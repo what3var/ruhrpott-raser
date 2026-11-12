@@ -233,7 +233,7 @@ Jobs funktionieren als **wiederholbare Kurz-Missionen** (Schicht), bringen Lohn 
 
 Grundsatz: Spieler können nur Aktionen auslösen, die das Spiel auch selbst ausführen könnte. Bleibende Änderungen an der Welt (Override-Layer) werden immer erst geprüft.
 
-**Glücksspiel und Echtgeld:** Die Spielwährung kann nicht mit echtem Geld gekauft werden. Sonst gelten für Spielothek und Casino Glücksspiel- und Jugendschutzregeln. Vor einem Release rechtlich prüfen.
+**Glücksspiel ist rein virtuell:** Gespielt wird nur mit Spielwährung. Die Währung kann nicht mit echtem Geld gekauft werden, Gewinne lassen sich nicht auszahlen, und es gibt keinen Handel gegen Echtgeld. Simuliertes Glücksspiel kann trotzdem die Altersfreigabe beeinflussen. Bei Waffen und Kriminalität wie in GTA ist ohnehin eine Freigabe ab 18 zu erwarten.
 
 ## 7. Multiplayer
 
