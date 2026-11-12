@@ -45,6 +45,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Gebäudetypen aus OSM-Tags, zuerst: Tankstelle, Imbiss, Kneipe, Autohändler, Hotel
 - [ ] Waffen und PvP, Fahndungslevel, Schutzbereiche, Schonfrist für Neue
 - [ ] Rennen: legal auf abgesperrten Strecken und illegal im Verkehr, Wetten
+- [ ] Jobs als Schicht-Missionen in Gebäuden, Aufstieg bis zur Übernahme
 - [ ] Gebäude mieten, prozedurale Innenräume
 - [ ] Ein Geschäftstyp mit Wirtschaftssimulation
 - [ ] Missionsgenerator mit echten POIs
@@ -56,6 +57,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Ganz NRW
 - [ ] Fassaden-Tool (Foto → Grammatik-Parameter) für größere Gebiete
 - [ ] Weitere Gebäudetypen (Disco, Casino, Spielothek, Internetcafé …)
+- [ ] Öffentliche Verwaltung: Genehmigungen, Ordnungsamt
+- [ ] Bauhöfe: Reparatur von Zerstörung, Baustellen, Winterdienst, Korrekturvorschläge für den Override-Layer
 - [ ] Öffentlicher Verkehr als Schnellreise (S-Bahn, RE, Flüge)
 - [ ] Spezial-Generatoren für Problemfälle (Autobahnkreuze, Brücken, Fördertürme)
 - [ ] Meldefunktion „sieht falsch aus“ als Arbeitsliste für Nachbesserungen

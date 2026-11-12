@@ -201,6 +201,38 @@ Die Funktion eines Gebäudes kommt aus den **echten OSM-Tags** (z. B. `amenity=f
 
 Weitere Kandidaten: Werkstatt/Tuning, Waffenladen, Kiosk/Trinkhalle („Büdchen“), Krankenhaus, Apotheke, Fitnessstudio, Friseur/Kleidung, Pfandhaus, Polizeiwache.
 
+### Jobs
+
+Gebäude bieten auch **legale Jobs** an, als Gegenstück zu den zwielichtigen Geschäften. Gute Einstiegsmöglichkeit für neue Spieler, die zu Fuß und ohne Geld starten. Ein Job kann gleichzeitig Tarnung oder Zugang für illegale Aktionen sein.
+
+| Gebäude | Beispiel-Jobs | Nebeneffekt |
+|---|---|---|
+| Tankstelle | Kassierer, Nachtschicht, Waschanlage | Kennt die Rennszene, Infos über Treffpunkte |
+| Imbiss / Restaurant | Koch, Kellner, Lieferfahrer | Lieferfahrten = Fahrtraining, lernt die Stadt kennen |
+| Bar / Disco | Barkeeper, Türsteher, DJ | Kontakte, Ruf in der Straßenszene |
+| Hotel | Rezeption, Pagen-Dienst | Zugang zu Zimmern |
+| Bahnhof / Flughafen | Lokführer, Busfahrer, Gepäckabfertigung | Zugang zu Lager- und Frachtbereichen |
+| Autohändler / Verleih | Verkäufer, Überführungsfahrer | Zugang zu Fahrzeugen und Schlüsseln |
+| Internetcafé | Aufsicht, IT-Support | Hacking-Fähigkeit steigt |
+
+Jobs funktionieren als **wiederholbare Kurz-Missionen** (Schicht), bringen Lohn und Fähigkeiten und steigen mit der Zeit im Rang (Aushilfe → Schichtleiter → Filialleitung → Übernahme des Ladens).
+
+### Öffentliche Verwaltung und Bauhöfe (später)
+
+Öffentliche Einrichtungen bieten Jobs, die **echte Aufgaben in der Spielwelt übernehmen**. Was sonst der Server automatisch erledigt, kann ganz oder teilweise von Spielern gemacht werden. Ein Server läuft auch ohne diese Spieler, dann übernimmt die Automatik.
+
+- **Stadtverwaltung / Bürgeramt / Ordnungsamt:**
+  - Genehmigungen für Geschäfte, Events und legale Rennen
+  - Knöllchen, Abschleppen, Kontrolle von Gewerben
+  - Bestechlich: Genehmigungen lassen sich auch kaufen
+- **Bauhof / Straßenmeisterei:**
+  - Zerstörte Bereiche reparieren. Das setzt Spieler-Deltas zurück auf den generierten Grundzustand (Abschnitt 7).
+  - Baustellen einrichten, Straßen sperren, Schnee räumen und streuen (Abschnitt 5)
+  - Müllabfuhr, Wracks entfernen
+  - Gemeldete Darstellungsfehler (Abschnitt 8) vor Ort prüfen und **Korrekturvorschläge** einreichen. Diese landen im Override-Layer, aber erst nach einer Prüfung.
+
+Grundsatz: Spieler können nur Aktionen auslösen, die das Spiel auch selbst ausführen könnte. Bleibende Änderungen an der Welt (Override-Layer) werden immer erst geprüft.
+
 **Glücksspiel und Echtgeld:** Die Spielwährung kann nicht mit echtem Geld gekauft werden. Sonst gelten für Spielothek und Casino Glücksspiel- und Jugendschutzregeln. Vor einem Release rechtlich prüfen.
 
 ## 7. Multiplayer
