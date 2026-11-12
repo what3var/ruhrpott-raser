@@ -17,6 +17,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Fassaden-Grammatik + parametrische Materialien
 - [ ] Sharp-bilinear-Shader
 - [ ] Tag/Nacht, viele Lichtquellen, warme Straßenbeleuchtung als Basis
+- [ ] Wetterzustand als gemeinsamer Eingang für Renderer, Physik und Gameplay
+- [ ] Wetterlagen: klar, Nebel, Regen (nasse Straßen, Spiegelungen), später Gewitter, Schnee, Wind
+- [ ] Mondphase/-stand astronomisch korrekt, Wolken mit orangem Stadtlicht-Himmel
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos
 - [ ] Referenzszene: Zechensiedlung in nebliger Nacht
 - [ ] Mood-Akzente pro Viertel, Render-Profile pro Gebiet
@@ -24,7 +27,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 
 ## M3: Fahren & Streaming
 - [ ] Kollisionsmesh aus den geschnittenen Voxeln, Override-Mesh wo nötig
-- [ ] Fahrzeugphysik
+- [ ] Fahrzeugphysik inkl. Nässe, Aquaplaning, Glätte
 - [ ] Streaming mehrerer Kacheln, Vorausgenerierung in Fahrtrichtung
 - [ ] LOD für weite Sichtweiten
 
@@ -32,6 +35,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Autoritativer Server, 2–8 Spieler
 - [ ] Client-Prediction für Fahrzeuge
 - [ ] Interest-Management pro Kachel
+- [ ] Serverseitiges Wetter (simuliert per Seed, optional echtes DWD-Wetter)
 - [ ] Zerstörungs-/Bau-Deltas (Key-Value-Store)
 
 ## M5: Gameplay
@@ -39,6 +43,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Ein Geschäftstyp mit Wirtschaftssimulation
 - [ ] Missionsgenerator mit echten POIs
 - [ ] Erste handgebaute Story-Mission
+- [ ] Wetter-Einfluss auf Entdeckung, Kundschaft und Missionen
 
 ## M6: Skalierung
 - [ ] Ganzes Ruhrgebiet

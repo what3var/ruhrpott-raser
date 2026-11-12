@@ -10,7 +10,7 @@
   - Straßen, Rampen, Böschungen und Dächer sind damit direkt im Voxelmodell abbildbar.
   - Speicher: 4 × 2 Bit = 1 Byte zusätzlich pro geschnittenem Voxel (nur Oberflächen-Voxel, Rest bleibt voller Würfel).
   - Später möglich: diagonale Schnitte im Grundriss (Viertelkeile) für schräge Fassaden und Bordsteine.
-- **Fahrphysik auf derselben Geometrie:** Das Kollisionsmesh für Fahrzeuge entsteht aus denselben geschnittenen Voxeln wie die Optik. Was man sieht, ist auch das, worauf man fährt. Wo Fahrzeuge ganz glatte Flächen brauchen (Autobahn, enge Kurven), darf ein Override-Mesh aus dem Zwischenlayer einspringen (siehe Abschnitt 7).
+- **Fahrphysik auf derselben Geometrie:** Das Kollisionsmesh für Fahrzeuge entsteht aus denselben geschnittenen Voxeln wie die Optik. Was man sieht, ist auch das, worauf man fährt. Wo Fahrzeuge ganz glatte Flächen brauchen (Autobahn, enge Kurven), darf ein Override-Mesh aus dem Zwischenlayer einspringen (siehe Abschnitt 8).
 
 ## 2. Weltpipeline
 
@@ -69,11 +69,11 @@ Fassadentexturen sind sehr klein (< 100 px breit). Sie werden in drei Ebenen bes
 
 Die **Basis überall ist warmes, orangefarbenes Licht**, wie bei Natriumdampflampen (ca. 1800–2200 K). Neon und kaltes Licht sind **Akzente** in bestimmten Vierteln, nicht die Grundstimmung.
 
-### Nebel als zentrales Element
+### Wetter und Himmel bestimmen die Nacht
 
-- Volumetrischer Nebel mit Lichtstreuung: Laternen bekommen Lichtkegel und Halos.
-- Nebeldichte hängt vom Wetter, von der Uhrzeit und vom Ort ab (Flussauen, Kanäle und Halden eher neblig).
-- Referenzszene: **kleine Zechensiedlung in nebliger Nacht.** Ziegelreihenhäuser, vereinzelte orange Laternen, Licht hinter Gardinen, sonst Dunkelheit. Daran wird die Beleuchtung abgestimmt.
+Keine Nacht sieht gleich aus. Die Atmosphäre entsteht aus warmer Grundbeleuchtung × Wetter × Mond × Viertel-Mood. Details stehen in Abschnitt 5.
+
+Referenzszene: **kleine Zechensiedlung in nebliger Nacht.** Ziegelreihenhäuser, vereinzelte orange Laternen, Licht hinter Gardinen, sonst Dunkelheit. Daran wird die Beleuchtung abgestimmt. Weitere Referenzszenen für jede Wetterlage folgen (z. B. Regen auf der Kneipenmeile, klare Neumondnacht am Kanal).
 
 ### Mood pro Viertel (Akzente über der warmen Basis)
 
@@ -86,19 +86,62 @@ Die **Basis überall ist warmes, orangefarbenes Licht**, wie bei Natriumdampflam
 
 Technik dafür: Clustered Forward oder Deferred Rendering für viele Lichtquellen, emissive Voxel, volumetrischer Nebel, Bloom, nasse Straßen mit Reflexionen.
 
-## 5. Gameplay
+## 5. Wetter, Mond und Tageszeit
+
+### Wetterlagen
+
+| Wetterlage | Optik | Auswirkung |
+|---|---|---|
+| Trocken, klar | Sterne, scharfe Lichtkegel, bei Vollmond blaue Mondschatten | Normale Haftung, weite Sicht |
+| Neblig | Volumetrischer Nebel, Halos um Laternen, Sichtweite stark reduziert | Gegner/Polizei erst spät sichtbar, gut für Fluchten |
+| Nieselregen / Regen | Nasse Straßen, Spiegelungen der Laternen und Reklamen, Pfützen, Regen im Lichtkegel | Weniger Haftung, längerer Bremsweg, Aquaplaning in Pfützen |
+| Starkregen / Gewitter | Blitze erhellen kurz die Szene, Wasserfilm, Sturzbäche an Bordsteinen | Stark eingeschränkte Sicht und Haftung |
+| Schnee / Frost (selten) | Weiße Dächer, Glätte, gedämpftes Licht durch reflektierenden Schnee | Glatteis, rutschige Kurven |
+| Wind / Sturm | Bewegte Bäume und Planen, treibender Regen | Seitenwind auf Brücken und Autobahn |
+
+Wetter wechselt fließend: Nach Regen bleiben Straßen eine Weile nass, auf Regen folgt in Senken und an Flüssen oft Nebel.
+
+### Mond und Himmel
+
+- **Mondphase und Mondstand astronomisch korrekt**, berechnet aus Datum und Uhrzeit.
+- Neumond + Bewölkung = besonders dunkle Nacht. Außerhalb der Laternenkegel sieht man fast nichts.
+- Vollmond bei klarem Himmel = helle Nacht mit Schatten.
+- Bewölkung reflektiert nachts das orange Stadtlicht (typischer orangeroter Himmel über dem Ruhrgebiet), klarer Himmel bleibt dunkel.
+
+### Wetterquelle
+
+Zwei Modi, pro Server einstellbar:
+- **Simuliert:** Deterministisch aus Seed und Zeit, mit regionalen Wetterzellen, die über die Karte ziehen.
+- **Echt:** Live-Wetter von den offenen Daten des Deutschen Wetterdienstes (DWD), umgerechnet auf die Spielwelt. Lizenz und Verfügbarkeit prüfen.
+
+Der Server ist für das Wetter autoritativ. Clients bekommen nur die Parameter (Wetterzellen, Zeit) und berechnen die Darstellung selbst.
+
+### Technik
+
+- Ein **Wetterzustand** (Bewölkung, Niederschlag, Nebeldichte, Nässe der Oberflächen, Wind, Temperatur) ist ein Eingang für Renderer, Physik und Gameplay.
+- Nässe wird pro Fläche gespeichert, damit Unterführungen und überdachte Bereiche trocken bleiben.
+- Render-Profile (Abschnitt 8) können pro Gebiet das Wetter lokal anpassen, z. B. Dampf an Hochöfen oder Nebel über dem Kanal.
+
+### Gameplay-Wirkung
+
+- Fahrphysik: Haftung, Bremsweg, Aquaplaning
+- Sicht und Entdeckung: Polizei und Gegner sehen bei Nebel und Dunkelheit weniger
+- Wirtschaft: Wetter beeinflusst die Kundschaft (bei Regen läuft die Pommesbude schlechter, der Lieferdienst besser)
+- Missionen: Manche Missionen gibt es nur bei bestimmtem Wetter oder bei Neumond
+
+## 6. Gameplay
 
 - **Häuser mieten:** Jedes LoD2-Gebäude ist potenziell mietbar. Innenräume werden prozedural aus Grundriss und Nutzung erzeugt, erst beim ersten Betreten.
 - **Zwielichtige Geschäfte:** Wirtschaftssimulation mit Tarnfirma, Umsatz, Polizei-Aufmerksamkeit und Konkurrenz durch Spieler. Der Standort zählt.
 - **Missionen:** Ein Generator nutzt echte POIs als Ziele, dazu kommen handgebaute Story-Missionen an festen Orten.
 
-## 6. Multiplayer
+## 7. Multiplayer
 
 - Der Server ist autoritativ, Fahrzeuge laufen mit Client-Prediction.
 - Interest-Management pro Kachel: Synchronisiert wird nur, was in der Nähe ist.
 - Zerstörung und Umbau werden als Deltas zum deterministischen Grundzustand übertragen und gespeichert.
 
-## 7. Nachbesserbarkeit für schwierige Bereiche
+## 8. Nachbesserbarkeit für schwierige Bereiche
 
 Automatische Generierung wird an vielen Stellen schlecht aussehen: Autobahnkreuze, Brücken, Stadien, Hochöfen, Fördertürme, Bahnhöfe. Die Struktur muss erlauben, diese Bereiche gezielt nachzubessern, ohne den Rest anzufassen.
 
@@ -122,7 +165,7 @@ Zwischen Zwischenlayer und Voxelisierung liegt ein **Override-Layer** mit handge
 - Debug-Ansicht im Client: Welcher Generator, welche Overrides und welches Render-Profil gelten hier?
 - Meldefunktion („sieht falsch aus“) mit Position, als Arbeitsliste für Nachbesserungen.
 
-## 8. Was fire leisten muss
+## 9. Was fire leisten muss
 
 Das Projekt soll die Sprache in allen Bereichen belasten:
 
