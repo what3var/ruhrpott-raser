@@ -27,7 +27,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 
 ## M3: Fahren & Streaming
 - [ ] Kollisionsmesh aus den geschnittenen Voxeln, Override-Mesh wo nötig
+- [ ] Spieler zu Fuß (Laufen, Sprinten, Ein-/Aussteigen)
 - [ ] Fahrzeugphysik inkl. Nässe, Aquaplaning, Glätte
+- [ ] Fahrzeugklassen: Fahrrad, Motorrad, Auto, Nutzfahrzeug; Tank/Akku, Zustand
 - [ ] Streaming mehrerer Kacheln, Vorausgenerierung in Fahrtrichtung
 - [ ] LOD für weite Sichtweiten
 
@@ -39,6 +41,10 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Zerstörungs-/Bau-Deltas (Key-Value-Store)
 
 ## M5: Gameplay
+- [ ] Spielerwerte: Vitalwerte, Fähigkeiten, Ruf
+- [ ] Gebäudetypen aus OSM-Tags, zuerst: Tankstelle, Imbiss, Kneipe, Autohändler, Hotel
+- [ ] Waffen und PvP, Fahndungslevel, Schutzbereiche, Schonfrist für Neue
+- [ ] Rennen: legal auf abgesperrten Strecken und illegal im Verkehr, Wetten
 - [ ] Gebäude mieten, prozedurale Innenräume
 - [ ] Ein Geschäftstyp mit Wirtschaftssimulation
 - [ ] Missionsgenerator mit echten POIs
@@ -49,6 +55,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Ganzes Ruhrgebiet
 - [ ] Ganz NRW
 - [ ] Fassaden-Tool (Foto → Grammatik-Parameter) für größere Gebiete
+- [ ] Weitere Gebäudetypen (Disco, Casino, Spielothek, Internetcafé …)
+- [ ] Öffentlicher Verkehr als Schnellreise (S-Bahn, RE, Flüge)
 - [ ] Spezial-Generatoren für Problemfälle (Autobahnkreuze, Brücken, Fördertürme)
 - [ ] Meldefunktion „sieht falsch aus“ als Arbeitsliste für Nachbesserungen
 
@@ -58,4 +66,5 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - Wie viele Spieler soll ein Server tragen?
 - Wie stark ist die Welt zerstörbar bzw. bebaubar?
 - Wie laufen Ingame-Zeit und Wirtschaft weiter, wenn Spieler offline sind?
+- Rechtliche Prüfung von Glücksspiel-Inhalten und Altersfreigabe
 - Lizenzen der Datenquellen final prüfen (NRW Open Data, OSM/ODbL, Mapillary/Panoramax)

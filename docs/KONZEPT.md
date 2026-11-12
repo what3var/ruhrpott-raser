@@ -131,9 +131,77 @@ Der Server ist für das Wetter autoritativ. Clients bekommen nur die Parameter (
 
 ## 6. Gameplay
 
+### Grundlagen
+
 - **Häuser mieten:** Jedes LoD2-Gebäude ist potenziell mietbar. Innenräume werden prozedural aus Grundriss und Nutzung erzeugt, erst beim ersten Betreten.
 - **Zwielichtige Geschäfte:** Wirtschaftssimulation mit Tarnfirma, Umsatz, Polizei-Aufmerksamkeit und Konkurrenz durch Spieler. Der Standort zählt.
 - **Missionen:** Ein Generator nutzt echte POIs als Ziele, dazu kommen handgebaute Story-Missionen an festen Orten.
+
+### Fortbewegung
+
+Wie in GTA: **Jeder startet zu Fuß.** Fahrzeuge muss man sich kaufen, leihen oder klauen.
+
+| Kategorie | Beispiele | Woher |
+|---|---|---|
+| Zu Fuß | Laufen, Sprinten, Klettern | Von Anfang an |
+| Fahrrad / E-Scooter | Hollandrad, Rennrad, Leih-Scooter | Fahrradladen, Leihstationen, klauen |
+| Motorrad / Roller | Mofa, Vespa-Typ, Superbike | Motorradladen, klauen |
+| Auto | Kleinwagen, Kombi, Tuning-Karre, Sportwagen, Transporter | Autohändler, Autoverleih, klauen |
+| Nutzfahrzeuge | Lkw, Bus, Müllwagen, Polizei | Missionen, klauen |
+| Öffentlicher Verkehr | S-Bahn, RE, Straßenbahn, Bus | Bahnhöfe und Haltestellen |
+| Flugzeug | Linienflug als Schnellreise, später ggf. kleine Flugzeuge | Flughäfen |
+
+- Fahrzeuge haben **Tank bzw. Akku, Zustand und Tuning**. Ein leerer Tank ist ein echtes Problem, deshalb sind Tankstellen wichtig.
+- **Öffentlicher Verkehr fährt auf dem echten Netz** aus OSM und dient als Schnellreise durch NRW. Für das Streaming ist das praktisch: Das Ziel steht fest, also kann der Server die Zielregion während der Fahrt vorgenerieren.
+- Fahrzeuge der Fantasie-Marken sind an echte Modelle angelehnt, ohne echte Marken- oder Modellnamen.
+
+### Kampf und PvP
+
+- **PvP ist möglich**, überall außerhalb von Schutzbereichen.
+- **Waffen in allen Varianten:** Nahkampf, Pistolen, Gewehre, Sprengstoff. Dazu **sarkastische Waffen** mit Ruhrpott-Bezug, z. B. Kohlenschaufel, Gartenzwerg-Granate, Taubenschlag (Brieftauben als Ablenkung), Bierflaschen-Wurf, Grubenlampe als Blendgranate.
+- **Fahndungslevel** wie in GTA: Gewalt und Diebstahl rufen die Polizei, je nach Schwere und Zeugen. Nebel und Dunkelheit (Abschnitt 5) machen Flucht leichter.
+- **Schutz gegen Griefing:**
+  - Eigene Wohnung, Hotelzimmer und bestimmte Gebäude sind Schutzbereiche.
+  - Neue Spieler haben eine Schonfrist ohne PvP.
+  - Spieler, die oft Schwächere angreifen, bekommen ein hohes Kopfgeld, das andere einsammeln können.
+
+### Rennen
+
+- **Legale Rennen** auf abgesperrten Strecken: Rennstrecken, Industriegelände, gesperrte Straßenabschnitte bei Events. Mit Startgeld, Preisgeld und Ranglisten.
+- **Illegale Straßenrennen** im normalen Verkehr: Treffpunkte an Tankstellen und Parkplätzen, Wetten unter Spielern, die Polizei kann eingreifen. Die Route wird aus dem echten Straßengraphen erzeugt oder von Spielern gesetzt.
+- Rennen sind **Missionen wie andere auch**: Sie können von Spielern ausgeschrieben werden und gelten für Wetter, Fahndung und Wirtschaft genauso.
+
+### Spielerwerte
+
+- **Vitalwerte** (schwanken, müssen gepflegt werden): Gesundheit, Hunger, Durst, Energie, Stress, Rausch
+- **Fähigkeiten** (steigen durch Nutzung und Training): Fahren, Schießen, Ausdauer, Kraft, Verhandeln, Hacken
+- **Ruf** in mehreren Szenen: Straße, Rennszene, Geschäftswelt, Polizei
+
+### Gebäudetypen mit Funktion
+
+Die Funktion eines Gebäudes kommt aus den **echten OSM-Tags** (z. B. `amenity=fuel`, `amenity=bar`, `shop=car`). Echte Orte bekommen also die passende Funktion. Echte Firmennamen und Logos werden durch Fantasie-Namen ersetzt.
+
+| Gebäudetyp | Kaufen / Verkaufen | Wirkung auf Werte | Besonderheit |
+|---|---|---|---|
+| **Tankstelle** („Tanke“) | Sprit, Bier, Snacks, Zigaretten, Zeitung, Kleinkram | Hunger, Durst, Stress | **Kulturgut.** 24/7 geöffnet, Treffpunkt der Rennszene, Ort für Missionen, beliebtes Überfallziel. Eigene Atmosphäre: Leuchtreklame, Neonröhren, Typen am Stehtisch |
+| Restaurant / Imbiss / Pommesbude | Essen, Getränke | Hunger, Durst, Gesundheit | Qualität und Preis unterschiedlich. Currywurst-Pommes-Schranke als Standard |
+| Bar / Kneipe | Getränke | Durst, Stress, Rausch | Infos und Missionen von Stammgästen, Kontakte für Geschäfte |
+| Disco / Club | Eintritt, Getränke | Stress, Energie, Rausch | Türsteher, Ruf entscheidet über Einlass, nachts Treffpunkt |
+| Rotlicht-Etablissement | Eintritt, Getränke | Stress | Kann als zwielichtiges Geschäft betrieben werden. Inhalte bleiben angedeutet, nichts explizites |
+| Spielothek | Automatenspiel | Stress, Geld | Kleines Glücksspiel, auch als Tarnfirma |
+| Casino | Roulette, Poker, Blackjack | Stress, Geld | Großes Glücksspiel, Kleiderordnung, Heist-Missionen |
+| Hotel | Zimmer | Energie (schlafen), Speicherpunkt | Zimmer ist ein Schutzbereich, gut ohne eigene Wohnung |
+| Bahnhof | Tickets | – | Schnellreise auf dem echten Netz, Schließfächer als Lager |
+| Flughafen | Flugtickets | – | Schnellreise über große Distanzen, Schmuggel-Missionen |
+| Autoverleih | Auto mieten | – | Ohne Kauf sofort mobil, Kaution, Schaden kostet extra |
+| Autohändler | Autos kaufen und verkaufen | – | Neu- und Gebrauchtwagen, Hehlerei mit gestohlenen Autos |
+| Fahrradladen | Fahrräder, Teile | – | Billiger Einstieg in die Mobilität |
+| Motorradladen | Motorräder, Roller, Ausrüstung | – | Helm und Kluft schützen bei Stürzen |
+| Internetcafé | Zugang zu Rechnern | – | Darknet-Markt, Hacking-Missionen, anonyme Aufträge |
+
+Weitere Kandidaten: Werkstatt/Tuning, Waffenladen, Kiosk/Trinkhalle („Büdchen“), Krankenhaus, Apotheke, Fitnessstudio, Friseur/Kleidung, Pfandhaus, Polizeiwache.
+
+**Glücksspiel und Echtgeld:** Die Spielwährung kann nicht mit echtem Geld gekauft werden. Sonst gelten für Spielothek und Casino Glücksspiel- und Jugendschutzregeln. Vor einem Release rechtlich prüfen.
 
 ## 7. Multiplayer
 
