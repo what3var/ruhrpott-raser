@@ -5,8 +5,12 @@
 - **Voxelgröße 25 cm** (1/4 Minecraft). Pro Volumen sind das 64× mehr Voxel als bei Minecraft.
   - Chunks/Bricks deshalb größer wählen (z. B. 64³ = 16 m Kantenlänge).
   - LOD ist ab Tag 1 Pflicht.
-- **Diagonalen:** Zusätzlich zu Würfeln gibt es Sonderformen (Schrägen, Viertelkeile). Die bringen mehr als noch kleinere Voxel.
-- **Fahrphysik getrennt von der Optik:** Straßen und Gelände bekommen ein eigenes, glattes Kollisionsmesh aus dem Zwischenlayer. Fahrzeuge fahren nie direkt auf Voxel-Treppen.
+- **Diagonale Höhen-Schnitte:** Ein Voxel darf oben schräg abgeschnitten sein. Die Oberseite ist über **vier Eckhöhen** definiert, quantisiert in 1/4-Voxel-Schritten (6,25 cm).
+  - Benachbarte Voxel teilen sich die Eckhöhen. So entstehen durchgehende, lückenlose Flächen ohne Treppen.
+  - Straßen, Rampen, Böschungen und Dächer sind damit direkt im Voxelmodell abbildbar.
+  - Speicher: 4 × 2 Bit = 1 Byte zusätzlich pro geschnittenem Voxel (nur Oberflächen-Voxel, Rest bleibt voller Würfel).
+  - Später möglich: diagonale Schnitte im Grundriss (Viertelkeile) für schräge Fassaden und Bordsteine.
+- **Fahrphysik auf derselben Geometrie:** Das Kollisionsmesh für Fahrzeuge entsteht aus denselben geschnittenen Voxeln wie die Optik. Was man sieht, ist auch das, worauf man fährt. Wo Fahrzeuge ganz glatte Flächen brauchen (Autobahn, enge Kurven), darf ein Override-Mesh aus dem Zwischenlayer einspringen (siehe Abschnitt 7).
 
 ## 2. Weltpipeline
 
@@ -61,16 +65,26 @@ Fassadentexturen sind sehr klein (< 100 px breit). Sie werden in drei Ebenen bes
 
 ## 4. Nacht-Atmosphäre
 
-Der „Mood“ eines Viertels wird aus Landnutzung und POIs abgeleitet:
+### Grundsatz: Klassische Straßenbeleuchtung
 
-| Viertel-Typ | Stimmung |
+Die **Basis überall ist warmes, orangefarbenes Licht**, wie bei Natriumdampflampen (ca. 1800–2200 K). Neon und kaltes Licht sind **Akzente** in bestimmten Vierteln, nicht die Grundstimmung.
+
+### Nebel als zentrales Element
+
+- Volumetrischer Nebel mit Lichtstreuung: Laternen bekommen Lichtkegel und Halos.
+- Nebeldichte hängt vom Wetter, von der Uhrzeit und vom Ort ab (Flussauen, Kanäle und Halden eher neblig).
+- Referenzszene: **kleine Zechensiedlung in nebliger Nacht.** Ziegelreihenhäuser, vereinzelte orange Laternen, Licht hinter Gardinen, sonst Dunkelheit. Daran wird die Beleuchtung abgestimmt.
+
+### Mood pro Viertel (Akzente über der warmen Basis)
+
+| Viertel-Typ | Akzente |
 |---|---|
-| Industrie / Hütte / Hafen | Orange-rote Glut, Dampf, Natriumdampflampen |
-| Innenstadt / Kneipenmeile | Neon in Magenta und Cyan, Richtung Vice City |
-| Hochhaussiedlung / Gewerbe | Kaltes Blau, Werbetafeln, Richtung Cyberpunk |
-| Zechensiedlung / Vorort | Warm, dunkel, wenige Laternen |
+| Zechensiedlung / Vorort | Keine. Nur warme Laternen, Fensterlicht, Nebel |
+| Industrie / Hütte / Hafen | Orange-rote Glut, Dampf, Flutlicht |
+| Innenstadt / Kneipenmeile | Neonreklamen in Magenta und Cyan (Richtung Vice City) |
+| Hochhaussiedlung / Gewerbe | Werbetafeln, vereinzelt kaltes LED-Licht (Richtung Cyberpunk) |
 
-Technik dafür: Clustered Forward oder Deferred Rendering für viele Lichtquellen, emissive Voxel, Bloom, Nebel, nasse Straßen mit Reflexionen.
+Technik dafür: Clustered Forward oder Deferred Rendering für viele Lichtquellen, emissive Voxel, volumetrischer Nebel, Bloom, nasse Straßen mit Reflexionen.
 
 ## 5. Gameplay
 
@@ -84,7 +98,31 @@ Technik dafür: Clustered Forward oder Deferred Rendering für viele Lichtquelle
 - Interest-Management pro Kachel: Synchronisiert wird nur, was in der Nähe ist.
 - Zerstörung und Umbau werden als Deltas zum deterministischen Grundzustand übertragen und gespeichert.
 
-## 7. Was fire leisten muss
+## 7. Nachbesserbarkeit für schwierige Bereiche
+
+Automatische Generierung wird an vielen Stellen schlecht aussehen: Autobahnkreuze, Brücken, Stadien, Hochöfen, Fördertürme, Bahnhöfe. Die Struktur muss erlauben, diese Bereiche gezielt nachzubessern, ohne den Rest anzufassen.
+
+### Override-Layer
+
+Zwischen Zwischenlayer und Voxelisierung liegt ein **Override-Layer** mit handgepflegten Korrekturen. Er ist versioniert und liegt im Repo, nicht nur in der Datenbank.
+
+- **Daten-Overrides:** Attribute des Zwischenlayers korrigieren (Gebäudehöhe, Dachtyp, Fassaden-Parameter, Straßenbreite).
+- **Spezial-Generatoren:** Für bestimmte Objekttypen oder Gebiete übernimmt ein eigener Generator (z. B. `Autobahnkreuz`, `Brücke`, `Förderturm`). Er wird über Tags oder Polygone registriert, die Standard-Generatoren sind nur der Fallback.
+- **Handgebaute Assets:** Voxelmodelle für Landmarken (Dortmunder U, Zeche Zollverein), die an einer Stelle eingesetzt werden.
+- **Render-Profile:** Lokale Einstellungen für Licht, Nebel, Mood, LOD-Distanzen, Spezial-Shader. Ein Gebiet kann einen eigenen Render-Pfad bekommen, ohne dass der globale Renderer sich ändert.
+
+### Versionierung und Neu-Generierung
+
+- Jede Kachel speichert die **Generator-Version** und den Hash der verwendeten Overrides.
+- Ändert sich ein Generator oder Override, werden nur die betroffenen Kacheln ungültig und neu erzeugt. Clients verwerfen ihren Cache für diese Kacheln.
+- **Spieler-Deltas** (Zerstörung, Umbau, Mietobjekte) hängen an stabilen IDs (Gebäude-ID, Straßen-ID) und nicht nur an Voxel-Koordinaten. So überleben sie eine Neu-Generierung.
+
+### Werkzeuge
+
+- Debug-Ansicht im Client: Welcher Generator, welche Overrides und welches Render-Profil gelten hier?
+- Meldefunktion („sieht falsch aus“) mit Position, als Arbeitsliste für Nachbesserungen.
+
+## 8. Was fire leisten muss
 
 Das Projekt soll die Sprache in allen Bereichen belasten:
 
