@@ -2,6 +2,7 @@
   "format": 1,
   "name": "Raser.Import",
   "type": "library",
+  "import": "raser.import",
   "references": [
     { "project": "../Raser.Core/Raser.Core.fireproj" },
     { "project": "../Raser.World/Raser.World.fireproj" }

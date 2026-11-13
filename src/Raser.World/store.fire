@@ -1,0 +1,174 @@
+// Raser.World: wo der Zwischenlayer und die Chunks liegen.
+//
+// Der Zwischenlayer soll in PostGIS liegen (db/schema.sql); solange fire keinen PostgreSQL-Treiber hat, liegt er in Dateien mit derselben Aufteilung:
+//   <world>/tiles/<x>_<y>.json        die Merkmale der Kachel (TileData)
+//   <world>/tiles/<x>_<y>.rrh         das Höhenraster (HeightRaster.Encode)
+//   <world>/chunks/<x>_<y>/<cx>_<cy>_<cz>.rrc   die Chunks (Chunk.Encode, mit Deflate)
+//   <world>/chunks/<x>_<y>/manifest.json        womit sie erzeugt wurden (Generator-Version, Overrides, Seed, Daten)
+// ITileStore ist die Grenze: ein PostGIS-Store setzt sie später um, ohne dass Import und Voxelisierung sich ändern.
+#import "raser.core"
+#import "json"
+#import "filesystem"
+#import "compression"
+
+namespace Raser {
+    interface ITileStore {
+        bool Has(TileKey key)
+        Tile Load(TileKey key)
+        undefined Save(Tile tile)
+        List<TileKey> Keys()
+    }
+
+    // Womit die Chunks einer Kachel erzeugt wurden.
+    class ChunkManifest {
+        defined int generatorVersion
+        string overridesHash
+        string seed
+        string dataHash
+        defined int chunks
+        defined int filled
+        List<string> keys
+
+        construct() { this.keys = new List<string>() }
+    }
+
+    class FileTileStore : ITileStore {
+        string root
+
+        construct(string root) {
+            this.root = root
+            IO.Directory.CreateDirectory(IO.Path.Combine(root, "tiles"))
+        }
+
+        string TilePath(TileKey key, string extension) { return IO.Path.Combine(this.root, "tiles", key.ToString() + extension) }
+
+        string ChunkFolder(TileKey key) { return IO.Path.Combine(this.root, "chunks", key.ToString()) }
+
+        bool Has(TileKey key) { return IO.File.Exists(this.TilePath(key, ".json")) }
+
+        Tile Load(TileKey key) {
+            string path = this.TilePath(key, ".json")
+            if (!IO.File.Exists(path)) { return undefined }
+            var tile = new Raser.Tile(new Raser.TileKey(key.x, key.y))
+            tile.data = Json.Deserialize<TileData>(IO.File.ReadAllText(path))
+            string hp = this.TilePath(key, ".rrh")
+            if (IO.File.Exists(hp)) { tile.heights = Raser.HeightRaster.Decode(IO.File.ReadAllBytes(hp)) }
+            return tile
+        }
+
+        undefined Save(Tile tile) {
+            var options = new JsonOptions(true)
+            options.typeNames = false
+            IO.File.WriteAllText(this.TilePath(tile.key, ".json"), Json.Serialize(tile.data, options))
+            if (tile.heights != undefined) { IO.File.WriteAllBytes(this.TilePath(tile.key, ".rrh"), tile.heights.Encode()) }
+        }
+
+        List<TileKey> Keys() {
+            var keys = new List<TileKey>()
+            var files = IO.Directory.GetFiles(IO.Path.Combine(this.root, "tiles"), "*.json")
+            foreach (f in files) {
+                var k = Raser.TileKey.Parse(IO.Path.GetFileNameWithoutExtension(f))
+                if (k != undefined) { keys.Add(take k) }
+            }
+            return keys
+        }
+
+        // Die Chunks einer Kachel.
+        undefined SaveChunk(Chunk chunk) {
+            string folder = this.ChunkFolder(chunk.key.Tile())
+            IO.Directory.CreateDirectory(folder)
+            IO.File.WriteAllBytes(IO.Path.Combine(folder, chunk.key.ToString() + ".rrc"), Compression.Deflate.Compress(chunk.Encode()))
+        }
+
+        Chunk LoadChunk(ChunkKey key) {
+            string path = IO.Path.Combine(this.ChunkFolder(key.Tile()), key.ToString() + ".rrc")
+            if (!IO.File.Exists(path)) { return undefined }
+            return Raser.Chunk.Decode(Compression.Deflate.Decompress(IO.File.ReadAllBytes(path)))
+        }
+
+        ChunkManifest LoadManifest(TileKey key) {
+            string path = IO.Path.Combine(this.ChunkFolder(key), "manifest.json")
+            if (!IO.File.Exists(path)) { return undefined }
+            return Json.Deserialize<ChunkManifest>(IO.File.ReadAllText(path))
+        }
+
+        undefined SaveManifest(TileKey key, ChunkManifest manifest) {
+            string folder = this.ChunkFolder(key)
+            IO.Directory.CreateDirectory(folder)
+            var options = new JsonOptions(true)
+            options.typeNames = false
+            IO.File.WriteAllText(IO.Path.Combine(folder, "manifest.json"), Json.Serialize(manifest, options))
+        }
+
+        // Löscht die Chunks einer Kachel (vor einer Neu-Generierung).
+        undefined ClearChunks(TileKey key) {
+            string folder = this.ChunkFolder(key)
+            if (IO.Directory.Exists(folder)) { IO.Directory.Delete(folder, true) }
+        }
+    }
+
+    // Erzeugt die Chunks einer Kachel, wenn sie fehlen oder veraltet sind.
+    class TileGenerator {
+        FileTileStore store
+        OverrideSet overrides
+        defined int seed
+
+        construct(FileTileStore store, OverrideSet overrides, defined int seed) {
+            this.store = store
+            try store.TakeTo(this)
+            this.overrides = overrides
+            try overrides.TakeTo(this)
+            this.seed = seed
+        }
+
+        // Liest alle *.json eines Ordners als Overrides (sortiert nach Namen). Ein fehlender Ordner heißt: keine.
+        static OverrideSet LoadOverrides(string folder) {
+            var set = new Raser.OverrideSet()
+            if (folder == undefined || !IO.Directory.Exists(folder)) { return set }
+            var files = IO.Directory.GetFiles(folder, "*.json", IO.SearchOption.AllDirectories)
+            foreach (f in files) { set.AddText(IO.File.ReadAllText(f), IO.Path.GetFileName(f)) }
+            return set
+        }
+
+        // Ist die Kachel aktuell? (Generator-Version, Overrides, Seed und Daten wie im Manifest.)
+        bool IsUpToDate(TileKey key) {
+            var manifest = this.store.LoadManifest(key)
+            if (manifest == undefined) { return false }
+            var tile = this.store.Load(key)
+            if (tile == undefined) { return false }
+            var v = new Raser.Voxelizer(tile, this.overrides, this.seed)
+            return manifest.generatorVersion == Raser.Voxelizer.Version && manifest.overridesHash == Raser.Fnv.Hex(v.overridesHash) && manifest.seed == Raser.Fnv.Hex(this.seed) && manifest.dataHash == Raser.Fnv.Hex(v.dataHash)
+        }
+
+        // Erzeugt die Chunks neu (leere Chunks werden nicht gespeichert). Gibt das Manifest zurück.
+        ChunkManifest Generate(TileKey key, lambda progress = undefined) {
+            var tile = this.store.Load(key)
+            if (tile == undefined) { throw new Raser.DataException("There is no tile " + key + " in the store.") }
+            var v = new Raser.Voxelizer(tile, this.overrides, this.seed)
+            this.store.ClearChunks(key)
+            var manifest = new Raser.ChunkManifest()
+            manifest.generatorVersion = Raser.Voxelizer.Version
+            manifest.overridesHash = Raser.Fnv.Hex(v.overridesHash)
+            manifest.seed = Raser.Fnv.Hex(this.seed)
+            manifest.dataHash = Raser.Fnv.Hex(v.dataHash)
+            var keys = v.ChunkKeys()
+            int done = 0
+            foreach (k in keys) {
+                var chunk = v.Generate(k)
+                if (!chunk.IsEmpty) {
+                    int filled = chunk.CountFilled()
+                    if (filled > 0) {
+                        this.store.SaveChunk(chunk)
+                        manifest.keys.Add(k.ToString())
+                        manifest.filled = manifest.filled + filled
+                    }
+                }
+                done++
+                if (progress != undefined) { progress(done, keys.Count) }
+            }
+            manifest.chunks = manifest.keys.Count
+            this.store.SaveManifest(key, manifest)
+            return manifest
+        }
+    }
+}

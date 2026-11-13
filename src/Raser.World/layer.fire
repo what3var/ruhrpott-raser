@@ -1,0 +1,239 @@
+// Raser.World: der Zwischenlayer (Konzept, Abschnitt 2) - semantisch und vektorbasiert, pro Kachel von 256 x 256 m.
+//
+// Eine Kachel hält ihr Höhenraster (DGM1, 1 m), die Gebäude (LoD2 / OSM), die Straßen (OSM) und die Flächen (Landnutzung aus OSM).
+// Alle Lagen sind kachel-lokal in Metern: (0, 0) ist die Südwest-Ecke der Kachel, x nach Osten, y nach Norden; Höhen absolut über NHN.
+// Merkmale, die über den Rand reichen, stehen in jeder Kachel, die sie berühren (mit derselben stabilen ID); die Voxelisierung schneidet am Chunk ab.
+#import "raser.core"
+#import "json"
+
+namespace Raser {
+    // Dachformen. Mit Dachflächen aus LoD2 zählt die Form nur für die Optik; ohne sie baut die Voxelisierung das Dach aus Form, Traufe und First.
+    enum RoofType { Unknown = 0, Flat = 1, Gable = 2, Hip = 3, Shed = 4, Pyramid = 5, Mansard = 6 }
+
+    // Eine Dachfläche aus LoD2: ein ebenes Polygon mit x, y, z je Punkt (kachel-lokal).
+    class RoofFace {
+        float points[]
+
+        construct() { }
+
+        defined int Count { get { return this.points.length / 3 } }
+    }
+
+    class Building {
+        defined int id
+        string source             // "lod2:<gml:id>" oder "osm:way/<id>"
+        float footprint[]         // x0, y0, x1, y1, ... (ein Ring, ohne den Startpunkt am Ende zu wiederholen)
+        defined float ground      // Höhe des Bodens (Unterkante des Erdgeschosses)
+        defined float eaves       // Traufhöhe (absolut)
+        defined float ridge       // Firsthöhe (absolut; = eaves bei Flachdach)
+        RoofType roofType
+        List<RoofFace> roofs      // Dachflächen aus LoD2 (leer: aus roofType bauen)
+        string function           // Nutzung (OSM-Tags wie "amenity=fuel", sonst die LoD2-Funktion)
+        string name
+        defined int levels        // Geschosse (0: aus der Höhe)
+        Material wall
+        defined int wallColor
+        Material roof
+        defined int roofColor
+
+        construct() {
+            this.roofs = new List<RoofFace>()
+            this.roofType = Raser.RoofType.Unknown
+            this.wall = Raser.Material.Brick
+            this.wallColor = Raser.Palette.Brick
+            this.roof = Raser.Material.RoofTiles
+            this.roofColor = Raser.Palette.RoofTiles
+        }
+
+        defined float Height { get { return this.ridge - this.ground } }
+    }
+
+    // Eine Straße oder ein Weg: Mittellinie mit Breite.
+    class Road {
+        defined int id
+        string source             // "osm:way/<id>"
+        string kind               // OSM highway=..., railway=...
+        float points[]            // x0, y0, x1, y1, ...
+        defined float width
+        Material surface
+        defined int color
+        defined int lanes
+        defined int layer         // OSM layer (Brücken > 0, Tunnel < 0; noch nicht genutzt)
+
+        construct() {
+            this.surface = Raser.Material.Asphalt
+            this.color = Raser.Palette.Asphalt
+        }
+    }
+
+    // Eine Fläche (Landnutzung, Wasser, Parkplatz ...): ein Ring.
+    class Area {
+        defined int id
+        string source
+        string kind               // "landuse=grass", "natural=water", "amenity=parking" ...
+        float ring[]
+        Material surface
+        defined int color
+        defined int priority      // bei Überlappung gewinnt die höhere
+
+        construct() { }
+    }
+
+    // Ein Punkt von Interesse (Ziel für Missionen, Funktion eines Gebäudes ohne Grundriss).
+    class Poi {
+        defined int id
+        string source
+        string kind
+        string name
+        defined float x
+        defined float y
+
+        construct() { }
+    }
+
+    // Die Merkmale einer Kachel (der Teil, der als JSON gespeichert wird; das Höhenraster liegt binär daneben).
+    class TileData {
+        defined int x
+        defined int y
+        defined int format
+        string quarter            // Viertel-Typ: "zechensiedlung", "innenstadt", "industrie", "hochhaus" ... (Konzept, Abschnitt 4)
+        string mood
+        List<string> sources      // woher die Daten kommen (Dateinamen, Stände)
+        List<Building> buildings
+        List<Road> roads
+        List<Area> areas
+        List<Poi> pois
+
+        construct() {
+            this.format = 1
+            this.quarter = "vorort"
+            this.mood = ""
+            this.sources = new List<string>()
+            this.buildings = new List<Building>()
+            this.roads = new List<Road>()
+            this.areas = new List<Area>()
+            this.pois = new List<Poi>()
+        }
+    }
+
+    // Eine Kachel: Merkmale + Höhenraster.
+    class Tile {
+        TileKey key
+        TileData data
+        HeightRaster heights
+
+        construct(TileKey key) {
+            this.key = key
+            try key.TakeTo(this)
+            this.data = new TileData()
+            this.data.x = key.x
+            this.data.y = key.y
+        }
+
+        // Ein Hash über alles, was die Voxelisierung liest: ändert er sich, sind die Chunks der Kachel veraltet.
+        defined int DataHash() {
+            int h = Raser.Fnv.OfText(Json.Serialize(this.data, new JsonOptions(false)))
+            if (this.heights != undefined) { h = Raser.Fnv.AddBytes(h, this.heights.Encode()) }
+            return h
+        }
+    }
+
+    // Ein Raster von Höhen (Meter über NHN): cols x rows Punkte im Abstand spacing, der erste Punkt bei (x0, y0) (kachel-lokal).
+    class HeightRaster {
+        defined float x0
+        defined float y0
+        defined float spacing
+        defined int cols
+        defined int rows
+        float[32] values[]
+
+        construct(defined float x0, defined float y0, defined float spacing, defined int cols, defined int rows, defined float fill = 0.0) {
+            this.x0 = x0
+            this.y0 = y0
+            this.spacing = spacing
+            this.cols = cols
+            this.rows = rows
+            this.values = new float[cols * rows]
+            for (int i = 0; i < cols * rows; i++) { this.values[i] = fill }
+        }
+
+        defined float Get(defined int c, defined int r) {
+            if (c < 0) { c = 0 }
+            if (r < 0) { r = 0 }
+            if (c >= this.cols) { c = this.cols - 1 }
+            if (r >= this.rows) { r = this.rows - 1 }
+            return this.values[r * this.cols + c]
+        }
+
+        undefined Set(defined int c, defined int r, defined float h) { this.values[r * this.cols + c] = h }
+
+        // Die Höhe an einem Punkt (bilinear, am Rand festgehalten).
+        defined float At(defined float x, defined float y) {
+            float fx = (x - this.x0) / this.spacing
+            float fy = (y - this.y0) / this.spacing
+            int c = Math.Floor(fx)!int
+            int r = Math.Floor(fy)!int
+            float tx = fx - c
+            float ty = fy - r
+            float a = this.Get(c, r)
+            float b = this.Get(c + 1, r)
+            float d = this.Get(c, r + 1)
+            float e = this.Get(c + 1, r + 1)
+            return (a * (1.0 - tx) + b * tx) * (1.0 - ty) + (d * (1.0 - tx) + e * tx) * ty
+        }
+
+        defined float Min() {
+            float m = this.values[0]
+            for (int i = 1; i < this.values.length; i++) {
+                if (this.values[i] < m) { m = this.values[i] }
+            }
+            return m
+        }
+
+        defined float Max() {
+            float m = this.values[0]
+            for (int i = 1; i < this.values.length; i++) {
+                if (this.values[i] > m) { m = this.values[i] }
+            }
+            return m
+        }
+
+        // Binär: Kopf, dann die Höhen in Zentimetern als Differenz zum Vorgänger (Varints) - ein Raster von 258 x 258 m braucht so meist unter 100 KB.
+        byte[] Encode() {
+            var w = new Raser.ByteWriter(this.cols * this.rows + 64)
+            w.Byte(82)    // "RRH1"
+            w.Byte(82)
+            w.Byte(72)
+            w.Byte(49)
+            w.SignedVarint(Math.Round(this.x0 * 100.0)!int)
+            w.SignedVarint(Math.Round(this.y0 * 100.0)!int)
+            w.Varint(Math.Round(this.spacing * 100.0)!int)
+            w.Varint(this.cols)
+            w.Varint(this.rows)
+            int last = 0
+            for (int i = 0; i < this.values.length; i++) {
+                int cm = Math.Round(this.values[i] * 100.0)!int
+                w.SignedVarint(cm - last)
+                last = cm
+            }
+            return w.ToBytes()
+        }
+
+        static HeightRaster Decode(byte data[]) {
+            var r = new Raser.ByteReader(data)
+            if (r.Byte() != 82 || r.Byte() != 82 || r.Byte() != 72 || r.Byte() != 49) { throw new Raser.DataException("Not a height raster (RRH1).") }
+            float x0 = r.SignedVarint() / 100.0
+            float y0 = r.SignedVarint() / 100.0
+            float spacing = r.Varint() / 100.0
+            int cols = r.Varint()
+            int rows = r.Varint()
+            var raster = new Raser.HeightRaster(x0, y0, spacing, cols, rows)
+            int cm = 0
+            for (int i = 0; i < cols * rows; i++) {
+                cm = cm + r.SignedVarint()
+                raster.values[i] = cm / 100.0
+            }
+            return raster
+        }
+    }
+}

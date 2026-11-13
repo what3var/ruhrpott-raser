@@ -1,0 +1,162 @@
+// Raser.World: 2D-Geometrie auf flachen Koordinatenlisten (x0, y0, x1, y1, ...).
+#import "raser.core"
+namespace Raser {
+    // Ein achsenparalleles Rechteck.
+    class Box2 {
+        defined float minX
+        defined float minY
+        defined float maxX
+        defined float maxY
+
+        construct(defined float minX, defined float minY, defined float maxX, defined float maxY) {
+            this.minX = minX
+            this.minY = minY
+            this.maxX = maxX
+            this.maxY = maxY
+        }
+
+        static Box2 Of(float points[], defined int stride = 2) {
+            var b = new Raser.Box2(1.0e30, 1.0e30, -1.0e30, -1.0e30)
+            for (int i = 0; i + 1 < points.length; i = i + stride) {
+                b.Add(points[i], points[i + 1])
+            }
+            return b
+        }
+
+        undefined Add(defined float x, defined float y) {
+            if (x < this.minX) { this.minX = x }
+            if (y < this.minY) { this.minY = y }
+            if (x > this.maxX) { this.maxX = x }
+            if (y > this.maxY) { this.maxY = y }
+        }
+
+        undefined Grow(defined float d) {
+            this.minX = this.minX - d
+            this.minY = this.minY - d
+            this.maxX = this.maxX + d
+            this.maxY = this.maxY + d
+        }
+
+        defined bool Overlaps(defined float minX, defined float minY, defined float maxX, defined float maxY) {
+            return this.minX <= maxX && this.maxX >= minX && this.minY <= maxY && this.maxY >= minY
+        }
+
+        defined bool Contains(defined float x, defined float y) { return x >= this.minX && x <= this.maxX && y >= this.minY && y <= this.maxY }
+    }
+
+    class Geo {
+        // Liegt (x, y) im Ring? (Gerade-Ungerade-Regel; stride 2 für x, y und 3 für x, y, z.)
+        static defined bool Inside(float ring[], defined float x, defined float y, defined int stride = 2) {
+            int n = ring.length / stride
+            if (n < 3) { return false }
+            bool inside = false
+            int j = n - 1
+            for (int i = 0; i < n; i++) {
+                float xi = ring[i * stride]
+                float yi = ring[i * stride + 1]
+                float xj = ring[j * stride]
+                float yj = ring[j * stride + 1]
+                if ((yi > y) != (yj > y)) {
+                    float cx = xj + (y - yj) * (xi - xj) / (yi - yj)
+                    if (x < cx) { inside = !inside }
+                }
+                j = i
+            }
+            return inside
+        }
+
+        // Der kleinste Abstand von (x, y) zu einer Linie aus Punkten (x0, y0, x1, y1, ...).
+        static defined float DistanceToLine(float line[], defined float x, defined float y) {
+            float best = 1.0e30
+            int n = line.length / 2
+            if (n == 1) { return Math.Sqrt((x - line[0]) * (x - line[0]) + (y - line[1]) * (y - line[1])) }
+            for (int i = 0; i + 1 < n; i++) {
+                float d = Raser.Geo.DistanceToSegment(x, y, line[i * 2], line[i * 2 + 1], line[i * 2 + 2], line[i * 2 + 3])
+                if (d < best) { best = d }
+            }
+            return best
+        }
+
+        static defined float DistanceToSegment(defined float px, defined float py, defined float ax, defined float ay, defined float bx, defined float by) {
+            float dx = bx - ax
+            float dy = by - ay
+            float len2 = dx * dx + dy * dy
+            float t = 0.0
+            if (len2 > 0.0) {
+                t = ((px - ax) * dx + (py - ay) * dy) / len2
+                if (t < 0.0) { t = 0.0 }
+                if (t > 1.0) { t = 1.0 }
+            }
+            float qx = ax + t * dx - px
+            float qy = ay + t * dy - py
+            return Math.Sqrt(qx * qx + qy * qy)
+        }
+
+        // Die vorzeichenbehaftete Fläche eines Rings (positiv: gegen den Uhrzeigersinn).
+        static defined float Area(float ring[], defined int stride = 2) {
+            int n = ring.length / stride
+            float a = 0.0
+            int j = n - 1
+            for (int i = 0; i < n; i++) {
+                a = a + (ring[j * stride] * ring[i * stride + 1] - ring[i * stride] * ring[j * stride + 1])
+                j = i
+            }
+            return a / 2.0
+        }
+
+        // Die Richtung der längsten Kante eines Rings als Einheitsvektor (dx, dy) - die Firstrichtung eines Satteldachs ohne LoD2-Flächen.
+        static float[] LongestEdge(float ring[]) {
+            int n = ring.length / 2
+            float best = -1.0
+            float dx = 1.0
+            float dy = 0.0
+            int j = n - 1
+            for (int i = 0; i < n; i++) {
+                float ex = ring[i * 2] - ring[j * 2]
+                float ey = ring[i * 2 + 1] - ring[j * 2 + 1]
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len > best && len > 0.0) {
+                    best = len
+                    dx = ex / len
+                    dy = ey / len
+                }
+                j = i
+            }
+            float result[] = [dx, dy]
+            return result
+        }
+
+        // Die Höhe der Ebene eines Polygons (x, y, z je Punkt) an (x, y), aus der Newell-Normalen. undefined für ein senkrechtes Polygon.
+        static any PlaneHeight(float poly[], defined float x, defined float y) {
+            int n = poly.length / 3
+            if (n < 3) { return undefined }
+            float nx = 0.0
+            float ny = 0.0
+            float nz = 0.0
+            float cx = 0.0
+            float cy = 0.0
+            float cz = 0.0
+            int j = n - 1
+            for (int i = 0; i < n; i++) {
+                float xi = poly[i * 3]
+                float yi = poly[i * 3 + 1]
+                float zi = poly[i * 3 + 2]
+                float xj = poly[j * 3]
+                float yj = poly[j * 3 + 1]
+                float zj = poly[j * 3 + 2]
+                nx = nx + (yj - yi) * (zj + zi)
+                ny = ny + (zj - zi) * (xj + xi)
+                nz = nz + (xj - xi) * (yj + yi)
+                cx = cx + xi
+                cy = cy + yi
+                cz = cz + zi
+                j = i
+            }
+            if (Math.Abs(nz) < 0.000001) { return undefined }
+            cx = cx / n
+            cy = cy / n
+            cz = cz / n
+            return cz - (nx * (x - cx) + ny * (y - cy)) / nz
+        }
+    }
+}

@@ -1,0 +1,198 @@
+// Raser.World: der Override-Layer (Konzept, Abschnitt 9) - handgepflegte Korrekturen zwischen Zwischenlayer und Voxelisierung.
+//
+// Overrides liegen versioniert im Repo (Ordner overrides/, *.json) und nicht nur in der Datenbank. Eine Datei:
+//
+//   { "overrides": [
+//       { "target": "lod2:DENW39AL10003xyz", "set": { "eaves": 7.5, "roofType": "Flat" }, "note": "Traufe aus Foto" },
+//       { "target": "osm:way/4711", "set": { "width": 9.0 } },
+//       { "target": "osm:way/4712", "remove": true },
+//       { "tile": "1473_22292", "set": { "quarter": "zechensiedlung", "mood": "nebel" } },
+//       { "tile": "1473_22292", "generator": "Foerderturm", "note": "Spezial-Generator, noch nicht umgesetzt" }
+//   ] }
+//
+// "target" ist die Quelle eines Gebäudes, einer Straße oder einer Fläche (stabil über Neu-Generierungen), "tile" eine Kachel.
+// Jede Kachel bekommt den Hash der Overrides, die sie betreffen; ändert sich einer, wird nur diese Kachel neu erzeugt.
+#import "raser.core"
+#import "json"
+
+namespace Raser {
+    class Override {
+        string target
+        string tile
+        string generator
+        string note
+        defined bool remove
+        JsonObject set
+        string file
+
+        construct() { }
+
+        // Ein fester Text für den Hash (Schlüssel sortiert, damit die Reihenfolge in der Datei nichts ändert).
+        string Canonical() {
+            string s = "t=" + this.target + ";k=" + this.tile + ";g=" + this.generator + ";r=" + this.remove
+            if (this.set != undefined) {
+                var keys = new List<string>()
+                foreach (k in this.set.Keys()) { keys.Add(k) }
+                Raser.Sorting.Texts(keys)
+                foreach (k in keys) { s = s + ";" + k + "=" + Json.Serialize(this.set.Get(k)) }
+            }
+            return s
+        }
+    }
+
+    class OverrideSet {
+        List<Override> items
+
+        construct() { this.items = new List<Override>() }
+
+        defined int Count { get { return this.items.Count } }
+
+        // Liest eine Datei im Format oben dazu.
+        undefined AddText(string text, string file = "") {
+            any root = Json.Parse(text)
+            if (!(root is of JsonObject) || !root.Has("overrides")) { throw new Raser.DataException(file + ": an override file is { \"overrides\": [ ... ] }.") }
+            any list = root.Get("overrides")
+            foreach (entry in list) {
+                if (!(entry is of JsonObject)) { throw new Raser.DataException(file + ": every override is an object.") }
+                var o = new Raser.Override()
+                o.file = file
+                if (entry.Has("target")) { o.target = entry.Get("target") }
+                if (entry.Has("tile")) { o.tile = entry.Get("tile") }
+                if (entry.Has("generator")) { o.generator = entry.Get("generator") }
+                if (entry.Has("note")) { o.note = entry.Get("note") }
+                if (entry.Has("remove")) { o.remove = entry.Get("remove") == true }
+                if (entry.Has("set")) {
+                    o.set = entry.Get("set")
+                    o.set.TakeTo(o)
+                }
+                if (o.target == undefined && o.tile == undefined) { throw new Raser.DataException(file + ": an override needs \"target\" or \"tile\".") }
+                this.items.Add(take o)
+            }
+        }
+
+        // Die Overrides, die eine Kachel betreffen: ihre eigenen und die ihrer Merkmale.
+        List<Override> For(Tile tile) {
+            var sources = new HashSet<string>()
+            foreach (b in tile.data.buildings) { sources.Add(b.source) }
+            foreach (r in tile.data.roads) { sources.Add(r.source) }
+            foreach (a in tile.data.areas) { sources.Add(a.source) }
+            string key = tile.key.ToString()
+            var result = new List<Override>()
+            foreach (o in this.items) {
+                if ((o.tile != undefined && o.tile == key) || (o.target != undefined && sources.Contains(o.target))) { result.Add(o) }
+            }
+            return result
+        }
+
+        // Der Hash der Overrides einer Kachel (0: keine).
+        defined int HashFor(Tile tile) {
+            var list = this.For(tile)
+            if (list.Count == 0) { return 0 }
+            var texts = new List<string>()
+            foreach (o in list) { texts.Add(o.Canonical()) }
+            Raser.Sorting.Texts(texts)
+            int h = Raser.Fnv.Start()
+            foreach (t in texts) { h = Raser.Fnv.AddText(h, t) }
+            return h
+        }
+
+        // Wendet die Overrides auf die Merkmale der Kachel an (an Ort und Stelle). Unbekannte Felder sind ein Fehler mit Datei und Ziel.
+        undefined Apply(Tile tile) {
+            var list = this.For(tile)
+            foreach (o in list) {
+                if (o.target == undefined) {
+                    if (o.set != undefined) { Raser.OverrideSet.ApplyTile(tile.data, o) }
+                    continue
+                }
+                for (int i = tile.data.buildings.Count - 1; i >= 0; i--) {
+                    var b = tile.data.buildings[i]
+                    if (b.source != o.target) { continue }
+                    if (o.remove) { tile.data.buildings.RemoveAt(i) } else { Raser.OverrideSet.ApplyBuilding(b, o) }
+                }
+                for (int i = tile.data.roads.Count - 1; i >= 0; i--) {
+                    var r = tile.data.roads[i]
+                    if (r.source != o.target) { continue }
+                    if (o.remove) { tile.data.roads.RemoveAt(i) } else { Raser.OverrideSet.ApplyRoad(r, o) }
+                }
+                for (int i = tile.data.areas.Count - 1; i >= 0; i--) {
+                    var a = tile.data.areas[i]
+                    if (a.source != o.target) { continue }
+                    if (o.remove) { tile.data.areas.RemoveAt(i) } else { Raser.OverrideSet.ApplyArea(a, o) }
+                }
+            }
+        }
+
+        static undefined Unknown(Override o, string key) {
+            string place = o.target
+            if (place == undefined) { place = "tile " + o.tile }
+            throw new Raser.DataException(o.file + ": the override of " + place + " sets '" + key + "', which it cannot change.")
+        }
+
+        static undefined ApplyTile(TileData d, Override o) {
+            foreach (k in o.set.Keys()) {
+                any v = o.set.Get(k)
+                switch (k) {
+                    case "quarter": d.quarter = v
+                    case "mood": d.mood = v
+                    case default: Raser.OverrideSet.Unknown(o, k)
+                }
+            }
+        }
+
+        static undefined ApplyBuilding(Building b, Override o) {
+            if (o.set == undefined) { return }
+            foreach (k in o.set.Keys()) {
+                any v = o.set.Get(k)
+                switch (k) {
+                    case "ground": b.ground = v
+                    case "eaves": b.eaves = v
+                    case "ridge": b.ridge = v
+                    case "height":
+                        b.ridge = b.ground + v
+                        if (b.eaves > b.ridge) { b.eaves = b.ridge }
+                    case "roofType":
+                        b.roofType = Raser.RoofType.Parse(v)
+                        b.roofs.Clear()
+                    case "levels": b.levels = v
+                    case "function": b.function = v
+                    case "name": b.name = v
+                    case "wall": b.wall = Raser.Material.Parse(v)
+                    case "wallColor": b.wallColor = v
+                    case "roof": b.roof = Raser.Material.Parse(v)
+                    case "roofColor": b.roofColor = v
+                    case default: Raser.OverrideSet.Unknown(o, k)
+                }
+            }
+        }
+
+        static undefined ApplyRoad(Road r, Override o) {
+            if (o.set == undefined) { return }
+            foreach (k in o.set.Keys()) {
+                any v = o.set.Get(k)
+                switch (k) {
+                    case "width": r.width = v
+                    case "kind": r.kind = v
+                    case "lanes": r.lanes = v
+                    case "layer": r.layer = v
+                    case "surface": r.surface = Raser.Material.Parse(v)
+                    case "color": r.color = v
+                    case default: Raser.OverrideSet.Unknown(o, k)
+                }
+            }
+        }
+
+        static undefined ApplyArea(Area a, Override o) {
+            if (o.set == undefined) { return }
+            foreach (k in o.set.Keys()) {
+                any v = o.set.Get(k)
+                switch (k) {
+                    case "kind": a.kind = v
+                    case "surface": a.surface = Raser.Material.Parse(v)
+                    case "color": a.color = v
+                    case "priority": a.priority = v
+                    case default: Raser.OverrideSet.Unknown(o, k)
+                }
+            }
+        }
+    }
+}

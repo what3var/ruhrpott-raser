@@ -1,0 +1,210 @@
+// Die Tests von Raser.World (forge test src/Raser.World/Raser.World.fireproj).
+#import "testing"
+#import "json"
+#import "filesystem"
+
+class Sample {
+    // Eine kleine Kachel: Gelände mit 2 % Steigung nach Osten bei 60 m, ein Satteldach-Haus, eine Straße, eine Wiese.
+    static Raser.Tile Make() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259)
+        for (int r = 0; r < 259; r++) {
+            for (int c = 0; c < 259; c++) { raster.Set(c, r, 60.0 + (c - 1) * 0.02) }
+        }
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:haus1"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [2.0, 4.0, 10.0, 4.0, 10.0, 11.0, 2.0, 11.0]
+        b.ground = 60.2
+        b.eaves = 66.0
+        b.ridge = 69.0
+        b.roofType = Raser.RoofType.Gable
+        tile.data.buildings.Add(take b)
+        var road = new Raser.Road()
+        road.source = "test:strasse"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "residential"
+        road.points = [0.0, 1.0, 40.0, 1.0]
+        road.width = 2.0
+        tile.data.roads.Add(take road)
+        var area = new Raser.Area()
+        area.source = "test:wiese"
+        area.kind = "landuse=meadow"
+        area.ring = [0.0, 11.6, 12.8, 11.6, 12.8, 30.0, 0.0, 30.0]
+        area.surface = Raser.Material.Sand
+        area.color = Raser.Palette.Sand
+        tile.data.areas.Add(take area)
+        return tile
+    }
+}
+
+class GeometryTests {
+    [Test "Punkt im Polygon und Abstand zur Linie"]
+    undefined Inside() {
+        float square[] = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]
+        Testing.Assert.IsTrue(Raser.Geo.Inside(square, 5.0, 5.0))
+        Testing.Assert.IsFalse(Raser.Geo.Inside(square, 11.0, 5.0))
+        Testing.Assert.AreEqual(100.0, Raser.Geo.Area(square))
+        float line[] = [0.0, 0.0, 10.0, 0.0]
+        Testing.Assert.AreEqual(3.0, Raser.Geo.DistanceToLine(line, 5.0, 3.0))
+        Testing.Assert.AreEqual(5.0, Raser.Geo.DistanceToLine(line, 13.0, 4.0))
+    }
+
+    [Test "Höhe einer Dachebene"]
+    undefined Plane() {
+        // Eine Fläche, die von y = 0 (z = 6) bis y = 4 (z = 10) ansteigt.
+        float face[] = [0.0, 0.0, 6.0, 10.0, 0.0, 6.0, 10.0, 4.0, 10.0, 0.0, 4.0, 10.0]
+        Testing.Assert.IsTrue(Math.Abs(Raser.Geo.PlaneHeight(face, 5.0, 2.0) - 8.0) < 0.0001)
+        float wall[] = [0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 0.0, 5.0]
+        Testing.Assert.IsTrue(Raser.Geo.PlaneHeight(wall, 1.0, 0.0) == undefined)
+    }
+}
+
+class RasterTests {
+    [Test "Bilinear und binär"]
+    undefined Raster() {
+        var r = new Raser.HeightRaster(0.0, 0.0, 1.0, 2, 2)
+        r.Set(0, 0, 10.0)
+        r.Set(1, 0, 12.0)
+        r.Set(0, 1, 14.0)
+        r.Set(1, 1, 16.0)
+        Testing.Assert.AreEqual(13.0, r.At(0.5, 0.5))
+        Testing.Assert.AreEqual(16.0, r.At(5.0, 5.0))
+        var back = Raser.HeightRaster.Decode(r.Encode())
+        Testing.Assert.AreEqual(2, back.cols)
+        Testing.Assert.AreEqual(13.0, back.At(0.5, 0.5))
+    }
+}
+
+class VoxelizerTests {
+    [Test "Gleiche Daten, gleiche Chunks"]
+    undefined Deterministic() {
+        var a = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var b = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var key = new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)
+        var ca = a.Generate(key)
+        var cb = b.Generate(key)
+        Testing.Assert.AreEqual(ca.ContentHash(), cb.ContentHash())
+        Testing.Assert.IsTrue(ca.CountFilled() > 0)
+        Testing.Assert.AreEqual(Raser.Voxelizer.Version, ca.generatorVersion)
+    }
+
+    [Test "Gelände: Oberfläche mit Höhen-Schnitten"]
+    undefined Terrain() {
+        var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var layers = v.ChunkLayers()
+        Testing.Assert.AreEqual(4, layers[0])
+        Testing.Assert.AreEqual(5, layers[1])
+        // Der Boden steigt um 2 cm je Meter nach Osten: bei x = 30,0 .. 30,2 m (Säule 22 im Chunk 2) liegt er bei 60,60 .. 60,604 m,
+        // also im Voxel 303 (z 47 im Chunk 4, der bei Voxel 256 beginnt).
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20 + 2, 22292 * 20 + 3, 4))
+        Testing.Assert.AreEqual(47, VoxelizerTests.Top(c, 22, 10))
+        Testing.Assert.AreEqual(Raser.Material.Grass!int, c.MaterialAt(22, 10, 47))
+        Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(22, 10, 46))
+        Testing.Assert.IsTrue(c.CountShaped() > 0)
+        // Darüber ist nichts: Chunk 5 beginnt bei 64 m.
+        Testing.Assert.AreEqual(0, v.Generate(new Raser.ChunkKey(1473 * 20 + 2, 22292 * 20 + 3, 5)).CountFilled())
+    }
+
+    // Das oberste Voxel einer Säule (-1: keins).
+    static int Top(Raser.Chunk c, int x, int y) {
+        for (int z = 63; z >= 0; z--) {
+            if (c.MaterialAt(x, y, z) != 0) { return z }
+        }
+        return -1
+    }
+
+    [Test "Gebäude mit Wänden, Fenstern und Dach"]
+    undefined Building() {
+        var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var low = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        var high = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 5))
+        // Das Haus steht bei x 2..10, y 4..11 m: Säulen 10..49, 20..54. Boden 60,2 m = Voxel 301 (z 45 im Chunk 4).
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, low.MaterialAt(30, 37, 45))
+        Testing.Assert.AreEqual(0, low.MaterialAt(30, 37, 50))
+        bool wallFound = false
+        bool glassFound = false
+        for (int y = 21; y < 54; y++) {
+            for (int z = 46; z < 64; z++) {
+                int m = low.MaterialAt(10, y, z)
+                if (m == Raser.Material.Brick!int) { wallFound = true }
+                if (m == Raser.Material.Glass!int) { glassFound = true }
+            }
+        }
+        Testing.Assert.IsTrue(wallFound)
+        Testing.Assert.IsTrue(glassFound)
+        // Der First (69 m = Voxel 344, z 24 im Chunk 5) läuft in x-Richtung (die längere Seite) bei y = 7,5 m (Säule 37).
+        Testing.Assert.AreEqual(24, VoxelizerTests.Top(high, 30, 37))
+        Testing.Assert.AreEqual(Raser.Material.RoofTiles!int, high.MaterialAt(30, 37, 24))
+        // An der Traufe (y = 4,2 m) ist das Dach niedriger.
+        Testing.Assert.IsTrue(VoxelizerTests.Top(high, 30, 21) < 12)
+        Testing.Assert.IsTrue(high.CountShaped() > 0)
+    }
+
+    [Test "Straße und Fläche"]
+    undefined Surfaces() {
+        var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // Die Straße bei y = 0..2 m; bei x = 1 m liegt der Boden bei 60,02 m -> Voxel 300 = z 44.
+        Testing.Assert.AreEqual(Raser.Material.Asphalt!int, c.MaterialAt(5, 5, 44))
+        Testing.Assert.AreEqual(Raser.Material.Gravel!int, c.MaterialAt(5, 5, 43))
+        // Die Fläche (als Sand) ab y = 11,6 m.
+        Testing.Assert.AreEqual(Raser.Material.Sand!int, c.MaterialAt(5, 62, 44))
+        Testing.Assert.AreEqual(Raser.Material.Grass!int, c.MaterialAt(5, 15, 44))
+    }
+
+    [Test "Overrides ändern Daten und Hash"]
+    undefined Overrides() {
+        var set = new Raser.OverrideSet()
+        set.AddText("{ \"overrides\": [ { \"target\": \"test:haus1\", \"set\": { \"roofType\": \"Flat\", \"eaves\": 64.0, \"ridge\": 64.0 } }, { \"tile\": \"1473_22292\", \"set\": { \"quarter\": \"zechensiedlung\" } } ] }", "test.json")
+        var tile = Sample.Make()
+        Testing.Assert.AreEqual(2, set.For(tile).Count)
+        int h1 = set.HashFor(tile)
+        Testing.Assert.IsTrue(h1 != 0)
+        var v = new Raser.Voxelizer(tile, set, 7)
+        Testing.Assert.AreEqual(h1, v.overridesHash)
+        Testing.Assert.AreEqual("zechensiedlung", tile.data.quarter)
+        Testing.Assert.AreEqual(Raser.RoofType.Flat, tile.data.buildings[0].roofType)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 5))
+        Testing.Assert.AreEqual(0, c.CountFilled())
+        var other = new Raser.OverrideSet()
+        other.AddText("{ \"overrides\": [ { \"target\": \"test:haus1\", \"set\": { \"eaves\": 64.0, \"ridge\": 64.0, \"roofType\": \"Flat\" } }, { \"tile\": \"1473_22292\", \"set\": { \"quarter\": \"zechensiedlung\" } } ] }", "b.json")
+        Testing.Assert.AreEqual(h1, other.HashFor(Sample.Make()))
+        var none = new Raser.OverrideSet()
+        none.AddText("{ \"overrides\": [ { \"target\": \"test:anderswo\", \"remove\": true } ] }", "c.json")
+        Testing.Assert.AreEqual(0, none.HashFor(Sample.Make()))
+    }
+
+    [Test "Unbekanntes Override-Feld ist ein Fehler"]
+    undefined BadOverride() {
+        var set = new Raser.OverrideSet()
+        set.AddText("{ \"overrides\": [ { \"target\": \"test:haus1\", \"set\": { \"farbe\": 3 } } ] }", "bad.json")
+        bool thrown = false
+        try {
+            set.Apply(Sample.Make())
+        } catch (Raser.DataException e) {
+            thrown = e.message.Contains("farbe") && e.message.Contains("bad.json")
+        }
+        Testing.Assert.IsTrue(thrown)
+    }
+}
+
+class StoreTests {
+    [Test "Speichern, Laden, Chunks erzeugen"]
+    undefined Store() {
+        string root = IO.Path.Combine(IO.Path.GetTempPath(), "raser-test-" + Raser.Fnv.Hex(Raser.Fnv.OfText("store")))
+        if (IO.Directory.Exists(root)) { IO.Directory.Delete(root, true) }
+        var store = new Raser.FileTileStore(root)
+        var tile = Sample.Make()
+        int hash = tile.DataHash()
+        store.Save(tile)
+        Testing.Assert.IsTrue(store.Has(new Raser.TileKey(1473, 22292)))
+        var back = store.Load(new Raser.TileKey(1473, 22292))
+        Testing.Assert.AreEqual(1, back.data.buildings.Count)
+        Testing.Assert.AreEqual(Raser.RoofType.Gable, back.data.buildings[0].roofType)
+        Testing.Assert.AreEqual(hash, back.DataHash())
+        Testing.Assert.AreEqual(1, store.Keys().Count)
+        IO.Directory.Delete(root, true)
+    }
+}

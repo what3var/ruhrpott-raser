@@ -2,6 +2,7 @@
   "format": 1,
   "name": "Raser.World",
   "type": "library",
+  "import": "raser.world",
   "references": [ { "project": "../Raser.Core/Raser.Core.fireproj" } ],
   "settings": {
     "version": "0.1.0",
