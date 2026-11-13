@@ -19,6 +19,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Tag/Nacht, viele Lichtquellen, warme Straßenbeleuchtung als Basis
 - [ ] Wetterzustand als gemeinsamer Eingang für Renderer, Physik und Gameplay
 - [ ] Wetterlagen: klar, Nebel, Regen (nasse Straßen, Spiegelungen), später Gewitter, Schnee, Wind
+- [ ] Ingame-Uhr in Echtzeit (deutsche Ortszeit, echter Sonnenstand), Zeitfaktor als Server-Einstellung
 - [ ] Mondphase/-stand astronomisch korrekt, Wolken mit orangem Stadtlicht-Himmel
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos
 - [ ] Referenzszene: Zechensiedlung in nebliger Nacht
@@ -85,7 +86,6 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - Wie viele Spieler soll ein Regionsserver tragen, und was ist das Ziel für ganz NRW?
 - Konkrete Schwellenwerte je Material (Balancing gegen Griefing)
 - Grundstücksgrenzen: ALKIS-Daten verfügbar oder Ableitung aus Grundrissen?
-- Zeitfaktor der Ingame-Uhr (Echtzeit oder beschleunigt wie in GTA)? Beeinflusst auch die Mondphase
 - Was läuft für Geschäfte und Mieten offline weiter?
 - Altersfreigabe (USK/PEGI) prüfen; Glücksspiel bleibt rein virtuell ohne Echtgeld
 - Lizenzen der Datenquellen final prüfen (NRW Open Data, OSM/ODbL, Mapillary/Panoramax)

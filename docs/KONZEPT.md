@@ -102,9 +102,16 @@ Technik dafür: Clustered Forward oder Deferred Rendering für viele Lichtquelle
 
 Wetter wechselt fließend: Nach Regen bleiben Straßen eine Weile nass, auf Regen folgt in Senken und an Flüssen oft Nebel.
 
+### Uhrzeit: Echtzeit
+
+- **Die Ingame-Uhr läuft in Echtzeit** und entspricht der deutschen Ortszeit (inkl. Sommer-/Winterzeit). Sonnenauf- und -untergang folgen dem echten Datum, im Dezember ist es also früh dunkel, im Juni lange hell.
+- Das passt zur echten Karte, zum echten Wetter (DWD-Modus) und zur echten Mondphase.
+- Folge: Wer immer zur selben Uhrzeit spielt, sieht immer dieselbe Tageszeit. Für ein Spiel mit Fokus auf die Nacht-Atmosphäre ist das vertretbar. Missionen und Events sollten deshalb nicht nur zu einer festen Tageszeit verfügbar sein.
+- Der Zeitfaktor bleibt eine Server-Einstellung (Standard 1:1), damit er später ohne Umbau geändert werden kann.
+
 ### Mond und Himmel
 
-- **Mondphase und Mondstand astronomisch korrekt**, berechnet aus Datum und Uhrzeit.
+- **Mondphase und Mondstand astronomisch korrekt**, berechnet aus dem echten Datum und der echten Uhrzeit.
 - Neumond + Bewölkung = besonders dunkle Nacht. Außerhalb der Laternenkegel sieht man fast nichts.
 - Vollmond bei klarem Himmel = helle Nacht mit Schatten.
 - Bewölkung reflektiert nachts das orange Stadtlicht (typischer orangeroter Himmel über dem Ruhrgebiet), klarer Himmel bleibt dunkel.
