@@ -1,0 +1,335 @@
+// Raser.Import: OpenStreetMap-XML (.osm, wie es die API und Overpass liefern) lesen und in Straßen, Flächen und POIs übersetzen.
+//
+// Mehrere Dateien (z. B. Ausschnitte einer Region) dürfen sich überlappen: Knoten und Wege zählen je ID einmal.
+// Koordinaten werden gleich nach UTM 32 umgerechnet. Relationen: Multipolygone, deren äußere Ringe geschlossene Wege sind, werden zu Flächen.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class OsmWay {
+        defined int id
+        List<int> nodes
+        Dictionary<string, string> tags
+
+        construct() {
+            this.nodes = new List<int>()
+            this.tags = new Dictionary<string, string>()
+        }
+
+        string Tag(string key) { return this.tags.Get(key, undefined) }
+
+        defined bool Closed { get { return this.nodes.Count >= 4 && this.nodes[0] == this.nodes[this.nodes.Count - 1] } }
+    }
+
+    class OsmPoint {
+        defined int id
+        defined float east
+        defined float north
+        Dictionary<string, string> tags
+
+        construct() { }
+    }
+
+    // Was ein OSM-Merkmal im Spiel ist.
+    class OsmFeature {
+        string source
+        string kind
+        string name
+        float points[]          // absolut (UTM)
+        defined bool area
+        defined float width
+        Material surface
+        defined int color
+        defined int priority
+        defined int lanes
+        defined int layer
+
+        construct() { }
+    }
+
+    class OsmData {
+        Dictionary<int, int> nodeIndex
+        List<float> east
+        List<float> north
+        List<OsmWay> ways
+        HashSet<int> wayIds
+        Dictionary<int, int> wayIndex
+        List<OsmPoint> points
+        HashSet<int> pointIds
+        List<OsmWay> relations
+        HashSet<int> relationIds
+
+        construct() {
+            this.nodeIndex = new Dictionary<int, int>()
+            this.east = new List<float>()
+            this.north = new List<float>()
+            this.ways = new List<OsmWay>()
+            this.wayIds = new HashSet<int>()
+            this.wayIndex = new Dictionary<int, int>()
+            this.points = new List<OsmPoint>()
+            this.pointIds = new HashSet<int>()
+            this.relations = new List<OsmWay>()
+            this.relationIds = new HashSet<int>()
+        }
+
+        defined int NodeCount { get { return this.east.Count } }
+
+        // Liest eine Datei dazu.
+        undefined Read(byte data[]) {
+            var reader = new Raser.XmlReader(data)
+            OsmWay way = undefined
+            OsmWay relation = undefined
+            Dictionary<string, string> nodeTags = undefined
+            int nodeId = 0
+            float nodeE = 0.0
+            float nodeN = 0.0
+            bool inNode = false
+            List<string> outerRoles = undefined
+            while (reader.Next()) {
+                if (reader.kind == Raser.XmlEvent.Start) {
+                    string n = reader.name
+                    if (n == "node") {
+                        nodeId = reader.Attr("id").ToInt()
+                        var p = Raser.Utm.FromLatLon(reader.Attr("lat").ToFloat(), reader.Attr("lon").ToFloat())
+                        nodeE = p[0]
+                        nodeN = p[1]
+                        if (!this.nodeIndex.ContainsKey(nodeId)) {
+                            this.nodeIndex[nodeId] = this.east.Count
+                            this.east.Add(nodeE)
+                            this.north.Add(nodeN)
+                        }
+                        inNode = !reader.selfClosing
+                        nodeTags = undefined
+                    } else if (n == "way") {
+                        way = new Raser.OsmWay()
+                        way.id = reader.Attr("id").ToInt()
+                    } else if (n == "relation") {
+                        relation = new Raser.OsmWay()
+                        relation.id = reader.Attr("id").ToInt()
+                    } else if (n == "nd" && way != undefined) {
+                        way.nodes.Add(reader.Attr("ref").ToInt())
+                    } else if (n == "member" && relation != undefined) {
+                        if (reader.Attr("type") == "way" && (reader.Attr("role") == "outer" || reader.Attr("role") == "")) { relation.nodes.Add(reader.Attr("ref").ToInt()) }
+                    } else if (n == "tag") {
+                        string k = reader.Attr("k")
+                        string v = reader.Attr("v")
+                        if (way != undefined) {
+                            way.tags[k] = v
+                        } else if (relation != undefined) {
+                            relation.tags[k] = v
+                        } else if (inNode) {
+                            if (nodeTags == undefined) { nodeTags = new Dictionary<string, string>() }
+                            nodeTags[k] = v
+                        }
+                    }
+                } else if (reader.kind == Raser.XmlEvent.End) {
+                    string n = reader.name
+                    if (n == "node") {
+                        if (inNode && nodeTags != undefined && Raser.OsmData.IsPoi(nodeTags) && !this.pointIds.Contains(nodeId)) {
+                            var pt = new Raser.OsmPoint()
+                            pt.id = nodeId
+                            pt.east = nodeE
+                            pt.north = nodeN
+                            pt.tags = take nodeTags
+                            this.pointIds.Add(nodeId)
+                            this.points.Add(take pt)
+                        }
+                        inNode = false
+                        nodeTags = undefined
+                    } else if (n == "way" && way != undefined) {
+                        if (!this.wayIds.Contains(way.id)) {
+                            this.wayIds.Add(way.id)
+                            this.wayIndex[way.id] = this.ways.Count
+                            this.ways.Add(take way)
+                        }
+                        way = undefined
+                    } else if (n == "relation" && relation != undefined) {
+                        if (!this.relationIds.Contains(relation.id) && relation.Tag("type") == "multipolygon") {
+                            this.relationIds.Add(relation.id)
+                            this.relations.Add(take relation)
+                        }
+                        relation = undefined
+                    }
+                }
+            }
+        }
+
+        static defined bool IsPoi(Dictionary<string, string> tags) {
+            return tags.ContainsKey("amenity") || tags.ContainsKey("shop") || tags.ContainsKey("tourism") || tags.ContainsKey("leisure") || tags.ContainsKey("craft") || tags.ContainsKey("office")
+        }
+
+        // Die Punkte eines Wegs (absolut), undefined wenn Knoten fehlen.
+        float[] Line(OsmWay w) {
+            float pts[] = new float[w.nodes.Count * 2]
+            for (int i = 0; i < w.nodes.Count; i++) {
+                int at = this.nodeIndex.Get(w.nodes[i], -1)
+                if (at < 0) { return undefined }
+                pts[i * 2] = this.east[at]
+                pts[i * 2 + 1] = this.north[at]
+            }
+            return pts
+        }
+
+        // Ein geschlossener Ring ohne den wiederholten Endpunkt.
+        float[] Ring(OsmWay w) {
+            var line = this.Line(w)
+            if (line == undefined || line.length < 8) { return undefined }
+            float ring[] = new float[line.length - 2]
+            for (int i = 0; i < ring.length; i++) { ring[i] = line[i] }
+            return ring
+        }
+
+        // Alle Merkmale, die das Spiel nutzt.
+        List<OsmFeature> Features() {
+            var result = new List<OsmFeature>()
+            foreach (w in this.ways) {
+                var f = Raser.OsmData.Classify(w.tags)
+                if (f == undefined) { continue }
+                f.source = "osm:way/" + w.id
+                if (f.area) {
+                    if (!w.Closed) { continue }
+                    f.points = this.Ring(w)
+                } else {
+                    f.points = this.Line(w)
+                }
+                if (f.points == undefined) { continue }
+                result.Add(take f)
+            }
+            foreach (r in this.relations) {
+                var f = Raser.OsmData.Classify(r.tags)
+                if (f == undefined || !f.area) { continue }
+                int part = 0
+                foreach (wid in r.nodes) {
+                    int at = this.wayIndex.Get(wid, -1)
+                    if (at < 0) { continue }
+                    var w = this.ways[at]
+                    if (!w.Closed) { continue }
+                    var ring = this.Ring(w)
+                    if (ring == undefined) { continue }
+                    var g = Raser.OsmData.Classify(r.tags)
+                    g.source = "osm:relation/" + r.id + "#" + part
+                    g.points = take ring
+                    result.Add(take g)
+                    part++
+                }
+            }
+            return result
+        }
+
+        // Breite einer Straße nach ihrer Art (Meter), wenn kein width-Tag da ist.
+        static defined float RoadWidth(string kind) {
+            switch (kind) {
+                case "motorway": return 11.0
+                case "trunk": return 9.0
+                case "primary": return 8.0
+                case "secondary": return 7.0
+                case "tertiary": return 6.5
+                case "motorway_link": return 5.0
+                case "trunk_link": return 5.0
+                case "primary_link": return 5.0
+                case "secondary_link": return 5.0
+                case "tertiary_link": return 5.0
+                case "residential": return 5.5
+                case "unclassified": return 5.0
+                case "living_street": return 4.5
+                case "pedestrian": return 5.0
+                case "service": return 3.5
+                case "track": return 3.0
+                case "busway": return 3.5
+                case default: return 2.0
+            }
+            return 2.0
+        }
+
+        // Was ein Satz Tags im Spiel ist; undefined: nichts, was die Welt braucht.
+        static OsmFeature Classify(Dictionary<string, string> tags) {
+            var f = new Raser.OsmFeature()
+            f.name = tags.Get("name", undefined)
+            f.layer = 0
+            if (tags.ContainsKey("layer")) {
+                any l = tags["layer"].TryToInt()
+                if (l != undefined) { f.layer = l }
+            }
+            string highway = tags.Get("highway", undefined)
+            if (highway != undefined && tags.Get("area", "no") != "yes") {
+                if (tags.Get("tunnel", "no") != "no" || f.layer < 0) { return undefined }
+                if (highway == "proposed" || highway == "construction" || highway == "platform" || highway == "elevator" || highway == "corridor") { return undefined }
+                f.kind = "highway=" + highway
+                f.width = Raser.OsmData.RoadWidth(highway)
+                if (tags.ContainsKey("width")) {
+                    any w = tags["width"].Replace(",", ".").Replace(" m", "").Replace("m", "").Trim().TryToFloat()
+                    if (w != undefined && w > 0.5 && w < 60.0) { f.width = w }
+                }
+                if (tags.ContainsKey("lanes")) {
+                    any n = tags["lanes"].TryToInt()
+                    if (n != undefined) { f.lanes = n }
+                }
+                f.surface = Raser.Material.Asphalt
+                f.color = Raser.Palette.Asphalt
+                string surface = tags.Get("surface", "")
+                bool small = highway == "footway" || highway == "path" || highway == "pedestrian" || highway == "steps" || highway == "cycleway" || highway == "living_street"
+                if (surface == "paving_stones" || surface == "sett" || surface == "cobblestone" || surface == "unhewn_cobblestone" || surface == "concrete:plates" || (surface == "" && small)) {
+                    f.surface = Raser.Material.Paving
+                    f.color = Raser.Palette.Paving
+                } else if (surface == "gravel" || surface == "fine_gravel" || surface == "unpaved" || surface == "compacted" || surface == "dirt" || surface == "ground" || highway == "track") {
+                    f.surface = Raser.Material.Gravel
+                    f.color = Raser.Palette.Gravel
+                }
+                return f
+            }
+            string railway = tags.Get("railway", undefined)
+            if (railway == "rail" || railway == "light_rail" || railway == "subway" || railway == "tram") {
+                if (tags.Get("tunnel", "no") != "no" || f.layer < 0) { return undefined }
+                if (railway == "tram" && tags.Get("embedded", "no") != "no") { return undefined }
+                f.kind = "railway=" + railway
+                f.width = 3.0
+                f.surface = Raser.Material.Gravel
+                f.color = Raser.Palette.Rail
+                return f
+            }
+            // Flächen
+            f.area = true
+            string natural = tags.Get("natural", undefined)
+            string landuse = tags.Get("landuse", undefined)
+            string leisure = tags.Get("leisure", undefined)
+            string amenity = tags.Get("amenity", undefined)
+            if (natural == "water" || landuse == "basin" || landuse == "reservoir" || tags.ContainsKey("water")) {
+                Raser.OsmData.Area(f, "natural=water", Raser.Material.Water, Raser.Palette.Water, 40); return f
+            }
+            if (amenity == "parking" && tags.Get("parking", "surface") == "surface") {
+                Raser.OsmData.Area(f, "amenity=parking", Raser.Material.Asphalt, Raser.Palette.Asphalt, 30); return f
+            }
+            if (tags.Get("highway", "") == "pedestrian" || tags.Get("place", "") == "square") {
+                Raser.OsmData.Area(f, "place=square", Raser.Material.Paving, Raser.Palette.Paving, 25); return f
+            }
+            if (leisure == "pitch" || leisure == "playground" || leisure == "track") {
+                if (tags.Get("surface", "") == "sand" || leisure == "playground") { Raser.OsmData.Area(f, "leisure=" + leisure, Raser.Material.Sand, Raser.Palette.Sand, 20); return f }
+                if (leisure == "track") { Raser.OsmData.Area(f, "leisure=track", Raser.Material.Paving, Raser.Palette.BrickLight, 20); return f }
+                Raser.OsmData.Area(f, "leisure=pitch", Raser.Material.Grass, Raser.Palette.Grass, 20); return f
+            }
+            if (natural == "wood" || landuse == "forest" || natural == "scrub") {
+                Raser.OsmData.Area(f, "landuse=forest", Raser.Material.Grass, Raser.Palette.Forest, 12); return f
+            }
+            if (leisure == "park" || leisure == "garden" || landuse == "grass" || landuse == "meadow" || landuse == "village_green" || landuse == "recreation_ground" || landuse == "cemetery" || landuse == "allotments" || natural == "grassland") {
+                Raser.OsmData.Area(f, "landuse=grass", Raser.Material.Grass, Raser.Palette.Grass, 10); return f
+            }
+            if (landuse == "farmland" || landuse == "orchard") {
+                Raser.OsmData.Area(f, "landuse=farmland", Raser.Material.Soil, Raser.Palette.Field, 8); return f
+            }
+            if (landuse == "railway") {
+                Raser.OsmData.Area(f, "landuse=railway", Raser.Material.Gravel, Raser.Palette.Gravel, 6); return f
+            }
+            if (landuse == "industrial" || landuse == "commercial" || landuse == "retail" || landuse == "construction") {
+                Raser.OsmData.Area(f, "landuse=" + landuse, Raser.Material.Paving, Raser.Palette.Concrete, 4); return f
+            }
+            return undefined
+        }
+
+        static undefined Area(OsmFeature f, string kind, Material surface, defined int color, defined int priority) {
+            f.kind = kind
+            f.surface = surface
+            f.color = color
+            f.priority = priority
+        }
+    }
+}

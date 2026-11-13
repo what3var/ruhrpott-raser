@@ -1,0 +1,194 @@
+// Raser.Import: 3D-Gebäudemodelle LoD2 (CityGML 1.0 von Geobasis NRW) lesen.
+//
+// Jedes bldg:Building und jedes bldg:BuildingPart mit eigener Geometrie wird ein Gebäude: Grundriss aus der GroundSurface (je Grundfläche ein
+// Gebäude), Dachflächen aus den RoofSurfaces, Traufe = niedrigster, First = höchster Dachpunkt. Ein Teil erbt Funktion und Dachform vom Gebäude,
+// wenn es keine eigenen hat. Koordinaten bleiben absolut (UTM 32, NHN); die Kachel rechnet sie später in kachel-lokale um.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class LodBuilding {
+        string id
+        string function
+        string roofCode
+        defined float measuredHeight
+        float ground[]              // x, y, z je Punkt
+        List<RoofFace> roofs
+        Box2 box
+
+        construct() { this.roofs = new List<RoofFace>() }
+    }
+
+    // Was für ein Building/BuildingPart beim Lesen gesammelt wird.
+    class LodObject {
+        string id
+        string function
+        string roofCode
+        defined float measuredHeight
+        List<float[]> grounds
+        List<float[]> roofs
+        LodObject parent
+
+        construct(string id) {
+            this.id = id
+            this.grounds = new List<float[]>()
+            this.roofs = new List<float[]>()
+        }
+    }
+
+    class CityGml {
+        // Die ALKIS-Dachform (bldg:roofType) als RoofType.
+        static RoofType RoofOf(string code) {
+            if (code == undefined) { return Raser.RoofType.Unknown }
+            switch (code) {
+                case "1000": return Raser.RoofType.Flat
+                case "2100": return Raser.RoofType.Shed
+                case "2200": return Raser.RoofType.Shed
+                case "3100": return Raser.RoofType.Gable
+                case "3200": return Raser.RoofType.Hip
+                case "3300": return Raser.RoofType.Hip
+                case "3400": return Raser.RoofType.Mansard
+                case "3500": return Raser.RoofType.Pyramid
+                case default: return Raser.RoofType.Unknown
+            }
+            return Raser.RoofType.Unknown
+        }
+
+        // Liest alle Gebäude einer Datei.
+        static List<LodBuilding> Read(byte data[]) {
+            var result = new List<LodBuilding>()
+            var reader = new Raser.XmlReader(data)
+            var objects = new List<LodObject>()      // der Stapel offener Building/BuildingPart
+            string surface = ""                      // GroundSurface, RoofSurface, WallSurface oder ""
+            int surfaceDepth = -1
+            bool exterior = false
+            int exteriorDepth = -1
+            while (reader.Next()) {
+                if (reader.kind == Raser.XmlEvent.Start) {
+                    string ln = reader.localName
+                    if (ln == "Building" || ln == "BuildingPart") {
+                        string id = reader.Attr("gml:id")
+                        if (id == undefined) { id = "building" + result.Count }
+                        var o = new Raser.LodObject(id)
+                        if (objects.Count > 0) { o.parent = objects[objects.Count - 1] }
+                        objects.Add(take o)
+                        continue
+                    }
+                    if (objects.Count == 0) { continue }
+                    var current = objects[objects.Count - 1]
+                    if (ln == "GroundSurface" || ln == "RoofSurface" || ln == "WallSurface" || ln == "ClosureSurface" || ln == "OuterFloorSurface" || ln == "OuterCeilingSurface") {
+                        surface = ln
+                        surfaceDepth = reader.depth
+                        continue
+                    }
+                    if (ln == "exterior") {
+                        exterior = true
+                        exteriorDepth = reader.depth
+                        continue
+                    }
+                    if (ln == "function" && surface == "") {
+                        current.function = reader.ReadText().Trim()
+                        continue
+                    }
+                    if (ln == "roofType" && surface == "") {
+                        current.roofCode = reader.ReadText().Trim()
+                        continue
+                    }
+                    if (ln == "measuredHeight" && surface == "") {
+                        any h = reader.ReadText().Trim().TryToFloat()
+                        if (h != undefined) { current.measuredHeight = h }
+                        continue
+                    }
+                    if (ln == "lod2TerrainIntersection" || ln == "lod2Solid" || ln == "externalReference" || ln == "address" || ln == "Address") {
+                        reader.Skip()
+                        continue
+                    }
+                    if (ln == "posList" && exterior && (surface == "GroundSurface" || surface == "RoofSurface")) {
+                        float points[] = Raser.CityGml.Points(reader.ReadText())
+                        if (points.length >= 9) {
+                            if (surface == "GroundSurface") { current.grounds.Add(take points) } else { current.roofs.Add(take points) }
+                        }
+                        continue
+                    }
+                } else if (reader.kind == Raser.XmlEvent.End) {
+                    string ln = reader.localName
+                    if (ln == "exterior" && reader.depth < exteriorDepth) {
+                        exterior = false
+                        exteriorDepth = -1
+                        continue
+                    }
+                    if (surface != "" && reader.depth < surfaceDepth && ln == surface) {
+                        surface = ""
+                        surfaceDepth = -1
+                        continue
+                    }
+                    if ((ln == "Building" || ln == "BuildingPart") && objects.Count > 0) {
+                        var o = objects.TakeAt(objects.Count - 1)
+                        Raser.CityGml.Emit(o, result)
+                    }
+                }
+            }
+            return result
+        }
+
+        // Ein Text mit "x y z x y z ..." als Zahlen (ohne den wiederholten Schlusspunkt eines Rings).
+        static float[] Points(string text) {
+            var parts = text.Trim().Replace("\n", " ").Replace("\t", " ").Split(" ")
+            var values = new List<float>()
+            foreach (p in parts) {
+                if (p.length == 0) { continue }
+                values.Add(p.ToFloat())
+            }
+            int n = values.Count / 3
+            if (n >= 2 && values[0] == values[(n - 1) * 3] && values[1] == values[(n - 1) * 3 + 1] && values[2] == values[(n - 1) * 3 + 2]) { n = n - 1 }
+            float result[] = new float[n * 3]
+            for (int i = 0; i < n * 3; i++) { result[i] = values[i] }
+            return result
+        }
+
+        static undefined Emit(LodObject o, List<LodBuilding> result) {
+            if (o.grounds.Count == 0 || o.roofs.Count == 0) { return }
+            string function = o.function
+            string roof = o.roofCode
+            var p = o.parent
+            while (p != undefined && (function == undefined || roof == undefined)) {
+                if (function == undefined) { function = p.function }
+                if (roof == undefined) { roof = p.roofCode }
+                p = p.parent
+            }
+            for (int g = 0; g < o.grounds.Count; g++) {
+                var b = new Raser.LodBuilding()
+                b.id = o.id
+                if (o.grounds.Count > 1) { b.id = o.id + "#" + g }
+                b.function = function
+                b.roofCode = roof
+                b.measuredHeight = o.measuredHeight
+                b.ground = flat o.grounds[g]
+                b.box = Raser.Box2.Of(b.ground, 3)
+                // Die Dachflächen über dieser Grundfläche (mit ihrem Mittelpunkt darin oder die Grundfläche berührend).
+                foreach (r in o.roofs) {
+                    if (o.grounds.Count == 1 || Raser.CityGml.Touches(b.ground, r)) {
+                        var face = new Raser.RoofFace()
+                        face.points = flat r
+                        b.roofs.Add(take face)
+                    }
+                }
+                if (b.roofs.Count > 0) { result.Add(take b) }
+            }
+        }
+
+        static defined bool Touches(float ground[], float roof[]) {
+            int n = roof.length / 3
+            for (int i = 0; i < n; i++) {
+                if (Raser.Geo.Inside(ground, roof[i * 3], roof[i * 3 + 1], 3)) { return true }
+            }
+            float cx = 0.0
+            float cy = 0.0
+            for (int i = 0; i < n; i++) {
+                cx = cx + roof[i * 3]
+                cy = cy + roof[i * 3 + 1]
+            }
+            return Raser.Geo.Inside(ground, cx / n, cy / n, 3)
+        }
+    }
+}

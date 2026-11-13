@@ -1,0 +1,282 @@
+// Raser.Import: ein kleiner XML-Pull-Parser auf Bytes (UTF-8), schnell genug für CityGML-Kacheln von 50 MB.
+//
+// reader.Next() geht zum nächsten Ereignis: Start (ein Element beginnt; ein leeres <a/> liefert Start mit selfClosing und danach End), End, Text.
+// Kommentare, <?...?>, <!DOCTYPE ...> werden übersprungen, CDATA wird Text. Entitäten (&amp; &lt; &gt; &quot; &apos; &#n; &#xn;) werden aufgelöst.
+// Namen bleiben wie im Text (mit Präfix); LocalName ist der Teil nach dem Doppelpunkt.
+#import "io"
+#import "raser.core"
+
+namespace Raser {
+    enum XmlEvent { None = 0, Start = 1, End = 2, Text = 3, Eof = 4 }
+
+    class XmlReader {
+        byte data[]
+        defined int pos
+        defined int length
+        XmlEvent kind
+        string name
+        string localName
+        defined bool selfClosing
+        defined bool pendingEnd
+        string text
+        List<string> attrNames
+        List<string> attrValues
+        defined int depth
+
+        construct(byte data[]) {
+            this.data = data
+            try data.TakeTo(this)
+            this.length = data.length
+            this.pos = 0
+            this.kind = Raser.XmlEvent.None
+            this.attrNames = new List<string>()
+            this.attrValues = new List<string>()
+            this.depth = 0
+        }
+
+        string Slice(defined int start, defined int end) { return IO.Utf8.GetString(this.data, start, end - start) }
+
+        static defined bool IsSpace(defined int c) { return c == 32 || c == 9 || c == 10 || c == 13 }
+
+        static defined bool IsNameEnd(defined int c) { return c == 32 || c == 9 || c == 10 || c == 13 || c == 62 || c == 47 || c == 61 }
+
+        // Das nächste Ereignis; false am Ende der Daten.
+        bool Next() {
+            if (this.pendingEnd) {
+                this.pendingEnd = false
+                this.kind = Raser.XmlEvent.End
+                this.selfClosing = true
+                return true
+            }
+            while (true) {
+                if (this.pos >= this.length) {
+                    this.kind = Raser.XmlEvent.Eof
+                    return false
+                }
+                int c = this.data[this.pos]
+                if (c != 60) {
+                    // Text bis zum nächsten '<'.
+                    int start = this.pos
+                    bool blank = true
+                    bool amp = false
+                    while (this.pos < this.length) {
+                        int d = this.data[this.pos]
+                        if (d == 60) { break }
+                        if (d == 38) { amp = true }
+                        if (blank && !Raser.XmlReader.IsSpace(d)) { blank = false }
+                        this.pos++
+                    }
+                    if (blank) { continue }
+                    this.text = this.Slice(start, this.pos)
+                    if (amp) { this.text = Raser.XmlReader.Unescape(this.text) }
+                    this.kind = Raser.XmlEvent.Text
+                    return true
+                }
+                // '<'
+                if (this.pos + 1 >= this.length) { throw new Raser.DataException("XML ends inside a tag.") }
+                int n = this.data[this.pos + 1]
+                if (n == 63) {           // <? ... ?>
+                    this.SkipPast(63, 62)
+                    continue
+                }
+                if (n == 33) {           // <!-- -->, <![CDATA[ ]]>, <!DOCTYPE >
+                    if (this.StartsAt(this.pos, "<!--")) {
+                        this.SkipPastText("-->")
+                        continue
+                    }
+                    if (this.StartsAt(this.pos, "<![CDATA[")) {
+                        int start = this.pos + 9
+                        int end = this.Find("]]>", start)
+                        this.text = this.Slice(start, end)
+                        this.pos = end + 3
+                        this.kind = Raser.XmlEvent.Text
+                        return true
+                    }
+                    this.SkipPast(-1, 62)
+                    continue
+                }
+                if (n == 47) {           // </name>
+                    int start = this.pos + 2
+                    int p = start
+                    while (p < this.length && !Raser.XmlReader.IsNameEnd(this.data[p])) { p++ }
+                    this.SetName(start, p)
+                    while (p < this.length && this.data[p] != 62) { p++ }
+                    this.pos = p + 1
+                    this.kind = Raser.XmlEvent.End
+                    this.selfClosing = false
+                    this.depth--
+                    return true
+                }
+                // <name attr="v" ...> oder <name ... />
+                int start = this.pos + 1
+                int p = start
+                while (p < this.length && !Raser.XmlReader.IsNameEnd(this.data[p])) { p++ }
+                this.SetName(start, p)
+                this.attrNames.Clear()
+                this.attrValues.Clear()
+                this.selfClosing = false
+                while (true) {
+                    while (p < this.length && Raser.XmlReader.IsSpace(this.data[p])) { p++ }
+                    if (p >= this.length) { throw new Raser.DataException("XML ends inside the tag <" + this.name + ">.") }
+                    int d = this.data[p]
+                    if (d == 62) {
+                        p++
+                        break
+                    }
+                    if (d == 47) {
+                        this.selfClosing = true
+                        while (p < this.length && this.data[p] != 62) { p++ }
+                        p++
+                        break
+                    }
+                    int a0 = p
+                    while (p < this.length && !Raser.XmlReader.IsNameEnd(this.data[p])) { p++ }
+                    string an = this.Slice(a0, p)
+                    while (p < this.length && this.data[p] != 34 && this.data[p] != 39) { p++ }
+                    int quote = this.data[p]
+                    p++
+                    int v0 = p
+                    bool amp = false
+                    while (p < this.length && this.data[p] != quote) {
+                        if (this.data[p] == 38) { amp = true }
+                        p++
+                    }
+                    string av = this.Slice(v0, p)
+                    if (amp) { av = Raser.XmlReader.Unescape(av) }
+                    p++
+                    this.attrNames.Add(an)
+                    this.attrValues.Add(av)
+                }
+                this.pos = p
+                this.kind = Raser.XmlEvent.Start
+                if (this.selfClosing) { this.pendingEnd = true } else { this.depth++ }
+                return true
+            }
+            return false
+        }
+
+        undefined SetName(defined int start, defined int end) {
+            this.name = this.Slice(start, end)
+            int colon = this.name.IndexOf(':')
+            if (colon >= 0) { this.localName = this.name.Substring(colon + 1) } else { this.localName = this.name }
+        }
+
+        // Der Wert eines Attributs (mit Präfix wie im Text, oder nur der lokale Name), undefined ohne.
+        string Attr(string attrName) {
+            for (int i = 0; i < this.attrNames.Count; i++) {
+                string n = this.attrNames[i]
+                if (n == attrName) { return this.attrValues[i] }
+                int colon = n.IndexOf(':')
+                if (colon >= 0 && n.Substring(colon + 1) == attrName) { return this.attrValues[i] }
+            }
+            return undefined
+        }
+
+        // Nach einem Start: der Text bis zum zugehörigen End (Kindelemente werden übersprungen, ihr Text angehängt).
+        string ReadText() {
+            if (this.kind != Raser.XmlEvent.Start) { return "" }
+            if (this.selfClosing) {
+                this.Next()
+                return ""
+            }
+            int level = 1
+            string result = ""
+            while (level > 0 && this.Next()) {
+                if (this.kind == Raser.XmlEvent.Start) {
+                    if (!this.selfClosing) { level++ }
+                } else if (this.kind == Raser.XmlEvent.End) {
+                    if (!this.selfClosing) { level-- }
+                } else if (this.kind == Raser.XmlEvent.Text) {
+                    result = result + this.text
+                }
+            }
+            return result
+        }
+
+        // Überspringt das Element, dessen Start gerade gelesen wurde.
+        undefined Skip() {
+            if (this.kind != Raser.XmlEvent.Start) { return }
+            if (this.selfClosing) {
+                this.Next()
+                return
+            }
+            int level = 1
+            while (level > 0 && this.Next()) {
+                if (this.kind == Raser.XmlEvent.Start && !this.selfClosing) { level++ }
+                if (this.kind == Raser.XmlEvent.End && !this.selfClosing) { level-- }
+            }
+        }
+
+        bool StartsAt(defined int at, string s) {
+            if (at + s.length > this.length) { return false }
+            for (int i = 0; i < s.length; i++) {
+                if (this.data[at + i] != s[i].ToInt()) { return false }
+            }
+            return true
+        }
+
+        defined int Find(string s, defined int startAt) {
+            int first = s[0].ToInt()
+            for (int p = startAt; p + s.length <= this.length; p++) {
+                if (this.data[p] == first && this.StartsAt(p, s)) { return p }
+            }
+            throw new Raser.DataException("XML: '" + s + "' is missing.")
+        }
+
+        undefined SkipPastText(string s) { this.pos = this.Find(s, this.pos) + s.length }
+
+        // Überspringt bis hinter das Zeichen last (davor optional prev, -1: egal).
+        undefined SkipPast(defined int prev, defined int last) {
+            int p = this.pos + 1
+            while (p < this.length) {
+                if (this.data[p] == last && (prev < 0 || this.data[p - 1] == prev)) {
+                    this.pos = p + 1
+                    return
+                }
+                p++
+            }
+            this.pos = this.length
+        }
+
+        static string Unescape(string s) {
+            string r = s.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'")
+            int i = r.IndexOf("&#")
+            while (i >= 0) {
+                int semi = r.IndexOf(";", i)
+                if (semi < 0) { break }
+                string num = r.Substring(i + 2, semi - i - 2)
+                int code = 0
+                if (num.StartsWith("x") || num.StartsWith("X")) {
+                    string hex = "0123456789abcdef"
+                    string low = num.Substring(1).ToLower()
+                    for (int k = 0; k < low.length; k++) { code = code * 16 + hex.IndexOf(low[k]) }
+                } else {
+                    code = num.ToInt()
+                }
+                r = r.Substring(0, i) + Raser.XmlReader.CharText(code) + r.Substring(semi + 1)
+                i = r.IndexOf("&#", i + 1)
+            }
+            return r.Replace("&amp;", "&")
+        }
+
+        static string CharText(defined int code) {
+            if (code < 128) { return Raser.Fnv.CharOf(code) }
+            var w = new Raser.ByteWriter(4)
+            if (code < 2048) {
+                w.Byte(192 | (code >> 6))
+                w.Byte(128 | (code & 63))
+            } else if (code < 65536) {
+                w.Byte(224 | (code >> 12))
+                w.Byte(128 | ((code >> 6) & 63))
+                w.Byte(128 | (code & 63))
+            } else {
+                w.Byte(240 | (code >> 18))
+                w.Byte(128 | ((code >> 12) & 63))
+                w.Byte(128 | ((code >> 6) & 63))
+                w.Byte(128 | (code & 63))
+            }
+            var b = w.ToBytes()
+            return IO.Utf8.GetString(b, 0, b.length)
+        }
+    }
+}

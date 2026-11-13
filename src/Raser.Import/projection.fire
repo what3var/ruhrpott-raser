@@ -1,0 +1,47 @@
+// Raser.Import: geografische Koordinaten (OSM: WGS84) nach ETRS89 / UTM Zone 32N (EPSG:25832).
+//
+// Transversale Mercator-Projektion nach Krüger (Reihen bis zur 6. Ordnung, Genauigkeit im Millimeterbereich innerhalb der Zone).
+// WGS84 und ETRS89 trennen inzwischen rund 0,9 m (Kontinentaldrift); das wird für OSM bewusst nicht ausgeglichen - OSM ist ohnehin nicht genauer.
+#import "raser.core"
+
+namespace Raser {
+    class Utm {
+        // GRS80
+        static defined float A = 6378137.0
+        static defined float F = 0.0033528106811823188    // 1 / 298.257222101
+        static defined float K0 = 0.9996
+        static defined float Lon0 = 9.0                    // Zone 32
+        static defined float FalseEast = 500000.0
+
+        // Ost und Nord in Metern als [east, north].
+        static float[] FromLatLon(defined float lat, defined float lon) {
+            float a = Raser.Utm.A
+            float f = Raser.Utm.F
+            float n = f / (2.0 - f)
+            float n2 = n * n
+            float n3 = n2 * n
+            float big = a / (1.0 + n) * (1.0 + n2 / 4.0 + n2 * n2 / 64.0)
+            float a1 = n / 2.0 - 2.0 * n2 / 3.0 + 5.0 * n3 / 16.0
+            float a2 = 13.0 * n2 / 48.0 - 3.0 * n3 / 5.0
+            float a3 = 61.0 * n3 / 240.0
+            float deg = Math.PI / 180.0
+            float phi = lat * deg
+            float dl = (lon - Raser.Utm.Lon0) * deg
+            float e = Math.Sqrt(f * (2.0 - f))
+            float s = Math.Sin(phi)
+            float t = Raser.Utm.Sinh(Raser.Utm.Atanh(s) - e * Raser.Utm.Atanh(e * s))
+            float xi = Math.Atan2(t, Math.Cos(dl))
+            float eta = Raser.Utm.Atanh(Math.Sin(dl) / Math.Sqrt(1.0 + t * t))
+            float x = eta + a1 * Math.Cos(2.0 * xi) * Raser.Utm.Sinh(2.0 * eta) + a2 * Math.Cos(4.0 * xi) * Raser.Utm.Sinh(4.0 * eta) + a3 * Math.Cos(6.0 * xi) * Raser.Utm.Sinh(6.0 * eta)
+            float y = xi + a1 * Math.Sin(2.0 * xi) * Raser.Utm.Cosh(2.0 * eta) + a2 * Math.Sin(4.0 * xi) * Raser.Utm.Cosh(4.0 * eta) + a3 * Math.Sin(6.0 * xi) * Raser.Utm.Cosh(6.0 * eta)
+            float result[] = [Raser.Utm.FalseEast + Raser.Utm.K0 * big * x, Raser.Utm.K0 * big * y]
+            return result
+        }
+
+        static defined float Sinh(defined float x) { return (Math.Exp(x) - Math.Exp(-x)) / 2.0 }
+
+        static defined float Cosh(defined float x) { return (Math.Exp(x) + Math.Exp(-x)) / 2.0 }
+
+        static defined float Atanh(defined float x) { return 0.5 * Math.Log((1.0 + x) / (1.0 - x)) }
+    }
+}

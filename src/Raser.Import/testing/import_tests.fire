@@ -1,0 +1,164 @@
+// Die Tests von Raser.Import (forge test src/Raser.Import/Raser.Import.fireproj).
+// data/dgm_small.tif: 40 x 30 Float32 mit LZW, Höhe 100 + 0,25 x - 0,5 y (Pixel x, y), Pixel (3, 3) ohne Daten; links oben bei 376000 / 5705000.
+// data/lod2_small.gml: zwei echte Gebäude aus LoD2_32_376_5704 (Geobasis NRW, dl-de/zero-2-0), eines mit drei Gebäudeteilen.
+// data/osm_small.osm: von Hand geschrieben.
+#import "testing"
+#import "io"
+#import "raser.core"
+#import "raser.world"
+
+class XmlTests {
+    [Test "Elemente, Attribute, Text, Entitäten"]
+    undefined Basics() {
+        string text = "<?xml version=\"1.0\"?><!-- c --><a x=\"1\" y='z&amp;w'><b/>Hallo &lt;Welt&gt; &#228;<c:d>t</c:d><![CDATA[<roh>]]></a>"
+        var r = new Raser.XmlReader(IO.Utf8.GetBytes(text))
+        Testing.Assert.IsTrue(r.Next())
+        Testing.Assert.AreEqual(Raser.XmlEvent.Start, r.kind)
+        Testing.Assert.AreEqual("a", r.name)
+        Testing.Assert.AreEqual("1", r.Attr("x"))
+        Testing.Assert.AreEqual("z&w", r.Attr("y"))
+        r.Next()
+        Testing.Assert.AreEqual("b", r.name)
+        Testing.Assert.IsTrue(r.selfClosing)
+        r.Next()
+        Testing.Assert.AreEqual(Raser.XmlEvent.End, r.kind)
+        r.Next()
+        Testing.Assert.AreEqual(Raser.XmlEvent.Text, r.kind)
+        Testing.Assert.AreEqual("Hallo <Welt> ä", r.text)
+        r.Next()
+        Testing.Assert.AreEqual("c:d", r.name)
+        Testing.Assert.AreEqual("d", r.localName)
+        Testing.Assert.AreEqual("t", r.ReadText())
+        r.Next()
+        Testing.Assert.AreEqual("<roh>", r.text)
+        r.Next()
+        Testing.Assert.AreEqual(Raser.XmlEvent.End, r.kind)
+        Testing.Assert.AreEqual("a", r.name)
+        Testing.Assert.IsFalse(r.Next())
+    }
+}
+
+class GeoTiffTests {
+    [Test "Float32 aus Bits"]
+    undefined Float32() {
+        Testing.Assert.AreEqual(1.0, Raser.GeoTiff.Float32(0x3F800000))
+        Testing.Assert.AreEqual(-2.5, Raser.GeoTiff.Float32(0xC0200000))
+        Testing.Assert.AreEqual(0.0, Raser.GeoTiff.Float32(0))
+        Testing.Assert.AreEqual(-9999.0, Raser.GeoTiff.Float32(0xC61C3C00))
+    }
+
+    [Test "DGM-Kachel mit LZW lesen"]
+    undefined Read() {
+        var raster = Raser.GeoTiff.Read(new Resource("data/dgm_small.tif").Bytes())
+        Testing.Assert.AreEqual(40, raster.width)
+        Testing.Assert.AreEqual(30, raster.height)
+        Testing.Assert.AreEqual(376000.0, raster.east)
+        Testing.Assert.AreEqual(5705000.0, raster.north)
+        Testing.Assert.AreEqual(1.0, raster.pixel)
+        Testing.Assert.AreEqual(-9999.0, raster.noData)
+        Testing.Assert.AreEqual(100.0, raster.Pixel(0, 0))
+        Testing.Assert.AreEqual(100.0 + 39 * 0.25 - 29 * 0.5, raster.Pixel(39, 29))
+        Testing.Assert.AreEqual(-9999.0, raster.Pixel(3, 3))
+        // Mitte des Pixels (10, 5): 376010,5 / 5704994,5.
+        Testing.Assert.AreEqual(100.0, raster.At(376010.5, 5704994.5))
+        // Zwischen zwei Pixelmitten in x: + 0,125.
+        Testing.Assert.AreEqual(100.125, raster.At(376011.0, 5704994.5))
+        Testing.Assert.IsTrue(raster.At(375999.0, 5704994.5) == undefined)
+    }
+}
+
+class ProjectionTests {
+    [Test "WGS84 nach UTM 32"]
+    undefined Utm() {
+        // Bochum, Rathaus (Vergleichswert aus einer unabhängigen Rechnung).
+        var p = Raser.Utm.FromLatLon(51.4818, 7.2160)
+        Testing.Assert.IsTrue(Math.Abs(p[0] - 376122.83) < 0.05)
+        Testing.Assert.IsTrue(Math.Abs(p[1] - 5704914.23) < 0.05)
+        // Auf dem Mittelmeridian: Ost = 500000.
+        var q = Raser.Utm.FromLatLon(51.0, 9.0)
+        Testing.Assert.IsTrue(Math.Abs(q[0] - 500000.0) < 0.001)
+    }
+}
+
+class CityGmlTests {
+    [Test "Gebäude und Gebäudeteile"]
+    undefined Read() {
+        var list = Raser.CityGml.Read(new Resource("data/lod2_small.gml").Bytes())
+        Testing.Assert.AreEqual(4, list.Count)
+        var a = list[0]
+        Testing.Assert.AreEqual("DENW01AL1000Amp7", a.id)
+        Testing.Assert.AreEqual("3100", a.roofCode)
+        Testing.Assert.AreEqual(8, a.ground.length / 3)
+        Testing.Assert.AreEqual(4, a.roofs.Count)
+        Testing.Assert.IsTrue(Math.Abs(a.measuredHeight - 13.272) < 0.001)
+        Testing.Assert.AreEqual(Raser.RoofType.Gable, Raser.CityGml.RoofOf(a.roofCode))
+        // Die Teile des zweiten Gebäudes haben eigene IDs und erben die Funktion.
+        Testing.Assert.IsTrue(list[1].id.StartsWith("UUID_"))
+        Testing.Assert.IsTrue(list[1].function != undefined)
+    }
+
+    [Test "Gebäude in eine Kachel"]
+    undefined Tile() {
+        var region = new Raser.Region()
+        region.AddBuildings(Raser.CityGml.Read(new Resource("data/lod2_small.gml").Bytes()), "lod2_small.gml")
+        // Das erste Gebäude liegt bei rund 376570 / 5704530.
+        var lb = region.buildings[0]
+        var key = Raser.TileKey.Of(lb.box.minX, lb.box.minY)
+        var tile = region.Build(key)
+        Testing.Assert.IsTrue(tile.data.buildings.Count >= 1)
+        var b = tile.data.buildings[0]
+        Testing.Assert.AreEqual("lod2:DENW01AL1000Amp7", b.source)
+        Testing.Assert.IsTrue(Math.Abs(b.ground - 105.734) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(b.eaves - 115.416) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(b.ridge - 119.006) < 0.001)
+        Testing.Assert.IsTrue(b.footprint[0] >= -1.0 && b.footprint[0] <= 257.0)
+        Testing.Assert.IsTrue(tile.heights == undefined)
+        // Die Voxelisierung baut daraus ein Dach mit Schnitten.
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 1)
+        float cx = (b.footprint[0] + b.footprint[4]) / 2.0
+        float cy = (b.footprint[1] + b.footprint[5]) / 2.0
+        var model = v.models[0]
+        float r = model.RoofAt(cx, cy)
+        Testing.Assert.IsTrue(r >= b.eaves - 0.01 && r <= b.ridge + 0.01)
+    }
+}
+
+class OsmTests {
+    [Test "Straßen, Flächen, POIs"]
+    undefined Read() {
+        var osm = new Raser.OsmData()
+        osm.Read(new Resource("data/osm_small.osm").Bytes())
+        osm.Read(new Resource("data/osm_small.osm").Bytes())     // doppelt gelesen: zählt einmal
+        Testing.Assert.AreEqual(7, osm.NodeCount)
+        Testing.Assert.AreEqual(4, osm.ways.Count)
+        Testing.Assert.AreEqual(1, osm.points.Count)
+        Testing.Assert.AreEqual("Tanke & Trinkhalle", osm.points[0].tags["name"])
+        var features = osm.Features()
+        // Straße, Park, Fußweg (der Tunnel fehlt).
+        Testing.Assert.AreEqual(3, features.Count)
+        Testing.Assert.AreEqual("highway=residential", features[0].kind)
+        Testing.Assert.AreEqual(5.5, features[0].width)
+        Testing.Assert.AreEqual("osm:way/10", features[0].source)
+        Testing.Assert.IsTrue(features[1].area)
+        Testing.Assert.AreEqual("landuse=grass", features[1].kind)
+        Testing.Assert.AreEqual(8, features[1].points.length)
+        Testing.Assert.AreEqual(3.5, features[2].width)
+        Testing.Assert.AreEqual(Raser.Material.Paving, features[2].surface)
+    }
+
+    [Test "OSM in eine Kachel"]
+    undefined Tile() {
+        var osm = new Raser.OsmData()
+        osm.Read(new Resource("data/osm_small.osm").Bytes())
+        var region = new Raser.Region()
+        region.AddOsm(osm, "osm_small.osm")
+        var key = Raser.TileKey.Of(376122.8, 5704914.2)
+        var tile = region.Build(key)
+        Testing.Assert.AreEqual(2, tile.data.roads.Count)
+        Testing.Assert.AreEqual(1, tile.data.areas.Count)
+        Testing.Assert.AreEqual(1, tile.data.pois.Count)
+        Testing.Assert.AreEqual("amenity=fuel", tile.data.pois[0].kind)
+        var p = tile.data.pois[0]
+        Testing.Assert.IsTrue(p.x >= 0.0 && p.x < 256.0 && p.y >= 0.0 && p.y < 256.0)
+    }
+}

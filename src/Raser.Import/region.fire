@@ -1,0 +1,231 @@
+// Raser.Import: aus den Rohdaten einer Region die Kacheln des Zwischenlayers bauen.
+//
+// Gelände: je Kachel 258 x 258 Höhen im Abstand von 1 m auf den Pixelmitten des DGM1 (-0,5 .. 256,5 m), also mit einem halben Meter Rand -
+// benachbarte Kacheln lesen an ihrer gemeinsamen Kante dieselben Pixel und rechnen dieselben Eckhöhen.
+// Gebäude, Straßen und Flächen kommen in jede Kachel, die ihr Rechteck berührt, kachel-lokal und mit ihrer stabilen ID.
+// Gebäude bekommen Nutzung und Namen von OSM-POIs, die in ihrem Grundriss liegen.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class Region {
+        List<GeoRaster> dgm
+        List<LodBuilding> buildings
+        List<OsmFeature> features
+        List<Box2> featureBoxes
+        List<OsmPoint> pois
+        List<string> sources
+
+        construct() {
+            this.dgm = new List<GeoRaster>()
+            this.buildings = new List<LodBuilding>()
+            this.features = new List<OsmFeature>()
+            this.featureBoxes = new List<Box2>()
+            this.pois = new List<OsmPoint>()
+            this.sources = new List<string>()
+        }
+
+        undefined AddDgm(GeoRaster raster, string source) {
+            this.dgm.Add(take raster)
+            this.sources.Add(source)
+        }
+
+        undefined AddBuildings(List<LodBuilding> list, string source) {
+            while (list.Count > 0) { this.buildings.Add(list.TakeAt(0)) }
+            this.sources.Add(source)
+        }
+
+        undefined AddOsm(OsmData osm, string source) {
+            var list = osm.Features()
+            while (list.Count > 0) {
+                var f = list.TakeAt(0)
+                var box = Raser.Box2.Of(f.points)
+                box.Grow(f.width / 2.0)
+                this.featureBoxes.Add(take box)
+                this.features.Add(take f)
+            }
+            while (osm.points.Count > 0) { this.pois.Add(osm.points.TakeAt(0)) }
+            this.sources.Add(source)
+        }
+
+        // Die Höhe an einem absoluten Punkt aus dem DGM, das ihn abdeckt (undefined ohne).
+        any HeightAt(defined float e, defined float n) {
+            foreach (r in this.dgm) {
+                any h = r.At(e, n)
+                if (h != undefined) { return h }
+            }
+            return undefined
+        }
+
+        // Die Kacheln, die die Region abdeckt (aus den DGM-Rastern).
+        List<TileKey> TileKeys() {
+            var keys = new List<TileKey>()
+            if (this.dgm.Count == 0) { return keys }
+            float minE = 1.0e30
+            float minN = 1.0e30
+            float maxE = -1.0e30
+            float maxN = -1.0e30
+            foreach (r in this.dgm) {
+                if (r.east < minE) { minE = r.east }
+                if (r.north > maxN) { maxN = r.north }
+                float e1 = r.east + r.width * r.pixel
+                float n0 = r.north - r.height * r.pixel
+                if (e1 > maxE) { maxE = e1 }
+                if (n0 < minN) { minN = n0 }
+            }
+            var lo = Raser.TileKey.Of(minE, minN)
+            var hi = Raser.TileKey.Of(maxE - 0.001, maxN - 0.001)
+            for (int y = lo.y; y <= hi.y; y++) {
+                for (int x = lo.x; x <= hi.x; x++) { keys.Add(new Raser.TileKey(x, y)) }
+            }
+            return keys
+        }
+
+        Tile Build(TileKey key) {
+            var tile = new Raser.Tile(new Raser.TileKey(key.x, key.y))
+            float e0 = key.East
+            float n0 = key.North
+            foreach (s in this.sources) { tile.data.sources.Add(s) }
+
+            // Gelände
+            var raster = new Raser.HeightRaster(-0.5, -0.5, 1.0, 258, 258)
+            float last = 0.0
+            bool found = false
+            for (int r = 0; r < 258; r++) {
+                for (int c = 0; c < 258; c++) {
+                    any h = this.HeightAt(e0 - 0.5 + c, n0 - 0.5 + r)
+                    if (h == undefined) { h = last } else { found = true }
+                    raster.Set(c, r, h)
+                    last = h
+                }
+            }
+            if (found) { tile.heights = take raster }
+
+            float minX = e0 - 1.0
+            float minY = n0 - 1.0
+            float maxX = e0 + 257.0
+            float maxY = n0 + 257.0
+
+            // Gebäude
+            foreach (lb in this.buildings) {
+                if (!lb.box.Overlaps(minX, minY, maxX, maxY)) { continue }
+                tile.data.buildings.Add(this.Building(lb, e0, n0))
+            }
+
+            // Straßen und Flächen
+            for (int i = 0; i < this.features.Count; i++) {
+                if (!this.featureBoxes[i].Overlaps(minX, minY, maxX, maxY)) { continue }
+                var f = this.features[i]
+                float local[] = new float[f.points.length]
+                for (int k = 0; k < f.points.length; k = k + 2) {
+                    local[k] = f.points[k] - e0
+                    local[k + 1] = f.points[k + 1] - n0
+                }
+                if (f.area) {
+                    var a = new Raser.Area()
+                    a.source = f.source
+                    a.id = Raser.Ids.Stable(Raser.IdKind.Area, f.source)
+                    a.kind = f.kind
+                    a.ring = take local
+                    a.surface = f.surface
+                    a.color = f.color
+                    a.priority = f.priority
+                    tile.data.areas.Add(take a)
+                } else {
+                    var road = new Raser.Road()
+                    road.source = f.source
+                    road.id = Raser.Ids.Stable(Raser.IdKind.Road, f.source)
+                    road.kind = f.kind
+                    road.points = take local
+                    road.width = f.width
+                    road.surface = f.surface
+                    road.color = f.color
+                    road.lanes = f.lanes
+                    road.layer = f.layer
+                    tile.data.roads.Add(take road)
+                }
+            }
+
+            // POIs
+            foreach (p in this.pois) {
+                if (p.east < e0 || p.north < n0 || p.east >= e0 + 256.0 || p.north >= n0 + 256.0) { continue }
+                var poi = new Raser.Poi()
+                poi.source = "osm:node/" + p.id
+                poi.id = Raser.Ids.Stable(Raser.IdKind.Poi, poi.source)
+                poi.kind = Raser.Region.PoiKind(p.tags)
+                poi.name = p.tags.Get("name", undefined)
+                poi.x = p.east - e0
+                poi.y = p.north - n0
+                tile.data.pois.Add(take poi)
+            }
+            Raser.Region.AssignFunctions(tile)
+            return tile
+        }
+
+        static string PoiKind(Dictionary<string, string> tags) {
+            string keys[] = ["amenity", "shop", "tourism", "leisure", "craft", "office"]
+            foreach (k in keys) {
+                if (tags.ContainsKey(k)) { return k + "=" + tags[k] }
+            }
+            return "poi"
+        }
+
+        Building Building(LodBuilding lb, defined float e0, defined float n0) {
+            var b = new Raser.Building()
+            b.source = "lod2:" + lb.id
+            b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+            int n = lb.ground.length / 3
+            float fp[] = new float[n * 2]
+            float ground = 1.0e30
+            for (int i = 0; i < n; i++) {
+                fp[i * 2] = lb.ground[i * 3] - e0
+                fp[i * 2 + 1] = lb.ground[i * 3 + 1] - n0
+                if (lb.ground[i * 3 + 2] < ground) { ground = lb.ground[i * 3 + 2] }
+            }
+            b.footprint = take fp
+            b.ground = ground
+            float eaves = 1.0e30
+            float ridge = -1.0e30
+            foreach (r in lb.roofs) {
+                var face = new Raser.RoofFace()
+                float pts[] = new float[r.points.length]
+                for (int i = 0; i < r.points.length; i = i + 3) {
+                    pts[i] = r.points[i] - e0
+                    pts[i + 1] = r.points[i + 1] - n0
+                    pts[i + 2] = r.points[i + 2]
+                    if (r.points[i + 2] < eaves) { eaves = r.points[i + 2] }
+                    if (r.points[i + 2] > ridge) { ridge = r.points[i + 2] }
+                }
+                face.points = take pts
+                b.roofs.Add(take face)
+            }
+            b.eaves = eaves
+            b.ridge = ridge
+            b.roofType = Raser.CityGml.RoofOf(lb.roofCode)
+            if (lb.function != undefined) { b.function = "alkis=" + lb.function }
+            // Wohnhäuser in Ziegel, alles andere verputzt (bis die Fassaden-Grammatik kommt).
+            if (lb.function != undefined && !lb.function.StartsWith("31001_1")) {
+                b.wall = Raser.Material.Plaster
+                b.wallColor = Raser.Palette.Plaster
+            }
+            if (b.roofType == Raser.RoofType.Flat) {
+                b.roof = Raser.Material.Concrete
+                b.roofColor = Raser.Palette.RoofFlat
+            }
+            return b
+        }
+
+        // Gebäude mit einem POI im Grundriss bekommen dessen Art und Namen (Konzept, Abschnitt 6: Gebäudetypen aus OSM-Tags).
+        static undefined AssignFunctions(Tile tile) {
+            foreach (p in tile.data.pois) {
+                foreach (b in tile.data.buildings) {
+                    if (Raser.Geo.Inside(b.footprint, p.x, p.y)) {
+                        b.function = p.kind
+                        if (p.name != undefined) { b.name = p.name }
+                        break
+                    }
+                }
+            }
+        }
+    }
+}
