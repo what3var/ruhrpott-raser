@@ -10,7 +10,7 @@
   - Straßen, Rampen, Böschungen und Dächer sind damit direkt im Voxelmodell abbildbar.
   - Speicher: 4 × 2 Bit = 1 Byte zusätzlich pro geschnittenem Voxel (nur Oberflächen-Voxel, Rest bleibt voller Würfel).
   - Später möglich: diagonale Schnitte im Grundriss (Viertelkeile) für schräge Fassaden und Bordsteine.
-- **Fahrphysik auf derselben Geometrie:** Das Kollisionsmesh für Fahrzeuge entsteht aus denselben geschnittenen Voxeln wie die Optik. Was man sieht, ist auch das, worauf man fährt. Wo Fahrzeuge ganz glatte Flächen brauchen (Autobahn, enge Kurven), darf ein Override-Mesh aus dem Zwischenlayer einspringen (siehe Abschnitt 8).
+- **Fahrphysik auf derselben Geometrie:** Das Kollisionsmesh für Fahrzeuge entsteht aus denselben geschnittenen Voxeln wie die Optik. Was man sieht, ist auch das, worauf man fährt. Wo Fahrzeuge ganz glatte Flächen brauchen (Autobahn, enge Kurven), darf ein Override-Mesh aus dem Zwischenlayer einspringen (siehe Abschnitt 9).
 
 ## 2. Weltpipeline
 
@@ -120,7 +120,7 @@ Der Server ist für das Wetter autoritativ. Clients bekommen nur die Parameter (
 
 - Ein **Wetterzustand** (Bewölkung, Niederschlag, Nebeldichte, Nässe der Oberflächen, Wind, Temperatur) ist ein Eingang für Renderer, Physik und Gameplay.
 - Nässe wird pro Fläche gespeichert, damit Unterführungen und überdachte Bereiche trocken bleiben.
-- Render-Profile (Abschnitt 8) können pro Gebiet das Wetter lokal anpassen, z. B. Dampf an Hochöfen oder Nebel über dem Kanal.
+- Render-Profile (Abschnitt 9) können pro Gebiet das Wetter lokal anpassen, z. B. Dampf an Hochöfen oder Nebel über dem Kanal.
 
 ### Gameplay-Wirkung
 
@@ -198,6 +198,9 @@ Die Funktion eines Gebäudes kommt aus den **echten OSM-Tags** (z. B. `amenity=f
 | Fahrradladen | Fahrräder, Teile | – | Billiger Einstieg in die Mobilität |
 | Motorradladen | Motorräder, Roller, Ausrüstung | – | Helm und Kluft schützen bei Stürzen |
 | Internetcafé | Zugang zu Rechnern | – | Darknet-Markt, Hacking-Missionen, anonyme Aufträge |
+| Supermarkt | Nahrungsmittel, Getränke, Haushalt | Hunger, Durst | Vorräte für zu Hause, günstiger als Imbiss |
+| Baumarkt | Baumaterial, Farben, Werkzeug, Gartenmöbel | – | Material und Farben für den Baumodus (Abschnitt 7) |
+| Elektronikmarkt | Fernseher, Computer, Konsolen, Licht, Musikanlagen | Stress | Geräte mit Funktion für die eigene Wohnung |
 
 Weitere Kandidaten: Werkstatt/Tuning, Waffenladen, Kiosk/Trinkhalle („Büdchen“), Krankenhaus, Apotheke, Fitnessstudio, Friseur/Kleidung, Pfandhaus, Polizeiwache.
 
@@ -225,23 +228,138 @@ Jobs funktionieren als **wiederholbare Kurz-Missionen** (Schicht), bringen Lohn 
   - Genehmigungen für Geschäfte, Events und legale Rennen
   - Knöllchen, Abschleppen, Kontrolle von Gewerben
   - Bestechlich: Genehmigungen lassen sich auch kaufen
+- **Bauamt:**
+  - Ändert öffentlichen Grund im Baumodus (Straßen, Plätze, öffentliche Gebäude)
+  - Mit Freigabe einer höheren Instanz auch Besitz von Spielern (Abschnitt 7)
 - **Bauhof / Straßenmeisterei:**
   - Zerstörte Bereiche reparieren. Das setzt Spieler-Deltas zurück auf den generierten Grundzustand (Abschnitt 7).
   - Baustellen einrichten, Straßen sperren, Schnee räumen und streuen (Abschnitt 5)
   - Müllabfuhr, Wracks entfernen
-  - Gemeldete Darstellungsfehler (Abschnitt 8) vor Ort prüfen und **Korrekturvorschläge** einreichen. Diese landen im Override-Layer, aber erst nach einer Prüfung.
+  - Gemeldete Darstellungsfehler (Abschnitt 9) vor Ort prüfen und **Korrekturvorschläge** einreichen. Diese landen im Override-Layer, aber erst nach einer Prüfung.
 
-Grundsatz: Spieler können nur Aktionen auslösen, die das Spiel auch selbst ausführen könnte. Bleibende Änderungen an der Welt (Override-Layer) werden immer erst geprüft.
+Grundsatz: Spieler können nur Aktionen auslösen, die das Spiel auch selbst ausführen könnte. Spieler-Bauten und Bauamt-Änderungen sind Deltas und lassen sich zurücksetzen. Korrekturen der generierten Welt selbst (Override-Layer) werden immer erst geprüft.
 
 **Glücksspiel ist rein virtuell:** Gespielt wird nur mit Spielwährung. Die Währung kann nicht mit echtem Geld gekauft werden, Gewinne lassen sich nicht auszahlen, und es gibt keinen Handel gegen Echtgeld. Simuliertes Glücksspiel kann trotzdem die Altersfreigabe beeinflussen. Bei Waffen und Kriminalität wie in GTA ist ohnehin eine Freigabe ab 18 zu erwarten.
 
-## 7. Multiplayer
+## 7. Bauen und Besitz
 
-- Der Server ist autoritativ, Fahrzeuge laufen mit Client-Prediction.
-- Interest-Management pro Kachel: Synchronisiert wird nur, was in der Nähe ist.
-- Zerstörung und Umbau werden als Deltas zum deterministischen Grundzustand übertragen und gespeichert.
+### Baumodus
 
-## 8. Nachbesserbarkeit für schwierige Bereiche
+Eigener Besitz (gekauft oder gemietet) lässt sich umbauen, wie in Minecraft. Der Baumodus ist **kein eigenes Spiel im Spiel**: Er tauscht nur HUD, Steuerung und Werkzeuge aus. Man bleibt in der Welt, andere Spieler sehen einen weiter.
+
+**Bewusst einfach gehalten.** Werkzeuge im Grundumfang:
+
+| Werkzeug | Funktion |
+|---|---|
+| Setzen / Entfernen | Einzelne Voxel oder ein aufgezogener Quader |
+| Form | Voller Würfel oder Höhen-Schnitt (Schräge, Abschnitt 1) |
+| Material | Auswahl aus wenigen Materialien (siehe unten) |
+| Pinsel | Oberfläche einfärben, ohne die Struktur zu ändern |
+| Objekt platzieren | Möbel, Geräte, Deko aus dem Inventar |
+| Rückgängig / Wiederholen | Pflicht, mit Verlauf |
+
+Erweiterungen (Kopieren/Einfügen, Spiegeln, Vorlagen) kommen erst, wenn der Grundumfang sitzt. Ein einfacher Baumodus hält auch die Datenstruktur einfach. Das hilft der Nachbesserbarkeit (Abschnitt 9).
+
+### Materialien
+
+Wenige Materialien mit **fester Oberflächenstruktur**. Die Farbe trägt man mit dem Pinsel auf.
+
+| Material | Struktur (fest) | Standard |
+|---|---|---|
+| Beton | Krisselig, leichte Poren | Grau |
+| Holz | Leicht gemasert | Naturholz |
+| Glas | Glatt | Transparent, tönbar |
+| Metall | Gebürstet oder matt (zwei Varianten) | Stahlgrau |
+| Ziegel / Putz (Kandidaten) | Fugenraster bzw. leichte Körnung | Ruhrpott-Rot bzw. Weiß |
+
+Die Strukturen sind dieselben parametrischen Materialfunktionen wie bei den Fassaden (Abschnitt 3). Pro Voxel werden nur **Material-ID + Farbindex** gespeichert (z. B. 1 Byte + 1 Byte aus einer Palette).
+
+### Kaufbare Objekte
+
+Was in Bau-, Super- und Elektronikmärkten gekauft wird, landet im Inventar und lässt sich im Baumodus platzieren:
+- **Baumarkt:** Baumaterial (Voxel-Kontingente je Material), Farben für den Pinsel, Werkzeug, Gartenmöbel
+- **Elektronikmarkt:** Fernseher, Computer, Konsole, Musikanlage, Licht. Manche Geräte haben Funktionen (Computer für Hacking-Missionen, Licht als echte Lichtquelle)
+- **Supermarkt:** Nahrungsmittel und Getränke für Vitalwerte, Vorrat im Kühlschrank zu Hause
+
+Objekte sind eigene Modelle mit Position, keine Voxel. So bleiben sie beweglich und können Funktionen haben.
+
+### Rechte
+
+| Wer | Darf ändern |
+|---|---|
+| Eigentümer | Eigenes Gebäude und Grundstück, innen und außen |
+| Mieter | Innenräume. Außen nur, wenn der Vermieter es erlaubt |
+| Bauamt-Bedienstete | Öffentlichen Grund (Straßen, Plätze, Parks, öffentliche Gebäude) |
+| Bauamt mit Freigabe einer höheren Instanz | Auch Besitz einzelner Spieler (Abriss, Umbau, Enteignung) |
+
+- Die höhere Instanz ist eine ranghöhere Spielerrolle (z. B. Bauamtsleitung) oder ein Admin. Jede Freigabe wird protokolliert und ist für den betroffenen Spieler einsehbar.
+- Grundstücksgrenzen kommen aus offenen Katasterdaten (ALKIS, Verfügbarkeit prüfen) oder werden aus Gebäudegrundrissen und Straßen abgeleitet.
+
+### Technik: Gebäude änderbar machen
+
+Das ist der schwierige Teil. Gebäude entstehen eigentlich deterministisch aus dem Generator. Sobald jemand baut, gilt:
+
+1. **Materialisieren:** Beim ersten Eingriff wird das generierte Gebäude als eigenes **Voxel-Objekt** gespeichert, unter seiner Gebäude-ID. Ab dann ist diese gespeicherte Version die Quelle, nicht mehr der Generator.
+2. **Änderungen als Deltas:** Weitere Bauaktionen werden als Deltas zu diesem Objekt gespeichert. Das ermöglicht Rückgängig, Protokoll und Rücksetzen.
+3. **Konflikte mit Generator-Updates:** Ändert sich der Generator oder ein Override für ein materialisiertes Gebäude, wird es **nicht automatisch überschrieben**. Das Gebäude wird markiert, und der Eigentümer bzw. das Bauamt entscheidet, ob es neu generiert wird.
+4. **Fassade nach dem Umbau:** Die Fassaden-Grammatik gilt nur für unveränderte Gebäude. Umgebaute Bereiche nutzen Material + Farbe pro Voxel.
+5. **LOD:** Materialisierte Gebäude brauchen eigene vereinfachte Fernmodelle. Die werden nach dem Bauen im Hintergrund neu berechnet.
+
+Spieler-Bauten sind **keine Overrides**. Sie liegen in der Delta-Ebene und lassen sich jederzeit zurücksetzen. Der Override-Layer (Abschnitt 9) bleibt für geprüfte, dauerhafte Korrekturen der generierten Welt.
+
+## 8. Multiplayer und Server-Architektur
+
+Ganz NRW als eine zusammenhängende Welt mit möglichst vielen gleichzeitigen Spielern. Ein einzelner Server schafft das nicht. Die Karte wird deshalb auf viele Server verteilt.
+
+### Aufbau
+
+```
+                    ┌──────────────────────┐
+                    │  Koordinator (Main)  │  Aufteilung, Lastverteilung,
+                    └──────────┬───────────┘  Übergaben, Server-Liste
+          ┌────────────────────┼────────────────────┐
+   ┌──────┴──────┐      ┌──────┴──────┐      ┌──────┴──────┐
+   │ Regionsserver│ ⇄  │ Regionsserver│ ⇄  │ Regionsserver│  Simulation
+   └──────┬──────┘      └──────┬──────┘      └──────┬──────┘
+          └──────────── Client: verbunden mit aktueller + umliegenden Regionen
+
+   Globale Dienste (getrennt): Konten, Inventar, Wirtschaft/Märkte, Chat, Wetter
+   Datenbanken: Zwischenlayer (PostGIS), Deltas/Gebäude (Key-Value)
+```
+
+- **Koordinator:** Teilt die Karte in Regionen auf und weist sie Regionsservern zu. Er simuliert selbst nichts und ist damit kein Flaschenhals.
+- **Regionsserver:** Autoritativ für alles in ihrer Region (Spieler, Fahrzeuge, NPCs, Bauen). Sie schreiben Deltas in die gemeinsame Datenbank.
+- **Globale Dienste:** Alles, was nicht an einen Ort gebunden ist, läuft getrennt von den Regionen. Ein Geldbetrag darf nicht doppelt existieren, nur weil ein Spieler gerade die Region wechselt.
+
+### Aufteilung der Karte
+
+- Regionen bestehen aus **ganzen Kacheln** (256 m), damit Weltdaten und Zuständigkeit zusammenpassen.
+- **Dynamisch nach Spielerdichte** statt festem Raster, z. B. als Quadtree: Die Dortmunder Innenstadt wird in viele kleine Regionen geteilt, das Sauerland bleibt eine große Region. Leere Regionen werden zusammengelegt.
+- Aufteilen und Zusammenlegen passieren im laufenden Betrieb. Dabei wechselt nur die Zuständigkeit, die Daten liegen ohnehin in der Datenbank.
+
+### Client-Verbindungen
+
+- Der Client ist immer mit seiner **aktuellen Region und allen umliegenden** verbunden.
+- 1 + 4 reicht nur an Kanten. An Ecken grenzen bei einem Raster 8 Regionen an, bei dynamischer Aufteilung auch mehr oder weniger. Deshalb gilt: **verbunden mit allen Regionen innerhalb des Sicht- bzw. Interessenradius**, typischerweise 1 + 3 bis 1 + 8.
+- Von Nachbarregionen bekommt der Client nur, was in seinem Radius liegt, und nur lesend. Gesteuert wird immer über die aktuelle Region.
+
+### Grenzen und Übergaben
+
+- **Randzone:** Regionen tauschen Objekte nahe der Grenze untereinander aus (Ghost-Objekte). So sehen und treffen sich Spieler über die Grenze hinweg.
+- **Übergabe der Zuständigkeit:** Fährt ein Fahrzeug über die Grenze, übernimmt die neue Region mit einem klaren Handover-Protokoll. Bei 55 m/s muss das ohne Ruckeln gehen, deshalb wird mit etwas Überlappung (Hysterese) übergeben, damit niemand an der Grenze hin- und herspringt.
+- **Interaktionen über die Grenze** (Schuss, Kollision) entscheidet die Region des Verursachers, die Zielregion wendet das Ergebnis an.
+- **Globale, eindeutige IDs** für alle Objekte, von Anfang an.
+
+### Weiterhin gilt
+
+- Fahrzeuge laufen mit Client-Prediction.
+- Zerstörung und Umbau werden als Deltas zum Grundzustand übertragen und gespeichert.
+
+### Einstieg
+
+Am Anfang läuft alles auf einem Rechner: ein Koordinator, ein Regionsserver. Protokoll, IDs und Übergaben werden aber gleich so gebaut, dass später mehrere Regionsserver möglich sind. Nachrüsten wäre deutlich teurer.
+
+## 9. Nachbesserbarkeit für schwierige Bereiche
 
 Automatische Generierung wird an vielen Stellen schlecht aussehen: Autobahnkreuze, Brücken, Stadien, Hochöfen, Fördertürme, Bahnhöfe. Die Struktur muss erlauben, diese Bereiche gezielt nachzubessern, ohne den Rest anzufassen.
 
@@ -265,11 +383,12 @@ Zwischen Zwischenlayer und Voxelisierung liegt ein **Override-Layer** mit handge
 - Debug-Ansicht im Client: Welcher Generator, welche Overrides und welches Render-Profil gelten hier?
 - Meldefunktion („sieht falsch aus“) mit Position, als Arbeitsliste für Nachbesserungen.
 
-## 9. Was fire leisten muss
+## 10. Was fire leisten muss
 
 Das Projekt soll die Sprache in allen Bereichen belasten:
 
 - Nebenläufigkeit: Generierungs-Worker, Server-Tick, Streaming
+- Verteilte Systeme: Regionsserver, Übergaben, Koordinator, globale Dienste
 - Netzwerk-I/O: Spielerprotokoll, Datenbankanbindung
 - GPU-Anbindung: Rendering, ggf. Compute für Meshing
 - Speicherlayout: dichte Voxel-Daten, Bricks, Kompression

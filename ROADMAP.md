@@ -34,11 +34,14 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] LOD für weite Sichtweiten
 
 ## M4: Multiplayer-Grundgerüst
-- [ ] Autoritativer Server, 2–8 Spieler
+- [ ] Koordinator + ein Regionsserver auf einem Rechner, Protokoll schon für mehrere Regionen ausgelegt
+- [ ] Globale, eindeutige Objekt-IDs; globale Dienste (Konten, Inventar, Wirtschaft) getrennt von Regionen
+- [ ] Autoritativer Regionsserver, 2–8 Spieler
 - [ ] Client-Prediction für Fahrzeuge
 - [ ] Interest-Management pro Kachel
 - [ ] Serverseitiges Wetter (simuliert per Seed, optional echtes DWD-Wetter)
 - [ ] Zerstörungs-/Bau-Deltas (Key-Value-Store)
+- [ ] Zwei Regionsserver mit Randzone und Übergabe (Fahrzeug fährt über die Grenze)
 
 ## M5: Gameplay
 - [ ] Spielerwerte: Vitalwerte, Fähigkeiten, Ruf
@@ -47,17 +50,23 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Rennen: legal auf abgesperrten Strecken und illegal im Verkehr, Wetten
 - [ ] Jobs als Schicht-Missionen in Gebäuden, Aufstieg bis zur Übernahme
 - [ ] Gebäude mieten, prozedurale Innenräume
+- [ ] Baumodus (Grundumfang): Setzen/Entfernen, Form, Material, Pinsel, Objekte, Rückgängig
+- [ ] Materialien: Beton, Holz, Glas, Metall (+ Ziegel/Putz); Material-ID + Farbindex pro Voxel
+- [ ] Gebäude materialisieren beim ersten Umbau, Deltas, Konfliktmarkierung bei Generator-Updates
+- [ ] Rechte: Eigentümer, Mieter, Bauamt
+- [ ] Super-, Bau- und Elektronikmarkt mit platzierbaren Objekten
 - [ ] Ein Geschäftstyp mit Wirtschaftssimulation
 - [ ] Missionsgenerator mit echten POIs
 - [ ] Erste handgebaute Story-Mission
 - [ ] Wetter-Einfluss auf Entdeckung, Kundschaft und Missionen
 
 ## M6: Skalierung
+- [ ] Dynamische Aufteilung der Karte nach Spielerdichte (Quadtree), Aufteilen/Zusammenlegen im Betrieb
 - [ ] Ganzes Ruhrgebiet
 - [ ] Ganz NRW
 - [ ] Fassaden-Tool (Foto → Grammatik-Parameter) für größere Gebiete
 - [ ] Weitere Gebäudetypen (Disco, Casino, Spielothek, Internetcafé …)
-- [ ] Öffentliche Verwaltung: Genehmigungen, Ordnungsamt
+- [ ] Öffentliche Verwaltung: Genehmigungen, Ordnungsamt, Bauamt (öffentlicher Grund, Spielerbesitz mit Freigabe)
 - [ ] Bauhöfe: Reparatur von Zerstörung, Baustellen, Winterdienst, Korrekturvorschläge für den Override-Layer
 - [ ] Öffentlicher Verkehr als Schnellreise (S-Bahn, RE, Flüge)
 - [ ] Spezial-Generatoren für Problemfälle (Autobahnkreuze, Brücken, Fördertürme)
@@ -66,8 +75,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 ## Offene Fragen
 - Wie redet fire mit der GPU (eigene Bindings, FFI zu Vulkan/WebGPU …)?
 - Läuft der Client nativ oder im Browser?
-- Wie viele Spieler soll ein Server tragen?
-- Wie stark ist die Welt zerstörbar bzw. bebaubar?
+- Wie viele Spieler soll ein Regionsserver tragen, und was ist das Ziel für ganz NRW?
+- Wie stark ist die Welt zerstörbar (außerhalb des Baumodus)?
+- Grundstücksgrenzen: ALKIS-Daten verfügbar oder Ableitung aus Grundrissen?
 - Wie laufen Ingame-Zeit und Wirtschaft weiter, wenn Spieler offline sind?
 - Altersfreigabe (USK/PEGI) prüfen; Glücksspiel bleibt rein virtuell ohne Echtgeld
 - Lizenzen der Datenquellen final prüfen (NRW Open Data, OSM/ODbL, Mapillary/Panoramax)
