@@ -49,7 +49,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Spielerwerte: Vitalwerte, Fähigkeiten, Ruf
 - [ ] Krankenhaus statt Tod: Aufwachen im nächsten Krankenhaus, Behandlungskosten
 - [ ] Offline: Vitalwerte einfrieren, Charakter verlässt die Welt, Wartezeit gegen Kampf-Ausloggen
-- [ ] Offline: kein Einkommen, laufende Kosten pausieren, AFK-Erkennung
+- [ ] Wirtschaft pro aktivem Tag: Login aktiviert den Tag, Nachbuchung beim Einloggen, wenige immer laufende Posten
 - [ ] Gebäudetypen aus OSM-Tags, zuerst: Tankstelle, Imbiss, Kneipe, Autohändler, Hotel
 - [ ] Waffen und PvP, Fahndungslevel, Schutzbereiche, Schonfrist für Neue
 - [ ] Rennen: legal auf abgesperrten Strecken und illegal im Verkehr, Wetten

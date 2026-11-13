@@ -196,9 +196,16 @@ Wie in GTA: **Jeder startet zu Fuß.** Fahrzeuge muss man sich kaufen, leihen od
 - **Welt und Zeit laufen immer weiter**, auch wenn ein Spieler offline ist: Tag und Nacht, Wetter, Wirtschaft, andere Spieler.
 - **Vitalwerte werden eingefroren.** Niemand verhungert, verdurstet oder stirbt durch Untätigkeit. Nach dem Einloggen geht es mit denselben Werten weiter.
 - **Der Charakter verlässt beim Ausloggen die Welt.** Er steht nicht schutzlos herum. Gegen Kampf-Ausloggen gibt es eine kurze Wartezeit, wenn man gerade im Kampf ist oder gesucht wird.
-- **Kein Einkommen im Offline-Zustand.** Geschäfte, Jobs und Vermietung bringen nur Geld, solange der Spieler online ist. Besitz bleibt bestehen, steht aber still.
-- **Laufende Kosten pausieren ebenfalls** (Miete, Gehälter, Nebenkosten). Sonst würde Offline sein in den Ruin führen. Grundsatz: Offline verliert man nichts und gewinnt nichts.
-- **AFK zählt nicht als online.** Wer eingeloggt ist, aber nichts tut, wird nach einer Weile wie offline behandelt. Sonst ließe sich Einkommen durch bloßes Eingeloggt-Bleiben erzeugen.
+- **Einkommen und Kosten laufen pro aktivem Tag.** Ein Tag ist der deutsche Kalendertag (00:00–24:00, passend zur Echtzeit-Uhr).
+  - Loggt sich ein Spieler an einem Tag ein, wird dieser Tag **aktiv**: Einkommen und Kosten laufen für den ganzen Tag.
+  - Was seit Tagesbeginn angefallen ist, wird **beim Einloggen sofort verbucht**. Der Rest des Tages läuft normal weiter, auch nach dem Ausloggen bis Mitternacht.
+  - Ist ein Spieler über Mitternacht online, wird der neue Tag direkt aktiv.
+  - **Tage ohne Login zählen nicht.** Weder Einkommen noch Kosten, Besitz steht still.
+- **Wenige Posten laufen immer**, auch an inaktiven Tagen. Sie sind bewusst klein, damit niemand durch Abwesenheit ruiniert wird oder reich wird. Kandidaten:
+  - Kosten: Grundsteuer und Versicherung für eigenen Besitz
+  - Einkommen: Zinsen auf ein Sparkonto
+- **Verträge zwischen Spielern** (z. B. Miete): Es zählen die aktiven Tage des Zahlenden. Der Mieter zahlt an seinen aktiven Tagen, der Vermieter bekommt das Geld dann gutgeschrieben, auch wenn er selbst offline ist.
+- Eine AFK-Erkennung ist dafür nicht nötig: Länger eingeloggt bleiben bringt kein zusätzliches Einkommen.
 
 ### Gebäudetypen mit Funktion
 
