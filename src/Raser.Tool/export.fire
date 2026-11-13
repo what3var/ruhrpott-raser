@@ -1,0 +1,223 @@
+// Raser.Tool: Export zur Kontrolle (Roadmap M1: "Export/Viewer zur Kontrolle, noch ohne eigenen Renderer").
+//   Draufsicht: je Voxel-Säule die Farbe des obersten Voxels, mit Hangschattierung - als PNG.
+//   OBJ: ein Ausschnitt als Dreiecksnetz (sichtbare Flächen, Höhen-Schnitte als schräge Oberseiten) mit MTL-Farben aus der Palette.
+#import "filesystem"
+#import "raser.core"
+#import "raser.world"
+
+class TopView {
+    defined int size
+    int top[]
+    int color[]
+
+    construct(defined int size) {
+        this.size = size
+        this.top = new int[size * size]
+        this.color = new int[size * size]
+        for (int i = 0; i < size * size; i++) {
+            this.top[i] = -1000000
+            this.color[i] = 0
+        }
+    }
+
+    // Die Draufsicht einer Kachel (1280 x 1280 Säulen, Zeile 0 im Norden) aus ihren gespeicherten Chunks.
+    static TopView OfTile(Raser.FileTileStore store, Raser.TileKey key) {
+        var view = new TopView(1280)
+        var manifest = store.LoadManifest(key)
+        if (manifest == undefined) { return view }
+        var keys = new List<Raser.ChunkKey>()
+        foreach (s in manifest.keys) { keys.Add(Raser.ChunkKey.Parse(s)) }
+        // von oben nach unten: was schon gefunden ist, wird nicht mehr gesucht
+        int maxZ = -1000000
+        int minZ = 1000000
+        foreach (k in keys) {
+            if (k.z > maxZ) { maxZ = k.z }
+            if (k.z < minZ) { minZ = k.z }
+        }
+        for (int cz = maxZ; cz >= minZ; cz--) {
+            foreach (k in keys) {
+                if (k.z != cz) { continue }
+                var chunk = store.LoadChunk(k)
+                if (chunk == undefined || chunk.IsEmpty) { continue }
+                int ox = k.VoxelX - key.VoxelX
+                int oy = k.VoxelY - key.VoxelY
+                for (int y = 0; y < 64; y++) {
+                    for (int x = 0; x < 64; x++) {
+                        int i = (1279 - (oy + y)) * 1280 + ox + x
+                        if (view.top[i] > -1000000) { continue }
+                        for (int z = 63; z >= 0; z--) {
+                            int m = chunk.MaterialAt(x, y, z)
+                            if (m != 0) {
+                                view.top[i] = k.VoxelZ + z
+                                view.color[i] = Raser.Palette.Rgb(chunk.ColorAt(x, y, z))
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return view
+    }
+
+    // Die Farben mit Hangschattierung (Licht von Nordwesten), jede step-te Säule (step 1: volle Auflösung).
+    int[] Shaded(defined int step) {
+        int n = this.size / step
+        int result[] = new int[n * n]
+        for (int y = 0; y < n; y++) {
+            for (int x = 0; x < n; x++) {
+                int sx = x * step
+                int sy = y * step
+                int i = sy * this.size + sx
+                int h = this.top[i]
+                if (h <= -1000000) {
+                    result[y * n + x] = 0x101018
+                    continue
+                }
+                int west = h
+                int north = h
+                if (sx >= step && this.top[i - step] > -1000000) { west = this.top[i - step] }
+                if (sy >= step && this.top[i - step * this.size] > -1000000) { north = this.top[i - step * this.size] }
+                float shade = 1.0 + ((h - west) + (h - north)) * 0.08 / step
+                shade = Math.Clamp(shade, 0.55, 1.45)
+                int c = this.color[i]
+                int r = Math.Clamp(((c >> 16) & 255) * shade, 0.0, 255.0)!int
+                int g = Math.Clamp(((c >> 8) & 255) * shade, 0.0, 255.0)!int
+                int b = Math.Clamp((c & 255) * shade, 0.0, 255.0)!int
+                result[y * n + x] = (r << 16) | (g << 8) | b
+            }
+        }
+        return result
+    }
+}
+
+// Ein Ausschnitt als OBJ.
+class ObjExport {
+    Dictionary<string, Raser.Chunk> chunks
+    Raser.FileTileStore store
+
+    construct(Raser.FileTileStore store) {
+        this.store = store
+        this.chunks = new Dictionary<string, Raser.Chunk>()
+    }
+
+    Raser.Chunk ChunkOf(defined int vx, defined int vy, defined int vz) {
+        var key = Raser.ChunkKey.OfVoxel(vx, vy, vz)
+        string name = key.ToString()
+        if (this.chunks.ContainsKey(name)) { return this.chunks[name] }
+        var c = this.store.LoadChunk(key)
+        this.chunks[name] = c
+        if (c != undefined) { c.TakeTo(this.chunks) }
+        return c
+    }
+
+    defined int MaterialAt(defined int vx, defined int vy, defined int vz) {
+        var c = this.ChunkOf(vx, vy, vz)
+        if (c == undefined) { return 0 }
+        return c.MaterialAt(Raser.Grid.FloorMod(vx, 64), Raser.Grid.FloorMod(vy, 64), Raser.Grid.FloorMod(vz, 64))
+    }
+
+    defined int ShapeAt(defined int vx, defined int vy, defined int vz) {
+        var c = this.ChunkOf(vx, vy, vz)
+        if (c == undefined) { return 255 }
+        return c.ShapeAt(Raser.Grid.FloorMod(vx, 64), Raser.Grid.FloorMod(vy, 64), Raser.Grid.FloorMod(vz, 64))
+    }
+
+    defined int ColorAt(defined int vx, defined int vy, defined int vz) {
+        var c = this.ChunkOf(vx, vy, vz)
+        if (c == undefined) { return 0 }
+        return c.ColorAt(Raser.Grid.FloorMod(vx, 64), Raser.Grid.FloorMod(vy, 64), Raser.Grid.FloorMod(vz, 64))
+    }
+
+    // Verdeckt das Nachbarvoxel die Fläche? (Nur volle, feste Voxel; Glas und Wasser verdecken nichts.)
+    defined bool Hides(defined int vx, defined int vy, defined int vz) {
+        int m = this.MaterialAt(vx, vy, vz)
+        if (m == 0 || m == Raser.Material.Glass!int || m == Raser.Material.Water!int) { return false }
+        return Raser.Shape.IsFull(this.ShapeAt(vx, vy, vz))
+    }
+
+    // Schreibt die Voxel (vx0..vx1, vy0..vy1, vz0..vz1) als OBJ-Datei (+ MTL daneben). Koordinaten in Metern relativ zur Südwest-Ecke unten,
+    // y nach oben (wie die meisten Betrachter es erwarten). Gibt die Zahl der Flächen zurück.
+    defined int Write(string path, defined int vx0, defined int vy0, defined int vz0, defined int vx1, defined int vy1, defined int vz1) {
+        var sb = new List<string>()
+        string mtl = IO.Path.ChangeExtension(path, ".mtl")
+        sb.Add("# Ruhrpott-Raser: Voxel " + vx0 + ".." + vx1 + ", " + vy0 + ".." + vy1 + ", " + vz0 + ".." + vz1)
+        sb.Add("mtllib " + IO.Path.GetFileName(mtl))
+        var used = new HashSet<int>()
+        int vertices = 0
+        int faces = 0
+        int current = -1
+        for (int vz = vz0; vz <= vz1; vz++) {
+            for (int vy = vy0; vy <= vy1; vy++) {
+                for (int vx = vx0; vx <= vx1; vx++) {
+                    int m = this.MaterialAt(vx, vy, vz)
+                    if (m == 0) { continue }
+                    int shape = this.ShapeAt(vx, vy, vz)
+                    int color = this.ColorAt(vx, vy, vz)
+                    float x0 = (vx - vx0) * 0.2
+                    float x1 = x0 + 0.2
+                    float y0 = (vy - vy0) * 0.2
+                    float y1 = y0 + 0.2
+                    float z0 = (vz - vz0) * 0.2
+                    float h0 = z0 + Raser.Shape.CornerMeters(shape, 0)
+                    float h1 = z0 + Raser.Shape.CornerMeters(shape, 1)
+                    float h2 = z0 + Raser.Shape.CornerMeters(shape, 2)
+                    float h3 = z0 + Raser.Shape.CornerMeters(shape, 3)
+                    bool full = Raser.Shape.IsFull(shape)
+                    var quads = new List<float>()
+                    // oben (bei einem Schnitt immer sichtbar)
+                    if (!full || !this.Hides(vx, vy, vz + 1)) { ObjExport.Quad(quads, x0, y0, h0, x1, y0, h1, x1, y1, h2, x0, y1, h3) }
+                    // unten
+                    if (!this.Hides(vx, vy, vz - 1)) { ObjExport.Quad(quads, x0, y1, z0, x1, y1, z0, x1, y0, z0, x0, y0, z0) }
+                    // Westen, Osten, Süden, Norden (Oberkante folgt den Eckhöhen)
+                    if (!this.Hides(vx - 1, vy, vz)) { ObjExport.Quad(quads, x0, y1, z0, x0, y0, z0, x0, y0, h0, x0, y1, h3) }
+                    if (!this.Hides(vx + 1, vy, vz)) { ObjExport.Quad(quads, x1, y0, z0, x1, y1, z0, x1, y1, h2, x1, y0, h1) }
+                    if (!this.Hides(vx, vy - 1, vz)) { ObjExport.Quad(quads, x0, y0, z0, x1, y0, z0, x1, y0, h1, x0, y0, h0) }
+                    if (!this.Hides(vx, vy + 1, vz)) { ObjExport.Quad(quads, x1, y1, z0, x0, y1, z0, x0, y1, h3, x1, y1, h2) }
+                    if (quads.Count == 0) { continue }
+                    if (color != current) {
+                        sb.Add("usemtl c" + color)
+                        used.Add(color)
+                        current = color
+                    }
+                    for (int q = 0; q < quads.Count; q = q + 12) {
+                        for (int k = 0; k < 4; k++) {
+                            // OBJ: x Ost, y oben, z Süd (rechtshändig)
+                            sb.Add("v " + ObjExport.F(quads[q + k * 3]) + " " + ObjExport.F(quads[q + k * 3 + 2]) + " " + ObjExport.F(-quads[q + k * 3 + 1]))
+                        }
+                        sb.Add("f " + (vertices + 1) + " " + (vertices + 2) + " " + (vertices + 3) + " " + (vertices + 4))
+                        vertices = vertices + 4
+                        faces++
+                    }
+                }
+            }
+        }
+        IO.File.WriteAllText(path, "\n".Join(sb) + "\n")
+        var m2 = new List<string>()
+        foreach (c in used) {
+            int rgb = Raser.Palette.Rgb(c)
+            m2.Add("newmtl c" + c)
+            m2.Add("Kd " + ObjExport.F(((rgb >> 16) & 255) / 255.0) + " " + ObjExport.F(((rgb >> 8) & 255) / 255.0) + " " + ObjExport.F((rgb & 255) / 255.0))
+            if (c == Raser.Palette.Glass) { m2.Add("d 0.5") }
+        }
+        IO.File.WriteAllText(mtl, "\n".Join(m2) + "\n")
+        return faces
+    }
+
+    static undefined Quad(List<float> q, defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float cx, defined float cy, defined float cz, defined float dx, defined float dy, defined float dz) {
+        q.Add(ax)
+        q.Add(ay)
+        q.Add(az)
+        q.Add(bx)
+        q.Add(by)
+        q.Add(bz)
+        q.Add(cx)
+        q.Add(cy)
+        q.Add(cz)
+        q.Add(dx)
+        q.Add(dy)
+        q.Add(dz)
+    }
+
+    static string F(defined float v) { return $"{v:F3}" }
+}

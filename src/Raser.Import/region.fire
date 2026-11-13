@@ -73,10 +73,13 @@ namespace Raser {
                 if (e1 > maxE) { maxE = e1 }
                 if (n0 < minN) { minN = n0 }
             }
-            var lo = Raser.TileKey.Of(minE, minN)
-            var hi = Raser.TileKey.Of(maxE - 0.001, maxN - 0.001)
-            for (int y = lo.y; y <= hi.y; y++) {
-                for (int x = lo.x; x <= hi.x; x++) { keys.Add(new Raser.TileKey(x, y)) }
+            // Nur Kacheln, die das DGM ganz abdeckt (mit dem halben Meter Rand): Randkacheln kommen mit den Nachbardaten.
+            int x0 = Math.Ceiling((minE + 0.5) / 256.0)!int
+            int y0 = Math.Ceiling((minN + 0.5) / 256.0)!int
+            int x1 = Math.Floor((maxE - 0.5) / 256.0)!int - 1
+            int y1 = Math.Floor((maxN - 0.5) / 256.0)!int - 1
+            for (int y = y0; y <= y1; y++) {
+                for (int x = x0; x <= x1; x++) { keys.Add(new Raser.TileKey(x, y)) }
             }
             return keys
         }

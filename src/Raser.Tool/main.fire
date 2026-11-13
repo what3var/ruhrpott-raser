@@ -1,2 +1,259 @@
+// Raser.Tool: das Werkzeug der Weltpipeline (Konzept, Abschnitt 2).
+//
+//   raser import    --dgm <ordner> --lod2 <ordner> --osm <ordner> [--world world] [--tiles x0_y0:x1_y1]
+//   raser voxelize  [--world world] [--overrides overrides] [--seed n] [--tile x_y | --all] [--force]
+//   raser export png [--world world] [--tile x_y | --all] [--step n] [--out datei.png]
+//   raser export obj [--world world] --at ost,nord [--size meter] [--out datei.obj]
+//   raser info      [--world world]
+//
+// Mit forge: forge run RuhrpottRaser.firesln -- import --dgm data/raw/dgm1 ...
+#import "filesystem"
+#import "time"
 #import "raser.core"
-print(Raser.Grid.FloorDiv(-1, 64))
+#import "raser.world"
+#import "raser.import"
+
+class Args {
+    List<string> positional
+    Dictionary<string, string> options
+
+    construct(string items[]) {
+        this.positional = new List<string>()
+        this.options = new Dictionary<string, string>()
+        int i = 0
+        while (i < items.length) {
+            string a = items[i]
+            if (a.StartsWith("--")) {
+                string name = a.Substring(2)
+                if (i + 1 < items.length && !items[i + 1].StartsWith("--")) {
+                    this.options[name] = items[i + 1]
+                    i = i + 2
+                } else {
+                    this.options[name] = "true"
+                    i = i + 1
+                }
+            } else {
+                this.positional.Add(a)
+                i = i + 1
+            }
+        }
+    }
+
+    string Get(string name, string fallback = undefined) { return this.options.Get(name, fallback) }
+
+    bool Has(string name) { return this.options.ContainsKey(name) }
+}
+
+class Tool {
+    static defined int started = 0
+
+    static string Seconds() {
+        float seconds = (DateTime.Now.Ticks - Tool.started) / 10000000.0
+        return $"{seconds:F1} s"
+    }
+
+    static undefined Log(string text) { print("[" + Tool.Seconds() + "] " + text) }
+
+    static List<string> Files(string folder, string pattern) {
+        var result = new List<string>()
+        if (folder == undefined) { return result }
+        if (!IO.Directory.Exists(folder)) { throw new Raser.DataException("The folder " + folder + " does not exist.") }
+        foreach (f in IO.Directory.GetFiles(folder, pattern)) { result.Add(f) }
+        return result
+    }
+
+    static undefined Import(Args args) {
+        var region = new Raser.Region()
+        foreach (f in Tool.Files(args.Get("dgm"), "*.tif")) {
+            Tool.Log("DGM " + IO.Path.GetFileName(f))
+            region.AddDgm(Raser.GeoTiff.Read(IO.File.ReadAllBytes(f)), IO.Path.GetFileName(f))
+        }
+        foreach (f in Tool.Files(args.Get("lod2"), "*.gml")) {
+            Tool.Log("LoD2 " + IO.Path.GetFileName(f))
+            var list = Raser.CityGml.Read(IO.File.ReadAllBytes(f))
+            Tool.Log("  " + list.Count + " Gebäude")
+            region.AddBuildings(list, IO.Path.GetFileName(f))
+        }
+        var osmFiles = Tool.Files(args.Get("osm"), "*.osm")
+        if (osmFiles.Count > 0) {
+            var osm = new Raser.OsmData()
+            foreach (f in osmFiles) {
+                Tool.Log("OSM " + IO.Path.GetFileName(f))
+                osm.Read(IO.File.ReadAllBytes(f))
+            }
+            Tool.Log("  " + osm.NodeCount + " Knoten, " + osm.ways.Count + " Wege, " + osm.relations.Count + " Multipolygone, " + osm.points.Count + " POIs")
+            region.AddOsm(osm, "osm (" + osmFiles.Count + " Dateien)")
+            Tool.Log("  " + region.features.Count + " Straßen und Flächen")
+        }
+        var keys = region.TileKeys()
+        if (args.Has("tiles")) { keys = Tool.TileRange(args.Get("tiles")) }
+        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        int n = 0
+        foreach (k in keys) {
+            var tile = region.Build(k)
+            store.Save(tile)
+            n++
+            Tool.Log("Kachel " + k + " (" + n + "/" + keys.Count + "): " + tile.data.buildings.Count + " Gebäude, " + tile.data.roads.Count + " Straßen, " + tile.data.areas.Count + " Flächen, " + tile.data.pois.Count + " POIs")
+        }
+    }
+
+    static List<Raser.TileKey> TileRange(string text) {
+        var parts = text.Split(":")
+        var a = Raser.TileKey.Parse(parts[0])
+        var b = a
+        if (parts.length > 1) { b = Raser.TileKey.Parse(parts[1]) }
+        if (a == undefined || b == undefined) { throw new Raser.DataException("--tiles is x0_y0:x1_y1, not " + text + ".") }
+        var keys = new List<Raser.TileKey>()
+        for (int y = Math.Min(a.y, b.y); y <= Math.Max(a.y, b.y); y++) {
+            for (int x = Math.Min(a.x, b.x); x <= Math.Max(a.x, b.x); x++) { keys.Add(new Raser.TileKey(x, y)) }
+        }
+        return keys
+    }
+
+    static List<Raser.TileKey> Chosen(Args args, Raser.FileTileStore store) {
+        if (args.Has("tile")) { return Tool.TileRange(args.Get("tile")) }
+        return store.Keys()
+    }
+
+    static undefined Voxelize(Args args) {
+        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        var overrides = Raser.TileGenerator.LoadOverrides(args.Get("overrides", "overrides"))
+        int seed = args.Get("seed", "1").ToInt()
+        var generator = new Raser.TileGenerator(store, overrides, seed)
+        Tool.Log(overrides.Count + " Overrides, Seed " + seed + ", Generator " + Raser.Voxelizer.Version)
+        foreach (k in Tool.Chosen(args, store)) {
+            if (!args.Has("force") && generator.IsUpToDate(k)) {
+                Tool.Log("Kachel " + k + ": aktuell")
+                continue
+            }
+            var manifest = generator.Generate(k)
+            Tool.Log("Kachel " + k + ": " + manifest.chunks + " Chunks, " + manifest.filled + " Voxel")
+        }
+    }
+
+    static undefined ExportPng(Args args) {
+        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        var keys = Tool.Chosen(args, store)
+        if (keys.Count == 0) { throw new Raser.DataException("There are no tiles.") }
+        int step = args.Get("step", "1").ToInt()
+        int minX = 1000000000
+        int minY = 1000000000
+        int maxX = -1000000000
+        int maxY = -1000000000
+        foreach (k in keys) {
+            minX = Math.Min(minX, k.x)
+            minY = Math.Min(minY, k.y)
+            maxX = Math.Max(maxX, k.x)
+            maxY = Math.Max(maxY, k.y)
+        }
+        int per = 1280 / step
+        int w = (maxX - minX + 1) * per
+        int h = (maxY - minY + 1) * per
+        int image[] = new int[w * h]
+        foreach (k in keys) {
+            var view = TopView.OfTile(store, k)
+            var shaded = view.Shaded(step)
+            int ox = (k.x - minX) * per
+            int oy = (maxY - k.y) * per
+            for (int y = 0; y < per; y++) {
+                for (int x = 0; x < per; x++) { image[(oy + y) * w + ox + x] = shaded[y * per + x] }
+            }
+            Tool.Log("Draufsicht " + k)
+        }
+        string out = args.Get("out", "world.png")
+        IO.File.WriteAllBytes(out, Png.Encode(image, w, h))
+        Tool.Log(out + ": " + w + " x " + h + " Pixel (" + (step * 0.2) + " m je Pixel)")
+    }
+
+    static undefined ExportObj(Args args) {
+        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        if (!args.Has("at")) { throw new Raser.DataException("export obj needs --at ost,nord.") }
+        var at = args.Get("at").Split(",")
+        float e = at[0].ToFloat()
+        float n = at[1].ToFloat()
+        float size = args.Get("size", "40").ToFloat()
+        int vx0 = Raser.Grid.VoxelOf(e - size / 2.0)
+        int vy0 = Raser.Grid.VoxelOf(n - size / 2.0)
+        int vx1 = Raser.Grid.VoxelOf(e + size / 2.0)
+        int vy1 = Raser.Grid.VoxelOf(n + size / 2.0)
+        // Höhenbereich aus den Manifesten der berührten Kacheln
+        var export = new ObjExport(store)
+        int vz0 = 1000000
+        int vz1 = -1000000
+        var tiles = Tool.TileRange(Raser.TileKey.OfVoxel(vx0, vy0).ToString() + ":" + Raser.TileKey.OfVoxel(vx1, vy1).ToString())
+        foreach (t in tiles) {
+            var m = store.LoadManifest(t)
+            if (m == undefined) { continue }
+            foreach (s in m.keys) {
+                var c = Raser.ChunkKey.Parse(s)
+                vz0 = Math.Min(vz0, c.VoxelZ)
+                vz1 = Math.Max(vz1, c.VoxelZ + 63)
+            }
+        }
+        if (vz0 > vz1) { throw new Raser.DataException("There are no chunks there (voxelize first).") }
+        // Nur bis wenige Meter unter die tiefste Oberfläche: Felsen darunter sieht niemand.
+        int lowest = Tool.LowestSurface(export, vx0, vy0, vx1, vy1, vz0, vz1)
+        if (lowest - 10 > vz0) { vz0 = lowest - 10 }
+        string out = args.Get("out", "world.obj")
+        int faces = export.Write(out, vx0, vy0, vz0, vx1, vy1, vz1)
+        Tool.Log(out + ": " + faces + " Flächen")
+    }
+
+    static defined int LowestSurface(ObjExport export, defined int vx0, defined int vy0, defined int vx1, defined int vy1, defined int vz0, defined int vz1) {
+        int lowest = 1000000
+        for (int vy = vy0; vy <= vy1; vy = vy + 8) {
+            for (int vx = vx0; vx <= vx1; vx = vx + 8) {
+                for (int vz = vz1; vz >= vz0; vz--) {
+                    if (export.MaterialAt(vx, vy, vz) != 0) {
+                        lowest = Math.Min(lowest, vz)
+                        break
+                    }
+                }
+            }
+        }
+        return lowest
+    }
+
+    static undefined Info(Args args) {
+        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        var keys = store.Keys()
+        print(keys.Count + " Kacheln in " + store.root)
+        foreach (k in keys) {
+            var tile = store.Load(k)
+            var m = store.LoadManifest(k)
+            string chunks = "noch nicht voxelisiert"
+            if (m != undefined) { chunks = m.chunks + " Chunks (Generator " + m.generatorVersion + ")" }
+            print("  " + k + ": " + tile.data.buildings.Count + " Gebäude, " + tile.data.roads.Count + " Straßen, " + tile.data.areas.Count + " Flächen, " + chunks)
+        }
+    }
+
+    static defined int Main(string items[]) {
+        Tool.started = DateTime.Now.Ticks
+        var args = new Args(items)
+        if (args.positional.Count == 0) {
+            print("raser import | voxelize | export png | export obj | info  (siehe src/Raser.Tool/main.fire)")
+            return 1
+        }
+        try {
+            string command = args.positional[0]
+            switch (command) {
+                case "import": Tool.Import(args)
+                case "voxelize": Tool.Voxelize(args)
+                case "info": Tool.Info(args)
+                case "export":
+                    string what = "png"
+                    if (args.positional.Count > 1) { what = args.positional[1] }
+                    if (what == "obj") { Tool.ExportObj(args) } else { Tool.ExportPng(args) }
+                case default:
+                    print("Unknown command: " + command)
+                    return 1
+            }
+        } catch (Raser.DataException e) {
+            print("Error: " + e.message)
+            return 1
+        }
+        return 0
+    }
+}
+
+Environment.Exit(Tool.Main(Environment.Args))

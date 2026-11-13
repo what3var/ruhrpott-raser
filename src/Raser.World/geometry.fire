@@ -65,6 +65,71 @@ namespace Raser {
             return inside
         }
 
+        // Die x-Werte, an denen die waagerechte Gerade y den Ring schneidet, aufsteigend (in out; dieselbe Regel wie Inside:
+        // ein Punkt (x, y) liegt im Ring, wenn er in [out[0], out[1]), [out[2], out[3]), ... liegt).
+        static undefined Crossings(float ring[], defined int stride, defined float y, List<float> out) {
+            out.Clear()
+            int n = ring.length / stride
+            if (n < 3) { return }
+            int j = n - 1
+            for (int i = 0; i < n; i++) {
+                float xi = ring[i * stride]
+                float yi = ring[i * stride + 1]
+                float xj = ring[j * stride]
+                float yj = ring[j * stride + 1]
+                if ((yi > y) != (yj > y)) {
+                    float cx = xj + (y - yj) * (xi - xj) / (yi - yj)
+                    // einsortieren
+                    int k = out.Count
+                    out.Add(cx)
+                    while (k > 0 && out[k - 1] > cx) {
+                        out[k] = out[k - 1]
+                        k--
+                    }
+                    out[k] = cx
+                }
+                j = i
+            }
+        }
+
+        // Die Ebene eines Polygons (x, y, z je Punkt) als [a, b, c, gültig] mit z = a x + b y + c (Newell-Normale); gültig 0 für ein senkrechtes Polygon.
+        static float[] Plane(float poly[]) {
+            float result[] = [0.0, 0.0, 0.0, 0.0]
+            int n = poly.length / 3
+            if (n < 3) { return result }
+            float nx = 0.0
+            float ny = 0.0
+            float nz = 0.0
+            float cx = 0.0
+            float cy = 0.0
+            float cz = 0.0
+            int j = n - 1
+            for (int i = 0; i < n; i++) {
+                float xi = poly[i * 3]
+                float yi = poly[i * 3 + 1]
+                float zi = poly[i * 3 + 2]
+                float xj = poly[j * 3]
+                float yj = poly[j * 3 + 1]
+                float zj = poly[j * 3 + 2]
+                nx = nx + (yj - yi) * (zj + zi)
+                ny = ny + (zj - zi) * (xj + xi)
+                nz = nz + (xj - xi) * (yj + yi)
+                cx = cx + xi
+                cy = cy + yi
+                cz = cz + zi
+                j = i
+            }
+            if (Math.Abs(nz) < 0.000001) { return result }
+            cx = cx / n
+            cy = cy / n
+            cz = cz / n
+            result[0] = -nx / nz
+            result[1] = -ny / nz
+            result[2] = cz + (nx * cx + ny * cy) / nz
+            result[3] = 1.0
+            return result
+        }
+
         // Der kleinste Abstand von (x, y) zu einer Linie aus Punkten (x0, y0, x1, y1, ...).
         static defined float DistanceToLine(float line[], defined float x, defined float y) {
             float best = 1.0e30
