@@ -46,6 +46,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 
 ## M5: Gameplay
 - [ ] Spielerwerte: Vitalwerte, Fähigkeiten, Ruf
+- [ ] Krankenhaus statt Tod: Aufwachen im nächsten Krankenhaus, Behandlungskosten
+- [ ] Offline: Vitalwerte einfrieren, Charakter verlässt die Welt, Wartezeit gegen Kampf-Ausloggen
 - [ ] Gebäudetypen aus OSM-Tags, zuerst: Tankstelle, Imbiss, Kneipe, Autohändler, Hotel
 - [ ] Waffen und PvP, Fahndungslevel, Schutzbereiche, Schonfrist für Neue
 - [ ] Rennen: legal auf abgesperrten Strecken und illegal im Verkehr, Wetten
@@ -83,6 +85,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - Wie viele Spieler soll ein Regionsserver tragen, und was ist das Ziel für ganz NRW?
 - Konkrete Schwellenwerte je Material (Balancing gegen Griefing)
 - Grundstücksgrenzen: ALKIS-Daten verfügbar oder Ableitung aus Grundrissen?
-- Wie laufen Ingame-Zeit und Wirtschaft weiter, wenn Spieler offline sind?
+- Zeitfaktor der Ingame-Uhr (Echtzeit oder beschleunigt wie in GTA)? Beeinflusst auch die Mondphase
+- Was läuft für Geschäfte und Mieten offline weiter?
 - Altersfreigabe (USK/PEGI) prüfen; Glücksspiel bleibt rein virtuell ohne Echtgeld
 - Lizenzen der Datenquellen final prüfen (NRW Open Data, OSM/ODbL, Mapillary/Panoramax)

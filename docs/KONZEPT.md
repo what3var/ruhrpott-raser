@@ -2,10 +2,11 @@
 
 ## 1. Voxel-Größe und Fahren
 
-- **Voxelgröße 25 cm** (1/4 Minecraft). Pro Volumen sind das 64× mehr Voxel als bei Minecraft.
-  - Chunks/Bricks deshalb größer wählen (z. B. 64³ = 16 m Kantenlänge).
+- **Voxelgröße 20 cm** (1/5 Minecraft). Das passt zu in Europa üblichen Maßen: Tür 2,0 m = 10 Voxel, Geschosshöhe ca. 2,8–3,0 m = 14–15 Voxel, Wandstärken von 20–40 cm = 1–2 Voxel, Bordstein 20 cm = 1 Voxel.
+  - Pro Volumen sind das 125× mehr Voxel als bei Minecraft.
+  - Chunks/Bricks deshalb größer wählen (z. B. 64³ = 12,8 m Kantenlänge).
   - LOD ist ab Tag 1 Pflicht.
-- **Diagonale Höhen-Schnitte:** Ein Voxel darf oben schräg abgeschnitten sein. Die Oberseite ist über **vier Eckhöhen** definiert, quantisiert in 1/4-Voxel-Schritten (6,25 cm).
+- **Diagonale Höhen-Schnitte:** Ein Voxel darf oben schräg abgeschnitten sein. Die Oberseite ist über **vier Eckhöhen** definiert, quantisiert in 1/4-Voxel-Schritten (5 cm).
   - Benachbarte Voxel teilen sich die Eckhöhen. So entstehen durchgehende, lückenlose Flächen ohne Treppen.
   - Straßen, Rampen, Böschungen und Dächer sind damit direkt im Voxelmodell abbildbar.
   - Speicher: 4 × 2 Bit = 1 Byte zusätzlich pro geschnittenem Voxel (nur Oberflächen-Voxel, Rest bleibt voller Würfel).
@@ -177,6 +178,19 @@ Wie in GTA: **Jeder startet zu Fuß.** Fahrzeuge muss man sich kaufen, leihen od
 - **Fähigkeiten** (steigen durch Nutzung und Training): Fahren, Schießen, Ausdauer, Kraft, Verhandeln, Hacken
 - **Ruf** in mehreren Szenen: Straße, Rennszene, Geschäftswelt, Polizei
 
+### Kein dauerhafter Tod: höchstens Krankenhaus
+
+- Ein Spieler **stirbt nie endgültig**. Sinkt die Gesundheit auf null (Kampf, Unfall, Absturz, Vernachlässigung der Vitalwerte), wacht er im **nächstgelegenen Krankenhaus** auf.
+- Folgen sind spürbar, aber nicht vernichtend: Behandlungskosten, ein Teil des mitgeführten Bargelds oder der Gegenstände ist weg, Fahrzeug bleibt am Unfallort (oder wird abgeschleppt), Fahndungslevel ggf. zurückgesetzt oder in Polizeigewahrsam.
+- Damit wird das Krankenhaus vom Kandidaten zum festen Gebäudetyp, auch mit Jobs (Rettungsdienst, Pflege).
+
+### Offline-Spieler
+
+- **Welt und Zeit laufen immer weiter**, auch wenn ein Spieler offline ist: Tag und Nacht, Wetter, Wirtschaft, andere Spieler.
+- **Vitalwerte werden eingefroren.** Niemand verhungert, verdurstet oder stirbt durch Untätigkeit. Nach dem Einloggen geht es mit denselben Werten weiter.
+- **Der Charakter verlässt beim Ausloggen die Welt.** Er steht nicht schutzlos herum. Gegen Kampf-Ausloggen gibt es eine kurze Wartezeit, wenn man gerade im Kampf ist oder gesucht wird.
+- **Besitz und Geschäfte** bleiben bestehen. Was genau offline weiterläuft (Umsatz von Geschäften, fällige Mieten, Lieferungen), wird beim Wirtschaftsdesign festgelegt. Grundsatz: Offline sein darf nicht in den Ruin führen, aber auch kein Geld ohne Spielen drucken.
+
 ### Gebäudetypen mit Funktion
 
 Die Funktion eines Gebäudes kommt aus den **echten OSM-Tags** (z. B. `amenity=fuel`, `amenity=bar`, `shop=car`). Echte Orte bekommen also die passende Funktion. Echte Firmennamen und Logos werden durch Fantasie-Namen ersetzt.
@@ -198,11 +212,12 @@ Die Funktion eines Gebäudes kommt aus den **echten OSM-Tags** (z. B. `amenity=f
 | Fahrradladen | Fahrräder, Teile | – | Billiger Einstieg in die Mobilität |
 | Motorradladen | Motorräder, Roller, Ausrüstung | – | Helm und Kluft schützen bei Stürzen |
 | Internetcafé | Zugang zu Rechnern | – | Darknet-Markt, Hacking-Missionen, anonyme Aufträge |
+| Krankenhaus | Behandlung, Medikamente | Gesundheit | Hier wacht man auf, wenn die Gesundheit auf null fällt |
 | Supermarkt | Nahrungsmittel, Getränke, Haushalt | Hunger, Durst | Vorräte für zu Hause, günstiger als Imbiss |
 | Baumarkt | Baumaterial, Farben, Werkzeug, Gartenmöbel | – | Material und Farben für den Baumodus (Abschnitt 7) |
 | Elektronikmarkt | Fernseher, Computer, Konsolen, Licht, Musikanlagen | Stress | Geräte mit Funktion für die eigene Wohnung |
 
-Weitere Kandidaten: Werkstatt/Tuning, Waffenladen, Kiosk/Trinkhalle („Büdchen“), Krankenhaus, Apotheke, Fitnessstudio, Friseur/Kleidung, Pfandhaus, Polizeiwache.
+Weitere Kandidaten: Werkstatt/Tuning, Waffenladen, Kiosk/Trinkhalle („Büdchen“), Apotheke, Fitnessstudio, Friseur/Kleidung, Pfandhaus, Polizeiwache.
 
 ### Jobs
 
