@@ -40,7 +40,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Client-Prediction für Fahrzeuge
 - [ ] Interest-Management pro Kachel
 - [ ] Serverseitiges Wetter (simuliert per Seed, optional echtes DWD-Wetter)
-- [ ] Zerstörungs-/Bau-Deltas (Key-Value-Store)
+- [ ] Zerstörungs-/Bau-Deltas (Key-Value-Store), Zerstörung als eigener Delta-Typ mit Ursache
+- [ ] Physik-Ereignisse (Aufprall, Explosion) liefern Energie und Trefferpunkt
 - [ ] Zwei Regionsserver mit Randzone und Übergabe (Fahrzeug fährt über die Grenze)
 
 ## M5: Gameplay
@@ -52,6 +53,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Gebäude mieten, prozedurale Innenräume
 - [ ] Baumodus (Grundumfang): Setzen/Entfernen, Form, Material, Pinsel, Objekte, Rückgängig
 - [ ] Materialien: Beton, Holz, Glas, Metall (+ Ziegel/Putz); Material-ID + Farbindex pro Voxel
+- [ ] Material-Tabelle mit physikalischen Werten (Schwelle, Zähigkeit, Dichte), zunächst ungenutzt
+- [ ] Baumaterial und Farben als Inventar, Kauf im Baumarkt; öffentliches Lager für Bauamt/Bauhof
 - [ ] Gebäude materialisieren beim ersten Umbau, Deltas, Konfliktmarkierung bei Generator-Updates
 - [ ] Rechte: Eigentümer, Mieter, Bauamt
 - [ ] Super-, Bau- und Elektronikmarkt mit platzierbaren Objekten
@@ -70,13 +73,15 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Bauhöfe: Reparatur von Zerstörung, Baustellen, Winterdienst, Korrekturvorschläge für den Override-Layer
 - [ ] Öffentlicher Verkehr als Schnellreise (S-Bahn, RE, Flüge)
 - [ ] Spezial-Generatoren für Problemfälle (Autobahnkreuze, Brücken, Fördertürme)
+- [ ] Zerstörbarkeit: Schwellen je Material, Energie-Verteilung, Materialisieren bei Zerstörung
+- [ ] Später: Statik, Trümmer, Brand
 - [ ] Meldefunktion „sieht falsch aus“ als Arbeitsliste für Nachbesserungen
 
 ## Offene Fragen
 - Wie redet fire mit der GPU (eigene Bindings, FFI zu Vulkan/WebGPU …)?
 - Läuft der Client nativ oder im Browser?
 - Wie viele Spieler soll ein Regionsserver tragen, und was ist das Ziel für ganz NRW?
-- Wie stark ist die Welt zerstörbar (außerhalb des Baumodus)?
+- Konkrete Schwellenwerte je Material (Balancing gegen Griefing)
 - Grundstücksgrenzen: ALKIS-Daten verfügbar oder Ableitung aus Grundrissen?
 - Wie laufen Ingame-Zeit und Wirtschaft weiter, wenn Spieler offline sind?
 - Altersfreigabe (USK/PEGI) prüfen; Glücksspiel bleibt rein virtuell ohne Echtgeld

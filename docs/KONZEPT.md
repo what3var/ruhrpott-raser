@@ -272,12 +272,20 @@ Wenige Materialien mit **fester Oberflächenstruktur**. Die Farbe trägt man mit
 | Metall | Gebürstet oder matt (zwei Varianten) | Stahlgrau |
 | Ziegel / Putz (Kandidaten) | Fugenraster bzw. leichte Körnung | Ruhrpott-Rot bzw. Weiß |
 
-Die Strukturen sind dieselben parametrischen Materialfunktionen wie bei den Fassaden (Abschnitt 3). Pro Voxel werden nur **Material-ID + Farbindex** gespeichert (z. B. 1 Byte + 1 Byte aus einer Palette).
+Die Strukturen sind dieselben parametrischen Materialfunktionen wie bei den Fassaden (Abschnitt 3). Pro Voxel werden nur **Material-ID + Farbindex** gespeichert (z. B. 1 Byte + 1 Byte aus einer Palette). Physikalische Werte wie die Bruchschwelle stehen in der Material-Tabelle (siehe Zerstörbarkeit).
+
+### Baumaterial muss gekauft werden
+
+- **Normale Spieler kaufen jedes Baumaterial im Baumarkt.** Material ist ein Inventar-Gegenstand mit Menge (Voxel je Material). Setzen verbraucht Material, Entfernen gibt einen Teil zurück (z. B. 50 %, Glas geht beim Abbau kaputt).
+- Farben für den Pinsel werden ebenfalls gekauft, als Farbeimer mit begrenzter Reichweite.
+- Ohne Material bleibt das Werkzeug gesperrt. Der Baumodus zeigt vorher an, wie viel Material ein Vorhaben braucht.
+- **Bauamt und Bauhof** bauen auf öffentlichem Grund mit Material aus einem öffentlichen Lager, bezahlt aus der Stadtkasse. Die Stadtkasse ist Teil der Wirtschaft (Gebühren, Knöllchen, Steuern).
+- Das hält die Wirtschaft geschlossen: Baumärkte haben echte Kundschaft, und große Bauten kosten echtes Spielgeld.
 
 ### Kaufbare Objekte
 
 Was in Bau-, Super- und Elektronikmärkten gekauft wird, landet im Inventar und lässt sich im Baumodus platzieren:
-- **Baumarkt:** Baumaterial (Voxel-Kontingente je Material), Farben für den Pinsel, Werkzeug, Gartenmöbel
+- **Baumarkt:** Baumaterial (Pflicht für jeden Bau, siehe oben), Farben für den Pinsel, Werkzeug, Gartenmöbel
 - **Elektronikmarkt:** Fernseher, Computer, Konsole, Musikanlage, Licht. Manche Geräte haben Funktionen (Computer für Hacking-Missionen, Licht als echte Lichtquelle)
 - **Supermarkt:** Nahrungsmittel und Getränke für Vitalwerte, Vorrat im Kühlschrank zu Hause
 
@@ -306,6 +314,32 @@ Das ist der schwierige Teil. Gebäude entstehen eigentlich deterministisch aus d
 5. **LOD:** Materialisierte Gebäude brauchen eigene vereinfachte Fernmodelle. Die werden nach dem Bauen im Hintergrund neu berechnet.
 
 Spieler-Bauten sind **keine Overrides**. Sie liegen in der Delta-Ebene und lassen sich jederzeit zurücksetzen. Der Override-Layer (Abschnitt 9) bleibt für geprüfte, dauerhafte Korrekturen der generierten Welt.
+
+### Zerstörbarkeit (später, aber jetzt schon vorbereitet)
+
+Gebäude und Objekte sind zerstörbar, aber nur bei genug Kraft. Jedes Material hat eine **Schwelle**. Darunter passiert nichts (höchstens optische Spuren), darüber wird abhängig von der Kraft zerstört.
+
+| Material | Schwelle (relativ) | Verhalten über der Schwelle |
+|---|---|---|
+| Glas | Sehr niedrig | Splittert sofort, auch durch Schüsse oder Würfe |
+| Holz | Niedrig–mittel | Bricht und splittert |
+| Ziegel / Putz | Mittel–hoch | Bröckelt, Löcher, einzelne Steine fallen |
+| Beton | Hoch | Nur durch große Energie, bricht in Brocken |
+| Metall | Hoch | Verbeult erst, reißt bei sehr großer Energie |
+
+**Ergebnis:**
+- Spieler können fremde Gebäude **nicht einfach einreißen**. Fäuste, Werkzeuge und normale Waffen bleiben unter den Schwellen von Mauern (Glas ausgenommen).
+- **Große Ereignisse** liegen darüber: ein explodierendes Auto, Sprengstoff, ein Lkw oder ein Auto mit 150 km/h. Zum Vergleich: Ein Auto mit 1,5 t bei 150 km/h trägt etwa 1,3 MJ Bewegungsenergie.
+- Bei einem Aufprall verteilt sich die Energie auf die getroffenen Voxel und wird dabei aufgezehrt. Ein schnelles Auto bricht durch eine Holzwand, bleibt aber in einer Betonwand stecken.
+
+**Was jetzt schon in der Basis offen gehalten wird:**
+1. **Material-Tabelle mit physikalischen Werten** (Schwelle, Zähigkeit, Dichte) statt nur Optik. Pro Voxel reicht weiter die Material-ID, die Werte kommen aus der Tabelle.
+2. **Zerstörung ist ein eigener Delta-Typ**, mit Ursache (Spieler, Fahrzeug, Explosion), Zeit und Region. So kann der Bauhof sie gezielt reparieren, und eine Versicherung oder ein Rücksetzen nach Zeit ist später möglich.
+3. **Schaden pro Voxel optional:** Ein Feld für Teilschaden (angeknackst, gerissen) ist im Format vorgesehen, wird aber anfangs nicht genutzt.
+4. **Generierte Gebäude werden bei Zerstörung materialisiert**, genau wie beim ersten Umbau. Es gibt also nur einen Weg, wie Gebäude vom Generator getrennt werden.
+5. **Physik-Ereignisse** (Aufprall, Explosion) liefern immer Energie und Trefferpunkt, auch wenn anfangs nichts zerstört wird. Dann muss später nur die Auswertung ergänzt werden.
+
+Später: Statik (frei schwebende Teile stürzen ein), Trümmer als physikalische Objekte, Brand.
 
 ## 8. Multiplayer und Server-Architektur
 
