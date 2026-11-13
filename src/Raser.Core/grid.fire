@@ -1,0 +1,119 @@
+// Raser.Core: das Raster der Welt.
+//
+// Koordinaten sind ETRS89 / UTM Zone 32N (EPSG:25832), wie in den Daten von NRW: x = Ost, y = Nord, z = Höhe über NHN, alles in Metern.
+// Ein Voxel ist 20 cm groß; Voxel-Koordinaten sind ganze Zahlen (floor(meter / 0,2)), auch negativ.
+// Eine Kachel ist 256 x 256 m (1280 x 1280 Voxel) und hat keine Höhe; ein Chunk ist 64 x 64 x 64 Voxel (12,8 m), eine Kachel also 20 x 20 Chunk-Säulen.
+namespace Raser {
+    class Grid {
+        static defined float VoxelSize = 0.2
+        static defined int VoxelsPerMeter = 5
+        static defined int ChunkSize = 64
+        static defined int ChunkVolume = 262144
+        static defined float TileSize = 256.0
+        static defined int TileVoxels = 1280
+        static defined int ChunksPerTile = 20
+
+        // Ganzzahlige Division, die nach unten rundet (auch für negative Zahlen): FloorDiv(-1, 64) ist -1.
+        static defined int FloorDiv(defined int a, defined int b) {
+            int q = a / b
+            if ((a % b != 0) && ((a < 0) != (b < 0))) { q = q - 1 }
+            return q
+        }
+
+        // Der Rest zu FloorDiv: immer 0 .. b - 1.
+        static defined int FloorMod(defined int a, defined int b) {
+            int m = a % b
+            if (m < 0) { m = m + b }
+            return m
+        }
+
+        static defined int Floor(defined float v) { return Math.Floor(v)!int }
+
+        // Das Voxel, in dem die Koordinate (in Metern) liegt. Der kleine Zuschlag gleicht Rundungsfehler aus (12.8 / 0.2 ist 63.99999...).
+        static defined int VoxelOf(defined float meters) { return Math.Floor(meters * 5.0 + 0.000001)!int }
+
+        // Die untere Kante des Voxels in Metern.
+        static defined float MetersOf(defined int voxel) { return voxel * 0.2 }
+    }
+
+    // Eine Kachel: 256 x 256 m. Der Schlüssel ist floor(Ost / 256), floor(Nord / 256).
+    class TileKey {
+        defined int x
+        defined int y
+
+        construct(defined int x, defined int y) { this.x = x; this.y = y }
+
+        static TileKey Of(defined float east, defined float north) {
+            return new TileKey(Math.Floor(east / 256.0)!int, Math.Floor(north / 256.0)!int)
+        }
+
+        static TileKey OfVoxel(defined int vx, defined int vy) {
+            return new TileKey(Raser.Grid.FloorDiv(vx, 1280), Raser.Grid.FloorDiv(vy, 1280))
+        }
+
+        // "x_y" zurück in einen Schlüssel; undefined, wenn der Text keiner ist.
+        static TileKey Parse(string text) {
+            var parts = text.Trim().Split("_")
+            if (parts.length != 2) { return undefined }
+            any a = parts[0].TryToInt()
+            any b = parts[1].TryToInt()
+            if (a == undefined || b == undefined) { return undefined }
+            return new TileKey(a, b)
+        }
+
+        // Die Südwest-Ecke der Kachel in Metern.
+        float East { get { return this.x * 256.0 } }
+        float North { get { return this.y * 256.0 } }
+
+        // Das erste Voxel der Kachel.
+        int VoxelX { get { return this.x * 1280 } }
+        int VoxelY { get { return this.y * 1280 } }
+
+        bool Equals(TileKey other) { return other != undefined && other.x == this.x && other.y == this.y }
+
+        string ToString() { return this.x + "_" + this.y }
+    }
+
+    // Ein Chunk: 64 x 64 x 64 Voxel. Der Schlüssel ist floor(Voxel / 64) in allen drei Achsen.
+    class ChunkKey {
+        defined int x
+        defined int y
+        defined int z
+
+        construct(defined int x, defined int y, defined int z) { this.x = x; this.y = y; this.z = z }
+
+        static ChunkKey OfVoxel(defined int vx, defined int vy, defined int vz) {
+            return new ChunkKey(Raser.Grid.FloorDiv(vx, 64), Raser.Grid.FloorDiv(vy, 64), Raser.Grid.FloorDiv(vz, 64))
+        }
+
+        // "x_y_z" zurück in einen Schlüssel; undefined, wenn der Text keiner ist.
+        static ChunkKey Parse(string text) {
+            var parts = text.Trim().Split("_")
+            if (parts.length != 3) { return undefined }
+            any a = parts[0].TryToInt()
+            any b = parts[1].TryToInt()
+            any c = parts[2].TryToInt()
+            if (a == undefined || b == undefined || c == undefined) { return undefined }
+            return new ChunkKey(a, b, c)
+        }
+
+        // Die Kachel, zu der der Chunk gehört.
+        TileKey Tile() { return new TileKey(Raser.Grid.FloorDiv(this.x, 20), Raser.Grid.FloorDiv(this.y, 20)) }
+
+        // Das erste Voxel des Chunks.
+        int VoxelX { get { return this.x * 64 } }
+        int VoxelY { get { return this.y * 64 } }
+        int VoxelZ { get { return this.z * 64 } }
+
+        bool Equals(ChunkKey other) { return other != undefined && other.x == this.x && other.y == this.y && other.z == this.z }
+
+        string ToString() { return this.x + "_" + this.y + "_" + this.z }
+    }
+}
+
+namespace Raser {
+    // Daten, die nicht zum erwarteten Format passen (Chunks, Rohdaten, Zwischenlayer).
+    class DataException : Exception {
+        construct(string message) : base(message) { }
+    }
+}

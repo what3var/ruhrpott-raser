@@ -1,0 +1,207 @@
+// Raser.Core: ein Chunk mit 64 x 64 x 64 Voxeln.
+//
+// Material und Farbe liegen dicht in zwei Puffern (je 256 KB); Formen (Höhen-Schnitte) nur für die Voxel, die nicht voll sind, und Teilschaden
+// (Konzept, Abschnitt 7) nur für beschädigte Voxel - beides in Tabellen nach dem Index. Ein Chunk, in dem nur Luft steht, braucht die Puffer nicht.
+//
+// Jeder Chunk weiß, wie er entstanden ist: Generator-Version, Hash der Overrides und Seed (Konzept, Abschnitt 9). Passt eines davon nicht mehr,
+// ist der Chunk veraltet und wird neu erzeugt.
+namespace Raser {
+    class Chunk {
+        ChunkKey key
+        byte materials[]
+        byte colors[]
+        Dictionary<int, int> shapes
+        Dictionary<int, int> damage
+        defined int generatorVersion
+        defined int overridesHash
+        defined int seed
+
+        construct(ChunkKey key) {
+            this.key = key
+            try key.TakeTo(this)
+            this.shapes = new Dictionary<int, int>()
+            this.damage = new Dictionary<int, int>()
+        }
+
+        // Der Index eines Voxels im Chunk (x, y, z jeweils 0..63).
+        static defined int Index(defined int x, defined int y, defined int z) { return x + (y << 6) + (z << 12) }
+
+        static defined bool Inside(defined int x, defined int y, defined int z) { return x >= 0 && y >= 0 && z >= 0 && x < 64 && y < 64 && z < 64 }
+
+        // Noch keine Puffer: nur Luft.
+        defined bool IsEmpty { get { return this.materials == undefined } }
+
+        undefined Allocate() {
+            if (this.materials != undefined) { return }
+            this.materials = new byte[262144]
+            this.colors = new byte[262144]
+        }
+
+        defined int MaterialAt(defined int x, defined int y, defined int z) {
+            if (this.materials == undefined) { return 0 }
+            return this.materials[Raser.Chunk.Index(x, y, z)]
+        }
+
+        defined int ColorAt(defined int x, defined int y, defined int z) {
+            if (this.colors == undefined) { return 0 }
+            return this.colors[Raser.Chunk.Index(x, y, z)]
+        }
+
+        defined int ShapeAt(defined int x, defined int y, defined int z) { return this.shapes.Get(Raser.Chunk.Index(x, y, z), 255) }
+
+        // Setzt ein Voxel. Luft löscht Farbe, Form und Schaden.
+        undefined Set(defined int x, defined int y, defined int z, defined int material, defined int color, defined int shape = 255) {
+            int i = Raser.Chunk.Index(x, y, z)
+            if (material == 0) {
+                if (this.materials == undefined) { return }
+                this.materials[i] = 0
+                this.colors[i] = 0
+                this.shapes.Remove(i)
+                this.damage.Remove(i)
+                return
+            }
+            this.Allocate()
+            this.materials[i] = material
+            this.colors[i] = color
+            if ((shape & 255) == 255) { this.shapes.Remove(i) } else { this.shapes[i] = shape & 255 }
+        }
+
+        undefined SetShape(defined int x, defined int y, defined int z, defined int shape) {
+            int i = Raser.Chunk.Index(x, y, z)
+            if ((shape & 255) == 255) { this.shapes.Remove(i) } else { this.shapes[i] = shape & 255 }
+        }
+
+        undefined SetColor(defined int x, defined int y, defined int z, defined int color) {
+            if (this.colors == undefined) { return }
+            this.colors[Raser.Chunk.Index(x, y, z)] = color
+        }
+
+        // Füllt einen Quader (Grenzen eingeschlossen, auf den Chunk beschnitten).
+        undefined Fill(defined int x0, defined int y0, defined int z0, defined int x1, defined int y1, defined int z1, defined int material, defined int color) {
+            if (x0 < 0) { x0 = 0 }
+            if (y0 < 0) { y0 = 0 }
+            if (z0 < 0) { z0 = 0 }
+            if (x1 > 63) { x1 = 63 }
+            if (y1 > 63) { y1 = 63 }
+            if (z1 > 63) { z1 = 63 }
+            for (int z = z0; z <= z1; z++) {
+                for (int y = y0; y <= y1; y++) {
+                    for (int x = x0; x <= x1; x++) { this.Set(x, y, z, material, color) }
+                }
+            }
+        }
+
+        // Wie viele Voxel nicht Luft sind.
+        defined int CountFilled() {
+            if (this.materials == undefined) { return 0 }
+            int n = 0
+            for (int i = 0; i < 262144; i++) {
+                if (this.materials[i] != 0) { n++ }
+            }
+            return n
+        }
+
+        defined int CountShaped() { return this.shapes.Count }
+
+        // Die Daten als Bytes: Kopf, dann Material + Farbe als Lauflängen, dann Formen und Schaden als (Abstand zum vorigen Index, Wert).
+        byte[] Encode() {
+            var w = new ByteWriter(4096)
+            w.Byte(82)    // "RRC1"
+            w.Byte(82)
+            w.Byte(67)
+            w.Byte(49)
+            w.SignedVarint(this.key.x)
+            w.SignedVarint(this.key.y)
+            w.SignedVarint(this.key.z)
+            w.Varint(this.generatorVersion)
+            w.Int64(this.overridesHash)
+            w.Int64(this.seed)
+            if (this.materials == undefined) {
+                w.Byte(0)
+            } else {
+                w.Byte(1)
+                int i = 0
+                while (i < 262144) {
+                    int m = this.materials[i]
+                    int c = this.colors[i]
+                    int j = i + 1
+                    while (j < 262144 && this.materials[j] == m && this.colors[j] == c) { j++ }
+                    w.Varint(j - i)
+                    w.Byte(m)
+                    w.Byte(c)
+                    i = j
+                }
+            }
+            Raser.Chunk.EncodeTable(w, this.shapes)
+            Raser.Chunk.EncodeTable(w, this.damage)
+            return w.ToBytes()
+        }
+
+        static undefined EncodeTable(ByteWriter w, Dictionary<int, int> table) {
+            var keys = table.Keys
+            Raser.Sorting.Ints(keys)
+            w.Varint(keys.Count)
+            int last = 0
+            foreach (k in keys) {
+                w.Varint(k - last)
+                w.Byte(table[k])
+                last = k
+            }
+        }
+
+        static Chunk Decode(byte data[]) {
+            var r = new ByteReader(data)
+            if (r.Byte() != 82 || r.Byte() != 82 || r.Byte() != 67 || r.Byte() != 49) { throw new DataException("Not a chunk (RRC1).") }
+            int kx = r.SignedVarint()
+            int ky = r.SignedVarint()
+            int kz = r.SignedVarint()
+            var chunk = new Chunk(new ChunkKey(kx, ky, kz))
+            chunk.generatorVersion = r.Varint()
+            chunk.overridesHash = r.Int64()
+            chunk.seed = r.Int64()
+            if (r.Byte() == 1) {
+                chunk.Allocate()
+                int i = 0
+                while (i < 262144) {
+                    int n = r.Varint()
+                    int m = r.Byte()
+                    int c = r.Byte()
+                    if (n <= 0 || i + n > 262144) { throw new DataException("A run of the chunk " + chunk.key + " is out of range.") }
+                    for (int j = 0; j < n; j++) {
+                        chunk.materials[i + j] = m
+                        chunk.colors[i + j] = c
+                    }
+                    i = i + n
+                }
+            }
+            Raser.Chunk.DecodeTable(r, chunk.shapes)
+            Raser.Chunk.DecodeTable(r, chunk.damage)
+            return chunk
+        }
+
+        static undefined DecodeTable(ByteReader r, Dictionary<int, int> table) {
+            int n = r.Varint()
+            int k = 0
+            for (int i = 0; i < n; i++) {
+                k = k + r.Varint()
+                table[k] = r.Byte()
+            }
+        }
+
+        // Ein Hash über den Inhalt (ohne Kopf): gleiche Voxel, gleicher Hash - für Determinismus-Tests und Caches.
+        defined int ContentHash() {
+            int h = Raser.Fnv.Start()
+            if (this.materials != undefined) {
+                h = Raser.Fnv.AddBytes(h, this.materials)
+                h = Raser.Fnv.AddBytes(h, this.colors)
+            }
+            var keys = this.shapes.Keys
+            Raser.Sorting.Ints(keys)
+            foreach (k in keys) {
+                h = Raser.Fnv.AddInt(h, k)
+                h = Raser.Fnv.AddByte(h, this.shapes[k])
+            }
+            return h
+        }
+    }
+}

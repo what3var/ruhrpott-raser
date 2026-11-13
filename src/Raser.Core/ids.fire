@@ -1,0 +1,56 @@
+// Raser.Core: globale, eindeutige IDs für alle Objekte (Konzept, Abschnitt 8) - von Anfang an.
+//
+// Eine ID ist eine 64-Bit-Zahl: oben 7 Bit Art (positiv bleibt sie so immer), darunter 56 Bit.
+// - Stabile IDs (Gebäude, Straßen, Flächen) kommen aus der Quelle: FNV-1a über "quelle:schlüssel" (z. B. "lod2:DENW39AL1000abcd", "osm:way/123").
+//   Sie überleben jede Neu-Generierung; Spieler-Deltas hängen daran (Konzept, Abschnitt 9).
+// - Laufzeit-IDs (Spieler, Fahrzeuge, Objekte) vergibt ein Server: 16 Bit Server-Nummer + 40 Bit Zähler, ohne Absprache eindeutig.
+namespace Raser {
+    enum IdKind {
+        None = 0,
+        Building = 1,
+        Road = 2,
+        Area = 3,
+        Poi = 4,
+        Player = 16,
+        Vehicle = 17,
+        Item = 18,
+        Npc = 19,
+        Delta = 32
+    }
+
+    class Ids {
+        static defined int Mask56 = 72057594037927935    // 2^56 - 1
+
+        static defined int Stable(IdKind kind, string source) {
+            return (kind!int << 56) | (Raser.Fnv.OfText(source) & Raser.Ids.Mask56)
+        }
+
+        static IdKind KindOf(defined int id) { return ((id >> 56) & 127)!IdKind }
+
+        // Lesbar: "Building:1a2b3c4d5e6f70".
+        static string Format(defined int id) {
+            string hex = Raser.Fnv.Hex(id & Raser.Ids.Mask56)
+            return Raser.IdKind.Name(Raser.Ids.KindOf(id)) + ":" + hex.Substring(2)
+        }
+    }
+
+    // Vergibt Laufzeit-IDs auf einem Server.
+    class IdAllocator {
+        defined int server
+        defined int next
+
+        construct(defined int server, defined int start = 1) {
+            if (server < 0 || server > 65535) { throw new ArgumentException("A server number is 0..65535, not " + server + ".") }
+            this.server = server
+            this.next = start
+        }
+
+        defined int Next(IdKind kind) {
+            int id = (kind!int << 56) | (this.server << 40) | (this.next & 1099511627775)
+            this.next = this.next + 1
+            return id
+        }
+
+        static defined int ServerOf(defined int id) { return (id >> 40) & 65535 }
+    }
+}

@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "name": "Raser.Tool",
+  "type": "exe",
+  "entry": "main.fire",
+  "references": [
+    { "project": "../Raser.Core/Raser.Core.fireproj" },
+    { "project": "../Raser.World/Raser.World.fireproj" },
+    { "project": "../Raser.Import/Raser.Import.fireproj" }
+  ],
+  "settings": {
+    "version": "0.1.0",
+    "subsystem": "console",
+    "description": "Ruhrpott-Raser: Werkzeug für die Weltpipeline (import, voxelize, export, info)."
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "name": "Raser.World",
+  "type": "library",
+  "references": [ { "project": "../Raser.Core/Raser.Core.fireproj" } ],
+  "settings": {
+    "version": "0.1.0",
+    "description": "Ruhrpott-Raser: Zwischenlayer (Kacheln mit Gelände, Gebäuden, Straßen, Flächen), Override-Layer, deterministische Voxelisierung."
+  }
+}

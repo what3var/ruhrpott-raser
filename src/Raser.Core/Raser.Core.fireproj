@@ -1,0 +1,9 @@
+{
+  "format": 1,
+  "name": "Raser.Core",
+  "type": "library",
+  "settings": {
+    "version": "0.1.0",
+    "description": "Ruhrpott-Raser: Koordinaten, Kacheln, Chunks, Voxel mit Höhen-Schnitten, Materialien, globale IDs."
+  }
+}

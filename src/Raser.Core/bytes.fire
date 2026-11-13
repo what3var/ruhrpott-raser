@@ -1,0 +1,232 @@
+// Raser.Core: Bytes schreiben und lesen (Little Endian, Varints), FNV-1a als schneller, stabiler Hash.
+namespace Raser {
+    // Ein wachsender Puffer zum Schreiben.
+    class ByteWriter {
+        byte data[]
+        defined int length
+
+        construct(defined int capacity = 256) {
+            if (capacity < 16) { capacity = 16 }
+            this.data = new byte[capacity]
+            this.length = 0
+        }
+
+        undefined Reserve(defined int extra) {
+            int need = this.length + extra
+            if (need <= this.data.length) { return }
+            int cap = this.data.length * 2
+            while (cap < need) { cap = cap * 2 }
+            byte bigger[] = new byte[cap]
+            for (int i = 0; i < this.length; i++) { bigger[i] = this.data[i] }
+            this.data = take bigger
+        }
+
+        undefined Byte(defined int v) {
+            this.Reserve(1)
+            this.data[this.length] = v & 255
+            this.length = this.length + 1
+        }
+
+        undefined Int16(defined int v) {
+            this.Byte(v)
+            this.Byte(v >> 8)
+        }
+
+        undefined Int32(defined int v) {
+            this.Reserve(4)
+            for (int i = 0; i < 4; i++) { this.data[this.length + i] = (v >> (i * 8)) & 255 }
+            this.length = this.length + 4
+        }
+
+        undefined Int64(defined int v) {
+            this.Reserve(8)
+            for (int i = 0; i < 8; i++) { this.data[this.length + i] = (v >> (i * 8)) & 255 }
+            this.length = this.length + 8
+        }
+
+        // Eine nicht negative Zahl in 7-Bit-Gruppen (LEB128).
+        undefined Varint(defined int v) {
+            if (v < 0) { throw new ArgumentException("Varint: negative value " + v) }
+            while (v >= 128) {
+                this.Byte((v & 127) | 128)
+                v = v >> 7
+            }
+            this.Byte(v)
+        }
+
+        // Eine ganze Zahl mit Vorzeichen als Varint (ZigZag: 0, -1, 1, -2, ...).
+        undefined SignedVarint(defined int v) {
+            if (v < 0) { this.Varint(((-v) << 1) - 1) } else { this.Varint(v << 1) }
+        }
+
+        undefined Bytes(byte b[]) {
+            this.Reserve(b.length)
+            for (int i = 0; i < b.length; i++) { this.data[this.length + i] = b[i] }
+            this.length = this.length + b.length
+        }
+
+        // Ein Text als Länge + Zeichen (ASCII; Zeichen über 255 werden abgeschnitten).
+        undefined Text(string s) {
+            this.Varint(s.length)
+            for (int i = 0; i < s.length; i++) { this.Byte(s[i].ToInt()) }
+        }
+
+        // Das Geschriebene als neuer Puffer.
+        byte[] ToBytes() {
+            byte result[] = new byte[this.length]
+            for (int i = 0; i < this.length; i++) { result[i] = this.data[i] }
+            return result
+        }
+    }
+
+    // Liest, was ein ByteWriter geschrieben hat.
+    class ByteReader {
+        byte data[]
+        defined int position
+
+        construct(byte data[]) {
+            this.data = data
+            try data.TakeTo(this)
+            this.position = 0
+        }
+
+        defined bool AtEnd { get { return this.position >= this.data.length } }
+
+        defined int Byte() {
+            if (this.position >= this.data.length) { throw new DataException("The data ends too early (at byte " + this.position + ").") }
+            int v = this.data[this.position]
+            this.position = this.position + 1
+            return v
+        }
+
+        defined int Int16() {
+            int lo = this.Byte()
+            int hi = this.Byte()
+            int v = lo | (hi << 8)
+            if (v >= 32768) { v = v - 65536 }
+            return v
+        }
+
+        defined int Int32() {
+            int v = 0
+            for (int i = 0; i < 4; i++) { v = v | (this.Byte() << (i * 8)) }
+            if (v >= 2147483648) { v = v - 4294967296 }
+            return v
+        }
+
+        defined int Int64() {
+            int v = 0
+            for (int i = 0; i < 8; i++) { v = v | (this.Byte() << (i * 8)) }
+            return v
+        }
+
+        defined int Varint() {
+            int v = 0
+            int shift = 0
+            while (true) {
+                int b = this.Byte()
+                v = v | ((b & 127) << shift)
+                if (b < 128) { return v }
+                shift = shift + 7
+                if (shift > 63) { throw new DataException("A varint is too long.") }
+            }
+            return v
+        }
+
+        defined int SignedVarint() {
+            int z = this.Varint()
+            if ((z & 1) == 1) { return -((z + 1) >> 1) }
+            return z >> 1
+        }
+
+        string Text() {
+            int n = this.Varint()
+            string s = ""
+            for (int i = 0; i < n; i++) { s = s + Raser.Fnv.CharOf(this.Byte()) }
+            return s
+        }
+    }
+
+    // FNV-1a mit 64 Bit: schnell, stabil über VM und native Builds, für IDs und Prüfsummen (nicht für Sicherheit).
+    class Fnv {
+        static defined int Offset = -3750763034362895579    // 0xcbf29ce484222325
+        static defined int Prime = 1099511628211            // 0x100000001b3
+
+        static defined int Start() { return Raser.Fnv.Offset }
+
+        static defined int AddByte(defined int h, defined int b) { return (h # (b & 255)) * Raser.Fnv.Prime }
+
+        static defined int AddInt(defined int h, defined int v) {
+            for (int i = 0; i < 8; i++) { h = Raser.Fnv.AddByte(h, v >> (i * 8)) }
+            return h
+        }
+
+        static defined int AddText(defined int h, string s) {
+            for (int i = 0; i < s.length; i++) {
+                int c = s[i].ToInt()
+                h = Raser.Fnv.AddByte(h, c)
+                if (c > 255) { h = Raser.Fnv.AddByte(h, c >> 8) }
+            }
+            return Raser.Fnv.AddByte(h, 0)
+        }
+
+        static defined int AddBytes(defined int h, byte b[]) {
+            for (int i = 0; i < b.length; i++) { h = (h # b[i]) * Raser.Fnv.Prime }
+            return h
+        }
+
+        static defined int OfText(string s) { return Raser.Fnv.AddText(Raser.Fnv.Offset, s) }
+
+        static defined int OfBytes(byte b[]) { return Raser.Fnv.AddBytes(Raser.Fnv.Offset, b) }
+
+        // 16 Hex-Ziffern (für Dateinamen und Ausgaben).
+        static string Hex(defined int h) {
+            string digits = "0123456789abcdef"
+            string s = ""
+            for (int i = 15; i >= 0; i--) { s = s + digits[(h >> (i * 4)) & 15] }
+            return s
+        }
+
+        static string CharOf(defined int code) {
+            byte one[1]
+            one[0] = code
+            return one.ToString()
+        }
+    }
+}
+
+namespace Raser {
+    // Sortieren ohne Hilfe der Standardbibliothek (List<T> hat kein Sort).
+    class Sorting {
+        // Sortiert eine Liste ganzer Zahlen aufsteigend, an Ort und Stelle (Shellsort mit der Folge von Ciura).
+        static undefined Ints(List<int> list) {
+            int gaps[] = [701, 301, 132, 57, 23, 10, 4, 1]
+            int n = list.Count
+            foreach (gap in gaps) {
+                for (int i = gap; i < n; i++) {
+                    int v = list[i]
+                    int j = i
+                    while (j >= gap && list[j - gap] > v) {
+                        list[j] = list[j - gap]
+                        j = j - gap
+                    }
+                    list[j] = v
+                }
+            }
+        }
+
+        // Sortiert Texte aufsteigend (ordinal), an Ort und Stelle.
+        static undefined Texts(List<string> list) {
+            int n = list.Count
+            for (int i = 1; i < n; i++) {
+                string v = list[i]
+                int j = i
+                while (j > 0 && list[j - 1].CompareTo(v) > 0) {
+                    list[j] = list[j - 1]
+                    j = j - 1
+                }
+                list[j] = v
+            }
+        }
+    }
+}

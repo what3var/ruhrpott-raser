@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "name": "RuhrpottRaser",
+  "projects": [
+    "src/Raser.Core/Raser.Core.fireproj",
+    "src/Raser.World/Raser.World.fireproj",
+    "src/Raser.Import/Raser.Import.fireproj",
+    "src/Raser.Tool/Raser.Tool.fireproj"
+  ],
+  "startup": "Raser.Tool",
+  "settings": {
+    "author": "what3var",
+    "license": "proprietary"
+  }
+}

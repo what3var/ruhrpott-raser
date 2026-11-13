@@ -1,0 +1,173 @@
+// Die Tests von Raser.Core (forge test src/Raser.Core/Raser.Core.fireproj).
+#import "testing"
+
+class GridTests {
+    [Test "FloorDiv rundet nach unten"]
+    undefined FloorDiv() {
+        Testing.Assert.AreEqual(-1, Raser.Grid.FloorDiv(-1, 64))
+        Testing.Assert.AreEqual(-1, Raser.Grid.FloorDiv(-64, 64))
+        Testing.Assert.AreEqual(-2, Raser.Grid.FloorDiv(-65, 64))
+        Testing.Assert.AreEqual(0, Raser.Grid.FloorDiv(63, 64))
+        Testing.Assert.AreEqual(63, Raser.Grid.FloorMod(-1, 64))
+    }
+
+    [Test "Voxel und Kacheln aus Metern"]
+    undefined Voxels() {
+        Testing.Assert.AreEqual(64, Raser.Grid.VoxelOf(12.8))
+        Testing.Assert.AreEqual(-1, Raser.Grid.VoxelOf(-0.1))
+        var t = Raser.TileKey.Of(377123.5, 5706999.0)
+        Testing.Assert.AreEqual("1473_22292", t.ToString())
+        Testing.Assert.AreEqual(377088.0, t.East)
+        var back = Raser.TileKey.Parse("1473_22292")
+        Testing.Assert.IsTrue(back.Equals(t))
+        Testing.Assert.IsTrue(Raser.TileKey.OfVoxel(t.VoxelX + 1279, t.VoxelY).Equals(t))
+        Testing.Assert.IsTrue(Raser.TileKey.Parse("x_1") == undefined)
+    }
+
+    [Test "Chunks gehören zu ihrer Kachel"]
+    undefined Chunks() {
+        var c = Raser.ChunkKey.OfVoxel(-1, 1280, 5)
+        Testing.Assert.AreEqual("-1_20_0", c.ToString())
+        Testing.Assert.AreEqual("-1_1", c.Tile().ToString())
+        Testing.Assert.IsTrue(Raser.ChunkKey.Parse("-1_20_0").Equals(c))
+    }
+}
+
+class ShapeTests {
+    [Test "Eckhöhen in einem Byte"]
+    undefined Corners() {
+        int s = Raser.Shape.Make(1, 2, 3, 4)
+        Testing.Assert.AreEqual(1, Raser.Shape.Corner(s, 0))
+        Testing.Assert.AreEqual(2, Raser.Shape.Corner(s, 1))
+        Testing.Assert.AreEqual(3, Raser.Shape.Corner(s, 2))
+        Testing.Assert.AreEqual(4, Raser.Shape.Corner(s, 3))
+        Testing.Assert.AreEqual(255, Raser.Shape.Make(4, 4, 4, 4))
+        Testing.Assert.IsTrue(Raser.Shape.IsFull(Raser.Shape.Make(9, 5, 4, 4)))
+        Testing.Assert.AreEqual(0, Raser.Shape.Make(0, 0, 0, 0))
+        Testing.Assert.IsTrue(Math.Abs(Raser.Shape.CornerMeters(s, 2) - 0.15) < 0.000001)
+    }
+
+    [Test "Materialtabelle"]
+    undefined Materials() {
+        Testing.Assert.AreEqual(16, Raser.Materials.Count())
+        Testing.Assert.AreEqual("Ziegel", Raser.Materials.Of(Raser.Material.Brick).name)
+        Testing.Assert.IsTrue(Raser.Materials.IsSolid(Raser.Material.Concrete!int))
+        Testing.Assert.IsFalse(Raser.Materials.IsSolid(Raser.Material.Water!int))
+        Testing.Assert.AreEqual(0x9A3B2A, Raser.Palette.Rgb(Raser.Palette.Brick))
+    }
+}
+
+class BytesTests {
+    [Test "Schreiben und Lesen"]
+    undefined RoundTrip() {
+        var w = new Raser.ByteWriter(16)
+        w.Byte(7)
+        w.Int16(-2)
+        w.Int32(-123456789)
+        w.Int64(-3750763034362895579)
+        w.Varint(300)
+        w.SignedVarint(-5)
+        w.Text("Zeche")
+        for (int i = 0; i < 100; i++) { w.Byte(i) }
+        var r = new Raser.ByteReader(w.ToBytes())
+        Testing.Assert.AreEqual(7, r.Byte())
+        Testing.Assert.AreEqual(-2, r.Int16())
+        Testing.Assert.AreEqual(-123456789, r.Int32())
+        Testing.Assert.AreEqual(-3750763034362895579, r.Int64())
+        Testing.Assert.AreEqual(300, r.Varint())
+        Testing.Assert.AreEqual(-5, r.SignedVarint())
+        Testing.Assert.AreEqual("Zeche", r.Text())
+        for (int i = 0; i < 100; i++) { Testing.Assert.AreEqual(i, r.Byte()) }
+        Testing.Assert.IsTrue(r.AtEnd)
+    }
+
+    [Test "FNV-1a 64 wie veröffentlicht"]
+    undefined Fnv() {
+        // Prüfwerte von FNV-1a 64: "" und "a".
+        Testing.Assert.AreEqual("cbf29ce484222325", Raser.Fnv.Hex(Raser.Fnv.OfBytes(new byte[0])))
+        Testing.Assert.AreEqual("af63dc4c8601ec8c", Raser.Fnv.Hex(Raser.Fnv.OfBytes("a".ToBytes())))
+    }
+
+    [Test "Sortieren"]
+    undefined Sort() {
+        var l = new List<int>([5, -1, 3, 3, 0, 100, -7])
+        Raser.Sorting.Ints(l)
+        Testing.Assert.AreEqual("-7,-1,0,3,3,5,100", ",".Join(l))
+        var t = new List<string>(["b", "a", "c"])
+        Raser.Sorting.Texts(t)
+        Testing.Assert.AreEqual("a,b,c", ",".Join(t))
+    }
+}
+
+class ChunkTests {
+    [Test "Ein leerer Chunk braucht keine Puffer"]
+    undefined Empty() {
+        var c = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))
+        Testing.Assert.IsTrue(c.IsEmpty)
+        c.Set(1, 1, 1, 0, 0)
+        Testing.Assert.IsTrue(c.IsEmpty)
+        Testing.Assert.AreEqual(0, c.MaterialAt(5, 5, 5))
+        Testing.Assert.AreEqual(255, c.ShapeAt(5, 5, 5))
+    }
+
+    [Test "Setzen, Füllen, Formen"]
+    undefined SetAndFill() {
+        var c = new Raser.Chunk(new Raser.ChunkKey(0, 0, 0))
+        c.Fill(0, 0, 0, 63, 63, 9, Raser.Material.Soil!int, Raser.Palette.Soil)
+        Testing.Assert.AreEqual(40960, c.CountFilled())
+        c.Set(3, 4, 10, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 2, 1))
+        Testing.Assert.AreEqual(1, c.CountShaped())
+        Testing.Assert.AreEqual(2, Raser.Shape.Corner(c.ShapeAt(3, 4, 10), 1))
+        c.Set(3, 4, 10, 0, 0)
+        Testing.Assert.AreEqual(0, c.CountShaped())
+        Testing.Assert.AreEqual(40960, c.CountFilled())
+    }
+
+    [Test "Kodieren und Dekodieren"]
+    undefined Codec() {
+        var c = new Raser.Chunk(new Raser.ChunkKey(-3, 7, -1))
+        c.generatorVersion = 4
+        c.overridesHash = -42
+        c.seed = 1234567
+        c.Fill(0, 0, 0, 63, 63, 20, Raser.Material.Rock!int, Raser.Palette.Rock)
+        c.Fill(10, 10, 21, 20, 20, 40, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.Set(0, 0, 21, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 1, 3, 2))
+        var bytes = c.Encode()
+        Testing.Assert.IsTrue(bytes.length < 3000)
+        var d = Raser.Chunk.Decode(bytes)
+        Testing.Assert.AreEqual("-3_7_-1", d.key.ToString())
+        Testing.Assert.AreEqual(4, d.generatorVersion)
+        Testing.Assert.AreEqual(-42, d.overridesHash)
+        Testing.Assert.AreEqual(1234567, d.seed)
+        Testing.Assert.AreEqual(c.CountFilled(), d.CountFilled())
+        Testing.Assert.AreEqual(c.ContentHash(), d.ContentHash())
+        Testing.Assert.AreEqual(Raser.Shape.Make(1, 1, 3, 2), d.ShapeAt(0, 0, 21))
+        var empty = Raser.Chunk.Decode(new Raser.Chunk(new Raser.ChunkKey(0, 0, 0)).Encode())
+        Testing.Assert.IsTrue(empty.IsEmpty)
+    }
+}
+
+class IdTests {
+    [Test "Stabile IDs"]
+    undefined Stable() {
+        int a = Raser.Ids.Stable(Raser.IdKind.Building, "lod2:DENW39AL1000abcd")
+        int b = Raser.Ids.Stable(Raser.IdKind.Building, "lod2:DENW39AL1000abcd")
+        int c = Raser.Ids.Stable(Raser.IdKind.Road, "lod2:DENW39AL1000abcd")
+        Testing.Assert.AreEqual(a, b)
+        Testing.Assert.IsTrue(a != c)
+        Testing.Assert.IsTrue(a > 0)
+        Testing.Assert.AreEqual(Raser.IdKind.Building, Raser.Ids.KindOf(a))
+        Testing.Assert.AreEqual(Raser.IdKind.Road, Raser.Ids.KindOf(c))
+        Testing.Assert.IsTrue(Raser.Ids.Format(a).StartsWith("Building:"))
+    }
+
+    [Test "Laufzeit-IDs eines Servers"]
+    undefined Runtime() {
+        var ids = new Raser.IdAllocator(513)
+        int p = ids.Next(Raser.IdKind.Player)
+        int v = ids.Next(Raser.IdKind.Vehicle)
+        Testing.Assert.IsTrue(p != v)
+        Testing.Assert.AreEqual(513, Raser.IdAllocator.ServerOf(v))
+        Testing.Assert.AreEqual(Raser.IdKind.Vehicle, Raser.Ids.KindOf(v))
+    }
+}
