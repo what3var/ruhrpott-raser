@@ -83,7 +83,7 @@ class MeshTests {
         c.Set(63, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
         var east = new Raser.Chunk(new Raser.ChunkKey(1, 0, 0))
         east.Set(0, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
-        var mesh = new Raser.Mesher(c, (dx, dy, dz) => dx == 1 ? east : undefined).Build()
+        var mesh = new Raser.Mesher(c, undefined, east).Build()
         Testing.Assert.AreEqual(5, mesh.opaque.Count)
     }
 

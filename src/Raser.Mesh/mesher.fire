@@ -86,17 +86,26 @@ namespace Raser {
         Chunk below
         Chunk above
 
-        // neighbour(dx, dy, dz) liefert den Nachbar-Chunk (oder undefined).
-        construct(Chunk center, Chunk lambda<int, int, int> neighbour = undefined) {
+        // Die Nachbarn (je undefined: Luft) kommen als einzelne Parameter: so bleiben es Verweise auf Chunks, die anderen gehören
+        // (aus einer Lambda geholt, würde fire sie dem Mesher übergeben und mit ihm zerstören - docs/FIRE.md).
+        construct(Chunk center, Chunk west = undefined, Chunk east = undefined, Chunk south = undefined, Chunk north = undefined, Chunk below = undefined, Chunk above = undefined) {
             this.center = center
-            if (neighbour != undefined) {
-                this.west = neighbour(-1, 0, 0)
-                this.east = neighbour(1, 0, 0)
-                this.south = neighbour(0, -1, 0)
-                this.north = neighbour(0, 1, 0)
-                this.below = neighbour(0, 0, -1)
-                this.above = neighbour(0, 0, 1)
+            this.west = west
+            this.east = east
+            this.south = south
+            this.north = north
+            this.below = below
+            this.above = above
+        }
+
+        // Voll und undurchsichtig in allen 64³ Voxeln (ohne Schnitte)?
+        static defined bool Solid(Chunk c) {
+            if (c == undefined || c.IsEmpty || c.shapes.Count > 0) { return false }
+            for (int i = 0; i < 262144; i++) {
+                int m = c.materials[i]
+                if (m == 0 || m == 6 || m == 11) { return false }
             }
+            return true
         }
 
         // Ein durchsichtiges Material: Glas und Wasser.
@@ -139,6 +148,8 @@ namespace Raser {
         ChunkMesh Build() {
             var mesh = new Raser.ChunkMesh(new Raser.ChunkKey(this.center.key.x, this.center.key.y, this.center.key.z))
             if (this.center.IsEmpty) { return mesh }
+            // ganz verschüttet: ein voller Chunk zwischen vollen Nachbarn hat keine sichtbare Fläche
+            if (Raser.Mesher.Solid(this.center) && Raser.Mesher.Solid(this.west) && Raser.Mesher.Solid(this.east) && Raser.Mesher.Solid(this.south) && Raser.Mesher.Solid(this.north) && Raser.Mesher.Solid(this.below) && Raser.Mesher.Solid(this.above)) { return mesh }
             int mask[4096]
             // Richtungen: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z
             for (int dir = 0; dir < 6; dir++) {

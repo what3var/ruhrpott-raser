@@ -1,0 +1,313 @@
+// Raser.Viewer: die Voxel-Welt mit scene3d betrachten (Roadmap M2: fahrbare Kamera durch die Testregion - der erste Renderer, noch ohne GPU).
+//
+//   raser-viewer [--world world] --at ost,nord [--radius 2] [--yaw 30] [--pitch -35] [--distance 60] [--size 960x600]
+//   raser-viewer ... --shot bild.png      ein Bild ohne Fenster
+//   raser-viewer ... --opaque             ohne Glas und Wasser
+//
+// Im Fenster: W/S vor und zurück, A/D seitwärts, Q/E hoch und runter, Pfeile drehen, Umschalt schneller.
+// Die Chunk-Säulen im Umkreis (radius in Chunks, 12,8 m) werden geladen und mit Raser.Mesh vernetzt; je Chunk und Farbe ein scene3d-Modell.
+// Szene: x = Ost, y = oben, z = -Nord (scene3d: Y oben, die Kamera blickt nach -Z), Ursprung beim Zielpunkt.
+#import "windows"
+#import "scene3d"
+#import "filesystem"
+#import "time"
+#import "raser.core"
+#import "raser.world"
+#import "raser.mesh"
+
+class Options {
+    Dictionary<string, string> values
+
+    construct(string items[]) {
+        this.values = new Dictionary<string, string>()
+        int i = 0
+        while (i < items.length) {
+            string a = items[i]
+            if (a.StartsWith("--") && i + 1 < items.length && !items[i + 1].StartsWith("--")) {
+                this.values[a.Substring(2)] = items[i + 1]
+                i = i + 2
+            } else {
+                if (a.StartsWith("--")) { this.values[a.Substring(2)] = "true" }
+                i = i + 1
+            }
+        }
+    }
+
+    string Get(string name, string fallback) { return this.values.Get(name, fallback) }
+}
+
+class WorldView {
+    Raser.FileTileStore store
+    Dictionary<string, Raser.Chunk> chunks
+    List<Model> models
+    Scene scene
+    defined float originE
+    defined float originN
+    defined float originZ
+    defined int objects
+    defined bool opaqueOnly
+    defined int triangles
+
+    construct(Raser.FileTileStore store, Scene scene, defined float e, defined float n, defined float z) {
+        this.store = store
+        this.scene = scene
+        this.chunks = new Dictionary<string, Raser.Chunk>()
+        this.models = new List<Model>()
+        this.originE = e
+        this.originN = n
+        this.originZ = z
+    }
+
+    Raser.Chunk ChunkAt(defined int cx, defined int cy, defined int cz) {
+        string name = cx + "_" + cy + "_" + cz
+        if (this.chunks.ContainsKey(name)) { return this.chunks[name] }
+        var c = this.store.LoadChunk(new Raser.ChunkKey(cx, cy, cz))
+        this.chunks[name] = c
+        if (c != undefined) { c.TakeTo(this.chunks) }
+        return c
+    }
+
+    // Lädt und vernetzt die Chunk-Säulen im Umkreis von (e, n).
+    undefined Load(defined float e, defined float n, defined int radius) {
+        int ccx = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(e), 64)
+        int ccy = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(n), 64)
+        var wanted = new HashSet<string>()
+        for (int cy = ccy - radius; cy <= ccy + radius; cy++) {
+            for (int cx = ccx - radius; cx <= ccx + radius; cx++) { wanted.Add(cx + "_" + cy) }
+        }
+        var keys = new List<Raser.ChunkKey>()
+        var tiles = new HashSet<string>()
+        for (int cy = ccy - radius; cy <= ccy + radius; cy++) {
+            for (int cx = ccx - radius; cx <= ccx + radius; cx++) { tiles.Add(new Raser.ChunkKey(cx, cy, 0).Tile().ToString()) }
+        }
+        foreach (t in tiles) {
+            var m = this.store.LoadManifest(Raser.TileKey.Parse(t))
+            if (m == undefined) { continue }
+            foreach (s in m.keys) {
+                var k = Raser.ChunkKey.Parse(s)
+                if (wanted.Contains(k.x + "_" + k.y)) { keys.Add(take k) }
+            }
+        }
+        int done = 0
+        foreach (k in keys) {
+            var chunk = this.ChunkAt(k.x, k.y, k.z)
+            if (chunk == undefined) { continue }
+            int kx = k.x
+            int ky = k.y
+            int kz = k.z
+            var mesh = new Raser.Mesher(chunk, this.ChunkAt(kx - 1, ky, kz), this.ChunkAt(kx + 1, ky, kz), this.ChunkAt(kx, ky - 1, kz), this.ChunkAt(kx, ky + 1, kz), this.ChunkAt(kx, ky, kz - 1), this.ChunkAt(kx, ky, kz + 1)).Build()
+            this.AddMesh(k, mesh.opaque, 1.0)
+            if (!this.opaqueOnly) { this.AddMesh(k, mesh.transparent, 0.45) }
+            done++
+            if (done % 20 == 0) { print("  " + done + "/" + keys.Count + " Chunks, " + this.triangles + " Dreiecke") }
+        }
+    }
+
+    // Ein scene3d-Objekt je Farbe.
+    undefined AddMesh(Raser.ChunkKey k, Raser.MeshPart part, defined float opacity) {
+        if (part.Count == 0) { return }
+        float ox = k.VoxelX * 0.2 - this.originE
+        float oy = k.VoxelY * 0.2 - this.originN
+        float oz = k.VoxelZ * 0.2 - this.originZ
+        var byColor = new Dictionary<int, List<int>>()
+        for (int q = 0; q < part.Count; q++) {
+            int c = part.colors[q]
+            if (!byColor.ContainsKey(c)) { byColor[c] = new List<int>() }
+            byColor[c].Add(q)
+        }
+        foreach (pair in byColor) {
+            var all = pair.Value
+            // höchstens 16.000 Vierecke (64.000 Ecken) je Netz: scene3d hält die Indizes in 16 Bit
+            for (int first = 0; first < all.Count; first = first + 16000) {
+                int count = Math.Min(16000, all.Count - first)
+                this.AddQuads(part, all, first, count, pair.Key, opacity, ox, oy, oz)
+            }
+        }
+    }
+
+    undefined AddQuads(Raser.MeshPart part, List<int> all, defined int first, defined int n, defined int color, defined float opacity, defined float ox, defined float oy, defined float oz) {
+        {
+            float positions[] = new float[n * 12]
+            float uvs[] = new float[n * 8]
+            int indices[] = new int[n * 6]
+            for (int i = 0; i < n; i++) {
+                int q = all[first + i]
+                for (int c = 0; c < 4; c++) {
+                    int src = q * 12 + c * 3
+                    int dst = i * 12 + c * 3
+                    positions[dst] = ox + part.positions[src]
+                    positions[dst + 1] = oz + part.positions[src + 2]
+                    positions[dst + 2] = -(oy + part.positions[src + 1])
+                    uvs[i * 8 + c * 2] = 0.0
+                    uvs[i * 8 + c * 2 + 1] = 0.0
+                }
+                // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
+                indices[i * 6] = i * 4
+                indices[i * 6 + 1] = i * 4 + 1
+                indices[i * 6 + 2] = i * 4 + 2
+                indices[i * 6 + 3] = i * 4
+                indices[i * 6 + 4] = i * 4 + 2
+                indices[i * 6 + 5] = i * 4 + 3
+            }
+            // scene3d setzt den Anker eines Objekts (Standard: die Mitte seines Netzes) auf die Position: die untere Ecke des Netzes auf sein Minimum
+            float minX = 1.0e30
+            float minY = 1.0e30
+            float minZ = 1.0e30
+            for (int v = 0; v < n * 4; v++) {
+                minX = Math.Min(minX, positions[v * 3])
+                minY = Math.Min(minY, positions[v * 3 + 1])
+                minZ = Math.Min(minZ, positions[v * 3 + 2])
+            }
+            var model = Model.FromArrays(positions, uvs, indices)
+            var obj = new Object(model)
+            obj.SetAnchor(0.0, 0.0, 0.0)
+            obj.SetPosition(minX * 1m, minY * 1m, minZ * 1m)
+            this.models.Add(take model)
+            int rgb = Raser.Palette.Rgb(color)
+            obj.Color = S3D.Rgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255)
+            if (opacity < 1.0) { obj.Opacity = opacity }
+            this.scene.Add(take obj)
+            this.objects++
+            this.triangles = this.triangles + n * 2
+        }
+    }
+}
+
+class Viewer {
+    static defined int Main(string items[]) {
+        var options = new Options(items)
+        var store = new Raser.FileTileStore(options.Get("world", "world"))
+        string at = options.Get("at", "376130,5704900")
+        var parts = at.Split(",")
+        float e = parts[0].ToFloat()
+        float n = parts[1].ToFloat()
+        int radius = options.Get("radius", "2").ToInt()
+        float yaw = options.Get("yaw", "30").ToFloat()
+        float pitch = options.Get("pitch", "-35").ToFloat()
+        float distance = options.Get("distance", "60").ToFloat()
+        var size = options.Get("size", "960x600").Split("x")
+        int width = size[0].ToInt()
+        int height = size[1].ToInt()
+
+        // Höhe des Bodens am Ziel aus dem Höhenraster der Kachel
+        var tileKey = Raser.TileKey.Of(e, n)
+        var tile = store.Load(tileKey)
+        float ground = 0.0
+        if (tile != undefined && tile.heights != undefined) { ground = tile.heights.At(e - tileKey.East, n - tileKey.North) }
+
+        var fb = new Framebuffer(width, height)
+        var scene = new Scene()
+        scene.Shadows = false
+        scene.AmbientIntensity = 0.45
+        scene.Add(Light.Directional(-0.45, -1.0, -0.3))
+        var cam = new Camera(fb)
+        cam.FieldOfView = 60deg
+        cam.Near = 0.2m
+        cam.Far = 2000m
+        cam.Background = S3D.Rgb(150, 170, 190)
+        float yr = yaw * Math.PI / 180.0
+        float pr = pitch * Math.PI / 180.0
+        // Kamera hinter dem Ziel, Blick auf das Ziel
+        float cx = Math.Sin(yr) * Math.Cos(pr) * distance
+        float cz = Math.Cos(yr) * Math.Cos(pr) * distance
+        float cy = -Math.Sin(pr) * distance
+        cam.SetPosition(cx * 1m, cy * 1m, cz * 1m)
+        cam.LookAt(0m, 0m, 0m)
+        scene.Add(cam)
+        var view = new WorldView(store, scene, e, n, ground)
+        int start = DateTime.Now.Ticks
+        print("Lade Chunks um " + e + ", " + n + " (Radius " + radius + ")")
+        view.opaqueOnly = options.Get("opaque", "") != ""
+        view.Load(e, n, radius)
+        print(view.objects + " Objekte, " + view.triangles + " Dreiecke in " + ((DateTime.Now.Ticks - start) / 10000000.0) + " s")
+
+
+        string shot = options.Get("shot", "")
+        if (shot != "") {
+            int t0 = DateTime.Now.Ticks
+            cam.Render()
+            print("Bild in " + ((DateTime.Now.Ticks - t0) / 10000.0) + " ms")
+            IO.File.WriteAllBytes(shot, fb.ToPng())
+            print(shot)
+            return 0
+        }
+
+        var win = new Window(fb, "Ruhrpott-Raser - " + e + ", " + n)
+        win.EnableEvents()
+        bool forward = false
+        bool back = false
+        bool left = false
+        bool right = false
+        bool rise = false
+        bool sink = false
+        bool turnLeft = false
+        bool turnRight = false
+        bool lookUp = false
+        bool lookDown = false
+        bool fast = false
+        float heading = cam.RotationY / 1deg
+        float tilt = cam.RotationX / 1deg
+        int last = DateTime.Now.Ticks
+        while (win.Tick()) {
+            any ev = win.NextEvent()
+            while (ev != undefined) {
+                if (ev[0] == EventType.KeyDown || ev[0] == EventType.KeyUp) {
+                    bool pressed = ev[0] == EventType.KeyDown
+                    int key = ev[1]
+                    if (key == 119) { forward = pressed }
+                    else if (key == 115) { back = pressed }
+                    else if (key == 97) { left = pressed }
+                    else if (key == 100) { right = pressed }
+                    else if (key == 101) { rise = pressed }
+                    else if (key == 113) { sink = pressed }
+                    else if (key == 1073741904) { turnLeft = pressed }
+                    else if (key == 1073741903) { turnRight = pressed }
+                    else if (key == 1073741906) { lookUp = pressed }
+                    else if (key == 1073741905) { lookDown = pressed }
+                    else if (key == 1073742049 || key == 1073742053) { fast = pressed }
+                }
+                ev = win.NextEvent()
+            }
+            int now = DateTime.Now.Ticks
+            float dt = (now - last) / 10000000.0
+            last = now
+            float speed = 15.0
+            if (fast) { speed = 60.0 }
+            if (turnLeft) { heading = heading + 60.0 * dt }
+            if (turnRight) { heading = heading - 60.0 * dt }
+            if (lookUp) { tilt = Math.Min(tilt + 45.0 * dt, 89.0) }
+            if (lookDown) { tilt = Math.Max(tilt - 45.0 * dt, -89.0) }
+            float h = heading * Math.PI / 180.0
+            float fx = -Math.Sin(h)
+            float fz = -Math.Cos(h)
+            float mx = 0.0
+            float mz = 0.0
+            float my = 0.0
+            if (forward) {
+                mx = mx + fx
+                mz = mz + fz
+            }
+            if (back) {
+                mx = mx - fx
+                mz = mz - fz
+            }
+            if (left) {
+                mx = mx + fz
+                mz = mz - fx
+            }
+            if (right) {
+                mx = mx - fz
+                mz = mz + fx
+            }
+            if (rise) { my = my + 1.0 }
+            if (sink) { my = my - 1.0 }
+            cam.Move(mx * speed * dt * 1m, my * speed * dt * 1m, mz * speed * dt * 1m)
+            cam.RotationY = heading * 1deg
+            cam.RotationX = tilt * 1deg
+            cam.Render()
+        }
+        return 0
+    }
+}
+
+Environment.Exit(Viewer.Main(Environment.Args))

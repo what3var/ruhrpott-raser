@@ -214,11 +214,10 @@ class ObjExport {
         var used = new HashSet<int>()
         int vertices = 0
         int faces = 0
-        var self = this
         foreach (k in keys) {
             var chunk = this.ChunkOf(k.VoxelX, k.VoxelY, k.VoxelZ)
             if (chunk == undefined || chunk.IsEmpty) { continue }
-            var mesher = new Raser.Mesher(chunk, (dx, dy, dz) => self.ChunkOf(k.VoxelX + dx * 64, k.VoxelY + dy * 64, k.VoxelZ + dz * 64))
+            var mesher = new Raser.Mesher(chunk, this.ChunkOf(k.VoxelX - 64, k.VoxelY, k.VoxelZ), this.ChunkOf(k.VoxelX + 64, k.VoxelY, k.VoxelZ), this.ChunkOf(k.VoxelX, k.VoxelY - 64, k.VoxelZ), this.ChunkOf(k.VoxelX, k.VoxelY + 64, k.VoxelZ), this.ChunkOf(k.VoxelX, k.VoxelY, k.VoxelZ - 64), this.ChunkOf(k.VoxelX, k.VoxelY, k.VoxelZ + 64))
             var mesh = mesher.Build()
             float ox = (k.VoxelX - vx0) * 0.2
             float oy = (k.VoxelY - vy0) * 0.2

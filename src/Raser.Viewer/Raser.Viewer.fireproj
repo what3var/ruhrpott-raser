@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "name": "Raser.Viewer",
+  "type": "exe",
+  "entry": "main.fire",
+  "references": [
+    { "project": "../Raser.Core/Raser.Core.fireproj" },
+    { "project": "../Raser.World/Raser.World.fireproj" },
+    { "project": "../Raser.Mesh/Raser.Mesh.fireproj" }
+  ],
+  "settings": {
+    "version": "0.1.0",
+    "subsystem": "gui",
+    "description": "Ruhrpott-Raser: Betrachter der Voxel-Welt mit scene3d (fliegende Kamera, Bilder ohne Fenster mit --shot)."
+  }
+}

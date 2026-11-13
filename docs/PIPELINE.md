@@ -17,6 +17,7 @@ data/raw/osm/*.osm   ─┘                    (Zwischenlayer)               ▲
 | `src/Raser.World` | Bibliothek (`raser.world`) | Zwischenlayer (`Tile`, `TileData`, `Building`, `Road`, `Area`, `Poi`, `HeightRaster`), Geometrie, Override-Layer, `Voxelizer`, `FileTileStore`, `TileGenerator` |
 | `src/Raser.Import` | Bibliothek (`raser.import`) | XML-Pull-Parser, GeoTIFF (LZW, Float32), WGS84 → UTM 32, CityGML LoD2, OSM-XML, `Region` (schneidet alles in Kacheln) |
 | `src/Raser.Mesh` | Bibliothek (`raser.mesh`) | Chunk-Meshing: Greedy Meshing für volle Voxel, Höhen-Schnitte als schräge Oberseiten und Trapez-Seiten, Glas und Wasser in einem eigenen Teil |
+| `src/Raser.Viewer` | Programm | Betrachter mit scene3d: lädt und vernetzt die Chunk-Säulen um einen Punkt, fliegende Kamera (W/A/S/D, Q/E, Pfeile), `--shot bild.png` rendert ohne Fenster |
 | `src/Raser.Tool` | Programm | `raser import`, `voxelize`, `export png`, `export obj`, `info` |
 
 Jede Bibliothek hat ihre Tests in `testing/` (`forge test src/Raser.World/Raser.World.fireproj`, oder alle: `forge test RuhrpottRaser.firesln`).
@@ -87,6 +88,18 @@ Je Chunk-Säule wird einmal ein Plan der 64 × 64 Voxel-Säulen gerechnet (gilt 
 ![OBJ-Ausschnitt](images/obj-ausschnitt.png)
 
 *Ein Ausschnitt am Rathaus als Netz: Wände mit Fensterreihen je Geschoss, Decken, Flach- und Steildächer, Straße und Grünstreifen.*
+
+## Betrachter
+
+```bash
+forge build RuhrpottRaser.firesln -p Raser.Viewer --engine native -m RELEASE
+src/Raser.Viewer/bin/linux-rel/Raser.Viewer --world world --at 376130,5704900 --radius 2 --distance 110 --pitch -40 --shot rathaus.png
+```
+
+Je Chunk und Farbe wird ein scene3d-Modell aus `Model.FromArrays` gebaut (Anker auf der unteren Ecke, damit die Lage stimmt). Um das Rathaus (Radius 2, 5 × 5 Chunk-Säulen)
+sind das 273 Objekte mit rund 1 Mio. Dreiecken; ein Bild von 960 × 600 braucht 240 ms im Software-Renderer, das Vernetzen beim Laden rund 50 s.
+
+![Betrachter](images/viewer-rathaus.png)
 
 ## Offen (für M1 und danach)
 
