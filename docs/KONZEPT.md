@@ -196,7 +196,9 @@ Wie in GTA: **Jeder startet zu Fuß.** Fahrzeuge muss man sich kaufen, leihen od
 - **Welt und Zeit laufen immer weiter**, auch wenn ein Spieler offline ist: Tag und Nacht, Wetter, Wirtschaft, andere Spieler.
 - **Vitalwerte werden eingefroren.** Niemand verhungert, verdurstet oder stirbt durch Untätigkeit. Nach dem Einloggen geht es mit denselben Werten weiter.
 - **Der Charakter verlässt beim Ausloggen die Welt.** Er steht nicht schutzlos herum. Gegen Kampf-Ausloggen gibt es eine kurze Wartezeit, wenn man gerade im Kampf ist oder gesucht wird.
-- **Besitz und Geschäfte** bleiben bestehen. Was genau offline weiterläuft (Umsatz von Geschäften, fällige Mieten, Lieferungen), wird beim Wirtschaftsdesign festgelegt. Grundsatz: Offline sein darf nicht in den Ruin führen, aber auch kein Geld ohne Spielen drucken.
+- **Kein Einkommen im Offline-Zustand.** Geschäfte, Jobs und Vermietung bringen nur Geld, solange der Spieler online ist. Besitz bleibt bestehen, steht aber still.
+- **Laufende Kosten pausieren ebenfalls** (Miete, Gehälter, Nebenkosten). Sonst würde Offline sein in den Ruin führen. Grundsatz: Offline verliert man nichts und gewinnt nichts.
+- **AFK zählt nicht als online.** Wer eingeloggt ist, aber nichts tut, wird nach einer Weile wie offline behandelt. Sonst ließe sich Einkommen durch bloßes Eingeloggt-Bleiben erzeugen.
 
 ### Gebäudetypen mit Funktion
 

@@ -49,6 +49,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Spielerwerte: Vitalwerte, Fähigkeiten, Ruf
 - [ ] Krankenhaus statt Tod: Aufwachen im nächsten Krankenhaus, Behandlungskosten
 - [ ] Offline: Vitalwerte einfrieren, Charakter verlässt die Welt, Wartezeit gegen Kampf-Ausloggen
+- [ ] Offline: kein Einkommen, laufende Kosten pausieren, AFK-Erkennung
 - [ ] Gebäudetypen aus OSM-Tags, zuerst: Tankstelle, Imbiss, Kneipe, Autohändler, Hotel
 - [ ] Waffen und PvP, Fahndungslevel, Schutzbereiche, Schonfrist für Neue
 - [ ] Rennen: legal auf abgesperrten Strecken und illegal im Verkehr, Wetten
@@ -86,6 +87,5 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - Wie viele Spieler soll ein Regionsserver tragen, und was ist das Ziel für ganz NRW?
 - Konkrete Schwellenwerte je Material (Balancing gegen Griefing)
 - Grundstücksgrenzen: ALKIS-Daten verfügbar oder Ableitung aus Grundrissen?
-- Was läuft für Geschäfte und Mieten offline weiter?
 - Altersfreigabe (USK/PEGI) prüfen; Glücksspiel bleibt rein virtuell ohne Echtgeld
 - Lizenzen der Datenquellen final prüfen (NRW Open Data, OSM/ODbL, Mapillary/Panoramax)
