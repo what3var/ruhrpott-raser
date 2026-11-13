@@ -4,6 +4,7 @@
 #import "filesystem"
 #import "raser.core"
 #import "raser.world"
+#import "raser.mesh"
 
 class TopView {
     defined int size
@@ -199,6 +200,58 @@ class ObjExport {
             m2.Add("newmtl c" + c)
             m2.Add("Kd " + ObjExport.F(((rgb >> 16) & 255) / 255.0) + " " + ObjExport.F(((rgb >> 8) & 255) / 255.0) + " " + ObjExport.F((rgb & 255) / 255.0))
             if (c == Raser.Palette.Glass) { m2.Add("d 0.5") }
+        }
+        IO.File.WriteAllText(mtl, "\n".Join(m2) + "\n")
+        return faces
+    }
+
+    // Die Chunks als Netze (Raser.Mesher: Greedy Meshing, Höhen-Schnitte) in eine OBJ-Datei; Ursprung bei (vx0, vy0, vz0). Gibt die Zahl der Flächen zurück.
+    defined int WriteMeshed(string path, List<Raser.ChunkKey> keys, defined int vx0, defined int vy0, defined int vz0) {
+        var lines = new List<string>()
+        string mtl = IO.Path.ChangeExtension(path, ".mtl")
+        lines.Add("# Ruhrpott-Raser: " + keys.Count + " Chunks, Ursprung Voxel " + vx0 + ", " + vy0 + ", " + vz0)
+        lines.Add("mtllib " + IO.Path.GetFileName(mtl))
+        var used = new HashSet<int>()
+        int vertices = 0
+        int faces = 0
+        var self = this
+        foreach (k in keys) {
+            var chunk = this.ChunkOf(k.VoxelX, k.VoxelY, k.VoxelZ)
+            if (chunk == undefined || chunk.IsEmpty) { continue }
+            var mesher = new Raser.Mesher(chunk, (dx, dy, dz) => self.ChunkOf(k.VoxelX + dx * 64, k.VoxelY + dy * 64, k.VoxelZ + dz * 64))
+            var mesh = mesher.Build()
+            float ox = (k.VoxelX - vx0) * 0.2
+            float oy = (k.VoxelY - vy0) * 0.2
+            float oz = (k.VoxelZ - vz0) * 0.2
+            for (int part = 0; part < 2; part++) {
+                var m = mesh.opaque
+                if (part == 1) { m = mesh.transparent }
+                int current = -1
+                for (int q = 0; q < m.Count; q++) {
+                    int color = m.colors[q]
+                    if (color != current) {
+                        lines.Add("usemtl c" + color)
+                        used.Add(color)
+                        current = color
+                    }
+                    for (int c = 0; c < 4; c++) {
+                        int o = q * 12 + c * 3
+                        // OBJ: x Ost, y oben, z Süd
+                        lines.Add("v " + ObjExport.F(ox + m.positions[o]) + " " + ObjExport.F(oz + m.positions[o + 2]) + " " + ObjExport.F(-(oy + m.positions[o + 1])))
+                    }
+                    lines.Add("f " + (vertices + 1) + " " + (vertices + 2) + " " + (vertices + 3) + " " + (vertices + 4))
+                    vertices = vertices + 4
+                    faces++
+                }
+            }
+        }
+        IO.File.WriteAllText(path, "\n".Join(lines) + "\n")
+        var m2 = new List<string>()
+        foreach (c in used) {
+            int rgb = Raser.Palette.Rgb(c)
+            m2.Add("newmtl c" + c)
+            m2.Add("Kd " + ObjExport.F(((rgb >> 16) & 255) / 255.0) + " " + ObjExport.F(((rgb >> 8) & 255) / 255.0) + " " + ObjExport.F((rgb & 255) / 255.0))
+            if (c == Raser.Palette.Glass || c == Raser.Palette.Water) { m2.Add("d 0.5") }
         }
         IO.File.WriteAllText(mtl, "\n".Join(m2) + "\n")
         return faces

@@ -1,0 +1,279 @@
+// Raser.Mesh: aus einem Chunk ein Netz aus Vierecken (Roadmap M2: Chunk-Meshing inkl. Höhen-Schnitten).
+//
+// - Volle Voxel: nur Flächen zu Nachbarn, die sie nicht verdecken; gleichfarbige Flächen in einer Ebene werden zu großen Rechtecken
+//   zusammengefasst (Greedy Meshing, je Richtung und Schicht).
+// - Geschnittene Voxel (Höhen-Schnitt): die Oberseite schräg aus den vier Eckhöhen, die Seiten als Trapeze bis zur Oberkante; die Unterseite
+//   ist ein volles Quadrat und läuft mit den vollen Voxeln.
+// - Durchsichtige Voxel (Glas, Wasser) kommen in einen eigenen Teil des Netzes; zwischen zwei Voxeln desselben durchsichtigen Materials
+//   gibt es keine Fläche.
+// Verdecken kann nur ein volles, undurchsichtiges Voxel. An den Rändern des Chunks wird der Nachbar-Chunk gefragt (fehlt er: Luft).
+// Koordinaten: Meter relativ zur unteren Südwest-Ecke des Chunks, x Ost, y Nord, z oben. Jedes Viereck ist von außen gesehen gegen den Uhrzeigersinn.
+#import "raser.core"
+
+namespace Raser {
+    class MeshPart {
+        List<float> positions     // 12 je Viereck (4 Ecken x, y, z)
+        List<float> normals       // 3 je Viereck
+        List<int> colors          // 1 je Viereck (Palettenindex)
+        List<int> materials       // 1 je Viereck
+
+        construct() {
+            this.positions = new List<float>()
+            this.normals = new List<float>()
+            this.colors = new List<int>()
+            this.materials = new List<int>()
+        }
+
+        defined int Count { get { return this.colors.Count } }
+
+        // Ein Viereck; die Reihenfolge der Ecken wird so gedreht, dass es zur Normale (nx, ny, nz) zeigt.
+        undefined Quad(defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float cx, defined float cy, defined float cz, defined float dx, defined float dy, defined float dz, defined float nx, defined float ny, defined float nz, defined int color, defined int material) {
+            float ux = bx - ax
+            float uy = by - ay
+            float uz = bz - az
+            float vx = cx - ax
+            float vy = cy - ay
+            float vz = cz - az
+            float px = uy * vz - uz * vy
+            float py = uz * vx - ux * vz
+            float pz = ux * vy - uy * vx
+            if (px * nx + py * ny + pz * nz < 0.0) {
+                this.Add(ax, ay, az)
+                this.Add(dx, dy, dz)
+                this.Add(cx, cy, cz)
+                this.Add(bx, by, bz)
+            } else {
+                this.Add(ax, ay, az)
+                this.Add(bx, by, bz)
+                this.Add(cx, cy, cz)
+                this.Add(dx, dy, dz)
+            }
+            this.normals.Add(nx)
+            this.normals.Add(ny)
+            this.normals.Add(nz)
+            this.colors.Add(color)
+            this.materials.Add(material)
+        }
+
+        undefined Add(defined float x, defined float y, defined float z) {
+            this.positions.Add(x)
+            this.positions.Add(y)
+            this.positions.Add(z)
+        }
+    }
+
+    class ChunkMesh {
+        ChunkKey key
+        MeshPart opaque
+        MeshPart transparent
+
+        construct(ChunkKey key) {
+            this.key = key
+            try key.TakeTo(this)
+            this.opaque = new Raser.MeshPart()
+            this.transparent = new Raser.MeshPart()
+        }
+
+        defined int Count { get { return this.opaque.Count + this.transparent.Count } }
+    }
+
+    class Mesher {
+        Chunk center
+        Chunk west
+        Chunk east
+        Chunk south
+        Chunk north
+        Chunk below
+        Chunk above
+
+        // neighbour(dx, dy, dz) liefert den Nachbar-Chunk (oder undefined).
+        construct(Chunk center, Chunk lambda<int, int, int> neighbour = undefined) {
+            this.center = center
+            if (neighbour != undefined) {
+                this.west = neighbour(-1, 0, 0)
+                this.east = neighbour(1, 0, 0)
+                this.south = neighbour(0, -1, 0)
+                this.north = neighbour(0, 1, 0)
+                this.below = neighbour(0, 0, -1)
+                this.above = neighbour(0, 0, 1)
+            }
+        }
+
+        // Ein durchsichtiges Material: Glas und Wasser.
+        static defined bool IsTransparent(defined int m) { return m == 11 || m == 6 }
+
+        // Der Chunk, der die Zelle (x, y, z) hält (höchstens eine Koordinate liegt außerhalb 0..63), und die Koordinaten darin.
+        Chunk ChunkFor(defined int x, defined int y, defined int z) {
+            if (x < 0) { return this.west }
+            if (x > 63) { return this.east }
+            if (y < 0) { return this.south }
+            if (y > 63) { return this.north }
+            if (z < 0) { return this.below }
+            if (z > 63) { return this.above }
+            return this.center
+        }
+
+        defined int MaterialAt(defined int x, defined int y, defined int z) {
+            var c = this.ChunkFor(x, y, z)
+            if (c == undefined) { return 0 }
+            return c.MaterialAt(x & 63, y & 63, z & 63)
+        }
+
+        defined int ShapeAt(defined int x, defined int y, defined int z) {
+            var c = this.ChunkFor(x, y, z)
+            if (c == undefined) { return 255 }
+            return c.ShapeAt(x & 63, y & 63, z & 63)
+        }
+
+        // Verdeckt die Zelle (x, y, z) die Fläche eines Voxels aus material? Volle undurchsichtige Voxel immer; ein durchsichtiges Voxel nur
+        // eine Fläche desselben Materials.
+        // fromBelow: die Zelle liegt über der Fläche - ihre Unterseite ist immer ein volles Quadrat, ein Schnitt ändert daran nichts.
+        defined bool Hides(defined int x, defined int y, defined int z, defined int material, defined bool fromBelow = false) {
+            int m = this.MaterialAt(x, y, z)
+            if (m == 0) { return false }
+            if (!fromBelow && !Raser.Shape.IsFull(this.ShapeAt(x, y, z))) { return false }
+            if (Raser.Mesher.IsTransparent(m)) { return m == material }
+            return true
+        }
+
+        ChunkMesh Build() {
+            var mesh = new Raser.ChunkMesh(new Raser.ChunkKey(this.center.key.x, this.center.key.y, this.center.key.z))
+            if (this.center.IsEmpty) { return mesh }
+            int mask[4096]
+            // Richtungen: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z
+            for (int dir = 0; dir < 6; dir++) {
+                int axis = dir / 2
+                int sign = (dir % 2) * 2 - 1
+                for (int s = 0; s < 64; s++) {
+                    bool found = false
+                    for (int v = 0; v < 64; v++) {
+                        for (int u = 0; u < 64; u++) {
+                            int x = 0
+                            int y = 0
+                            int z = 0
+                            if (axis == 0) {
+                                x = s
+                                y = u
+                                z = v
+                            } else if (axis == 1) {
+                                x = u
+                                y = s
+                                z = v
+                            } else {
+                                x = u
+                                y = v
+                                z = s
+                            }
+                            int value = 0
+                            int m = this.center.MaterialAt(x, y, z)
+                            if (m != 0) {
+                                bool full = Raser.Shape.IsFull(this.center.ShapeAt(x, y, z))
+                                // geschnittene Voxel: nur die Unterseite läuft hier mit
+                                if (full || dir == 4) {
+                                    int nx = x
+                                    int ny = y
+                                    int nz = z
+                                    if (axis == 0) { nx = x + sign } else if (axis == 1) { ny = y + sign } else { nz = z + sign }
+                                    if (!this.Hides(nx, ny, nz, m, dir == 5)) { value = 1 + this.center.ColorAt(x, y, z) + (m << 8) }
+                                }
+                            }
+                            mask[v * 64 + u] = value
+                            if (value != 0) { found = true }
+                        }
+                    }
+                    if (found) { this.Greedy(mesh, mask, axis, sign, s) }
+                }
+            }
+            // die schrägen Oberseiten und Trapez-Seiten der geschnittenen Voxel
+            foreach (pair in this.center.shapes) {
+                int i = pair.Key
+                int shape = pair.Value
+                int x = i & 63
+                int y = (i >> 6) & 63
+                int z = i >> 12
+                int m = this.center.MaterialAt(x, y, z)
+                if (m == 0) { continue }
+                this.Sloped(mesh, x, y, z, m, this.center.ColorAt(x, y, z), shape)
+            }
+            return mesh
+        }
+
+        // Fasst gleiche Einträge der Maske zu Rechtecken zusammen und gibt sie aus.
+        undefined Greedy(ChunkMesh mesh, int mask[], defined int axis, defined int sign, defined int s) {
+            for (int v = 0; v < 64; v++) {
+                int u = 0
+                while (u < 64) {
+                    int value = mask[v * 64 + u]
+                    if (value == 0) {
+                        u++
+                        continue
+                    }
+                    int w = 1
+                    while (u + w < 64 && mask[v * 64 + u + w] == value) { w++ }
+                    int h = 1
+                    bool grow = true
+                    while (v + h < 64 && grow) {
+                        for (int k = 0; k < w; k++) {
+                            if (mask[(v + h) * 64 + u + k] != value) {
+                                grow = false
+                                break
+                            }
+                        }
+                        if (grow) { h++ }
+                    }
+                    for (int dv = 0; dv < h; dv++) {
+                        for (int k = 0; k < w; k++) { mask[(v + dv) * 64 + u + k] = 0 }
+                    }
+                    this.Rect(mesh, axis, sign, s, u, v, w, h, value)
+                    u = u + w
+                }
+            }
+        }
+
+        undefined Rect(ChunkMesh mesh, defined int axis, defined int sign, defined int s, defined int u, defined int v, defined int w, defined int h, defined int value) {
+            int color = (value - 1) & 255
+            int material = (value - 1) >> 8
+            float p = s * 0.2
+            if (sign > 0) { p = (s + 1) * 0.2 }
+            float u0 = u * 0.2
+            float u1 = (u + w) * 0.2
+            float v0 = v * 0.2
+            float v1 = (v + h) * 0.2
+            var part = mesh.opaque
+            if (Raser.Mesher.IsTransparent(material)) { part = mesh.transparent }
+            float n = sign * 1.0
+            if (axis == 0) {
+                part.Quad(p, u0, v0, p, u1, v0, p, u1, v1, p, u0, v1, n, 0.0, 0.0, color, material)
+            } else if (axis == 1) {
+                part.Quad(u0, p, v0, u1, p, v0, u1, p, v1, u0, p, v1, 0.0, n, 0.0, color, material)
+            } else {
+                part.Quad(u0, v0, p, u1, v0, p, u1, v1, p, u0, v1, p, 0.0, 0.0, n, color, material)
+            }
+        }
+
+        // Oberseite und Seiten eines geschnittenen Voxels.
+        undefined Sloped(ChunkMesh mesh, defined int x, defined int y, defined int z, defined int material, defined int color, defined int shape) {
+            var part = mesh.opaque
+            if (Raser.Mesher.IsTransparent(material)) { part = mesh.transparent }
+            float x0 = x * 0.2
+            float x1 = x0 + 0.2
+            float y0 = y * 0.2
+            float y1 = y0 + 0.2
+            float z0 = z * 0.2
+            float h0 = z0 + Raser.Shape.Corner(shape, 0) * 0.05
+            float h1 = z0 + Raser.Shape.Corner(shape, 1) * 0.05
+            float h2 = z0 + Raser.Shape.Corner(shape, 2) * 0.05
+            float h3 = z0 + Raser.Shape.Corner(shape, 3) * 0.05
+            // Oberseite: Normale aus den Diagonalen
+            float nx = ((h0 + h3) - (h1 + h2)) * 0.5 / 0.2
+            float ny = ((h0 + h1) - (h2 + h3)) * 0.5 / 0.2
+            float len = Math.Sqrt(nx * nx + ny * ny + 1.0)
+            part.Quad(x0, y0, h0, x1, y0, h1, x1, y1, h2, x0, y1, h3, nx / len, ny / len, 1.0 / len, color, material)
+            // Seiten
+            if (!this.Hides(x - 1, y, z, material)) { part.Quad(x0, y1, z0, x0, y0, z0, x0, y0, h0, x0, y1, h3, -1.0, 0.0, 0.0, color, material) }
+            if (!this.Hides(x + 1, y, z, material)) { part.Quad(x1, y0, z0, x1, y1, z0, x1, y1, h2, x1, y0, h1, 1.0, 0.0, 0.0, color, material) }
+            if (!this.Hides(x, y - 1, z, material)) { part.Quad(x0, y0, z0, x1, y0, z0, x1, y0, h1, x0, y0, h0, 0.0, -1.0, 0.0, color, material) }
+            if (!this.Hides(x, y + 1, z, material)) { part.Quad(x1, y1, z0, x0, y1, z0, x0, y1, h3, x1, y1, h2, 0.0, 1.0, 0.0, color, material) }
+        }
+    }
+}

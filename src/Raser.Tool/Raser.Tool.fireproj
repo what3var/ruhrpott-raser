@@ -4,9 +4,18 @@
   "type": "exe",
   "entry": "main.fire",
   "references": [
-    { "project": "../Raser.Core/Raser.Core.fireproj" },
-    { "project": "../Raser.World/Raser.World.fireproj" },
-    { "project": "../Raser.Import/Raser.Import.fireproj" }
+    {
+      "project": "../Raser.Core/Raser.Core.fireproj"
+    },
+    {
+      "project": "../Raser.World/Raser.World.fireproj"
+    },
+    {
+      "project": "../Raser.Import/Raser.Import.fireproj"
+    },
+    {
+      "project": "../Raser.Mesh/Raser.Mesh.fireproj"
+    }
   ],
   "settings": {
     "version": "0.1.0",

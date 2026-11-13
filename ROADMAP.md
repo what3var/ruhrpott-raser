@@ -12,7 +12,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Export/Viewer zur Kontrolle (noch ohne eigenen Renderer): Draufsicht als PNG, Ausschnitte als OBJ
 
 ## M2: Renderer
-- [ ] Chunk-Meshing inkl. Höhen-Schnitten
+- [x] Chunk-Meshing inkl. Höhen-Schnitten (`Raser.Mesh`: Greedy Meshing, schräge Oberseiten, Trapez-Seiten, Glas/Wasser getrennt)
 - [ ] Fahrbare Kamera durch die Testregion
 - [ ] Fassaden-Grammatik + parametrische Materialien
 - [ ] Sharp-bilinear-Shader

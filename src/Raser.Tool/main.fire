@@ -12,6 +12,7 @@
 #import "raser.core"
 #import "raser.world"
 #import "raser.import"
+#import "raser.mesh"
 
 class Args {
     List<string> positional
@@ -172,46 +173,31 @@ class Tool {
         float e = at[0].ToFloat()
         float n = at[1].ToFloat()
         float size = args.Get("size", "40").ToFloat()
-        int vx0 = Raser.Grid.VoxelOf(e - size / 2.0)
-        int vy0 = Raser.Grid.VoxelOf(n - size / 2.0)
-        int vx1 = Raser.Grid.VoxelOf(e + size / 2.0)
-        int vy1 = Raser.Grid.VoxelOf(n + size / 2.0)
-        // Höhenbereich aus den Manifesten der berührten Kacheln
-        var export = new ObjExport(store)
-        int vz0 = 1000000
-        int vz1 = -1000000
-        var tiles = Tool.TileRange(Raser.TileKey.OfVoxel(vx0, vy0).ToString() + ":" + Raser.TileKey.OfVoxel(vx1, vy1).ToString())
+        // die Chunk-Säulen, die das Quadrat berühren
+        var lo = Raser.ChunkKey.OfVoxel(Raser.Grid.VoxelOf(e - size / 2.0), Raser.Grid.VoxelOf(n - size / 2.0), 0)
+        var hi = Raser.ChunkKey.OfVoxel(Raser.Grid.VoxelOf(e + size / 2.0), Raser.Grid.VoxelOf(n + size / 2.0), 0)
+        var columns = new HashSet<string>()
+        for (int cy = lo.y; cy <= hi.y; cy++) {
+            for (int cx = lo.x; cx <= hi.x; cx++) { columns.Add(cx + "_" + cy) }
+        }
+        var keys = new List<Raser.ChunkKey>()
+        int vz0 = 1000000000
+        var tiles = Tool.TileRange(lo.Tile().ToString() + ":" + hi.Tile().ToString())
         foreach (t in tiles) {
             var m = store.LoadManifest(t)
             if (m == undefined) { continue }
             foreach (s in m.keys) {
                 var c = Raser.ChunkKey.Parse(s)
+                if (!columns.Contains(c.x + "_" + c.y)) { continue }
                 vz0 = Math.Min(vz0, c.VoxelZ)
-                vz1 = Math.Max(vz1, c.VoxelZ + 63)
+                keys.Add(take c)
             }
         }
-        if (vz0 > vz1) { throw new Raser.DataException("There are no chunks there (voxelize first).") }
-        // Nur bis wenige Meter unter die tiefste Oberfläche: Felsen darunter sieht niemand.
-        int lowest = Tool.LowestSurface(export, vx0, vy0, vx1, vy1, vz0, vz1)
-        if (lowest - 10 > vz0) { vz0 = lowest - 10 }
+        if (keys.Count == 0) { throw new Raser.DataException("There are no chunks there (voxelize first).") }
         string out = args.Get("out", "world.obj")
-        int faces = export.Write(out, vx0, vy0, vz0, vx1, vy1, vz1)
-        Tool.Log(out + ": " + faces + " Flächen")
-    }
-
-    static defined int LowestSurface(ObjExport export, defined int vx0, defined int vy0, defined int vx1, defined int vy1, defined int vz0, defined int vz1) {
-        int lowest = 1000000
-        for (int vy = vy0; vy <= vy1; vy = vy + 8) {
-            for (int vx = vx0; vx <= vx1; vx = vx + 8) {
-                for (int vz = vz1; vz >= vz0; vz--) {
-                    if (export.MaterialAt(vx, vy, vz) != 0) {
-                        lowest = Math.Min(lowest, vz)
-                        break
-                    }
-                }
-            }
-        }
-        return lowest
+        var export = new ObjExport(store)
+        int faces = export.WriteMeshed(out, keys, lo.VoxelX, lo.VoxelY, vz0)
+        Tool.Log(out + ": " + keys.Count + " Chunks, " + faces + " Flächen")
     }
 
     static undefined Info(Args args) {

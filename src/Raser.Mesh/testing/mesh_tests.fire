@@ -1,0 +1,111 @@
+// Die Tests von Raser.Mesh (forge test src/Raser.Mesh/Raser.Mesh.fireproj).
+#import "testing"
+#import "raser.core"
+
+class MeshTests {
+    static Raser.Chunk Empty() { return new Raser.Chunk(new Raser.ChunkKey(0, 0, 0)) }
+
+    [Test "Ein Voxel: sechs Flächen"]
+    undefined One() {
+        var c = MeshTests.Empty()
+        c.Set(5, 5, 5, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(6, mesh.opaque.Count)
+        Testing.Assert.AreEqual(0, mesh.transparent.Count)
+    }
+
+    [Test "Greedy: ein Quader aus gleichen Voxeln hat sechs Flächen"]
+    undefined Box() {
+        var c = MeshTests.Empty()
+        c.Fill(2, 3, 4, 9, 6, 8, Raser.Material.Concrete!int, Raser.Palette.Concrete)
+        var mesh = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(6, mesh.opaque.Count)
+        // Oberseite bei z = 9 * 0,2, über 8 x 4 Voxel
+        var p = mesh.opaque.positions
+        bool top = false
+        for (int q = 0; q < mesh.opaque.Count; q++) {
+            if (mesh.opaque.normals[q * 3 + 2] > 0.5) {
+                top = Math.Abs(p[q * 12 + 2] - 1.8) < 0.0001
+            }
+        }
+        Testing.Assert.IsTrue(top)
+    }
+
+    [Test "Zwei Farben bleiben getrennt"]
+    undefined Colors() {
+        var c = MeshTests.Empty()
+        c.Set(0, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.Set(1, 0, 0, Raser.Material.Brick!int, Raser.Palette.BrickDark)
+        var mesh = new Raser.Mesher(c).Build()
+        // je Voxel 5 sichtbare Flächen (die gemeinsame Seite ist verdeckt)
+        Testing.Assert.AreEqual(10, mesh.opaque.Count)
+    }
+
+    [Test "Höhen-Schnitt: schräge Oberseite, Trapez-Seiten"]
+    undefined Sloped() {
+        var c = MeshTests.Empty()
+        c.Set(5, 5, 5, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 3, 4))
+        var mesh = new Raser.Mesher(c).Build()
+        // Unterseite + schräge Oberseite + 4 Seiten
+        Testing.Assert.AreEqual(6, mesh.opaque.Count)
+        int slopes = 0
+        for (int q = 0; q < mesh.opaque.Count; q++) {
+            float nz = mesh.opaque.normals[q * 3 + 2]
+            if (nz > 0.1 && nz < 0.999) { slopes++ }
+        }
+        Testing.Assert.AreEqual(1, slopes)
+        // Ein volles Voxel darunter zeigt keine Oberseite: die Unterseite des Schnitts verdeckt sie.
+        c.Set(5, 5, 4, Raser.Material.Soil!int, Raser.Palette.Soil)
+        var lower = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(6 + 4, lower.opaque.Count)
+        c.Set(5, 5, 4, 0, 0)
+        // Ein Voxel darüber verdeckt die schräge Fläche nicht.
+        c.Set(5, 5, 6, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var again = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(6 + 6, again.opaque.Count)       // auch der Ziegel zeigt seine Unterseite: der Schnitt darunter verdeckt sie nicht
+    }
+
+    [Test "Glas: eigener Teil, keine Flächen zwischen Glas"]
+    undefined Glass() {
+        var c = MeshTests.Empty()
+        c.Set(0, 0, 0, Raser.Material.Glass!int, Raser.Palette.Glass)
+        c.Set(1, 0, 0, Raser.Material.Glass!int, Raser.Palette.Glass)
+        c.Set(2, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh = new Raser.Mesher(c).Build()
+        // Glas: ein 2 x 1 Quader ohne die Seite zum Ziegel = 5 Flächen; Ziegel: 6 (Glas verdeckt nichts)
+        Testing.Assert.AreEqual(5, mesh.transparent.Count)
+        Testing.Assert.AreEqual(6, mesh.opaque.Count)
+    }
+
+    [Test "Nachbar-Chunks verdecken den Rand"]
+    undefined Neighbours() {
+        var c = MeshTests.Empty()
+        c.Set(63, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var east = new Raser.Chunk(new Raser.ChunkKey(1, 0, 0))
+        east.Set(0, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh = new Raser.Mesher(c, (dx, dy, dz) => dx == 1 ? east : undefined).Build()
+        Testing.Assert.AreEqual(5, mesh.opaque.Count)
+    }
+
+    [Test "Flächen zeigen nach außen"]
+    undefined Winding() {
+        var c = MeshTests.Empty()
+        c.Set(5, 5, 5, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh = new Raser.Mesher(c).Build()
+        var p = mesh.opaque.positions
+        for (int q = 0; q < 6; q++) {
+            int o = q * 12
+            float ux = p[o + 3] - p[o]
+            float uy = p[o + 4] - p[o + 1]
+            float uz = p[o + 5] - p[o + 2]
+            float vx = p[o + 6] - p[o]
+            float vy = p[o + 7] - p[o + 1]
+            float vz = p[o + 8] - p[o + 2]
+            float cx = uy * vz - uz * vy
+            float cy = uz * vx - ux * vz
+            float cz = ux * vy - uy * vx
+            float dot = cx * mesh.opaque.normals[q * 3] + cy * mesh.opaque.normals[q * 3 + 1] + cz * mesh.opaque.normals[q * 3 + 2]
+            Testing.Assert.IsTrue(dot > 0.0)
+        }
+    }
+}

@@ -141,7 +141,7 @@ namespace Raser {
         }
 
         // Erzeugt die Chunks neu (leere Chunks werden nicht gespeichert). Gibt das Manifest zurück.
-        ChunkManifest Generate(TileKey key, lambda progress = undefined) {
+        ChunkManifest Generate(TileKey key, lambda<int, int> progress = undefined) {
             var tile = this.store.Load(key)
             if (tile == undefined) { throw new Raser.DataException("There is no tile " + key + " in the store.") }
             var v = new Raser.Voxelizer(tile, this.overrides, this.seed)
