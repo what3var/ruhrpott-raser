@@ -1,7 +1,8 @@
 // Raser.Core: was in einem Voxel steht.
 //
 // Pro Voxel: Material-ID (1 Byte) + Farbindex (1 Byte, aus der Palette). Oberflächen-Voxel können oben schräg abgeschnitten sein (Konzept, Abschnitt 1):
-// Die Form ist ein Byte mit vier Eckhöhen zu je 2 Bit, in Vierteln eines Voxels (5 cm): 1/4, 2/4, 3/4 oder 4/4.
+// Die Form ist ein Byte mit vier Eckhöhen zu je 2 Bit, in Dritteln eines Voxels: 0, 1/3, 2/3 oder 3/3 (eine Ecke darf auf der Unterkante liegen - so
+// schließen Lagen lückenlos aneinander, auch wo eine schräge Fläche von einer Voxel-Lage in die nächste wechselt).
 // Benachbarte Voxel berechnen dieselbe Ecke aus denselben Daten und teilen sich so die Eckhöhen; es entstehen lückenlose Flächen.
 namespace Raser {
     // Die Materialien. Die Nummer ist die Material-ID im Voxel und bleibt stabil (neue Materialien nur hinten anhängen).
@@ -206,22 +207,28 @@ namespace Raser {
     class Shape {
         static readonly defined int Full = 255
 
+        static readonly defined float Step = 0.0666666666666667     // ein Drittel Voxel (m)
+
+        // Aus vier Eckhöhen in Dritteln (0..3; 3 an allen Ecken: voll = 255).
         static defined int Make(defined int h0, defined int h1, defined int h2, defined int h3) {
-            return (Raser.Shape.Clamp(h0) - 1) | ((Raser.Shape.Clamp(h1) - 1) << 2) | ((Raser.Shape.Clamp(h2) - 1) << 4) | ((Raser.Shape.Clamp(h3) - 1) << 6)
+            return Raser.Shape.Clamp(h0) | (Raser.Shape.Clamp(h1) << 2) | (Raser.Shape.Clamp(h2) << 4) | (Raser.Shape.Clamp(h3) << 6)
         }
 
         static defined int Clamp(defined int h) {
-            if (h < 1) { return 1 }
-            if (h > 4) { return 4 }
+            if (h < 0) { return 0 }
+            if (h > 3) { return 3 }
             return h
         }
 
-        // Die Höhe der Ecke (1..4 Viertel).
-        static defined int Corner(defined int shape, defined int corner) { return ((shape >> (corner * 2)) & 3) + 1 }
+        // Die Höhe der Ecke (0..3 Drittel).
+        static defined int Corner(defined int shape, defined int corner) { return (shape >> (corner * 2)) & 3 }
+
+        // Alle Ecken auf der Unterkante: das Voxel hat keinen Inhalt.
+        static defined bool IsEmpty(defined int shape) { return (shape & 255) == 0 }
 
         static defined bool IsFull(defined int shape) { return (shape & 255) == 255 }
 
         // Die Höhe einer Ecke in Metern über der Unterkante des Voxels.
-        static defined float CornerMeters(defined int shape, defined int corner) { return Raser.Shape.Corner(shape, corner) * 0.05 }
+        static defined float CornerMeters(defined int shape, defined int corner) { return Raser.Shape.Corner(shape, corner) * 0.2 / 3.0 }
     }
 }

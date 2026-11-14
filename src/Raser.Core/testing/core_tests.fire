@@ -92,15 +92,16 @@ class PlanTests {
 class ShapeTests {
     [Test "Eckhöhen in einem Byte"]
     undefined Corners() {
-        int s = Raser.Shape.Make(1, 2, 3, 4)
-        Testing.Assert.AreEqual(1, Raser.Shape.Corner(s, 0))
-        Testing.Assert.AreEqual(2, Raser.Shape.Corner(s, 1))
-        Testing.Assert.AreEqual(3, Raser.Shape.Corner(s, 2))
-        Testing.Assert.AreEqual(4, Raser.Shape.Corner(s, 3))
-        Testing.Assert.AreEqual(255, Raser.Shape.Make(4, 4, 4, 4))
-        Testing.Assert.IsTrue(Raser.Shape.IsFull(Raser.Shape.Make(9, 5, 4, 4)))
+        int s = Raser.Shape.Make(0, 1, 2, 3)
+        Testing.Assert.AreEqual(0, Raser.Shape.Corner(s, 0))
+        Testing.Assert.AreEqual(1, Raser.Shape.Corner(s, 1))
+        Testing.Assert.AreEqual(2, Raser.Shape.Corner(s, 2))
+        Testing.Assert.AreEqual(3, Raser.Shape.Corner(s, 3))
+        Testing.Assert.AreEqual(255, Raser.Shape.Make(3, 3, 3, 3))
+        Testing.Assert.IsTrue(Raser.Shape.IsFull(Raser.Shape.Make(9, 5, 4, 3)))
         Testing.Assert.AreEqual(0, Raser.Shape.Make(0, 0, 0, 0))
-        Testing.Assert.IsTrue(Math.Abs(Raser.Shape.CornerMeters(s, 2) - 0.15) < 0.000001)
+        Testing.Assert.IsTrue(Raser.Shape.IsEmpty(Raser.Shape.Make(-1, 0, 0, 0)))
+        Testing.Assert.IsTrue(Math.Abs(Raser.Shape.CornerMeters(s, 2) - 0.2 * 2.0 / 3.0) < 0.000001)
     }
 
     [Test "Materialtabelle"]

@@ -181,8 +181,10 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
+        // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 7
+        static readonly defined int Version = 9
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -371,11 +373,11 @@ namespace Raser {
             return keys
         }
 
-        // Die Viertel-Höhe (1..4) einer Ecke über der Unterkante des Voxels k.
+        // Die Höhe einer Ecke über der Unterkante des Voxels k in Dritteln (0..3, Raser.Shape).
         static defined int Quarter(defined float h, defined int k) {
-            int q = Math.Round((h - k * 0.2) / 0.05)!int
-            if (q < 1) { return 1 }
-            if (q > 4) { return 4 }
+            int q = Math.Round((h - k * 0.2) / 0.2 * 3.0)!int
+            if (q < 0) { return 0 }
+            if (q > 3) { return 3 }
             return q
         }
 
@@ -409,6 +411,68 @@ namespace Raser {
         // Alle Lagen werden aus dem kachel-lokalen Voxel-Index gerechnet ((lx + 0,5) * 0,2), damit jeder Chunk dieselbe Säule gleich sieht.
         // Grundrisse und Flächen werden zeilenweise gerastert (Schnittpunkte der Zeile mit dem Ring, Gerade-Ungerade wie Geo.Inside),
         // Straßen segmentweise (nur die Säulen im Rechteck um das Segment).
+        // Gibt den Säulen an schrägen Kanten der Grundrisse eine Diagonale aus dem Katalog (Raser.Plan): Länge n aus der Steigung (1:1 .. 1:6; flacher
+        // bleibt achsparallel), Teil k aus der Lage der Kante in der Säule, die gefüllte Seite aus dem Inneren des Grundrisses. Säulen direkt außerhalb,
+        // durch die die Kante läuft, kommen zum Gebäude dazu (owner). Raster wie owner: 66 x 66 mit Rand, (i, j) ab -1.
+        static undefined FitDiagonals(List<RoofModel> models, int owner[], defined int planOf[], defined int lx0, defined int ly0) {
+            for (int m = 0; m < models.Count; m++) {
+                float ring[] = models[m].building.footprint
+                int pts = ring.length / 2
+                for (int e = 0; e < pts; e++) {
+                    float ax = ring[e * 2]
+                    float ay = ring[e * 2 + 1]
+                    float bx = ring[((e + 1) % pts) * 2]
+                    float by = ring[((e + 1) % pts) * 2 + 1]
+                    float dx = bx - ax
+                    float dy = by - ay
+                    float len2 = dx * dx + dy * dy
+                    if (len2 < 0.09) { continue }
+                    bool axisY = Math.Abs(dy) > Math.Abs(dx)
+                    float slope = dy / dx
+                    if (axisY) { slope = dx / dy }
+                    if (Math.Abs(slope) < 1.0 / 6.5) { continue }          // achsparallel genug
+                    int n = Math.Clamp(Math.Round(1.0 / Math.Abs(slope))!int, 1, 6)
+                    bool rising = slope > 0.0
+                    int i0 = Math.Max(-1, Math.Floor(Math.Min(ax, bx) * 5.0)!int - lx0 - 1)
+                    int i1 = Math.Min(64, Math.Floor(Math.Max(ax, bx) * 5.0)!int - lx0 + 1)
+                    int j0 = Math.Max(-1, Math.Floor(Math.Min(ay, by) * 5.0)!int - ly0 - 1)
+                    int j1 = Math.Min(64, Math.Floor(Math.Max(ay, by) * 5.0)!int - ly0 + 1)
+                    for (int j = j0; j <= j1; j++) {
+                        for (int i = i0; i <= i1; i++) {
+                            float x0 = (lx0 + i) * 0.2
+                            float y0 = (ly0 + j) * 0.2
+                            // nur im Bereich der Kante (die Mitte der Säule auf die Kante projiziert)
+                            float t = ((x0 + 0.1 - ax) * dx + (y0 + 0.1 - ay) * dy) / len2
+                            if (t < -0.01 || t > 1.01) { continue }
+                            // die Kante in der Säule: a beim Eintritt (Voxel), b beim Austritt
+                            float a = 0.0
+                            if (axisY) { a = (ax + slope * (y0 - ay) - x0) / 0.2 } else { a = (ay + slope * (x0 - ax) - y0) / 0.2 }
+                            int k = Math.Round(a * n)!int
+                            if (!rising) { k = k - 1 }
+                            if (k < 0 || k >= n) { continue }
+                            // welche Seite innen liegt: ein Punkt knapp unter der Kante (im Muster: kleineres v)
+                            float lineV = a + slope * 0.5
+                            float wx = x0 + 0.1
+                            float wy = y0 + (lineV - 0.15) * 0.2
+                            if (axisY) {
+                                wx = x0 + (lineV - 0.15) * 0.2
+                                wy = y0 + 0.1
+                            }
+                            int side = 1
+                            if (Raser.Geo.Inside(ring, wx, wy)) { side = 0 }
+                            int o = side
+                            if (!rising) { o = o | 2 }
+                            if (axisY) { o = o | 4 }
+                            int cell = (j + 1) * 66 + (i + 1)
+                            if (owner[cell] >= 0 && owner[cell] != m) { continue }
+                            owner[cell] = m
+                            planOf[cell] = Raser.Plan.Diagonal(n, k, o)
+                        }
+                    }
+                }
+            }
+        }
+
         ColumnPlan Plan(defined int cx, defined int cy) {
             var plan = new Raser.ColumnPlan()
             int lx0 = cx * 64 - this.tile.key.VoxelX
@@ -450,6 +514,10 @@ namespace Raser {
                     }
                 }
             }
+
+            // Schräge Kanten: Diagonalen aus dem Katalog der Bauelemente (Raser.Plan), auch für die Säulen direkt außerhalb
+            defined int planOf[4356]
+            Raser.Voxelizer.FitDiagonals(models, owner, planOf, lx0, ly0)
 
             // Flächen: die höchste Priorität gewinnt, bei gleicher die kleinere ID.
             int areaPriority[4096]
@@ -586,6 +654,16 @@ namespace Raser {
                         plan.ground[c] = ground
                         plan.cellar[c] = ground - bd.cellars * storey
                         plan.shape[c] = Raser.Shape.Make(Raser.Voxelizer.Quarter(r0, roof), Raser.Voxelizer.Quarter(r1, roof), Raser.Voxelizer.Quarter(r2, roof), Raser.Voxelizer.Quarter(r3, roof))
+                        // liegt die Fläche auf der Unterkante des obersten Voxels, ist das darunter das Dach-Voxel
+                        if (Raser.Shape.IsEmpty(plan.shape[c]) && roof > ground) {
+                            roof--
+                            plan.top[c] = roof
+                            plan.shape[c] = Raser.Shape.Make(Raser.Voxelizer.Quarter(r0, roof), Raser.Voxelizer.Quarter(r1, roof), Raser.Voxelizer.Quarter(r2, roof), Raser.Voxelizer.Quarter(r3, roof))
+                        }
+                        plan.rc0[c] = r0
+                        plan.rc1[c] = r1
+                        plan.rc2[c] = r2
+                        plan.rc3[c] = r3
                         // steile Dächer fallen in einer Säule um mehr als ein Voxel: bis zur tiefsten Ecke darunter voll mit Dachmaterial (sonst sieht man
                         // durch das Dach auf die Decken darunter)
                         float lowest = Math.Min(Math.Min(r0, r1), Math.Min(r2, r3))
@@ -601,6 +679,7 @@ namespace Raser {
                         int along = Raser.Grid.FloorMod(cx * 64 + x + cy * 64 + y, 9)
                         if (along >= 3 && along <= 6) { flags = flags | 2 }
                         plan.flags[c] = flags
+                        plan.planShape[c] = planOf[o]
                         if (terrainTop > plan.highest) { plan.highest = terrainTop }
                         if (roof > plan.highest) { plan.highest = roof }
                         continue
@@ -620,8 +699,15 @@ namespace Raser {
                         belowColor = Raser.Palette.Sand
                     }
                     plan.kind[c] = 0
-                    plan.top[c] = terrainTop
-                    plan.shape[c] = Raser.Shape.Make(Raser.Voxelizer.Quarter(h0, terrainTop), Raser.Voxelizer.Quarter(h1, terrainTop), Raser.Voxelizer.Quarter(h2, terrainTop), Raser.Voxelizer.Quarter(h3, terrainTop))
+                    int surface = terrainTop
+                    int tshape = Raser.Shape.Make(Raser.Voxelizer.Quarter(h0, surface), Raser.Voxelizer.Quarter(h1, surface), Raser.Voxelizer.Quarter(h2, surface), Raser.Voxelizer.Quarter(h3, surface))
+                    // liegt die Oberfläche auf der Unterkante des obersten Voxels, ist das darunter die Oberfläche
+                    if (Raser.Shape.IsEmpty(tshape)) {
+                        surface--
+                        tshape = Raser.Shape.Make(Raser.Voxelizer.Quarter(h0, surface), Raser.Voxelizer.Quarter(h1, surface), Raser.Voxelizer.Quarter(h2, surface), Raser.Voxelizer.Quarter(h3, surface))
+                    }
+                    plan.top[c] = surface
+                    plan.shape[c] = tshape
                     plan.material[c] = material
                     plan.color[c] = color
                     plan.below[c] = below
@@ -657,6 +743,11 @@ namespace Raser {
         int belowColor[4096]
         int ground[4096]
         int cellar[4096]        // Gebäude: das unterste Voxel des untersten Kellers (= ground ohne Keller)
+        defined float rc0[4096]         // Gebäude: die Dachhöhen an den vier Ecken der Säule (m) - je Lage eine eigene Form
+        defined float rc1[4096]
+        defined float rc2[4096]
+        defined float rc3[4096]
+        defined int planShape[4096]     // Gebäude: die Grundriss-Form der Säule (Raser.Plan, 0: voll) - für alle Voxel ab dem Boden
         defined int roofLow[4096]       // Gebäude: ab hier bis unter das Dach-Voxel voll mit Dachmaterial (steile Dächer)
         int floor[4096]
         int flags[4096]
@@ -688,6 +779,7 @@ namespace Raser {
                         int i = c + (z << 12)
                         int depth = top - (vz0 + z)
                         if (depth == 0) {
+                            if (Raser.Shape.IsEmpty(this.shape[c])) { continue }      // die Oberfläche liegt auf der Unterkante: Luft
                             chunk.materials[i] = this.material[c]
                             chunk.colors[i] = this.color[c]
                             if (this.shape[c] != 255) { chunk.shapes[i] = this.shape[c] }
@@ -741,14 +833,19 @@ namespace Raser {
                         continue
                     }
                     if (vz == top) {
+                        if (Raser.Shape.IsEmpty(this.shape[c])) { continue }          // die Fläche liegt auf der Unterkante: Luft
                         chunk.materials[i] = this.material[c]
                         chunk.colors[i] = this.color[c]
                         if (this.shape[c] != 255) { chunk.shapes[i] = this.shape[c] }
                         continue
                     }
                     if (vz >= this.roofLow[c] && !wall) {
+                        // unter dem Dach-Voxel: jede Lage mit ihrer eigenen Form aus den Eckhöhen (so schließt die Fläche lückenlos)
+                        int ls = Raser.Shape.Make(Raser.Voxelizer.Quarter(this.rc0[c], vz), Raser.Voxelizer.Quarter(this.rc1[c], vz), Raser.Voxelizer.Quarter(this.rc2[c], vz), Raser.Voxelizer.Quarter(this.rc3[c], vz))
+                        if (Raser.Shape.IsEmpty(ls)) { continue }
                         chunk.materials[i] = this.material[c]
                         chunk.colors[i] = this.color[c]
+                        if (ls != 255) { chunk.shapes[i] = ls }
                         continue
                     }
                     int inStorey = (vz - ground) % this.storey
@@ -763,6 +860,16 @@ namespace Raser {
                     } else if (inStorey == 0) {
                         chunk.materials[i] = concrete
                         chunk.colors[i] = concreteColor
+                    }
+                }
+                // die Grundriss-Form der Säule für alles ab dem Boden (Wand, Fenster, Dach)
+                int ps = this.planShape[c]
+                if (ps != 0) {
+                    for (int z = 0; z <= zEnd; z++) {
+                        int vz = vz0 + z
+                        if (vz < ground) { continue }
+                        int i = c + (z << 12)
+                        if (chunk.materials[i] != 0) { chunk.plans[i] = ps }
                     }
                 }
             }

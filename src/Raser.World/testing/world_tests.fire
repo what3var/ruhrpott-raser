@@ -148,12 +148,14 @@ class VoxelizerTests {
         var layers = v.ChunkLayers()
         Testing.Assert.AreEqual(4, layers[0])
         Testing.Assert.AreEqual(5, layers[1])
-        // Der Boden steigt um 2 cm je Meter nach Osten: bei x = 30,0 .. 30,2 m (Säule 22 im Chunk 2) liegt er bei 60,60 .. 60,604 m,
-        // also im Voxel 303 (z 47 im Chunk 4, der bei Voxel 256 beginnt).
+        // Der Boden steigt um 2 cm je Meter nach Osten: bei x = 30,0 .. 30,2 m (Säule 22 im Chunk 2) liegt er bei 60,60 .. 60,604 m - auf der
+        // Unterkante des Voxels 303 (in Dritteln: 0), also ist das Voxel 302 die Oberfläche (z 46 im Chunk 4, der bei Voxel 256 beginnt), voll.
         var c = v.Generate(new Raser.ChunkKey(1473 * 20 + 2, 22292 * 20 + 3, 4))
-        Testing.Assert.AreEqual(47, VoxelizerTests.Top(c, 22, 10))
-        Testing.Assert.AreEqual(Raser.Material.Grass!int, c.MaterialAt(22, 10, 47))
-        Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(22, 10, 46))
+        Testing.Assert.AreEqual(46, VoxelizerTests.Top(c, 22, 10))
+        Testing.Assert.AreEqual(Raser.Material.Grass!int, c.MaterialAt(22, 10, 46))
+        Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(22, 10, 45))
+        // bei x = 32,4 .. 32,6 m (bis 60,652 m, ein Drittel über der Unterkante): Voxel 303 ist die Oberfläche, geschnitten
+        Testing.Assert.AreEqual(47, VoxelizerTests.Top(c, 34, 10))
         Testing.Assert.IsTrue(c.CountShaped() > 0)
         // Darüber ist nichts: Chunk 5 beginnt bei 64 m.
         Testing.Assert.AreEqual(0, v.Generate(new Raser.ChunkKey(1473 * 20 + 2, 22292 * 20 + 3, 5)).CountFilled())
@@ -278,12 +280,13 @@ class VoxelizerTests {
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
         var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
-        // Die Straße bei y = 0..2 m; bei x = 1 m liegt der Boden bei 60,02 m -> Voxel 300 = z 44.
-        Testing.Assert.AreEqual(Raser.Material.Asphalt!int, c.MaterialAt(5, 5, 44))
-        Testing.Assert.AreEqual(Raser.Material.Gravel!int, c.MaterialAt(5, 5, 43))
+        // Die Straße bei y = 0..2 m; bei x = 1 m liegt der Boden bei 60,02 m - kaum über der Unterkante von Voxel 300, also ist Voxel 299 = z 43
+        // die Oberfläche.
+        Testing.Assert.AreEqual(Raser.Material.Asphalt!int, c.MaterialAt(5, 5, 43))
+        Testing.Assert.AreEqual(Raser.Material.Gravel!int, c.MaterialAt(5, 5, 42))
         // Die Fläche (als Sand) ab y = 11,6 m.
-        Testing.Assert.AreEqual(Raser.Material.Sand!int, c.MaterialAt(5, 62, 44))
-        Testing.Assert.AreEqual(Raser.Material.Grass!int, c.MaterialAt(5, 15, 44))
+        Testing.Assert.AreEqual(Raser.Material.Sand!int, c.MaterialAt(5, 62, 43))
+        Testing.Assert.AreEqual(Raser.Material.Grass!int, c.MaterialAt(5, 15, 43))
     }
 
     [Test "Overrides ändern Daten und Hash"]
