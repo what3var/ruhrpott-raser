@@ -26,7 +26,7 @@ Rohdaten ──► Zwischenlayer (semantisch, vektorbasiert) ──► Voxel-Chu
 |---|---|
 | NRW Open Data: DGM1 | Geländemodell mit 1-m-Raster |
 | NRW Open Data: 3D-Gebäudemodelle LoD2 | Grundrisse, Höhen, Dachformen |
-| NRW Open Data: DOP | Luftbilder für Dach- und Bodenfarben |
+| NRW Open Data: DOP | Luftbilder für Dach- und Bodenfarben; Gegencheck: Untergründe genauer bestimmen, fehlende Gebäude als Patches (Override-Layer) |
 | OpenStreetMap | Straßen, Landnutzung, POIs |
 | Mapillary / Panoramax | Straßenfotos als Vorlage für Fassaden |
 

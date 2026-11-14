@@ -10,6 +10,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Voxel mit diagonalen Höhen-Schnitten (vier Eckhöhen, geteilt mit Nachbarn)
 - [x] Override-Layer + Generator-Versionierung pro Kachel (von Anfang an, nicht nachrüsten)
 - [x] Export/Viewer zur Kontrolle (noch ohne eigenen Renderer): Draufsicht als PNG, Ausschnitte als OBJ
+- [ ] Gegencheck mit Luftbildern (NRW DOP, Orthofotos): Untergründe genauer bestimmen (Rasen, Pflaster, Asphalt, Schotter, Wasser - wo OSM nichts oder zu grob sagt) und fehlende Gebäude finden (im Bild ein Dach, in LoD2 nichts: z. B. Neubauten) - daraus Vorschläge als Patches im Override-Layer, nicht direkt in den Rohdaten; mit nDOM/DGM-Differenz für die Höhe
 
 ## M2: Renderer
 - [x] Chunk-Meshing inkl. Höhen-Schnitten (`Raser.Mesh`: Greedy Meshing, schräge Oberseiten, Trapez-Seiten, Glas/Wasser getrennt)
