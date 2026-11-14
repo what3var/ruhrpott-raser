@@ -101,11 +101,24 @@ namespace Raser {
         // Voll und undurchsichtig in allen 64³ Voxeln (ohne Schnitte)?
         static defined bool Solid(Chunk c) {
             if (c == undefined || c.IsEmpty || c.shapes.Count > 0) { return false }
-            for (int i = 0; i < 262144; i++) {
-                int m = c.materials[i]
-                if (m == 0 || m == 6 || m == 11) { return false }
+            return c.materials.IndexOf(0) < 0 && c.materials.IndexOf(6) < 0 && c.materials.IndexOf(11) < 0
+        }
+
+        // Je Schicht z: 1 = nur Luft, 2 = nur feste, undurchsichtige, ungeschnittene Voxel, 0 = gemischt (mit IndexOf/Compare, ohne Schleife über die Voxel).
+        static int[] LayerStates(byte mats[], byte cut[], int cutsPerLayer[]) {
+            int states[64]
+            byte air[4096]
+            for (int z = 0; z < 64; z++) {
+                byte layer[] = mats.Slice(z << 12, 4096)
+                states[z] = 0
+                if (layer.Compare(air) == 0) {
+                    states[z] = 1
+                    continue
+                }
+                if (cutsPerLayer[z] > 0) { continue }
+                if (layer.IndexOf(0) < 0 && layer.IndexOf(11) < 0 && layer.IndexOf(6) < 0) { states[z] = 2 }
             }
-            return true
+            return states
         }
 
         // Ein durchsichtiges Material: Glas und Wasser.
@@ -155,14 +168,30 @@ namespace Raser {
             byte mats[] = this.center.materials
             byte cols[] = this.center.colors
             byte cut[262144]
-            foreach (pair in this.center.shapes) { cut[pair.Key] = 1 }
+            int cutsPerLayer[64]
+            for (int z = 0; z < 64; z++) { cutsPerLayer[z] = 0 }
+            foreach (pair in this.center.shapes) {
+                cut[pair.Key] = 1
+                cutsPerLayer[pair.Key >> 12] = cutsPerLayer[pair.Key >> 12] + 1
+            }
+            var states = Raser.Mesher.LayerStates(mats, cut, cutsPerLayer)
             // Richtungen: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z
             for (int dir = 0; dir < 6; dir++) {
                 int axis = dir / 2
                 int sign = (dir % 2) * 2 - 1
                 for (int s = 0; s < 64; s++) {
                     bool found = false
+                    // nach z: eine Schicht aus Luft hat keine Flächen, eine feste nur dort, wo die Nachbarschicht nicht fest ist
+                    if (axis == 2) {
+                        if (states[s] == 1) { continue }
+                        if (states[s] == 2 && s + sign >= 0 && s + sign < 64 && states[s + sign] == 2) { continue }
+                    }
                     for (int v = 0; v < 64; v++) {
+                        // nach x/y ist v die Schicht z: aus Luft, oder fest mit dem Nachbarn im selben Chunk - keine Fläche in dieser Zeile
+                        if (axis < 2 && (states[v] == 1 || (states[v] == 2 && s + sign >= 0 && s + sign < 64))) {
+                            for (int u = 0; u < 64; u++) { mask[v * 64 + u] = 0 }
+                            continue
+                        }
                         for (int u = 0; u < 64; u++) {
                             int x = 0
                             int y = 0

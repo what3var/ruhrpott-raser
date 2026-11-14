@@ -3,9 +3,12 @@
 //   raser-viewer [--world world] --at ost,nord [--radius 2] [--yaw 30] [--pitch -35] [--distance 60] [--size 960x600]
 //   raser-viewer ... --shot bild.png      ein Bild ohne Fenster
 //   raser-viewer ... --opaque             ohne Glas und Wasser
+//   raser-viewer ... --fly 300 [--speed 15] [--fps 10] [--budget 1] [--shot ende.png]
+//                                         ohne Fenster geradeaus fliegen, nachladen und rendern; die Zeiten am Ende
 //
 // Im Fenster: W/S vor und zurück, A/D seitwärts, Q/E hoch und runter, Pfeile drehen, Umschalt schneller.
 // Die Chunk-Säulen im Umkreis (radius in Chunks, 12,8 m) werden geladen und mit Raser.Mesh vernetzt; je Chunk und Farbe ein scene3d-Modell.
+// Bewegt sich die Kamera, kommen je Bild die nächsten fehlenden Säulen dazu (eine im Fenster), und Säulen weiter als radius + 1 werden entladen.
 // Szene: x = Ost, y = oben, z = -Nord (scene3d: Y oben, die Kamera blickt nach -Z), Ursprung beim Zielpunkt.
 #import "windows"
 #import "scene3d"
@@ -36,26 +39,40 @@ class Options {
     string Get(string name, string fallback) { return this.values.Get(name, fallback) }
 }
 
+// Die Welt um die Kamera, in Chunk-Säulen (12,8 x 12,8 m, alle Höhen): geladen, vernetzt, als scene3d-Objekte in der Szene.
 class WorldView {
     Raser.FileTileStore store
-    Dictionary<string, Raser.Chunk> chunks
-    List<Model> models
     Scene scene
+    Dictionary<string, Raser.Chunk> chunks            // geladene Chunks (auch Nachbarn für das Vernetzen)
+    Dictionary<string, List<int>> layers               // je Säule die Chunk-Ebenen, die es gibt (aus den Manifesten)
+    HashSet<string> manifests                          // Kacheln, deren Manifest gelesen ist
+    Dictionary<string, List<Model>> columnModels       // je Säule die Netze (gehören hierher)
+    Dictionary<string, List<Object>> columnObjects     // je Säule die Objekte (gehören der Szene)
     defined float originE
     defined float originN
     defined float originZ
+    defined int radius
     defined int objects
-    defined bool opaqueOnly
     defined int triangles
+    defined int loadedColumns
+    defined int unloadedColumns
+    defined bool opaqueOnly
+    defined int loadTicks       // Zeit für Chunks lesen und entpacken
+    defined int meshTicks       // Zeit für das Vernetzen
+    defined int modelTicks      // Zeit für die scene3d-Modelle
 
-    construct(Raser.FileTileStore store, Scene scene, defined float e, defined float n, defined float z) {
+    construct(Raser.FileTileStore store, Scene scene, defined float e, defined float n, defined float z, defined int radius) {
         this.store = store
         this.scene = scene
         this.chunks = new Dictionary<string, Raser.Chunk>()
-        this.models = new List<Model>()
+        this.layers = new Dictionary<string, List<int>>()
+        this.manifests = new HashSet<string>()
+        this.columnModels = new Dictionary<string, List<Model>>()
+        this.columnObjects = new Dictionary<string, List<Object>>()
         this.originE = e
         this.originN = n
         this.originZ = z
+        this.radius = radius
     }
 
     Raser.Chunk ChunkAt(defined int cx, defined int cy, defined int cz) {
@@ -67,44 +84,105 @@ class WorldView {
         return c
     }
 
-    // Lädt und vernetzt die Chunk-Säulen im Umkreis von (e, n).
-    undefined Load(defined float e, defined float n, defined int radius) {
-        int ccx = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(e), 64)
-        int ccy = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(n), 64)
-        var wanted = new HashSet<string>()
-        for (int cy = ccy - radius; cy <= ccy + radius; cy++) {
-            for (int cx = ccx - radius; cx <= ccx + radius; cx++) { wanted.Add(cx + "_" + cy) }
-        }
-        var keys = new List<Raser.ChunkKey>()
-        var tiles = new HashSet<string>()
-        for (int cy = ccy - radius; cy <= ccy + radius; cy++) {
-            for (int cx = ccx - radius; cx <= ccx + radius; cx++) { tiles.Add(new Raser.ChunkKey(cx, cy, 0).Tile().ToString()) }
-        }
-        foreach (t in tiles) {
-            var m = this.store.LoadManifest(Raser.TileKey.Parse(t))
-            if (m == undefined) { continue }
-            foreach (s in m.keys) {
-                var k = Raser.ChunkKey.Parse(s)
-                if (wanted.Contains(k.x + "_" + k.y)) { keys.Add(take k) }
+    // Die Chunk-Ebenen einer Säule (leer: dort gibt es nichts).
+    List<int> LayersOf(defined int cx, defined int cy) {
+        string key = cx + "_" + cy
+        string tile = new Raser.ChunkKey(cx, cy, 0).Tile().ToString()
+        if (!this.manifests.Contains(tile)) {
+            this.manifests.Add(tile)
+            var m = this.store.LoadManifest(Raser.TileKey.Parse(tile))
+            if (m != undefined) {
+                foreach (s in m.keys) {
+                    var k = Raser.ChunkKey.Parse(s)
+                    string col = k.x + "_" + k.y
+                    if (!this.layers.ContainsKey(col)) { this.layers[col] = new List<int>() }
+                    this.layers[col].Add(k.z)
+                }
             }
         }
-        int done = 0
-        foreach (k in keys) {
-            var chunk = this.ChunkAt(k.x, k.y, k.z)
+        if (!this.layers.ContainsKey(key)) { this.layers[key] = new List<int>() }
+        return this.layers[key]
+    }
+
+    // Lädt und vernetzt eine Säule.
+    undefined LoadColumn(defined int cx, defined int cy) {
+        string col = cx + "_" + cy
+        this.columnModels[col] = new List<Model>()
+        this.columnObjects[col] = new List<Object>()
+        foreach (z in this.LayersOf(cx, cy)) {
+            int t0 = DateTime.Now.Ticks
+            var chunk = this.ChunkAt(cx, cy, z)
             if (chunk == undefined) { continue }
-            int kx = k.x
-            int ky = k.y
-            int kz = k.z
-            var mesh = new Raser.Mesher(chunk, this.ChunkAt(kx - 1, ky, kz), this.ChunkAt(kx + 1, ky, kz), this.ChunkAt(kx, ky - 1, kz), this.ChunkAt(kx, ky + 1, kz), this.ChunkAt(kx, ky, kz - 1), this.ChunkAt(kx, ky, kz + 1)).Build()
-            this.AddMesh(k, mesh.opaque, 1.0)
-            if (!this.opaqueOnly) { this.AddMesh(k, mesh.transparent, 0.45) }
-            done++
-            if (done % 20 == 0) { print("  " + done + "/" + keys.Count + " Chunks, " + this.triangles + " Dreiecke") }
+            var w = this.ChunkAt(cx - 1, cy, z)
+            var e = this.ChunkAt(cx + 1, cy, z)
+            var so = this.ChunkAt(cx, cy - 1, z)
+            var no = this.ChunkAt(cx, cy + 1, z)
+            var be = this.ChunkAt(cx, cy, z - 1)
+            var ab = this.ChunkAt(cx, cy, z + 1)
+            int t1 = DateTime.Now.Ticks
+            var mesh = new Raser.Mesher(chunk, w, e, so, no, be, ab).Build()
+            int t2 = DateTime.Now.Ticks
+            var key = new Raser.ChunkKey(cx, cy, z)
+            this.AddMesh(col, key, mesh.opaque, 1.0)
+            if (!this.opaqueOnly) { this.AddMesh(col, key, mesh.transparent, 0.45) }
+            int t3 = DateTime.Now.Ticks
+            this.loadTicks = this.loadTicks + (t1 - t0)
+            this.meshTicks = this.meshTicks + (t2 - t1)
+            this.modelTicks = this.modelTicks + (t3 - t2)
         }
+        this.loadedColumns++
+    }
+
+    // Nimmt eine Säule aus der Szene und gibt ihre Netze und Chunks frei.
+    undefined UnloadColumn(string col) {
+        foreach (o in this.columnObjects[col]) {
+            this.triangles = this.triangles - o.Triangles
+            this.objects--
+            this.scene.Remove(o)
+        }
+        this.columnObjects.Remove(col)
+        this.columnModels.Remove(col)
+        var parts = col.Split("_")
+        int cx = parts[0].ToInt()
+        int cy = parts[1].ToInt()
+        foreach (z in this.LayersOf(cx, cy)) { this.chunks.Remove(cx + "_" + cy + "_" + z) }
+        this.unloadedColumns++
+    }
+
+    // Lädt höchstens `budget` fehlende Säulen im Umkreis von (e, n), die nächsten zuerst (Ringe um die Säule der Kamera), und entlädt Säulen
+    // weiter weg als radius + 1. Gibt zurück, wie viele noch fehlen.
+    defined int Update(defined float e, defined float n, defined int budget) {
+        int ccx = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(e), 64)
+        int ccy = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(n), 64)
+        var far = new List<string>()
+        foreach (pair in this.columnObjects) {
+            var p = pair.Key.Split("_")
+            int dx = Math.Abs(p[0].ToInt() - ccx)
+            int dy = Math.Abs(p[1].ToInt() - ccy)
+            if (dx > this.radius + 1 || dy > this.radius + 1) { far.Add(pair.Key) }
+        }
+        foreach (col in far) { this.UnloadColumn(col) }
+        int missing = 0
+        for (int r = 0; r <= this.radius; r++) {
+            for (int dy = -r; dy <= r; dy++) {
+                for (int dx = -r; dx <= r; dx++) {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dy)) != r) { continue }
+                    string col = (ccx + dx) + "_" + (ccy + dy)
+                    if (this.columnObjects.ContainsKey(col)) { continue }
+                    if (budget > 0) {
+                        this.LoadColumn(ccx + dx, ccy + dy)
+                        budget--
+                    } else {
+                        missing++
+                    }
+                }
+            }
+        }
+        return missing
     }
 
     // Ein scene3d-Objekt je Farbe.
-    undefined AddMesh(Raser.ChunkKey k, Raser.MeshPart part, defined float opacity) {
+    undefined AddMesh(string col, Raser.ChunkKey k, Raser.MeshPart part, defined float opacity) {
         if (part.Count == 0) { return }
         float ox = k.VoxelX * 0.2 - this.originE
         float oy = k.VoxelY * 0.2 - this.originN
@@ -120,46 +198,59 @@ class WorldView {
             // höchstens 16.000 Vierecke (64.000 Ecken) je Netz: scene3d hält die Indizes in 16 Bit
             for (int first = 0; first < all.Count; first = first + 16000) {
                 int count = Math.Min(16000, all.Count - first)
-                this.AddQuads(part, all, first, count, pair.Key, opacity, ox, oy, oz)
+                this.AddQuads(col, part, all, first, count, pair.Key, opacity, ox, oy, oz)
             }
         }
     }
 
-    undefined AddQuads(Raser.MeshPart part, List<int> all, defined int first, defined int n, defined int color, defined float opacity, defined float ox, defined float oy, defined float oz) {
-        {
-            float positions[] = new float[n * 12]
-            float uvs[] = new float[n * 8]
-            int indices[] = new int[n * 6]
-            for (int i = 0; i < n; i++) {
-                int q = all[first + i]
-                for (int c = 0; c < 4; c++) {
-                    int src = q * 12 + c * 3
-                    int dst = i * 12 + c * 3
-                    positions[dst] = ox + part.positions[src]
-                    positions[dst + 1] = oz + part.positions[src + 2]
-                    positions[dst + 2] = -(oy + part.positions[src + 1])
-                    uvs[i * 8 + c * 2] = 0.0
-                    uvs[i * 8 + c * 2 + 1] = 0.0
-                }
-                // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
-                indices[i * 6] = i * 4
-                indices[i * 6 + 1] = i * 4 + 1
-                indices[i * 6 + 2] = i * 4 + 2
-                indices[i * 6 + 3] = i * 4
-                indices[i * 6 + 4] = i * 4 + 2
-                indices[i * 6 + 5] = i * 4 + 3
+    undefined AddQuads(string col, Raser.MeshPart part, List<int> all, defined int first, defined int n, defined int color, defined float opacity, defined float ox, defined float oy, defined float oz) {
+        float positions[] = new float[n * 12]
+        float uvs[] = new float[n * 8]
+        int indices[] = new int[n * 6]
+        for (int i = 0; i < n; i++) {
+            int q = all[first + i]
+            for (int c = 0; c < 4; c++) {
+                int src = q * 12 + c * 3
+                int dst = i * 12 + c * 3
+                positions[dst] = ox + part.positions[src]
+                positions[dst + 1] = oz + part.positions[src + 2]
+                positions[dst + 2] = -(oy + part.positions[src + 1])
+                uvs[i * 8 + c * 2] = 0.0
+                uvs[i * 8 + c * 2 + 1] = 0.0
             }
-            var model = Model.FromArrays(positions, uvs, indices)
-            var obj = new Object(model)
-            obj.KeepMeshCoordinates = true          // die Koordinaten des Netzes sind Welt-Koordinaten (Ursprung des Netzes an der Position 0, 0, 0)
-            this.models.Add(take model)
-            int rgb = Raser.Palette.Rgb(color)
-            obj.Color = S3D.Rgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255)
-            if (opacity < 1.0) { obj.Opacity = opacity }
-            this.scene.Add(take obj)
-            this.objects++
-            this.triangles = this.triangles + n * 2
+            // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
+            indices[i * 6] = i * 4
+            indices[i * 6 + 1] = i * 4 + 1
+            indices[i * 6 + 2] = i * 4 + 2
+            indices[i * 6 + 3] = i * 4
+            indices[i * 6 + 4] = i * 4 + 2
+            indices[i * 6 + 5] = i * 4 + 3
         }
+        var model = Model.FromArrays(positions, uvs, indices)
+        var obj = new Object(model)
+        obj.KeepMeshCoordinates = true          // die Koordinaten des Netzes sind Welt-Koordinaten (Ursprung des Netzes an der Position 0, 0, 0)
+        this.columnModels[col].Add(take model)
+        int rgb = Raser.Palette.Rgb(color)
+        obj.Color = S3D.Rgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255)
+        if (opacity < 1.0) { obj.Opacity = opacity }
+        this.columnObjects[col].Add(obj)
+        this.scene.Add(take obj)
+        this.objects++
+        this.triangles = this.triangles + n * 2
+    }
+
+    // Wohin die Kamera am Boden blickt (Ost, Nord): der Schnitt des Blicks mit der Höhe des Ursprungs, höchstens 150 m vor der Kamera
+    // (beim Blick nach oben oder geradeaus: 150 m). Um diesen Punkt wird geladen.
+    float[] WorldOf(Camera cam) {
+        float yaw = cam.RotationY / 1deg * Math.PI / 180.0
+        float pitch = cam.RotationX / 1deg * Math.PI / 180.0
+        float height = cam.Y / 1m
+        float ahead = 150.0
+        if (pitch < -0.01 && height > 0.0) { ahead = Math.Min(150.0, height / Math.Tan(-pitch)) }
+        float x = cam.X / 1m - Math.Sin(yaw) * ahead
+        float z = cam.Z / 1m - Math.Cos(yaw) * ahead
+        float result[] = [this.originE + x, this.originN - z]
+        return result
     }
 }
 
@@ -204,12 +295,48 @@ class Viewer {
         cam.SetPosition(cx * 1m, cy * 1m, cz * 1m)
         cam.LookAt(0m, 0m, 0m)
         scene.Add(cam)
-        var view = new WorldView(store, scene, e, n, ground)
+        var view = new WorldView(store, scene, e, n, ground, radius)
+        view.opaqueOnly = options.Get("opaque", "") != ""
         int start = DateTime.Now.Ticks
         print("Lade Chunks um " + e + ", " + n + " (Radius " + radius + ")")
-        view.opaqueOnly = options.Get("opaque", "") != ""
-        view.Load(e, n, radius)
+        var here = view.WorldOf(cam)
+        view.Update(here[0], here[1], 1000000)
         print(view.objects + " Objekte, " + view.triangles + " Dreiecke in " + ((DateTime.Now.Ticks - start) / 10000000.0) + " s")
+
+        // Ein Flug ohne Fenster: geradeaus in Blickrichtung, je Bild nachladen (höchstens `budget` Säulen) und rendern; am Ende die Zeiten.
+        float fly = options.Get("fly", "0").ToFloat()
+        if (fly > 0.0) {
+            float speed = options.Get("speed", "15").ToFloat()
+            int fps = options.Get("fps", "10").ToInt()
+            int budget = options.Get("budget", "1").ToInt()
+            float step = speed / fps
+            int frames = Math.Ceiling(fly / step)!int
+            float h = cam.RotationY / 1deg * Math.PI / 180.0
+            float fx = -Math.Sin(h)
+            float fz = -Math.Cos(h)
+            int renderTicks = 0
+            int updateTicks = 0
+            int worstUpdate = 0
+            int worstRender = 0
+            int behind = 0
+            for (int f = 0; f < frames; f++) {
+                cam.SetPosition(cam.X + fx * step * 1m, cam.Y, cam.Z + fz * step * 1m)
+                int t0 = DateTime.Now.Ticks
+                var w = view.WorldOf(cam)
+                int missing = view.Update(w[0], w[1], budget)
+                if (missing > 0) { behind++ }
+                int t1 = DateTime.Now.Ticks
+                cam.Render()
+                int t2 = DateTime.Now.Ticks
+                updateTicks = updateTicks + (t1 - t0)
+                renderTicks = renderTicks + (t2 - t1)
+                worstUpdate = Math.Max(worstUpdate, t1 - t0)
+                worstRender = Math.Max(worstRender, t2 - t1)
+            }
+            print(frames + " Bilder über " + fly + " m: Nachladen im Mittel " + (updateTicks / frames / 10000.0) + " ms (höchstens " + (worstUpdate / 10000.0) + " ms), Rendern " + (renderTicks / frames / 10000.0) + " ms (höchstens " + (worstRender / 10000.0) + " ms)")
+            print("je Säule: Chunks lesen " + (view.loadTicks / view.loadedColumns / 10000.0) + " ms, vernetzen " + (view.meshTicks / view.loadedColumns / 10000.0) + " ms, scene3d-Modelle " + (view.modelTicks / view.loadedColumns / 10000.0) + " ms")
+            print(view.loadedColumns + " Säulen geladen, " + view.unloadedColumns + " entladen, jetzt " + view.objects + " Objekte mit " + view.triangles + " Dreiecken; in " + behind + " Bildern fehlten noch Säulen")
+        }
 
 
         string shot = options.Get("shot", "")
@@ -291,9 +418,11 @@ class Viewer {
             }
             if (rise) { my = my + 1.0 }
             if (sink) { my = my - 1.0 }
-            cam.Move(mx * speed * dt * 1m, my * speed * dt * 1m, mz * speed * dt * 1m)
+            cam.SetPosition(cam.X + mx * speed * dt * 1m, cam.Y + my * speed * dt * 1m, cam.Z + mz * speed * dt * 1m)
             cam.RotationY = heading * 1deg
             cam.RotationX = tilt * 1deg
+            var w = view.WorldOf(cam)
+            view.Update(w[0], w[1], 1)
             cam.Render()
         }
         return 0

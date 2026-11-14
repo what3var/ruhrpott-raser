@@ -47,7 +47,10 @@ namespace Raser {
             return this.colors[Raser.Chunk.Index(x, y, z)]
         }
 
-        defined int ShapeAt(defined int x, defined int y, defined int z) { return this.shapes.Get(Raser.Chunk.Index(x, y, z), 255) }
+        defined int ShapeAt(defined int x, defined int y, defined int z) {
+            if (this.shapes.Count == 0) { return 255 }
+            return this.shapes.Get(Raser.Chunk.Index(x, y, z), 255)
+        }
 
         // Setzt ein Voxel. Luft löscht Farbe, Form und Schaden.
         undefined Set(defined int x, defined int y, defined int z, defined int material, defined int color, defined int shape = 255) {

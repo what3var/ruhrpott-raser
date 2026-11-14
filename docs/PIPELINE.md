@@ -114,7 +114,19 @@ src/Raser.Viewer/bin/linux-rel/Raser.Viewer --world world --at 376130,5704900 --
 Je Chunk und Farbe wird ein scene3d-Modell aus `Model.FromArrays` gebaut (Anker auf der unteren Ecke, damit die Lage stimmt). Um das Rathaus (Radius 2, 5 × 5 Chunk-Säulen)
 sind das 273 Objekte mit rund 1 Mio. Dreiecken; ein Bild von 960 × 600 braucht rund 250 ms im Software-Renderer, Laden und Vernetzen rund 10 s.
 
+**Nachladen.** Geladen wird um den Punkt, auf den die Kamera am Boden blickt (höchstens 150 m voraus), in Ringen um seine Chunk-Säule; je Bild kommen
+höchstens `--budget` Säulen dazu, Säulen weiter als Radius + 1 werden entladen (Objekte, Netze, Chunks). Ohne Fenster misst `--fly` einen Flug:
+
+```bash
+Raser.Viewer --world world --at 376130,5704900 --radius 3 --distance 60 --pitch -25 --yaw 200 --size 480x300 --fly 300 --speed 15 --fps 10 --shot ende.png
+```
+
+Gemessen (300 m, 200 Bilder): 238 Säulen geladen, 182 entladen; je Säule Chunks lesen rund 50 ms, vernetzen rund 170 ms, scene3d-Modelle rund 45 ms;
+ein Bild von 480 × 300 rund 230 ms. Mit einer Säule je Bild kommt das Laden bei 15 m/s nicht nach - es gehört in einen eigenen Thread.
+
 ![Betrachter](images/viewer-rathaus.png)
+
+![Nach 300 m Flug](images/viewer-flug.png)
 
 ## Offen (für M1 und danach)
 
