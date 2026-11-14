@@ -176,10 +176,22 @@ namespace Raser {
         byte[] QuietLayers(byte mats[]) {
             byte quiet[] = new byte[64]
             if (!this.skipTerrain) { return quiet }
-            var hard = new List<int>()
-            if (this.hardColumns != undefined) {
+            // die harten Säulen als typisiertes Array (nativ dicht gepackt - eine List<int> kostet hier das Zehnfache)
+            defined int hardCount = 0
+            byte hc[] = this.hardColumns
+            if (hc != undefined) {
                 for (int k = 0; k < 4096; k++) {
-                    if (this.hardColumns[k] != 0) { hard.Add(k) }
+                    if (hc[k] != 0) { hardCount++ }
+                }
+            }
+            int hard[] = new int[hardCount]
+            if (hardCount > 0) {
+                defined int at = 0
+                for (int k = 0; k < 4096; k++) {
+                    if (hc[k] != 0) {
+                        hard[at] = k
+                        at++
+                    }
                 }
             }
             for (int z = 0; z < 64; z++) {
@@ -189,8 +201,8 @@ namespace Raser {
                     if (layer.IndexOf(m) >= 0) { q = false }
                 }
                 if (q) {
-                    foreach (k in hard) {
-                        if (layer[k] != 0) {
+                    for (int h = 0; h < hardCount; h++) {
+                        if (layer[hard[h]] != 0) {
                             q = false
                             break
                         }
@@ -287,7 +299,20 @@ namespace Raser {
             word occ[16384]
             word emitFull[16384]
             word emitCut[16384]
-            for (int z = 0; z < 64; z++) {
+            // je Zeile die Bits der harten Säulen (mit skipTerrain bringen nur dort Gelände-Voxel Flächen)
+            word hardRow[256]
+            byte hc[] = this.hardColumns
+            if (this.skipTerrain && hc != undefined) {
+                for (int y = 0; y < 64; y++) {
+                    for (int k = 0; k < per; k++) {
+                        word hb = 0
+                        for (int b = 0; b < wb; b++) {
+                            if (hc[k * wb + b + (y << 6)] != 0) { hb = hb | (one << b) }
+                        }
+                        hardRow[y * per + k] = hb
+                    }
+                }
+            }            for (int z = 0; z < 64; z++) {
                 if (states[z] == 1) { continue }
                 bool q = quiet[z] != 0
                 if (states[z] == 2 && (q || !this.skipTerrain)) {
@@ -302,29 +327,28 @@ namespace Raser {
                     defined int r = y + (z << 6)
                     defined int at = r << 6
                     for (int k = 0; k < per; k++) {
-                        word na = 0
-                        word oc = 0
-                        word ef = 0
-                        word ec = 0
+                        word na = 0         // nicht Luft
+                        word tb = 0         // Gelände (Material 1..8)
+                        word cb = 0         // geschnitten
+                        word tr = 0         // durchsichtig
+                        defined int i0 = at + k * wb
                         for (int b = 0; b < wb; b++) {
-                            defined int i = at + k * wb + b
-                            defined int m = mats[i]
+                            defined int m = mats[i0 + b]
                             if (m == 0) { continue }
                             word bit = one << b
                             na = na | bit
-                            bool skip = q || (this.skipTerrain && m <= 8 && this.Skips(i))
-                            if (cut[i] == 0) {
-                                if (m != 11 && m != 6) { oc = oc | bit }
-                                if (!skip) { ef = ef | bit }
-                            } else if (!skip) {
-                                ec = ec | bit
-                            }
+                            if (m <= 8) { tb = tb | bit }
+                            if (m == 11 || m == 6) { tr = tr | bit }
+                            if (cut[i0 + b] != 0) { cb = cb | bit }
                         }
+                        // was Flächen bringt: alles außer der stillen Schicht; mit skipTerrain Gelände nur in den harten Säulen
+                        word emits = full
+                        if (q) { emits = 0 } else if (this.skipTerrain) { emits = ~tb | hardRow[y * per + k] }
                         defined int w = r * per + k
                         nonair[w] = na
-                        occ[w] = oc
-                        emitFull[w] = ef
-                        emitCut[w] = ec
+                        occ[w] = na & ~tr & ~cb
+                        emitFull[w] = na & ~cb & emits
+                        emitCut[w] = na & cb & emits
                     }
                 }
             }

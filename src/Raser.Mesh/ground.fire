@@ -31,18 +31,21 @@ namespace Raser {
         // Nimmt einen Chunk der Säule auf (die Chunks einer Säule in beliebiger Reihenfolge).
         undefined Add(Chunk c) {
             if (c == undefined || c.IsEmpty) { return }
-            int vz0 = c.key.VoxelZ
+            defined int vz0 = c.key.VoxelZ
             byte mats[] = c.materials
+            // über lokale Namen der Felder: so schreibt der native Code direkt in die gepackten Arrays
+            int top[] = this.terrainTop
+            int low[] = this.structureLow
             for (int z = 0; z < 64; z++) {
-                int vz = vz0 + z
-                int at = z << 12
+                defined int vz = vz0 + z
+                defined int at = z << 12
                 for (int k = 0; k < 4096; k++) {
-                    int m = mats[at + k]
+                    defined int m = mats[at + k]
                     if (m == 0) { continue }
                     if (m <= 8) {
-                        if (vz > this.terrainTop[k]) { this.terrainTop[k] = vz }
-                    } else if (vz < this.structureLow[k]) {
-                        this.structureLow[k] = vz
+                        if (vz > top[k]) { top[k] = vz }
+                    } else if (vz < low[k]) {
+                        low[k] = vz
                     }
                 }
             }
@@ -52,18 +55,20 @@ namespace Raser {
         // die Rasterhöhen aus fm.
         byte[] Hard(FarMesher fm, defined float x0, defined float y0) {
             byte cells[256]
+            int tops[] = this.terrainTop
+            int lows[] = this.structureLow
             for (int y = 0; y < 64; y++) {
                 for (int x = 0; x < 64; x++) {
                     int k = x + (y << 6)
                     int cell = (x >> 2) + ((y >> 2) << 4)
                     if (cells[cell] != 0) { continue }
                     float g = fm.GroundAt(x0 + x * 0.2 + 0.1, y0 + y * 0.2 + 0.1)
-                    bool hard = this.structureLow[k] * 0.2 <= g + 0.2
+                    bool hard = lows[k] * 0.2 <= g + 0.2
                     if (!hard) {
-                        if (this.terrainTop[k] < -999999) {
+                        if (tops[k] < -999999) {
                             hard = true
                         } else {
-                            float top = (this.terrainTop[k] + 1) * 0.2
+                            float top = (tops[k] + 1) * 0.2
                             hard = top > g + this.tolerance || top < g - this.tolerance
                         }
                     }
