@@ -13,7 +13,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 
 ## M2: Renderer
 - [x] Chunk-Meshing inkl. Höhen-Schnitten (`Raser.Mesh`: Greedy Meshing, schräge Oberseiten, Trapez-Seiten, Glas/Wasser getrennt)
-- [ ] Fahrbare Kamera durch die Testregion (`Raser.Viewer` mit scene3d: fliegende Kamera, Nachladen und Entladen von Chunk-Säulen um den Blickpunkt, `--shot`, `--fly` mit Zeiten; nahe Blöcke in Worker-Threads, ferne Stufe im Hauptprogramm; 83 m/s mit der fernen Stufe; offen: die nahe Stufe für Tempo - schneller vernetzen, Netze vorab speichern, mittlere Stufe)
+- [ ] Fahrbare Kamera durch die Testregion (`Raser.Viewer` mit scene3d: fliegende Kamera, Nachladen und Entladen von Chunk-Säulen um den Blickpunkt, `--shot`, `--fly` mit Zeiten; nahe Blöcke in Worker-Threads, ferne Stufe im Hauptprogramm; 83 m/s mit der fernen Stufe; Vorrat nach freiem Speicher, Vorausladen im Stillstand; offen: die nahe Stufe für Tempo - schneller vernetzen, Netze vorab speichern, mittlere Stufe)
 - [ ] Detailstufen nach Entfernung: Voxel nah (Stufe 0), gröbere Voxel (Stufen 1-2), fern direkt aus dem Zwischenlayer (Höhenraster-Netz, Gebäude aus Grundriss und Dachflächen) - Stufe 0 und fern gebaut (`Raser.FarMesher`), mittlere Stufen offen
 - [ ] Laden entlang der Route: Kegel in Fahrtrichtung, Nähe-Radius nach Tempo, grob vor fein, Korridor vorab bei bekanntem Ziel; Ziel: Autobahn mit 250-300 km/h - grob vor fein und Ladepunkt voraus gebaut; 83 m/s halten die fernen Stufen (Messflug); offen: Nähe-Radius nach Tempo, Korridor vorab
 - [x] Untergrund glatt: das Gelände ist in jeder Stufe ein Netz aus dem Höhenraster (mit Diagonalen), Voxel nur für das, was darauf steht; hart (Voxel) nur, wo etwas hineingreift

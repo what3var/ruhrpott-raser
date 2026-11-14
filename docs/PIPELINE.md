@@ -170,6 +170,14 @@ Textur (die Farbe steckt in den Texturkoordinaten):
 - **Fern** (`--far`): `Raser.FarMesher` baut den Block direkt aus dem Zwischenlayer - Gelände als Raster (`--spacing`, Standard 3,2 m, ab dem dritten Ring
   doppelt so grob) mit den Farben der Flächen und Straßen, Gebäude als Wände bis unter die Dachfläche (in Stücken von höchstens 2 m, so folgen sie Giebeln)
   und die LoD2-Dachflächen (trianguliert). Rund 6 ms je Block.
+- **Vorrat:** Was aus den Radien fällt, wird nicht verworfen. Seine Netze bleiben (ohne Objekt in der Szene - auch versteckte Objekte kosten beim
+  Rendern) und sind wieder da, wenn der Block zurück in den Radius kommt. Steht der Ladepunkt (eine halbe Sekunde im selben Block) oder beim Start,
+  wird über die Radien hinaus vorausgeladen: die ferne Stufe `--far-ahead` Ringe weiter (Standard: noch einmal `far`), die nahe `--near-ahead` Ringe
+  (Standard 2, in den Workern). Entladen wird erst, wenn weniger als `--min-free` Prozent des Speichers frei sind (Standard 20) oder der Viewer mehr als
+  `--memory-mb` belegt: dann je Sekunde ein Viertel des Vorrats, das Entfernteste zuerst, nahe Stufen vor ganzen Blöcken. Den Speicher liest der Viewer
+  unter Linux aus `/proc` (fire hat dafür noch keine Abfrage, docs/FIRE.md). Nach 1,3 km Flug mit nahen Blöcken: 709 Blöcke, 1,5 Millionen Dreiecke im
+  Vorrat, 880 MB.
+- Ferne Blöcke bekommen ihr Geländeraster nach dem Ring (ab dem dritten doppelt so grob); kommt ein grob gebauter Block näher, wird er fein neu gebaut.
 - Je Bild wird bis `--budget-ms` gearbeitet: erst fehlende ferne Blöcke vom Ladepunkt nach außen, dann die nahen Säule für Säule. Der Ladepunkt liegt in
   Blickrichtung voraus (`--lead`, im Flug Tempo x 2,5 s): vorne wird zuerst geladen, hinten fällt zuerst weg.
 
