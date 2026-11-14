@@ -92,6 +92,21 @@ namespace Raser {
         construct() { }
     }
 
+    // Stadtmöbel und Vegetation (Konzept: grobe 3D-Pixelgrafik): ein Baum, eine Laterne, eine Bank ... an einem Punkt. Das Modell entsteht im
+    // Voxelizer aus Art, Höhe und Variante (Raser.Props); gestellt wird es auf das Gelände.
+    class Prop {
+        defined int id
+        string source             // "osm:node/123" oder "fill:<fläche>/<n>" (bestreut)
+        string kind               // "tree", "lamp", "bench", "bin", "sign", "signal"
+        defined float x
+        defined float y
+        defined float height      // m (0: Standard der Art)
+        defined float angle       // Richtung der Vorderseite (Grad, 0 = Ost, gegen den Uhrzeigersinn)
+        string detail             // Baum: "broadleaved"/"needleleaved"; Schild: das Verkehrszeichen ("DE:206")
+
+        construct() { }
+    }
+
     // Die Merkmale einer Kachel (der Teil, der als JSON gespeichert wird; das Höhenraster liegt binär daneben).
     class TileData {
         defined int x
@@ -104,6 +119,7 @@ namespace Raser {
         List<Road> roads
         List<Area> areas
         List<Poi> pois
+        List<Prop> props
 
         construct() {
             this.format = 1
@@ -114,6 +130,7 @@ namespace Raser {
             this.roads = new List<Road>()
             this.areas = new List<Area>()
             this.pois = new List<Poi>()
+            this.props = new List<Prop>()
         }
     }
 

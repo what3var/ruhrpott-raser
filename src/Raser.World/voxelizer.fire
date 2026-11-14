@@ -178,7 +178,9 @@ namespace Raser {
     class Voxelizer {
         // 2: neu erzeugt, weil native Builds vor fire 8a0292a die unterste Ebene zu hoch setzten (HeightRaster.Min falsch gelesen)
         // 3: bei Gleichstand (Straßenbreite, Flächenpriorität, überlappende Gebäude) gewinnt die kleinere ID - unabhängig von der Reihenfolge der Merkmale
-        static readonly defined int Version = 4
+        // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
+        // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
+        static readonly defined int Version = 5
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -188,6 +190,10 @@ namespace Raser {
         List<RoofModel> models
         List<Box2> roadBoxes
         List<Box2> areaBoxes
+        // die Props als gestempelte Modelle: das Modell (geteilt) und der Fußpunkt in Voxeln der Welt
+        List<VoxelModel> propModels
+        List<int> propAt                  // je Prop: x, y, z (Voxel der Welt) und der Index des Modells
+        defined float propTop             // die höchste Spitze (m)
 
         // Wendet die Overrides auf die Kachel an (an Ort und Stelle) und bereitet die Merkmale vor.
         construct(Tile tile, OverrideSet overrides, defined int seed) {
@@ -214,6 +220,97 @@ namespace Raser {
             }
             this.areaBoxes = new List<Box2>()
             foreach (a in tile.data.areas) { this.areaBoxes.Add(Raser.Box2.Of(a.ring)) }
+            this.propModels = new List<VoxelModel>()
+            this.propAt = new List<int>()
+            this.propIndex = new Dictionary<string, int>()
+            this.AddProps(this.tile, 0.0, 0.0)
+        }
+
+        Dictionary<string, int> propIndex
+
+        // Die Modelle der Props einer Kachel (gleiche Art, Höhe, Variante, Richtung: ein Modell) und ihre Fußpunkte: auf dem obersten Gelände-Voxel
+        // ihrer Säule. (ox, oy): wo die Kachel `t` liegt, von dieser aus (m) - für die Nachbarn, deren Bäume über die Grenze ragen; von ihnen nur
+        // die Props bis 12 m an dieser Kachel.
+        undefined AddProps(Tile t, defined float ox, defined float oy) {
+            int vx0 = this.tile.key.x * 1280
+            int vy0 = this.tile.key.y * 1280
+            foreach (p in t.data.props) {
+                float px = p.x + ox
+                float py = p.y + oy
+                if (px < -12.0 || py < -12.0 || px > 268.0 || py > 268.0) { continue }
+                int variant = Math.Abs(p.id) % 6
+                float height = Math.Round(p.height)
+                int quarters = (Math.Round(p.angle / 90.0)!int % 4 + 4) % 4
+                string key = p.kind + "/" + height + "/" + variant + "/" + quarters + "/" + p.detail
+                if (!this.propIndex.ContainsKey(key)) {
+                    var m = Raser.Props.Make(p.kind, height, Raser.Fnv.AddInt(Raser.Fnv.Start(), variant + 17 * p.kind.Length), quarters * 90.0, p.detail)
+                    if (m == undefined) { continue }
+                    this.propIndex[key] = this.propModels.Count
+                    this.propModels.Add(take m)
+                }
+                int mi = this.propIndex[key]
+                int cx = Math.Floor(px / 0.2)!int
+                int cy = Math.Floor(py / 0.2)!int
+                // das Gelände aus dem Raster der Kachel des Props (kachel-lokal dort)
+                float lx = cx * 0.2 - ox
+                float ly = cy * 0.2 - oy
+                float h0 = 0.0
+                float h1 = 0.0
+                float h2 = 0.0
+                float h3 = 0.0
+                if (t.heights != undefined) {
+                    h0 = t.heights.At(lx, ly)
+                    h1 = t.heights.At(lx + 0.2, ly)
+                    h2 = t.heights.At(lx + 0.2, ly + 0.2)
+                    h3 = t.heights.At(lx, ly + 0.2)
+                }
+                int z = Raser.Voxelizer.TopVoxel(h0, h1, h2, h3) + 1
+                this.propAt.Add(vx0 + cx)
+                this.propAt.Add(vy0 + cy)
+                this.propAt.Add(z)
+                this.propAt.Add(mi)
+                float top = (z + this.propModels[mi].sz) * 0.2
+                if (top > this.propTop) { this.propTop = top }
+            }
+        }
+
+        // Stempelt die Props in einen Chunk: nur in Luft (Gebäude und Gelände bleiben).
+        undefined StampProps(Chunk chunk) {
+            int kx = chunk.key.VoxelX
+            int ky = chunk.key.VoxelY
+            int kz = chunk.key.VoxelZ
+            for (int p = 0; p + 3 < this.propAt.Count; p = p + 4) {
+                var m = this.propModels[this.propAt[p + 3]]
+                // die Ecke des Modells in Voxeln der Welt
+                int mx = this.propAt[p] - m.ox
+                int my = this.propAt[p + 1] - m.oy
+                int mz = this.propAt[p + 2]
+                if (mx + m.sx <= kx || my + m.sy <= ky || mz + m.sz <= kz || mx >= kx + 64 || my >= ky + 64 || mz >= kz + 64) { continue }
+                chunk.Allocate()
+                byte mats[] = chunk.materials
+                byte cols[] = chunk.colors
+                byte mm[] = m.materials
+                byte mc[] = m.colors
+                int x0 = Math.Max(mx, kx)
+                int x1 = Math.Min(mx + m.sx, kx + 64)
+                int y0 = Math.Max(my, ky)
+                int y1 = Math.Min(my + m.sy, ky + 64)
+                int z0 = Math.Max(mz, kz)
+                int z1 = Math.Min(mz + m.sz, kz + 64)
+                for (int z = z0; z < z1; z++) {
+                    for (int y = y0; y < y1; y++) {
+                        for (int x = x0; x < x1; x++) {
+                            int src = (x - mx) + (y - my) * m.sx + (z - mz) * m.sx * m.sy
+                            int mat = mm[src]
+                            if (mat == 0) { continue }
+                            int dst = (x - kx) + ((y - ky) << 6) + ((z - kz) << 12)
+                            if (mats[dst] != 0) { continue }
+                            mats[dst] = mat
+                            cols[dst] = mc[src]
+                        }
+                    }
+                }
+            }
         }
 
         // Die Höhe des Geländes an einem kachel-lokalen Punkt.
@@ -236,6 +333,7 @@ namespace Raser {
                 float bottom = m.building.ground - m.building.cellars * Raser.Voxelizer.StoreyHeight
                 if (bottom < low) { low = bottom }
             }
+            if (this.propTop > high) { high = this.propTop }
             int result[] = [Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(low - 3.0), 64), Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(high + 1.0), 64)]
             return result
         }
@@ -284,6 +382,7 @@ namespace Raser {
             chunk.overridesHash = this.overridesHash
             chunk.seed = this.seed
             this.plan.Fill(chunk)
+            this.StampProps(chunk)
             return chunk
         }
 

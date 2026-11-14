@@ -177,6 +177,14 @@ namespace Raser {
             var tile = this.store.Load(key)
             if (tile == undefined) { throw new Raser.DataException("There is no tile " + key + " in the store.") }
             var v = new Raser.Voxelizer(tile, this.overrides, this.seed)
+            // Bäume und Stadtmöbel der Nachbarn, die über die Grenze ragen
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    if (dx == 0 && dy == 0) { continue }
+                    var nb = this.store.Load(new Raser.TileKey(key.x + dx, key.y + dy))
+                    if (nb != undefined) { v.AddProps(nb, dx * 256.0, dy * 256.0) }
+                }
+            }
             this.store.ClearChunks(key)
             var manifest = new Raser.ChunkManifest()
             manifest.generatorVersion = Raser.Voxelizer.Version

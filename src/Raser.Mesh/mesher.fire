@@ -240,7 +240,7 @@ namespace Raser {
             for (int z = 0; z < 64; z++) {
                 byte layer[] = mats.Slice(z << 12, 4096)
                 bool q = true
-                for (int m = 9; m < 16 && q; m++) {
+                for (int m = 9; m < 32 && q; m++) {
                     if (layer.IndexOf(m) >= 0) { q = false }
                 }
                 if (q) {

@@ -210,6 +210,52 @@ class VoxelizerTests {
         Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(5, 37, 35))
     }
 
+    [Test "Props: Baum und Bank stehen auf dem Gelände, nur in Luft"]
+    undefined Props() {
+        var tile = Sample.Make()
+        var tree = new Raser.Prop()
+        tree.source = "test:baum"
+        tree.id = Raser.Ids.Stable(Raser.IdKind.Prop, tree.source)
+        tree.kind = "tree"
+        tree.x = 20.1
+        tree.y = 20.1
+        tree.height = 8.0
+        tile.data.props.Add(take tree)
+        var bench = new Raser.Prop()
+        bench.source = "test:bank"
+        bench.id = Raser.Ids.Stable(Raser.IdKind.Prop, bench.source)
+        bench.kind = "bench"
+        bench.x = 23.1
+        bench.y = 20.1
+        tile.data.props.Add(take bench)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var low = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 4))
+        // Gelände bei x 20 m: 60 + 21 * 0,02 = 60,42 m - oberstes Gelände-Voxel 302, der Stamm ab 303 (z 47 im Chunk 4); Säule 100 = x 0 im Chunk 1
+        Testing.Assert.AreEqual(Raser.Material.Wood!int, low.MaterialAt(100 - 64, 100 - 64, 47))
+        Testing.Assert.AreEqual(Raser.Palette.Bark, low.ColorAt(100 - 64, 100 - 64, 47))
+        Testing.Assert.IsTrue(low.MaterialAt(100 - 64, 100 - 64, 46) != Raser.Material.Wood!int)
+        // die Krone reicht in den Chunk darüber: Laub
+        var high = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 5))
+        int leaves = 0
+        for (int z = 0; z < 64; z++) {
+            for (int y = 0; y < 64; y++) {
+                for (int x = 0; x < 64; x++) {
+                    if (high.MaterialAt(x, y, z) == Raser.Material.Leaves!int) { leaves++ }
+                }
+            }
+        }
+        Testing.Assert.IsTrue(leaves > 200)
+        // die Bank (x 23,1 m = Säule 115, im Chunk 51): der Sitz aus Holz 40 cm über dem Gelände, 9 Voxel lang
+        int seat = 0
+        for (int y = 0; y < 64; y++) {
+            if (low.MaterialAt(51, y, 49) == Raser.Material.Wood!int) { seat++ }
+        }
+        Testing.Assert.AreEqual(9, seat)
+        // gleiche Daten, gleicher Chunk
+        var again = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        Testing.Assert.IsTrue(again.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)).ContentHash() == new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)).ContentHash())
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)

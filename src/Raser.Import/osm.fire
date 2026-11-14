@@ -155,7 +155,19 @@ namespace Raser {
         }
 
         static defined bool IsPoi(Dictionary<string, string> tags) {
-            return tags.ContainsKey("amenity") || tags.ContainsKey("shop") || tags.ContainsKey("tourism") || tags.ContainsKey("leisure") || tags.ContainsKey("craft") || tags.ContainsKey("office")
+            if (tags.ContainsKey("amenity") || tags.ContainsKey("shop") || tags.ContainsKey("tourism") || tags.ContainsKey("leisure") || tags.ContainsKey("craft") || tags.ContainsKey("office")) { return true }
+            return Raser.OsmData.PropKind(tags) != undefined
+        }
+
+        // Stadtmöbel und Vegetation (Raser.Prop): die Art, undefined für keines.
+        static string PropKind(Dictionary<string, string> tags) {
+            if (tags.Get("natural", "") == "tree") { return "tree" }
+            if (tags.Get("highway", "") == "street_lamp") { return "lamp" }
+            if (tags.Get("amenity", "") == "bench") { return "bench" }
+            if (tags.Get("amenity", "") == "waste_basket") { return "bin" }
+            if (tags.Get("highway", "") == "traffic_signals") { return "signal" }
+            if (tags.ContainsKey("traffic_sign")) { return "sign" }
+            return undefined
         }
 
         // Die Punkte eines Wegs (absolut), undefined wenn Knoten fehlen.

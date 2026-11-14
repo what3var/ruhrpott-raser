@@ -1,0 +1,295 @@
+// Raser.World: Stadtmöbel und Vegetation als grobe 3D-Pixelgrafik (Konzept: "als hätte man sie in Minecraft gebaut") - kleine Voxel-Modelle,
+// prozedural aus Art, Höhe und Variante. Gleiche Eingaben geben dasselbe Modell (deterministisch); der Voxelizer stempelt sie in die Chunks.
+//
+// Ein Modell ist ein Block von sx x sy x sz Voxeln; sein Fußpunkt ist die Säule (ox, oy) in Höhe 0 - der erste Voxel über dem Gelände.
+#import "raser.core"
+
+namespace Raser {
+    class VoxelModel {
+        defined int sx
+        defined int sy
+        defined int sz
+        defined int ox
+        defined int oy
+        byte materials[]
+        byte colors[]
+
+        construct(defined int sx, defined int sy, defined int sz) {
+            this.sx = sx
+            this.sy = sy
+            this.sz = sz
+            // (über lokale Werte: fire schreibt nativ im Konstruktor bei `this.ox = sx / 2` den Parameter statt des Quotienten - docs/FIRE.md)
+            defined int hx = sx / 2
+            defined int hy = sy / 2
+            this.ox = hx
+            this.oy = hy
+            this.materials = new byte[sx * sy * sz]
+            this.colors = new byte[sx * sy * sz]
+        }
+
+        defined bool Inside(defined int x, defined int y, defined int z) { return x >= 0 && y >= 0 && z >= 0 && x < this.sx && y < this.sy && z < this.sz }
+
+        // Setzt einen Voxel relativ zum Fußpunkt.
+        undefined Set(defined int dx, defined int dy, defined int z, defined int material, defined int color) {
+            int x = this.ox + dx
+            int y = this.oy + dy
+            if (!this.Inside(x, y, z)) { return }
+            int i = x + y * this.sx + z * this.sx * this.sy
+            this.materials[i] = material
+            this.colors[i] = color
+        }
+
+        defined int MaterialAt(defined int x, defined int y, defined int z) { return this.materials[x + y * this.sx + z * this.sx * this.sy] }
+        defined int ColorAt(defined int x, defined int y, defined int z) { return this.colors[x + y * this.sx + z * this.sx * this.sy] }
+
+        // Eine Vierteldrehung (gegen den Uhrzeigersinn um den Fußpunkt) quarters Mal; ohne Drehung das Modell selbst.
+        VoxelModel Turned(defined int quarters) {
+            int q = ((quarters % 4) + 4) % 4
+            if (q == 0) { return this }
+            var cur = this.TurnedOnce()
+            for (int k = 1; k < q; k++) { cur = cur.TurnedOnce() }
+            return cur
+        }
+
+        // (x, y) -> (sy - 1 - y, x)
+        VoxelModel TurnedOnce() {
+            var r = new Raser.VoxelModel(this.sy, this.sx, this.sz)
+            r.ox = this.sy - 1 - this.oy
+            r.oy = this.ox
+            for (int z = 0; z < this.sz; z++) {
+                for (int y = 0; y < this.sy; y++) {
+                    for (int x = 0; x < this.sx; x++) {
+                        int mat = this.MaterialAt(x, y, z)
+                        if (mat == 0) { continue }
+                        int i = (this.sy - 1 - y) + x * r.sx + z * r.sx * r.sy
+                        r.materials[i] = mat
+                        r.colors[i] = this.ColorAt(x, y, z)
+                    }
+                }
+            }
+            return r
+        }
+    }
+
+    class Props {
+        // Ein Wert in [0, 1) aus Variante und Zahlen.
+        static defined float Rand(defined int seed, defined int a, defined int b) {
+            int h = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), seed), a), b)
+            return ((h >> 20) & 65535) / 65536.0
+        }
+
+        // Das Modell eines Props: Art, Höhe (m, 0: Standard), Variante (aus der ID), Richtung (Grad), Detail.
+        static VoxelModel Make(string kind, defined float height, defined int variant, defined float angle, string detail) {
+            int quarters = Math.Round(angle / 90.0)!int
+            if (kind == "tree") {
+                if (detail == "needleleaved") { return Raser.Props.Conifer(height, variant) }
+                return Raser.Props.Tree(height, variant)
+            }
+            if (kind == "lamp") { return Raser.Props.Lamp().Turned(quarters) }
+            if (kind == "bench") { return Raser.Props.Bench().Turned(quarters) }
+            if (kind == "bin") { return Raser.Props.Bin() }
+            if (kind == "sign") { return Raser.Props.Sign(detail).Turned(quarters) }
+            if (kind == "signal") { return Raser.Props.Signal().Turned(quarters) }
+            return undefined
+        }
+
+        // Ein Laubbaum: Stamm, schräg aufsteigende Äste, an ihren Enden und oben löchrige Blattbüschel (oben heller, unten dunkler).
+        static VoxelModel Tree(defined float height, defined int v) {
+            float h = height
+            if (h <= 0.0) { h = 8.0 + Raser.Props.Rand(v, 1, 0) * 8.0 }
+            h = Math.Clamp(h, 4.0, 30.0)
+            int hv = Math.Round(h / 0.2)!int
+            int crown = Math.Round(hv * 0.32)!int                 // Radius der Krone (Voxel)
+            int size = crown * 2 + 9
+            var m = new Raser.VoxelModel(size, size, hv + 4)
+            int bark = Raser.Material.Wood!int
+            int thick = 1
+            if (h > 9.0) { thick = 2 }
+            int trunkTop = Math.Round(hv * (0.55 + Raser.Props.Rand(v, 2, 0) * 0.15))!int
+            for (int z = 0; z < trunkTop; z++) {
+                for (int a = 0; a < thick; a++) {
+                    for (int b = 0; b < thick; b++) { m.Set(a, b, z, bark, Raser.Palette.Bark) }
+                }
+            }
+            // Äste
+            int branches = 3 + Math.Floor(Raser.Props.Rand(v, 3, 0) * 4.0)!int
+            for (int k = 0; k < branches; k++) {
+                float dir = Raser.Props.Rand(v, 10, k) * 6.2832
+                float start = hv * (0.35 + Raser.Props.Rand(v, 11, k) * 0.3)
+                float len = crown * (0.45 + Raser.Props.Rand(v, 12, k) * 0.4)
+                float rise = 0.5 + Raser.Props.Rand(v, 13, k) * 0.8
+                float ex = 0.0
+                float ey = 0.0
+                float ez = start
+                int steps = Math.Max(1, Math.Round(len)!int)
+                for (int t = 0; t <= steps; t++) {
+                    ex = Math.Cos(dir) * t
+                    ey = Math.Sin(dir) * t
+                    ez = start + rise * t
+                    m.Set(Math.Round(ex)!int, Math.Round(ey)!int, Math.Round(ez)!int, bark, Raser.Palette.Bark)
+                }
+                float r = crown * (0.45 + Raser.Props.Rand(v, 14, k) * 0.25)
+                Raser.Props.Blob(m, ex, ey, ez + r * 0.3, r, r * 0.75, v * 31 + k, hv)
+            }
+            // die Krone oben
+            Raser.Props.Blob(m, 0.0, 0.0, trunkTop + crown * 0.55, crown * 0.8, crown * 0.7, v * 31 + 99, hv)
+            return m
+        }
+
+        // Ein Blattbüschel: ein Ellipsoid mit Löchern und ausgefranstem Rand; die Farbe nach Höhe und Zufall.
+        static undefined Blob(VoxelModel m, defined float cx, defined float cy, defined float cz, defined float r, defined float rz, defined int seed, defined int top) {
+            int ri = Math.Ceiling(r)!int + 1
+            int rzi = Math.Ceiling(rz)!int + 1
+            int leaves = Raser.Material.Leaves!int
+            for (int dz = -rzi; dz <= rzi; dz++) {
+                for (int dy = -ri; dy <= ri; dy++) {
+                    for (int dx = -ri; dx <= ri; dx++) {
+                        float d = (dx * dx + dy * dy) / (r * r) + (dz * dz) / (rz * rz)
+                        float n = Raser.Props.Rand(seed, dx * 977 + dy, dz)
+                        if (d > 1.0 - n * 0.35) { continue }              // ausgefranst
+                        if (d > 0.35 && n < 0.18) { continue }            // Löcher (innen dicht, der Stamm verschwindet nicht)
+                        int x = Math.Round(cx)!int + dx
+                        int y = Math.Round(cy)!int + dy
+                        int z = Math.Round(cz)!int + dz
+                        int color = Raser.Palette.Leaves
+                        float up = z * 1.0 / top
+                        float pick = Raser.Props.Rand(seed + 7, x * 131 + y, z)
+                        if (pick < 0.25 - up * 0.2) { color = Raser.Palette.LeavesDark } else if (pick > 0.85 - up * 0.3) { color = Raser.Palette.LeavesLight }
+                        m.Set(x, y, z, leaves, color)
+                    }
+                }
+            }
+        }
+
+        // Ein Nadelbaum: ein Kegel aus Ringen, unten breit, dunkel.
+        static VoxelModel Conifer(defined float height, defined int v) {
+            float h = height
+            if (h <= 0.0) { h = 10.0 + Raser.Props.Rand(v, 1, 0) * 10.0 }
+            h = Math.Clamp(h, 4.0, 35.0)
+            int hv = Math.Round(h / 0.2)!int
+            int radius = Math.Round(hv * 0.2)!int
+            var m = new Raser.VoxelModel(radius * 2 + 5, radius * 2 + 5, hv + 2)
+            int start = Math.Round(hv * 0.15)!int
+            for (int z = 0; z < hv; z++) { m.Set(0, 0, z, Raser.Material.Wood!int, Raser.Palette.Bark) }
+            for (int z = start; z <= hv; z++) {
+                float t = (z - start) * 1.0 / (hv - start)
+                // Stufen: alle paar Voxel wieder breiter (Etagen der Äste)
+                float r = radius * (1.0 - t) * (0.75 + 0.25 * ((z - start) % 4) / 3.0) + 0.6
+                int ri = Math.Ceiling(r)!int
+                for (int dy = -ri; dy <= ri; dy++) {
+                    for (int dx = -ri; dx <= ri; dx++) {
+                        float d = Math.Sqrt(dx * dx + dy * dy * 1.0)
+                        float n = Raser.Props.Rand(v, dx * 977 + dy, z)
+                        if (d > r - n * 0.8) { continue }
+                        int color = Raser.Palette.LeavesDark
+                        if (n > 0.8) { color = Raser.Palette.Leaves }
+                        m.Set(dx, dy, z, Raser.Material.Leaves!int, color)
+                    }
+                }
+            }
+            return m
+        }
+
+        // Eine Laterne: Mast (5 m), oben ein Ausleger nach vorn (+x), daran die Leuchte.
+        static VoxelModel Lamp() {
+            var m = new Raser.VoxelModel(9, 3, 27)
+            int metal = Raser.Material.Metal!int
+            for (int z = 0; z < 25; z++) { m.Set(0, 0, z, metal, Raser.Palette.Metal) }
+            for (int x = 1; x <= 3; x++) { m.Set(x, 0, 25, metal, Raser.Palette.Metal) }
+            m.Set(3, 0, 24, Raser.Material.Glass!int, Raser.Palette.Lamp)
+            m.Set(4, 0, 24, Raser.Material.Glass!int, Raser.Palette.Lamp)
+            m.Set(4, 0, 25, metal, Raser.Palette.Metal)
+            return m
+        }
+
+        // Eine Bank: 1,8 m lang (entlang y), Sitz aus Holz in 40 cm Höhe, Lehne hinten (-x), Füße aus Metall; die Vorderseite zeigt nach +x.
+        static VoxelModel Bench() {
+            var m = new Raser.VoxelModel(3, 9, 5)
+            m.ox = 1
+            m.oy = 4
+            int wood = Raser.Material.Wood!int
+            int metal = Raser.Material.Metal!int
+            for (int y = -4; y <= 4; y++) {
+                m.Set(0, y, 2, wood, Raser.Palette.Wood)
+                m.Set(-1, y, 2, wood, Raser.Palette.Wood)
+                m.Set(-1, y, 3, wood, Raser.Palette.Wood)
+                m.Set(-1, y, 4, wood, Raser.Palette.Wood)
+            }
+            foreach (y in [-4, 4]) {
+                m.Set(0, y, 0, metal, Raser.Palette.Metal)
+                m.Set(0, y, 1, metal, Raser.Palette.Metal)
+                m.Set(-1, y, 0, metal, Raser.Palette.Metal)
+                m.Set(-1, y, 1, metal, Raser.Palette.Metal)
+            }
+            return m
+        }
+
+        // Ein Papierkorb: 20 x 20 cm, 80 cm hoch, oben offen (dunkel).
+        static VoxelModel Bin() {
+            var m = new Raser.VoxelModel(1, 1, 4)
+            for (int z = 0; z < 4; z++) { m.Set(0, 0, z, Raser.Material.Metal!int, Raser.Palette.Metal) }
+            m.Set(0, 0, 3, Raser.Material.Metal!int, Raser.Palette.Asphalt)
+            return m
+        }
+
+        // Ein Verkehrszeichen: Mast 2,2 m, oben ein Schild 3 x 3 Voxel (60 cm) als Pixelbild, die Vorderseite nach +x.
+        // detail: OSM traffic_sign ("DE:206" Stop, "DE:205" Vorfahrt achten, "DE:274..." Tempo, "DE:306" Vorfahrtstraße), sonst ein blaues Hinweisschild.
+        static VoxelModel Sign(string detail) {
+            var m = new Raser.VoxelModel(2, 3, 14)
+            m.ox = 0
+            m.oy = 1
+            int metal = Raser.Material.Metal!int
+            for (int z = 0; z < 11; z++) { m.Set(0, 0, z, metal, Raser.Palette.Metal) }
+            // Pixel: Rand und Mitte
+            int edge = Raser.Palette.SignBlue
+            int center = Raser.Palette.SignBlue
+            int corner = Raser.Palette.SignBlue
+            string d = ""
+            if (detail != undefined) { d = detail }
+            if (d.Contains("206")) {
+                edge = Raser.Palette.SignRed
+                center = Raser.Palette.SignWhite
+                corner = Raser.Palette.SignRed
+            } else if (d.Contains("205")) {
+                edge = Raser.Palette.SignRed
+                center = Raser.Palette.SignWhite
+                corner = 0
+            } else if (d.Contains("274") || d.Contains("250") || d.Contains("267")) {
+                edge = Raser.Palette.SignRed
+                center = Raser.Palette.SignWhite
+                corner = 0
+            } else if (d.Contains("306")) {
+                edge = Raser.Palette.SignWhite
+                center = Raser.Palette.SignYellow
+                corner = 0
+            } else if (d.Contains("350") || d.Contains("314")) {
+                edge = Raser.Palette.SignBlue
+                center = Raser.Palette.SignWhite
+                corner = Raser.Palette.SignBlue
+            }
+            for (int dz = 0; dz < 3; dz++) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    int c = edge
+                    if (dz == 1 && dy == 0) { c = center }
+                    if (dz != 1 && dy != 0) { c = corner }
+                    if (c == 0) { continue }
+                    m.Set(1, dy, 11 + dz, Raser.Material.Metal!int, c)
+                }
+            }
+            return m
+        }
+
+        // Eine Ampel: Mast 3 m, oben ein dunkler Kasten mit Rot, Gelb, Grün nach vorn (+x).
+        static VoxelModel Signal() {
+            var m = new Raser.VoxelModel(2, 1, 18)
+            m.ox = 0
+            m.oy = 0
+            int metal = Raser.Material.Metal!int
+            for (int z = 0; z < 18; z++) { m.Set(0, 0, z, metal, Raser.Palette.Asphalt) }
+            m.Set(1, 0, 17, metal, Raser.Palette.SignRed)
+            m.Set(1, 0, 16, metal, Raser.Palette.SignYellow)
+            m.Set(1, 0, 15, metal, Raser.Palette.SignGreen)
+            return m
+        }
+    }
+}

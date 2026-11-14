@@ -152,6 +152,7 @@ namespace Raser {
             // POIs
             foreach (p in this.pois) {
                 if (p.east < e0 || p.north < n0 || p.east >= e0 + 256.0 || p.north >= n0 + 256.0) { continue }
+                if (Raser.OsmData.PropKind(p.tags) != undefined) { continue }          // Stadtmöbel und Bäume: unten als Prop
                 var poi = new Raser.Poi()
                 poi.source = "osm:node/" + p.id
                 poi.id = Raser.Ids.Stable(Raser.IdKind.Poi, poi.source)
@@ -161,8 +162,120 @@ namespace Raser {
                 poi.y = p.north - n0
                 tile.data.pois.Add(take poi)
             }
+            // Stadtmöbel und Vegetation: aus OSM-Knoten, dazu Wälder und Parks bestreut
+            foreach (p in this.pois) {
+                if (p.east < e0 || p.north < n0 || p.east >= e0 + 256.0 || p.north >= n0 + 256.0) { continue }
+                string kind = Raser.OsmData.PropKind(p.tags)
+                if (kind == undefined) { continue }
+                var prop = new Raser.Prop()
+                prop.source = "osm:node/" + p.id
+                prop.id = Raser.Ids.Stable(Raser.IdKind.Prop, prop.source)
+                prop.kind = kind
+                prop.x = p.east - e0
+                prop.y = p.north - n0
+                any height = p.tags.Get("height", "").Replace(" m", "").Replace(",", ".").TryToFloat()
+                if (height != undefined) { prop.height = height }
+                if (kind == "tree") { prop.detail = p.tags.Get("leaf_type", undefined) }
+                if (kind == "sign") { prop.detail = p.tags.Get("traffic_sign", undefined) }
+                Raser.Region.Orient(tile, prop)
+                tile.data.props.Add(take prop)
+            }
+            Raser.Region.Scatter(tile)
             Raser.Region.AssignFunctions(tile)
             return tile
+        }
+
+        // Richtet ein Prop zur nächsten Straße aus: Laternen, Bänke und Schilder zeigen zur Straße; eine Ampel auf der Fahrbahn (ein Knoten der Straße)
+        // rückt an den rechten Rand und zeigt entgegen der Fahrtrichtung.
+        static undefined Orient(Tile tile, Prop prop) {
+            if (prop.kind == "tree" || prop.kind == "bin") { return }
+            float best = 1.0e30
+            float qx = prop.x
+            float qy = prop.y
+            float dx = 1.0
+            float dy = 0.0
+            float width = 0.0
+            foreach (r in tile.data.roads) {
+                for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                    float ax = r.points[k]
+                    float ay = r.points[k + 1]
+                    float bx = r.points[k + 2]
+                    float by = r.points[k + 3]
+                    float ex = bx - ax
+                    float ey = by - ay
+                    float len2 = ex * ex + ey * ey
+                    if (len2 <= 0.0) { continue }
+                    float t = Math.Clamp(((prop.x - ax) * ex + (prop.y - ay) * ey) / len2, 0.0, 1.0)
+                    float cx = ax + ex * t
+                    float cy = ay + ey * t
+                    float d = (prop.x - cx) * (prop.x - cx) + (prop.y - cy) * (prop.y - cy)
+                    if (d < best) {
+                        best = d
+                        qx = cx
+                        qy = cy
+                        float len = Math.Sqrt(len2)
+                        dx = ex / len
+                        dy = ey / len
+                        width = r.width
+                    }
+                }
+            }
+            if (best > 900.0) { return }          // keine Straße in 30 m
+            if (prop.kind == "signal" && best < 1.0) {
+                // auf der Fahrbahn: an den rechten Rand, Blick gegen die Fahrtrichtung
+                prop.x = qx + dy * (width / 2.0 + 0.6)
+                prop.y = qy - dx * (width / 2.0 + 0.6)
+                prop.angle = Math.Atan2(-dy, -dx) * 180.0 / Math.PI
+                return
+            }
+            prop.angle = Math.Atan2(qy - prop.y, qx - prop.x) * 180.0 / Math.PI
+        }
+
+        // Bestreut Wälder (alle 5 m ein Baum, verrückt) und Parks (alle 12 m, jeder zweite) mit Bäumen - deterministisch aus der ID der Fläche;
+        // nicht in Gebäuden und nicht auf Straßen.
+        static undefined Scatter(Tile tile) {
+            foreach (a in tile.data.areas) {
+                float step = 0.0
+                float chance = 1.0
+                if (a.kind == "landuse=forest" || a.kind == "natural=wood") { step = 5.0 }
+                if (a.kind == "leisure=park") {
+                    step = 12.0
+                    chance = 0.5
+                }
+                if (step == 0.0) { continue }
+                var box = Raser.Box2.Of(a.ring)
+                int n = 0
+                for (float gy = Math.Floor(Math.Max(box.minY, 0.0) / step) * step; gy < Math.Min(box.maxY, 256.0); gy = gy + step) {
+                    for (float gx = Math.Floor(Math.Max(box.minX, 0.0) / step) * step; gx < Math.Min(box.maxX, 256.0); gx = gx + step) {
+                        int cell = Math.Round(gx / step)!int * 7919 + Math.Round(gy / step)!int
+                        if (Raser.Props.Rand(a.id, cell, 0) > chance) { continue }
+                        float x = gx + Raser.Props.Rand(a.id, cell, 1) * step
+                        float y = gy + Raser.Props.Rand(a.id, cell, 2) * step
+                        if (x < 0.0 || y < 0.0 || x >= 256.0 || y >= 256.0) { continue }
+                        if (!Raser.Geo.Inside(a.ring, x, y) || Raser.Region.Occupied(tile, x, y)) { continue }
+                        var prop = new Raser.Prop()
+                        prop.source = "fill:" + a.source + "/" + cell
+                        prop.id = Raser.Ids.Stable(Raser.IdKind.Prop, prop.source)
+                        prop.kind = "tree"
+                        prop.x = x
+                        prop.y = y
+                        if (step == 5.0 && Raser.Props.Rand(a.id, cell, 3) < 0.3) { prop.detail = "needleleaved" }
+                        tile.data.props.Add(take prop)
+                        n++
+                    }
+                }
+            }
+        }
+
+        // Steht dort ein Gebäude oder eine Straße (mit 1 m Abstand)?
+        static defined bool Occupied(Tile tile, defined float x, defined float y) {
+            foreach (b in tile.data.buildings) {
+                if (b.footprint != undefined && Raser.Geo.Inside(b.footprint, x, y)) { return true }
+            }
+            foreach (r in tile.data.roads) {
+                if (Raser.Geo.DistanceToLine(r.points, x, y) < r.width / 2.0 + 1.0) { return true }
+            }
+            return false
         }
 
         static string PoiKind(Dictionary<string, string> tags) {

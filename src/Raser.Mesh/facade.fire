@@ -24,7 +24,7 @@ namespace Raser {
         static defined bool HasTile(defined int c) {
             if (c <= 0 || c >= 128) { return false }
             int b = c % 32
-            return b >= 1 && b <= 26
+            return b >= 1 && b <= 30
         }
 
         // Die linke obere Ecke des Inneren der Materialkachel der Farbe c (Texel).
@@ -186,6 +186,10 @@ namespace Raser {
             if (c == 2 || c == 24 || c == 25) { return 1.0 + grain * 0.09 + blot * 0.08 + mid * 0.05 }
             // Erde, Sand, Schotter, Fels, Gleis
             if (c == 1 || c == 3 || c == 4 || c == 5 || c == 26) { return 1.0 + grain * 0.10 + blot * 0.06 }
+            // Laub: kräftiges Korn (Blätter, Licht und Schatten), Flecken
+            if (c == 27 || c == 28 || c == 29) { return 1.0 + grain * 0.16 + mid * 0.08 + blot * 0.05 }
+            // Rinde: senkrechte Furchen
+            if (c == 30) { return 1.0 + (Raser.Atlas.Hash(x, y / 3, s + 1000) * 2.0 - 1.0) * 0.10 + grain * 0.05 }
             // Wasser: ruhige Wellen
             if (c == 6) { return 1.0 + Raser.Atlas.Smooth(x, y, 8, c) * 0.05 }
             // der Rest (Glas, Metall, Markierung, Flachdach ...): leises Korn

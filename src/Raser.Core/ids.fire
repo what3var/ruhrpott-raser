@@ -11,6 +11,7 @@ namespace Raser {
         Road = 2,
         Area = 3,
         Poi = 4,
+        Prop = 5,
         Player = 16,
         Vehicle = 17,
         Item = 18,

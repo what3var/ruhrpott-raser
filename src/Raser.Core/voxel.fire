@@ -21,7 +21,8 @@ namespace Raser {
         Metal = 12,
         Brick = 13,
         Plaster = 14,
-        RoofTiles = 15
+        RoofTiles = 15,
+        Leaves = 16
     }
 
     // Die Werte eines Raser.Materials. Physikalische Werte sind von Anfang an da (Konzept, Abschnitt 7: Zerstörbarkeit), werden aber noch nicht genutzt.
@@ -77,6 +78,17 @@ namespace Raser {
         static readonly defined int Forest = 24
         static readonly defined int Field = 25
         static readonly defined int Rail = 26
+        static readonly defined int Leaves = 27
+        static readonly defined int LeavesDark = 28
+        static readonly defined int LeavesLight = 29
+        static readonly defined int Bark = 30
+        // ohne Kachel im Atlas (flach): Schilder und Licht
+        static readonly defined int SignWhite = 160
+        static readonly defined int SignRed = 161
+        static readonly defined int SignBlue = 162
+        static readonly defined int SignYellow = 163
+        static readonly defined int SignGreen = 164
+        static readonly defined int Lamp = 165
 
         static int colors[] = Raser.Palette.Build()
 
@@ -110,6 +122,16 @@ namespace Raser {
             c[24] = 0x2F5226
             c[25] = 0x8E9A4A
             c[26] = 0x5A4A40
+            c[27] = 0x3E6B2A
+            c[28] = 0x2C5220
+            c[29] = 0x5C8A34
+            c[30] = 0x4A3A2C
+            c[160] = 0xF2F2EE
+            c[161] = 0xC8202A
+            c[162] = 0x1F4E9C
+            c[163] = 0xF2C200
+            c[164] = 0x1E7A3C
+            c[165] = 0xFFE7A0
             for (int level = 1; level < 4; level++) {
                 for (int i = 1; i < 32; i++) { c[i + 32 * level] = Raser.Palette.Soiled(c[i], level) }
             }
@@ -166,6 +188,7 @@ namespace Raser {
             t.Add(new MaterialInfo(Raser.Material.Brick, "Ziegel", true, false, Raser.Palette.Brick, 1.0, 1.0, 1800.0))
             t.Add(new MaterialInfo(Raser.Material.Plaster, "Putz", true, false, Raser.Palette.Plaster, 0.8, 0.8, 1600.0))
             t.Add(new MaterialInfo(Raser.Material.RoofTiles, "Dachziegel", true, false, Raser.Palette.RoofTiles, 0.6, 0.6, 1900.0))
+            t.Add(new MaterialInfo(Raser.Material.Leaves, "Laub", true, false, Raser.Palette.Leaves, 0.05, 0.1, 300.0))
             return t
         }
 
