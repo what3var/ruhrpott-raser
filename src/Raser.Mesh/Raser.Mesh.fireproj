@@ -3,7 +3,14 @@
   "name": "Raser.Mesh",
   "type": "library",
   "import": "raser.mesh",
-  "references": [ { "project": "../Raser.Core/Raser.Core.fireproj" } ],
+  "references": [
+    {
+      "project": "../Raser.Core/Raser.Core.fireproj"
+    },
+    {
+      "project": "../Raser.World/Raser.World.fireproj"
+    }
+  ],
   "settings": {
     "version": "0.1.0",
     "description": "Ruhrpott-Raser: Chunk-Meshing (Greedy Meshing für volle Voxel, Höhen-Schnitte als schräge Flächen, durchsichtige Voxel getrennt)."

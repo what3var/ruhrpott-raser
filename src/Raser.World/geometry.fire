@@ -92,6 +92,67 @@ namespace Raser {
             }
         }
 
+        // Zerlegt einen einfachen Ring (stride 2 oder 3, x und y zählen) in Dreiecke (Ohren abschneiden). Gibt die Indizes der Punkte, je drei.
+        static int[] Triangulate(float ring[], defined int stride = 2) {
+            int n = ring.length / stride
+            var order = new List<int>()
+            for (int i = 0; i < n; i++) { order.Add(i) }
+            // gegen den Uhrzeigersinn arbeiten
+            if (Raser.Geo.Area(ring, stride) < 0.0) {
+                var back = new List<int>()
+                for (int i = n - 1; i >= 0; i--) { back.Add(i) }
+                order = take back
+            }
+            var result = new List<int>()
+            int guard = 0
+            while (order.Count > 3 && guard < n * n) {
+                guard++
+                bool cut = false
+                for (int k = 0; k < order.Count; k++) {
+                    int a = order[(k + order.Count - 1) % order.Count]
+                    int b = order[k]
+                    int c = order[(k + 1) % order.Count]
+                    float ax = ring[a * stride]
+                    float ay = ring[a * stride + 1]
+                    float bx = ring[b * stride]
+                    float by = ring[b * stride + 1]
+                    float cx = ring[c * stride]
+                    float cy = ring[c * stride + 1]
+                    float cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+                    if (cross <= 0.0) { continue }          // keine konvexe Ecke
+                    bool inside = false
+                    foreach (o in order) {
+                        if (o == a || o == b || o == c) { continue }
+                        float px = ring[o * stride]
+                        float py = ring[o * stride + 1]
+                        float d1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+                        float d2 = (cx - bx) * (py - by) - (cy - by) * (px - bx)
+                        float d3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx)
+                        if (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) {
+                            inside = true
+                            break
+                        }
+                    }
+                    if (inside) { continue }
+                    result.Add(a)
+                    result.Add(b)
+                    result.Add(c)
+                    order.RemoveAt(k)
+                    cut = true
+                    break
+                }
+                if (!cut) { break }          // entarteter Ring: der Rest als Fächer
+            }
+            for (int k = 1; k + 1 < order.Count; k++) {
+                result.Add(order[0])
+                result.Add(order[k])
+                result.Add(order[k + 1])
+            }
+            int out[] = new int[result.Count]
+            for (int i = 0; i < result.Count; i++) { out[i] = result[i] }
+            return out
+        }
+
         // Die Ebene eines Polygons (x, y, z je Punkt) als [a, b, c, gültig] mit z = a x + b y + c (Newell-Normale); gültig 0 für ein senkrechtes Polygon.
         static float[] Plane(float poly[]) {
             float result[] = [0.0, 0.0, 0.0, 0.0]

@@ -14,8 +14,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 ## M2: Renderer
 - [x] Chunk-Meshing inkl. Höhen-Schnitten (`Raser.Mesh`: Greedy Meshing, schräge Oberseiten, Trapez-Seiten, Glas/Wasser getrennt)
 - [ ] Fahrbare Kamera durch die Testregion (`Raser.Viewer` mit scene3d: fliegende Kamera, Nachladen und Entladen von Chunk-Säulen um den Blickpunkt, `--shot`, `--fly` mit Zeiten; Laden in Worker-Threads; offen: bei 15 m/s kommt das Laden nicht nach - Netze vorab speichern, LOD)
-- [ ] Detailstufen nach Entfernung: Voxel nah (Stufe 0), gröbere Voxel (Stufen 1-2), fern direkt aus dem Zwischenlayer (Höhenraster-Netz, Gebäude aus Grundriss und Dachflächen)
-- [ ] Laden entlang der Route: Kegel in Fahrtrichtung, Nähe-Radius nach Tempo, grob vor fein, Korridor vorab bei bekanntem Ziel; Ziel: Autobahn mit 250-300 km/h
+- [ ] Detailstufen nach Entfernung: Voxel nah (Stufe 0), gröbere Voxel (Stufen 1-2), fern direkt aus dem Zwischenlayer (Höhenraster-Netz, Gebäude aus Grundriss und Dachflächen) - Stufe 0 und fern gebaut (`Raser.FarMesher`), mittlere Stufen offen
+- [ ] Laden entlang der Route: Kegel in Fahrtrichtung, Nähe-Radius nach Tempo, grob vor fein, Korridor vorab bei bekanntem Ziel; Ziel: Autobahn mit 250-300 km/h - grob vor fein und Ladepunkt voraus gebaut; 83 m/s halten die fernen Stufen (Messflug); offen: Nähe-Radius nach Tempo, Korridor vorab
 - [ ] Fassaden-Grammatik + parametrische Materialien
 - [ ] Fenster ab Stufe 1 als Fassaden-Textur (gleiches Raster wie die Voxel-Fenster, 1 Texel je Voxel); nachts einzelne Fenster als Lichtquellen
 - [ ] Ausstattung der Gebäude, zufällig aber stabil (aus ID und Seed): vorgerenderte Innenansichten hinter den Fenstern für das schnelle Vorbeifahren, detaillierte Ausstattung in der Nähe und beim Betreten

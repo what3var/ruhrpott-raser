@@ -51,6 +51,28 @@ class GeometryTests {
         Testing.Assert.AreEqual(5.0, Raser.Geo.DistanceToLine(line, 13.0, 4.0))
     }
 
+    [Test "Triangulieren"]
+    undefined Triangulate() {
+        // ein L (konkav): 6 Ecken, 4 Dreiecke, Fläche 3
+        float l[] = [0.0, 0.0, 2.0, 0.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 0.0, 2.0]
+        var t = Raser.Geo.Triangulate(l)
+        Testing.Assert.AreEqual(12, t.length)
+        float area = 0.0
+        for (int i = 0; i < t.length; i = i + 3) {
+            float ax = l[t[i] * 2]
+            float ay = l[t[i] * 2 + 1]
+            float bx = l[t[i + 1] * 2]
+            float by = l[t[i + 1] * 2 + 1]
+            float cx = l[t[i + 2] * 2]
+            float cy = l[t[i + 2] * 2 + 1]
+            area = area + ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / 2.0
+        }
+        Testing.Assert.IsTrue(Math.Abs(area - 3.0) < 0.000001)
+        // im Uhrzeigersinn: dieselbe Fläche
+        float cw[] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+        Testing.Assert.AreEqual(6, Raser.Geo.Triangulate(cw).length)
+    }
+
     [Test "Höhe einer Dachebene"]
     undefined Plane() {
         // Eine Fläche, die von y = 0 (z = 6) bis y = 4 (z = 10) ansteigt.

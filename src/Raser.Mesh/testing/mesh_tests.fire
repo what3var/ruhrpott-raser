@@ -151,3 +151,41 @@ class MeshTests {
         }
     }
 }
+
+class FarTests {
+    static Raser.Tile Sample() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var raster = new Raser.HeightRaster(-0.5, -0.5, 1.0, 258, 258, 50.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:haus"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [10.0, 10.0, 20.0, 10.0, 20.0, 18.0, 10.0, 18.0]
+        b.ground = 50.0
+        b.eaves = 56.0
+        b.ridge = 59.0
+        b.roofType = Raser.RoofType.Gable
+        tile.data.buildings.Add(take b)
+        return tile
+    }
+
+    [Test "Ferne Stufe: Gelände als Raster, Gebäude aus Grundriss und Dach"]
+    undefined Block() {
+        var far = new Raser.FarMesher(FarTests.Sample(), 1)
+        var part = far.Block(0.0, 0.0, 51.2, 3.2)
+        // 16 x 16 Geländezellen; Wände: 2 x 10 m (je 5 Stücke) + 2 x 8 m (je 4 Stücke) = 18; Dach: der Grundriss (2 Dreiecke)
+        Testing.Assert.AreEqual(256 + 18 + 2, part.Count)
+        // Giebel: die Wand an der Schmalseite (x = 10) reicht in der Mitte (y = 14) bis fast zum First
+        float top = 0.0
+        for (int q = 256; q < 256 + 18; q++) {
+            for (int c = 0; c < 4; c++) {
+                float x = part.positions[q * 12 + c * 3]
+                float z = part.positions[q * 12 + c * 3 + 2]
+                if (Math.Abs(x - 10.0) < 0.001 && z > top) { top = z }
+            }
+        }
+        Testing.Assert.IsTrue(top > 58.0)
+        // ein Block ohne die Mitte des Gebäudes hat nur Gelände
+        Testing.Assert.AreEqual(256, far.Block(51.2, 0.0, 51.2, 3.2).Count)
+    }
+}

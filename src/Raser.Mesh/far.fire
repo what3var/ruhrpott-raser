@@ -1,0 +1,184 @@
+// Raser.Mesh: die fernen Detailstufen - Netze direkt aus dem Zwischenlayer, ohne Voxel (Roadmap M2: Detailstufen nach Entfernung).
+//
+// Ein Block (z. B. 4 x 4 Chunk-Säulen, 51,2 m) wird:
+// - Gelände: ein Raster der Höhen im Abstand `spacing`, je Zelle die Farbe der Oberfläche in ihrer Mitte (Flächen und Straßen nach denselben Regeln
+//   wie die Voxelisierung: höchste Priorität bzw. breiteste Straße, bei Gleichstand die kleinere ID);
+// - Gebäude: die Wände vom Boden bis unter die Dachfläche, in Stücke von höchstens 2 m geteilt (so folgen sie Giebeln), dazu die Dachflächen aus LoD2
+//   (trianguliert) oder der Grundriss auf Dachhöhe. Ein Gebäude gehört dem Block, in dem die Mitte seines Rechtecks liegt (und nur der Kachel, in der sie liegt).
+// Koordinaten wie Raser.Mesher: Meter, x Ost, y Nord, z oben - hier kachel-lokal in x und y und absolut (NHN) in z.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class FarMesher {
+        Tile tile
+        List<RoofModel> models
+        List<Box2> areaBoxes
+        List<Box2> roadBoxes
+        List<Area> areas           // die Flächen und Straßen, die den Block berühren (in Block gesetzt)
+        List<Road> roads
+
+        construct(Tile tile, defined int seed) {
+            this.tile = tile
+            try tile.TakeTo(this)
+            this.models = new List<RoofModel>()
+            foreach (b in tile.data.buildings) {
+                if (b.footprint == undefined || b.footprint.length < 6 || b.ridge <= b.ground) { continue }
+                this.models.Add(new Raser.RoofModel(b, seed))
+            }
+            this.areaBoxes = new List<Box2>()
+            foreach (a in tile.data.areas) { this.areaBoxes.Add(Raser.Box2.Of(a.ring)) }
+            this.roadBoxes = new List<Box2>()
+            foreach (r in tile.data.roads) {
+                var box = Raser.Box2.Of(r.points)
+                box.Grow(r.width / 2.0)
+                this.roadBoxes.Add(take box)
+            }
+            this.areas = new List<Area>()
+            this.roads = new List<Road>()
+        }
+
+        defined float GroundAt(defined float x, defined float y) {
+            if (this.tile.heights == undefined) { return 0.0 }
+            return this.tile.heights.At(x, y)
+        }
+
+        // Die Oberfläche (Farbe + Material << 8) an einem Punkt.
+        defined int SurfaceAt(defined float x, defined float y) {
+            int material = Raser.Material.Grass!int
+            int color = Raser.Palette.Grass
+            int priority = -1000000
+            int areaId = 0
+            foreach (a in this.areas) {
+                if (a.priority < priority || (a.priority == priority && a.id >= areaId)) { continue }
+                if (Raser.Geo.Inside(a.ring, x, y)) {
+                    priority = a.priority
+                    areaId = a.id
+                    material = a.surface!int
+                    color = a.color
+                }
+            }
+            float width = 0.0
+            int roadId = 0
+            foreach (r in this.roads) {
+                if (r.width < width || (r.width == width && r.id >= roadId)) { continue }
+                if (Raser.Geo.DistanceToLine(r.points, x, y) <= r.width / 2.0) {
+                    width = r.width
+                    roadId = r.id
+                    material = r.surface!int
+                    color = r.color
+                }
+            }
+            return color + (material << 8)
+        }
+
+        // Ein Block: x0, y0 kachel-lokal, Kantenlänge size, Geländeraster spacing.
+        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing) {
+            var part = new Raser.MeshPart()
+            int n = Math.Round(size / spacing)!int
+            // nur die Flächen und Straßen, die den Block berühren
+            this.areas.Clear()
+            this.roads.Clear()
+            for (int i = 0; i < this.tile.data.areas.Count; i++) {
+                if (this.areaBoxes[i].Overlaps(x0, y0, x0 + size, y0 + size)) { this.areas.Add(this.tile.data.areas[i]) }
+            }
+            for (int i = 0; i < this.tile.data.roads.Count; i++) {
+                if (this.roadBoxes[i].Overlaps(x0, y0, x0 + size, y0 + size)) { this.roads.Add(this.tile.data.roads[i]) }
+            }
+            // Gelände
+            for (int j = 0; j < n; j++) {
+                for (int i = 0; i < n; i++) {
+                    float ax = x0 + i * spacing
+                    float ay = y0 + j * spacing
+                    float bx = ax + spacing
+                    float by = ay + spacing
+                    float h0 = this.GroundAt(ax, ay)
+                    float h1 = this.GroundAt(bx, ay)
+                    float h2 = this.GroundAt(bx, by)
+                    float h3 = this.GroundAt(ax, by)
+                    int s = this.SurfaceAt(ax + spacing / 2.0, ay + spacing / 2.0)
+                    float nx = ((h0 + h3) - (h1 + h2)) / (2.0 * spacing)
+                    float ny = ((h0 + h1) - (h2 + h3)) / (2.0 * spacing)
+                    float len = Math.Sqrt(nx * nx + ny * ny + 1.0)
+                    part.Quad(ax, ay, h0, bx, ay, h1, bx, by, h2, ax, by, h3, nx / len, ny / len, 1.0 / len, s & 255, s >> 8)
+                }
+            }
+            // Gebäude
+            foreach (m in this.models) {
+                float cx = (m.box.minX + m.box.maxX) / 2.0
+                float cy = (m.box.minY + m.box.maxY) / 2.0
+                if (cx < x0 || cy < y0 || cx >= x0 + size || cy >= y0 + size) { continue }
+                if (cx < 0.0 || cy < 0.0 || cx >= 256.0 || cy >= 256.0) { continue }
+                Raser.FarMesher.Building(part, m)
+            }
+            return part
+        }
+
+        static undefined Building(MeshPart part, RoofModel m) {
+            Building b = m.building
+            float fp[] = b.footprint
+            int n = fp.length / 2
+            bool ccw = Raser.Geo.Area(fp) > 0.0
+            float g = b.ground
+            int wall = b.wall!int
+            for (int k = 0; k < n; k++) {
+                int ia = k
+                int ib = (k + 1) % n
+                if (!ccw) {
+                    ia = (n - k) % n
+                    ib = (n - k - 1 + n) % n
+                }
+                float ax = fp[ia * 2]
+                float ay = fp[ia * 2 + 1]
+                float bx = fp[ib * 2]
+                float by = fp[ib * 2 + 1]
+                float dx = bx - ax
+                float dy = by - ay
+                float len = Math.Sqrt(dx * dx + dy * dy)
+                if (len < 0.001) { continue }
+                float onx = dy / len           // nach außen (Ring gegen den Uhrzeigersinn)
+                float ony = -dx / len
+                int pieces = Math.Max(1, Math.Ceiling(len / 2.0)!int)
+                for (int p = 0; p < pieces; p++) {
+                    float t0 = p * 1.0 / pieces
+                    float t1 = (p + 1) * 1.0 / pieces
+                    float px = ax + dx * t0
+                    float py = ay + dy * t0
+                    float qx = ax + dx * t1
+                    float qy = ay + dy * t1
+                    // knapp innen nach der Dachhöhe fragen (auf dem Rand liegt die Traufe)
+                    float tp = m.RoofAt(px - onx * 0.05, py - ony * 0.05)
+                    float tq = m.RoofAt(qx - onx * 0.05, qy - ony * 0.05)
+                    part.Quad(px, py, g, qx, qy, g, qx, qy, tq, px, py, tp, onx, ony, 0.0, m.wallColor, wall)
+                }
+            }
+            int roof = b.roof!int
+            if (b.roofs.Count > 0) {
+                foreach (f in b.roofs) {
+                    var tri = Raser.Geo.Triangulate(f.points, 3)
+                    var plane = Raser.Geo.Plane(f.points)
+                    if (plane[3] == 0.0) { continue }              // senkrecht: keine Dachfläche
+                    float nz = 1.0 / Math.Sqrt(plane[0] * plane[0] + plane[1] * plane[1] + 1.0)
+                    for (int t = 0; t < tri.length; t = t + 3) {
+                        float pts[] = f.points
+                        int a = tri[t] * 3
+                        int c = tri[t + 1] * 3
+                        int d = tri[t + 2] * 3
+                        part.Quad(pts[a], pts[a + 1], pts[a + 2], pts[c], pts[c + 1], pts[c + 2], pts[d], pts[d + 1], pts[d + 2], pts[d], pts[d + 1], pts[d + 2], -plane[0] * nz, -plane[1] * nz, nz, m.roofColor, roof)
+                    }
+                }
+            } else {
+                var tri = Raser.Geo.Triangulate(fp)
+                for (int t = 0; t < tri.length; t = t + 3) {
+                    int a = tri[t] * 2
+                    int c = tri[t + 1] * 2
+                    int d = tri[t + 2] * 2
+                    float ha = m.RoofAt(fp[a], fp[a + 1])
+                    float hc = m.RoofAt(fp[c], fp[c + 1])
+                    float hd = m.RoofAt(fp[d], fp[d + 1])
+                    part.Quad(fp[a], fp[a + 1], ha, fp[c], fp[c + 1], hc, fp[d], fp[d + 1], hd, fp[d], fp[d + 1], hd, 0.0, 0.0, 1.0, m.roofColor, roof)
+                }
+            }
+        }
+    }
+}

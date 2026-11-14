@@ -155,6 +155,29 @@ das Hauptprogramm in `cam.Render()` steckt (docs/FIRE.md) - beim Flug mit 15 m/s
 
 ![Nach 300 m Flug](images/viewer-flug.png)
 
+## Detailstufen
+
+Der Betrachter arbeitet in Blöcken von 4 x 4 Chunk-Säulen (51,2 m; fünf Blöcke sind eine Kachel), jeder Block ein scene3d-Objekt mit der Palette als
+Textur (die Farbe steckt in den Texturkoordinaten):
+
+- **Stufe 0** (`--near`, Blöcke um den Ladepunkt): die Voxel-Chunks, vernetzt mit `Raser.Mesh`, Säule für Säule über mehrere Bilder aufgebaut; bis ein
+  Block fertig ist, bleibt seine ferne Version stehen. Ein Block kostet rund 2,4 s - für Tempo ist diese Stufe zu teuer (ohne Worker-Threads, docs/FIRE.md).
+- **Fern** (`--far`): `Raser.FarMesher` baut den Block direkt aus dem Zwischenlayer - Gelände als Raster (`--spacing`, Standard 3,2 m, ab dem dritten Ring
+  doppelt so grob) mit den Farben der Flächen und Straßen, Gebäude als Wände bis unter die Dachfläche (in Stücken von höchstens 2 m, so folgen sie Giebeln)
+  und die LoD2-Dachflächen (trianguliert). Rund 6 ms je Block.
+- Je Bild wird bis `--budget-ms` gearbeitet: erst fehlende ferne Blöcke vom Ladepunkt nach außen, dann die nahen Säule für Säule. Der Ladepunkt liegt in
+  Blickrichtung voraus (`--lead`, im Flug Tempo x 2,5 s): vorne wird zuerst geladen, hinten fällt zuerst weg.
+
+Gemessen: Flug mit 83 m/s (300 km/h) über 1,3 km quer durch die Testregion (`--near -1 --far 6`, 480 x 300): 533 ferne Blöcke, Nachladen im Mittel 3,9 ms
+je Bild, Rendern rund 18 ms, rund 46 Bilder je Sekunde; nur in 51 von 718 Bildern fehlte noch ein Block.
+
+![Detailstufen](images/viewer-stufen.png)
+
+*Nah die Voxel (mit Fenstern), weiter weg die Gebäude aus Grundriss und LoD2-Dächern (noch ohne Fassade).*
+
+Offen: eine mittlere Stufe (Voxel 40/80 cm), die Fassaden-Textur mit den Fenstern ab der fernen Stufe, Stufe 0 in Worker-Threads (sobald fire-Threads
+nicht mehr stehen, während das Hauptprogramm rendert).
+
 ## Offen (für M1 und danach)
 
 - Brücken und Tunnel (`layer`), Gebäudeteile über Durchfahrten, Fassaden-Grammatik (M2), Viertel-Typen aus den Daten.
