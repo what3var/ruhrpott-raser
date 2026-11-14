@@ -145,6 +145,7 @@ namespace Raser {
                     road.color = f.color
                     road.lanes = f.lanes
                     road.layer = f.layer
+                    road.sidewalk = f.sidewalk
                     tile.data.roads.Add(take road)
                 }
             }

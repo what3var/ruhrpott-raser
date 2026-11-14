@@ -60,6 +60,7 @@ namespace Raser {
         defined int color
         defined int lanes
         defined int layer         // OSM layer (Brücken > 0, Tunnel < 0; noch nicht genutzt)
+        string sidewalk           // OSM sidewalk: "both", "left", "right", "no", "separate"; undefined: nicht angegeben (dann nach Art)
 
         construct() {
             this.surface = Raser.Material.Asphalt

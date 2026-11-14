@@ -59,7 +59,9 @@ namespace Raser {
                 defined int at = z << 12
                 for (int k = 0; k < 4096; k++) {
                     if (done[k] != 0) { continue }
-                    if (mats[at + k] > 8) {
+                    // Bauwerk (nicht Gelände); Stämme, Masten und Laub (Holz, Metall, Laub: Raser.Props) machen das Gelände nicht hart
+                    int sm = mats[at + k]
+                    if (sm > 8 && sm != 10 && sm != 12 && sm != 16) {
                         done[k] = 1
                         left--
                         defined int v = vz0 + z

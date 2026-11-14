@@ -49,8 +49,8 @@ namespace Raser {
                         [b.id, b.source, Raser.Wkb.Polygon(Raser.PostgresTileStore.Offset(b.footprint, e0, n0)), b.ground, b.eaves, b.ridge, b.roofType!int, roofs, b.function, b.name, b.levels, b.cellars, b.wall!int, b.wallColor, b.roof!int, b.roofColor])
                 }
                 foreach (r in d.roads) {
-                    this.db.Execute("insert into road (id, source, kind, line, width, surface, color, lanes, layer) values (?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ?) on conflict (source) do update set kind = excluded.kind, line = excluded.line, width = excluded.width, surface = excluded.surface, color = excluded.color, lanes = excluded.lanes, layer = excluded.layer",
-                        [r.id, r.source, r.kind, Raser.Wkb.LineString(Raser.PostgresTileStore.Offset(r.points, e0, n0)), r.width, r.surface!int, r.color, r.lanes, r.layer])
+                    this.db.Execute("insert into road (id, source, kind, line, width, surface, color, lanes, layer, sidewalk) values (?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ?, ?) on conflict (source) do update set kind = excluded.kind, line = excluded.line, width = excluded.width, surface = excluded.surface, color = excluded.color, lanes = excluded.lanes, layer = excluded.layer, sidewalk = excluded.sidewalk",
+                        [r.id, r.source, r.kind, Raser.Wkb.LineString(Raser.PostgresTileStore.Offset(r.points, e0, n0)), r.width, r.surface!int, r.color, r.lanes, r.layer, r.sidewalk])
                 }
                 foreach (a in d.areas) {
                     this.db.Execute("insert into area (id, source, kind, ring, surface, color, priority) values (?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?) on conflict (source) do update set kind = excluded.kind, ring = excluded.ring, surface = excluded.surface, color = excluded.color, priority = excluded.priority",
@@ -121,7 +121,7 @@ namespace Raser {
             }
 
             // Straßen: wie der Import - das Rechteck der Linie um die halbe Breite vergrößert muss die Kachel berühren
-            foreach (r in this.db.Query("select id, source, kind, ST_AsBinary(line, 'NDR') as ln, width, surface, color, lanes, layer from road where line && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [minX - 50.0, minY - 50.0, maxX + 50.0, maxY + 50.0])) {
+            foreach (r in this.db.Query("select id, source, kind, ST_AsBinary(line, 'NDR') as ln, width, surface, color, lanes, layer, sidewalk from road where line && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [minX - 50.0, minY - 50.0, maxX + 50.0, maxY + 50.0])) {
                 float width = r.Float("width")
                 var points = Raser.Wkb.ReadLineString(r.Bytes("ln"))
                 var box = Raser.Box2.Of(points)
@@ -137,6 +137,7 @@ namespace Raser {
                 road.color = r.Int("color")
                 road.lanes = r.Int("lanes")
                 road.layer = r.Int("layer")
+                road.sidewalk = r.Text("sidewalk")
                 tile.data.roads.Add(take road)
             }
 

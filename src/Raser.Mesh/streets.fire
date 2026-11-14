@@ -1,0 +1,190 @@
+// Raser.Mesh: Fahrbahnen und Gehwege mit natürlichen Kanten (Konzept, Abschnitt 1: Straßenkanten treppen nicht im 20-cm-Raster).
+//
+// Ein Abstandsfeld über dem Gelände: d(x, y) ist der Abstand zum Fahrbahnrand (negativ auf der Fahrbahn). Die Mittellinien werden vorher geglättet
+// (Chaikin, zwei Runden: aus Knicken werden Bögen), mehrere Straßen weich verbunden (smooth-min: an Einmündungen entstehen die Radien von selbst).
+// Fahrbahn ist d < 0, Gehweg 0 <= d < w (w: die Breite des Gehwegs der nächsten Straße), der Rest das übrige Gelände. Die Zellen des Geländerasters
+// werden an d = 0 und d = w geteilt (linear zwischen den Ecken, wie Marching Squares) - die Kanten werden Kurven statt Treppen. Der Gehweg liegt
+// 15 cm höher; am Fahrbahnrand steht der Bordstein als senkrechte Fläche, ebenso an der Hinterkante des Gehwegs.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class StreetField {
+        static readonly defined float Curb = 0.15        // Höhe des Bordsteins (m)
+        static readonly defined float Blend = 3.0        // smooth-min: so weit (m) runden sich Einmündungen aus
+
+        List<Road> roads                // die Straßen nahe dem Block (Fahrbahnen)
+        List<float[]> lines             // ihre geglätteten Mittellinien
+        List<Road> paths                // Fuß- und Radwege, Wege, Gleise: flach, ohne Bordstein, mit derselben glatten Kante
+        List<float[]> pathLines
+        defined float dp                // nach PathAt: der Abstand zum Rand des nächsten Wegs (negativ darauf)
+        defined int pathNearest
+        defined float d                 // nach At: der Abstand zum Fahrbahnrand (smooth-min)
+        defined float walk              // nach At: die Breite des Gehwegs der nächsten Straße (0: keiner)
+        defined int nearest             // nach At: der Index der nächsten Straße (-1: keine in Reichweite)
+
+        construct() {
+            this.roads = new List<Road>()
+            this.lines = new List<float[]>()
+            this.paths = new List<Road>()
+            this.pathLines = new List<float[]>()
+        }
+
+        // Eine Fahrbahn für das Feld? (Straßen der Autos auf Höhe 0; Fuß- und Radwege, Bahnen, Brücken bleiben wie bisher)
+        static defined bool IsStreet(Road r) {
+            if (r.layer != 0 || !r.kind.StartsWith("highway=")) { return false }
+            string k = r.kind.Substring(8)
+            return k == "motorway" || k == "trunk" || k == "primary" || k == "secondary" || k == "tertiary" || k == "residential" || k == "unclassified" || k == "living_street" || k == "service" || k.EndsWith("_link")
+        }
+
+        // Die Breite des Gehwegs (m): aus OSM sidewalk, sonst nach Art (innerorts an Hauptstraßen und Wohnstraßen ja, an Spielstraßen, Zufahrten und
+        // Autobahnen nein). left/right gelten vorerst für beide Seiten.
+        static defined float WalkWidth(Road r) {
+            if (r.sidewalk == "no" || r.sidewalk == "separate") { return 0.0 }
+            string k = r.kind.Substring(8)
+            if (r.sidewalk == "both" || r.sidewalk == "left" || r.sidewalk == "right") {
+                if (k == "primary" || k == "secondary") { return 3.0 }
+                return 2.5
+            }
+            if (k == "primary" || k == "secondary") { return 3.0 }
+            if (k == "tertiary" || k == "residential" || k == "unclassified") { return 2.5 }
+            return 0.0
+        }
+
+        // Zwei Runden Chaikin: jede Kante wird durch zwei Punkte bei 1/4 und 3/4 ersetzt; die Enden bleiben.
+        static float[] Smooth(float pts[]) {
+            float cur[] = pts
+            for (int round = 0; round < 2; round++) {
+                int n = cur.length / 2
+                if (n < 3) { return cur }
+                float next[] = new float[(2 * (n - 1)) * 2 + 4]
+                int at = 0
+                next[at] = cur[0]
+                next[at + 1] = cur[1]
+                at = at + 2
+                for (int i = 0; i + 1 < n; i++) {
+                    float ax = cur[i * 2]
+                    float ay = cur[i * 2 + 1]
+                    float bx = cur[i * 2 + 2]
+                    float by = cur[i * 2 + 3]
+                    if (i > 0) {
+                        next[at] = ax * 0.75 + bx * 0.25
+                        next[at + 1] = ay * 0.75 + by * 0.25
+                        at = at + 2
+                    }
+                    if (i + 2 < n) {
+                        next[at] = ax * 0.25 + bx * 0.75
+                        next[at + 1] = ay * 0.25 + by * 0.75
+                        at = at + 2
+                    }
+                }
+                next[at] = cur[(n - 1) * 2]
+                next[at + 1] = cur[(n - 1) * 2 + 1]
+                at = at + 2
+                float exact[] = new float[at]
+                for (int i = 0; i < at; i++) { exact[i] = next[i] }
+                cur = exact
+            }
+            return cur
+        }
+
+        // Die Straßen eines Bereichs übernehmen (mit Rand für Gehweg und Ausrundung).
+        undefined Collect(List<Road> all, defined float minX, defined float minY, defined float maxX, defined float maxY) {
+            this.roads.Clear()
+            this.lines.Clear()
+            this.paths.Clear()
+            this.pathLines.Clear()
+            foreach (r in all) {
+                if (!Raser.StreetField.IsStreet(r)) {
+                    if (r.layer != 0) { continue }
+                    var pbox = Raser.Box2.Of(r.points)
+                    pbox.Grow(r.width / 2.0 + 1.0)
+                    if (!pbox.Overlaps(minX, minY, maxX, maxY)) { continue }
+                    this.paths.Add(r)
+                    this.pathLines.Add(Raser.StreetField.Smooth(r.points))
+                    continue
+                }
+                var box = Raser.Box2.Of(r.points)
+                box.Grow(r.width / 2.0 + Raser.StreetField.WalkWidth(r) + Raser.StreetField.Blend + 1.0)
+                if (!box.Overlaps(minX, minY, maxX, maxY)) { continue }
+                this.roads.Add(r)
+                this.lines.Add(Raser.StreetField.Smooth(r.points))
+            }
+        }
+
+        defined bool Empty { get { return this.roads.Count == 0 && this.paths.Count == 0 } }
+
+        // Die Wege an (x, y): setzt dp und pathNearest (der breiteste gewinnt bei Überlappung, wie in der Voxelisierung).
+        undefined PathAt(defined float x, defined float y) {
+            this.dp = 1.0e30
+            this.pathNearest = -1
+            for (int i = 0; i < this.paths.Count; i++) {
+                float di = Raser.Geo.DistanceToLine(this.pathLines[i], x, y) - this.paths[i].width / 2.0
+                if (di < this.dp) {
+                    this.dp = di
+                    this.pathNearest = i
+                }
+            }
+        }
+
+        // Das Feld an (x, y): setzt d, walk und nearest.
+        undefined At(defined float x, defined float y) {
+            float best = 1.0e30
+            float smooth = 1.0e30
+            if (this.roads.Count == 0) {
+                this.d = 1.0e30
+                this.walk = 0.0
+                this.nearest = -1
+                return
+            }
+            this.walk = 0.0
+            this.nearest = -1
+            float k = Raser.StreetField.Blend
+            for (int i = 0; i < this.roads.Count; i++) {
+                var r = this.roads[i]
+                float di = Raser.Geo.DistanceToLine(this.lines[i], x, y) - r.width / 2.0
+                if (di < best) {
+                    best = di
+                    this.walk = Raser.StreetField.WalkWidth(r)
+                    this.nearest = i
+                }
+                // smooth-min (polynomial): rundet die Ecken zwischen zwei Straßen aus
+                if (smooth > 1.0e29) {
+                    smooth = di
+                } else {
+                    float h = Math.Max(k - Math.Abs(smooth - di), 0.0) / k
+                    smooth = Math.Min(smooth, di) - h * h * k * 0.25
+                }
+            }
+            this.d = smooth
+        }
+
+        // Ein Polygon (n Punkte in px, py mit Werten pv) an pv = t beschneiden: below behält pv < t, sonst pv >= t. Gibt die Zahl der Punkte in ox, oy, ov.
+        static defined int Clip(defined float px[], defined float py[], defined float pv[], defined int n, defined float t, defined bool below, defined float ox[], defined float oy[], defined float ov[]) {
+            int m = 0
+            for (int i = 0; i < n; i++) {
+                int j = (i + 1) % n
+                bool inI = pv[i] < t
+                bool inJ = pv[j] < t
+                if (!below) {
+                    inI = !inI
+                    inJ = !inJ
+                }
+                if (inI) {
+                    ox[m] = px[i]
+                    oy[m] = py[i]
+                    ov[m] = pv[i]
+                    m++
+                }
+                if (inI != inJ) {
+                    float f = (t - pv[i]) / (pv[j] - pv[i])
+                    ox[m] = px[i] + (px[j] - px[i]) * f
+                    oy[m] = py[i] + (py[j] - py[i]) * f
+                    ov[m] = t
+                    m++
+                }
+            }
+            return m
+        }
+    }
+}

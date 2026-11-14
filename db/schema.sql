@@ -48,8 +48,10 @@ CREATE TABLE IF NOT EXISTS road (
     surface     smallint NOT NULL,
     color       smallint NOT NULL,
     lanes       smallint NOT NULL DEFAULT 0,
-    layer       smallint NOT NULL DEFAULT 0
+    layer       smallint NOT NULL DEFAULT 0,
+    sidewalk    text                                    -- OSM sidewalk: both, left, right, no, separate
 );
+ALTER TABLE road ADD COLUMN IF NOT EXISTS sidewalk text;
 CREATE INDEX IF NOT EXISTS road_line ON road USING gist (line);
 
 CREATE TABLE IF NOT EXISTS area (

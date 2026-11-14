@@ -82,6 +82,7 @@ namespace Raser {
         static readonly defined int LeavesDark = 28
         static readonly defined int LeavesLight = 29
         static readonly defined int Bark = 30
+        static readonly defined int Sidewalk = 31          // Gehweg: schmale Pflastersteine, heller als die Fahrbahn
         // ohne Kachel im Atlas (flach): Schilder und Licht
         static readonly defined int SignWhite = 160
         static readonly defined int SignRed = 161
@@ -126,6 +127,7 @@ namespace Raser {
             c[28] = 0x2C5220
             c[29] = 0x5C8A34
             c[30] = 0x4A3A2C
+            c[31] = 0xA8A096
             c[160] = 0xF2F2EE
             c[161] = 0xC8202A
             c[162] = 0x1F4E9C

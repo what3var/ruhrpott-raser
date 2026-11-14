@@ -17,6 +17,7 @@ namespace Raser {
         List<Box2> roadBoxes
         List<Area> areas           // die Flächen und Straßen, die den Block berühren (in Block gesetzt)
         List<Road> roads
+        StreetField streets         // Fahrbahnen und Gehwege mit natürlichen Kanten
 
         construct(Tile tile, defined int seed) {
             this.tile = tile
@@ -36,6 +37,7 @@ namespace Raser {
             }
             this.areas = new List<Area>()
             this.roads = new List<Road>()
+            this.streets = new Raser.StreetField()
         }
 
         defined float GroundAt(defined float x, defined float y) {
@@ -43,8 +45,8 @@ namespace Raser {
             return this.tile.heights.At(x, y)
         }
 
-        // Die Oberfläche (Farbe + Material << 8) an einem Punkt.
-        defined int SurfaceAt(defined float x, defined float y) {
+        // Die Oberfläche (Farbe + Material << 8) an einem Punkt. streets = false: ohne die Fahrbahnen (die kommen aus dem StreetField).
+        defined int SurfaceAt(defined float x, defined float y, defined bool streets = true) {
             int material = Raser.Material.Grass!int
             int color = Raser.Palette.Grass
             int priority = -1000000
@@ -61,6 +63,7 @@ namespace Raser {
             float width = 0.0
             int roadId = 0
             foreach (r in this.roads) {
+                if (!streets && r.layer == 0) { continue }          // Straßen und Wege kommen aus dem StreetField
                 if (r.width < width || (r.width == width && r.id >= roadId)) { continue }
                 if (Raser.Geo.DistanceToLine(r.points, x, y) <= r.width / 2.0) {
                     width = r.width
@@ -87,9 +90,26 @@ namespace Raser {
             for (int i = 0; i < this.tile.data.roads.Count; i++) {
                 if (this.roadBoxes[i].Overlaps(x0, y0, x0 + size, y0 + size)) { this.roads.Add(this.tile.data.roads[i]) }
             }
-            // Gelände
+            // Gelände, darin Fahrbahnen und Gehwege mit natürlichen Kanten (Raser.StreetField)
             int side = 0
             if (skip != undefined) { side = Math.Round(Math.Sqrt(skip.length))!int }
+            var field = this.streets
+            field.Collect(this.tile.data.roads, x0, y0, x0 + size, y0 + size)
+            int nv = n + 1
+            defined float dg[] = new float[nv * nv]
+            defined float wg[] = new float[nv * nv]
+            defined float pg[] = new float[nv * nv]
+            if (!field.Empty) {
+                for (int j = 0; j <= n; j++) {
+                    for (int i = 0; i <= n; i++) {
+                        field.At(x0 + i * spacing, y0 + j * spacing)
+                        field.PathAt(x0 + i * spacing, y0 + j * spacing)
+                        dg[i + j * nv] = field.d
+                        wg[i + j * nv] = field.walk
+                        pg[i + j * nv] = field.dp
+                    }
+                }
+            }
             for (int j = 0; j < n; j++) {
                 for (int i = 0; i < n; i++) {
                     if (side > 0 && skip[(i * side / n) + (j * side / n) * side] != 0) { continue }
@@ -101,11 +121,15 @@ namespace Raser {
                     float h1 = this.GroundAt(bx, ay)
                     float h2 = this.GroundAt(bx, by)
                     float h3 = this.GroundAt(ax, by)
-                    int s = this.SurfaceAt(ax + spacing / 2.0, ay + spacing / 2.0)
                     float nx = ((h0 + h3) - (h1 + h2)) / (2.0 * spacing)
                     float ny = ((h0 + h1) - (h2 + h3)) / (2.0 * spacing)
                     float len = Math.Sqrt(nx * nx + ny * ny + 1.0)
-                    part.Quad(ax, ay, h0, bx, ay, h1, bx, by, h2, ax, by, h3, nx / len, ny / len, 1.0 / len, s & 255, s >> 8)
+                    if (field.Empty) {
+                        int s = this.SurfaceAt(ax + spacing / 2.0, ay + spacing / 2.0)
+                        part.Quad(ax, ay, h0, bx, ay, h1, bx, by, h2, ax, by, h3, nx / len, ny / len, 1.0 / len, s & 255, s >> 8)
+                        continue
+                    }
+                    this.StreetCell(part, field, ax, ay, spacing, h0, h1, h2, h3, nx / len, ny / len, 1.0 / len, dg[i + j * nv], dg[i + 1 + j * nv], dg[i + 1 + (j + 1) * nv], dg[i + (j + 1) * nv], Math.Max(Math.Max(wg[i + j * nv], wg[i + 1 + j * nv]), Math.Max(wg[i + 1 + (j + 1) * nv], wg[i + (j + 1) * nv])), pg[i + j * nv], pg[i + 1 + j * nv], pg[i + 1 + (j + 1) * nv], pg[i + (j + 1) * nv])
                 }
             }
             // Gebäude
@@ -140,6 +164,144 @@ namespace Raser {
         }
 
         // vx0, vy0: die Kachel in Voxeln der Welt (für das Fensterraster).
+        // Eine Zelle des Geländes mit Fahrbahn (d < 0), Gehweg (0 <= d < w, 15 cm höher) und Rest - geteilt an d = 0 und d = w, mit Bordsteinen.
+        undefined StreetCell(MeshPart part, StreetField field, defined float ax, defined float ay, defined float sp, defined float h0, defined float h1, defined float h2, defined float h3, defined float nx, defined float ny, defined float nz, defined float d0, defined float d1, defined float d2, defined float d3, defined float w, defined float p0, defined float p1, defined float p2, defined float p3) {
+            defined float px[8]
+            defined float py[8]
+            defined float pv[8]
+            px[0] = ax
+            py[0] = ay
+            pv[0] = d0
+            px[1] = ax + sp
+            py[1] = ay
+            pv[1] = d1
+            px[2] = ax + sp
+            py[2] = ay + sp
+            pv[2] = d2
+            px[3] = ax
+            py[3] = ay + sp
+            pv[3] = d3
+            float lo = Math.Min(Math.Min(d0, d1), Math.Min(d2, d3))
+            float hi = Math.Max(Math.Max(d0, d1), Math.Max(d2, d3))
+            defined float qx[8]
+            defined float qy[8]
+            defined float qv[8]
+            defined float rx[8]
+            defined float ry[8]
+            defined float rv[8]
+            // Fahrbahn
+            if (lo < 0.0) {
+                int m = 4
+                if (hi >= 0.0) { m = Raser.StreetField.Clip(px, py, pv, 4, 0.0, true, qx, qy, qv) } else { m = Raser.FarMesher.CopyPoly(px, py, pv, 4, qx, qy, qv) }
+                field.At(Raser.FarMesher.Mean(qx, m), Raser.FarMesher.Mean(qy, m))
+                int color = Raser.Palette.Asphalt
+                int material = Raser.Material.Asphalt!int
+                if (field.nearest >= 0) {
+                    color = field.roads[field.nearest].color
+                    material = field.roads[field.nearest].surface!int
+                }
+                Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, color, material)
+            }
+            // Gehweg
+            if (w > 0.0 && hi >= 0.0 && lo < w) {
+                int m = Raser.FarMesher.CopyPoly(px, py, pv, 4, qx, qy, qv)
+                if (lo < 0.0) { m = Raser.StreetField.Clip(px, py, pv, 4, 0.0, false, qx, qy, qv) }
+                if (hi >= w) {
+                    m = Raser.StreetField.Clip(qx, qy, qv, m, w, true, rx, ry, rv)
+                    m = Raser.FarMesher.CopyPoly(rx, ry, rv, m, qx, qy, qv)
+                }
+                Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, Raser.StreetField.Curb, nx, ny, nz, Raser.Palette.Sidewalk, Raser.Material.Paving!int)
+                // Bordsteine: Kanten auf d = 0 (zur Fahrbahn) und d = w (Hinterkante), senkrecht von der Höhe des Geländes bis zum Gehweg
+                for (int k = 0; k < m; k++) {
+                    int l = (k + 1) % m
+                    bool front = Math.Abs(qv[k]) < 0.000001 && Math.Abs(qv[l]) < 0.000001
+                    bool back = Math.Abs(qv[k] - w) < 0.000001 && Math.Abs(qv[l] - w) < 0.000001
+                    if (!front && !back) { continue }
+                    float za = Raser.FarMesher.Bilinear(qx[k], qy[k], ax, ay, sp, h0, h1, h2, h3)
+                    float zb = Raser.FarMesher.Bilinear(qx[l], qy[l], ax, ay, sp, h0, h1, h2, h3)
+                    float ex = qx[l] - qx[k]
+                    float ey = qy[l] - qy[k]
+                    float el = Math.Sqrt(ex * ex + ey * ey)
+                    if (el < 0.0001) { continue }
+                    // das Polygon läuft gegen den Uhrzeigersinn: außen ist rechts der Kante
+                    part.Quad(qx[k], qy[k], za, qx[l], qy[l], zb, qx[l], qy[l], zb + Raser.StreetField.Curb, qx[k], qy[k], za + Raser.StreetField.Curb, ey / el, -ex / el, 0.0, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                }
+            }
+            // der Rest: das Gelände mit seinen Flächen, darin die Wege (flach, glatte Kante)
+            float edge = Math.Max(w, 0.0)
+            if (hi >= edge) {
+                int m = Raser.FarMesher.CopyPoly(px, py, pv, 4, qx, qy, qv)
+                if (lo < edge) { m = Raser.StreetField.Clip(px, py, pv, 4, edge, false, qx, qy, qv) }
+                // die Werte des Wegefelds an den Punkten des Rests (bilinear aus den Ecken)
+                for (int k = 0; k < m; k++) {
+                    float u = (qx[k] - ax) / sp
+                    float v = (qy[k] - ay) / sp
+                    qv[k] = p0 * (1.0 - u) * (1.0 - v) + p1 * u * (1.0 - v) + p2 * u * v + p3 * (1.0 - u) * v
+                }
+                float plo = 1.0e30
+                float phi = -1.0e30
+                for (int k = 0; k < m; k++) {
+                    plo = Math.Min(plo, qv[k])
+                    phi = Math.Max(phi, qv[k])
+                }
+                if (plo < 0.0) {
+                    int mp = Raser.StreetField.Clip(qx, qy, qv, m, 0.0, true, rx, ry, rv)
+                    field.PathAt(Raser.FarMesher.Mean(rx, mp), Raser.FarMesher.Mean(ry, mp))
+                    if (field.pathNearest >= 0) {
+                        var pr = field.paths[field.pathNearest]
+                        Raser.FarMesher.Poly(part, rx, ry, mp, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, pr.color, pr.surface!int)
+                    }
+                }
+                if (phi >= 0.0) {
+                    int mr = m
+                    if (plo < 0.0) {
+                        mr = Raser.StreetField.Clip(qx, qy, qv, m, 0.0, false, rx, ry, rv)
+                        mr = Raser.FarMesher.CopyPoly(rx, ry, rv, mr, qx, qy, qv)
+                    }
+                    int s = this.SurfaceAt(Raser.FarMesher.Mean(qx, mr), Raser.FarMesher.Mean(qy, mr), false)
+                    Raser.FarMesher.Poly(part, qx, qy, mr, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, s & 255, s >> 8)
+                }
+            }
+        }
+
+        static defined int CopyPoly(defined float px[], defined float py[], defined float pv[], defined int n, defined float ox[], defined float oy[], defined float ov[]) {
+            for (int i = 0; i < n; i++) {
+                ox[i] = px[i]
+                oy[i] = py[i]
+                ov[i] = pv[i]
+            }
+            return n
+        }
+
+        static defined float Mean(defined float a[], defined int n) {
+            float s = 0.0
+            for (int i = 0; i < n; i++) { s = s + a[i] }
+            return s / Math.Max(n, 1)
+        }
+
+        // Die Höhe des Geländes in der Zelle (bilinear aus den vier Ecken).
+        static defined float Bilinear(defined float x, defined float y, defined float ax, defined float ay, defined float sp, defined float h0, defined float h1, defined float h2, defined float h3) {
+            float u = (x - ax) / sp
+            float v = (y - ay) / sp
+            return h0 * (1.0 - u) * (1.0 - v) + h1 * u * (1.0 - v) + h2 * u * v + h3 * (1.0 - u) * v
+        }
+
+        // Ein konvexes Polygon (gegen den Uhrzeigersinn) als Vierecke (ein Fächer zu je zwei Dreiecken), auf dem Gelände plus raise.
+        static undefined Poly(MeshPart part, defined float px[], defined float py[], defined int m, defined float ax, defined float ay, defined float sp, defined float h0, defined float h1, defined float h2, defined float h3, defined float raise, defined float nx, defined float ny, defined float nz, defined int color, defined int material) {
+            if (m < 3) { return }
+            float z0 = Raser.FarMesher.Bilinear(px[0], py[0], ax, ay, sp, h0, h1, h2, h3) + raise
+            int k = 1
+            while (k + 1 < m) {
+                int c = k + 1
+                int d = Math.Min(k + 2, m - 1)
+                float zk = Raser.FarMesher.Bilinear(px[k], py[k], ax, ay, sp, h0, h1, h2, h3) + raise
+                float zc = Raser.FarMesher.Bilinear(px[c], py[c], ax, ay, sp, h0, h1, h2, h3) + raise
+                float zd = Raser.FarMesher.Bilinear(px[d], py[d], ax, ay, sp, h0, h1, h2, h3) + raise
+                part.Quad(px[0], py[0], z0, px[k], py[k], zk, px[c], py[c], zc, px[d], py[d], zd, nx, ny, nz, color, material)
+                k = k + 2
+            }
+        }
+
         // Ein Quader (fünf Seiten, ohne Boden).
         static undefined Box(MeshPart part, defined float x0, defined float y0, defined float z0, defined float x1, defined float y1, defined float z1, defined int color, defined int material) {
             part.Quad(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, 0.0, 0.0, 1.0, color, material)

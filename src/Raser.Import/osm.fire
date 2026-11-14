@@ -43,6 +43,7 @@ namespace Raser {
         defined int priority
         defined int lanes
         defined int layer
+        string sidewalk
 
         construct() { }
     }
@@ -278,6 +279,17 @@ namespace Raser {
                 }
                 f.surface = Raser.Material.Asphalt
                 f.color = Raser.Palette.Asphalt
+                // Gehwege: sidewalk, sidewalk:both / :left / :right (yes, separate, no)
+                string sw = tags.Get("sidewalk", undefined)
+                if (sw == undefined) {
+                    string both = tags.Get("sidewalk:both", undefined)
+                    string left = tags.Get("sidewalk:left", "no")
+                    string right = tags.Get("sidewalk:right", "no")
+                    if (both != undefined) { sw = both } else if (left == "yes" && right == "yes") { sw = "both" } else if (left == "yes") { sw = "left" } else if (right == "yes") { sw = "right" } else if (tags.ContainsKey("sidewalk:left") || tags.ContainsKey("sidewalk:right")) { sw = "no" }
+                }
+                if (sw == "yes") { sw = "both" }
+                if (sw == "none") { sw = "no" }
+                f.sidewalk = sw
                 string surface = tags.Get("surface", "")
                 bool small = highway == "footway" || highway == "path" || highway == "pedestrian" || highway == "steps" || highway == "cycleway" || highway == "living_street"
                 if (surface == "paving_stones" || surface == "sett" || surface == "cobblestone" || surface == "unhewn_cobblestone" || surface == "concrete:plates" || (surface == "" && small)) {
