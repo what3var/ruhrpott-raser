@@ -101,7 +101,8 @@ namespace Raser {
             int hv = Math.Round(h / 0.2)!int
             int crown = Math.Round(hv * 0.32)!int                 // Radius der Krone (Voxel)
             int size = crown * 2 + 9
-            var m = new Raser.VoxelModel(size, size, hv + 4)
+            // hoch genug für die Krone: der Stamm bis höchstens 0,7 hv, darüber die Krone (Mitte 0,55 crown, Halbachse 0,7 crown, ausgefranst) - dazu Rand
+            var m = new Raser.VoxelModel(size, size, hv + crown + 8)
             int bark = Raser.Material.Wood!int
             int thick = 1
             if (h > 9.0) { thick = 2 }

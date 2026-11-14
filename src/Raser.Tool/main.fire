@@ -12,6 +12,7 @@
 // Mit forge: forge run RuhrpottRaser.firesln -- import --dgm data/raw/dgm1 ...
 #import "filesystem"
 #import "time"
+#import "console"
 #import "raser.core"
 #import "raser.world"
 #import "raser.import"
@@ -57,7 +58,22 @@ class Tool {
         return $"{seconds:F1} s"
     }
 
-    static undefined Log(string text) { print("[" + Tool.Seconds() + "] " + text) }
+    // Eine Zeile ins Log - sofort geschrieben (auch in eine Datei umgeleitet), so sieht man den Fortschritt laufender Befehle.
+    static undefined Log(string text) {
+        print("[" + Tool.Seconds() + "] " + text)
+        Console.Flush()
+    }
+
+    // "(3/49, noch etwa 12 min)": wie weit eine Schleife über n Kacheln ist, mit der Restzeit aus dem bisherigen Mittel.
+    static string Progress(defined int done, defined int n, defined int startTicks) {
+        string s = "(" + done + "/" + n
+        if (done > 0 && done < n) {
+            float per = (DateTime.Now.Ticks - startTicks) / 10000000.0 / done
+            float rest = per * (n - done)
+            if (rest >= 90.0) { s = s + ", noch etwa " + Math.Round(rest / 60.0) + " min" } else { s = s + ", noch etwa " + Math.Round(rest) + " s" }
+        }
+        return s + ")"
+    }
 
     // Der Speicher: Dateien unter --world; mit --db postgres://... liegt der Zwischenlayer in PostGIS (Benutzer --db-user, Passwort aus RASER_DB_PASSWORD).
     static Raser.FileTileStore Store(Args args) {
@@ -138,13 +154,19 @@ class Tool {
         int seed = args.Get("seed", "1").ToInt()
         var generator = new Raser.TileGenerator(store, overrides, seed)
         Tool.Log(overrides.Count + " Overrides, Seed " + seed + ", Generator " + Raser.Voxelizer.Version)
-        foreach (k in Tool.Chosen(args, store)) {
+        var keys = Tool.Chosen(args, store)
+        int start = DateTime.Now.Ticks
+        int done = 0
+        int built = 0
+        foreach (k in keys) {
+            done++
             if (!args.Has("force") && generator.IsUpToDate(k)) {
-                Tool.Log("Kachel " + k + ": aktuell")
+                Tool.Log("Kachel " + k + ": aktuell " + Tool.Progress(done, keys.Count, start))
                 continue
             }
             var manifest = generator.Generate(k)
-            Tool.Log("Kachel " + k + ": " + manifest.chunks + " Chunks, " + manifest.filled + " Voxel")
+            built++
+            Tool.Log("Kachel " + k + ": " + manifest.chunks + " Chunks, " + manifest.filled + " Voxel " + Tool.Progress(done, keys.Count, start))
         }
     }
 
@@ -166,7 +188,11 @@ class Tool {
     static undefined Meshes(Args args) {
         var store = Tool.Store(args)
         var builder = new Raser.NearBuilder(args.Get("world", "world"), 0.0, 0.0, 0.0, false)
-        foreach (k in Tool.Chosen(args, store)) {
+        var keys = Tool.Chosen(args, store)
+        int start = DateTime.Now.Ticks
+        int done = 0
+        foreach (k in keys) {
+            done++
             if (store.LoadManifest(k) == undefined) {
                 Tool.Log("Kachel " + k + ": nicht voxelisiert")
                 continue
@@ -184,7 +210,7 @@ class Tool {
                     foreach (b in res.batches) { quads = quads + b.quads }
                 }
             }
-            Tool.Log("Kachel " + k + ": " + built + " Blöcke gebaut, " + quads + " Vierecke")
+            Tool.Log("Kachel " + k + ": " + built + " Blöcke gebaut, " + quads + " Vierecke " + Tool.Progress(done, keys.Count, start))
         }
     }
 

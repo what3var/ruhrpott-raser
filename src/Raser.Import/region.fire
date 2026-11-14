@@ -221,10 +221,29 @@ namespace Raser {
                 }
             }
             if (best > 900.0) { return }          // keine Straße in 30 m
-            if (prop.kind == "signal" && best < 1.0) {
-                // auf der Fahrbahn: an den rechten Rand, Blick gegen die Fahrtrichtung
-                prop.x = qx + dy * (width / 2.0 + 0.6)
-                prop.y = qy - dx * (width / 2.0 + 0.6)
+            if (prop.kind == "signal") {
+                // auf oder an der Fahrbahn: nach rechts hinaus, bis sie neben allen Fahrbahnen steht (an Kreuzungen reicht die nächste Straße nicht),
+                // Blick gegen die Fahrtrichtung
+                float nx = dy
+                float ny = -dx
+                for (float off = width / 2.0 + 0.6; off < 20.0; off = off + 0.5) {
+                    float x = qx + nx * off
+                    float y = qy + ny * off
+                    bool free = true
+                    foreach (r in tile.data.roads) {
+                        // nur Fahrbahnen: keine Bahnen, Fuß- und Radwege
+                        if (r.kind.StartsWith("railway") || r.kind == "highway=footway" || r.kind == "highway=path" || r.kind == "highway=cycleway" || r.kind == "highway=steps" || r.kind == "highway=pedestrian") { continue }
+                        if (Raser.Geo.DistanceToLine(r.points, x, y) < r.width / 2.0 + 0.4) {
+                            free = false
+                            break
+                        }
+                    }
+                    if (free) {
+                        prop.x = x
+                        prop.y = y
+                        break
+                    }
+                }
                 prop.angle = Math.Atan2(-dy, -dx) * 180.0 / Math.PI
                 return
             }

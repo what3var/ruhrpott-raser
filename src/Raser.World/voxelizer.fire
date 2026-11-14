@@ -180,7 +180,8 @@ namespace Raser {
         // 3: bei Gleichstand (Straßenbreite, Flächenpriorität, überlappende Gebäude) gewinnt die kleinere ID - unabhängig von der Reihenfolge der Merkmale
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
-        static readonly defined int Version = 5
+        // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        static readonly defined int Version = 6
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
