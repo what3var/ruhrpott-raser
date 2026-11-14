@@ -11,6 +11,19 @@
   - Straßen, Rampen, Böschungen und Dächer sind damit direkt im Voxelmodell abbildbar.
   - Speicher: 4 × 2 Bit = 1 Byte zusätzlich pro geschnittenem Voxel (nur Oberflächen-Voxel, Rest bleibt voller Würfel).
   - Später möglich: diagonale Schnitte im Grundriss (Viertelkeile) für schräge Fassaden und Bordsteine.
+- **Natürliche Kanten, gerade Fronten** (Vorschlag, noch offen):
+  - *Straßenkanten* treppen nicht im 20-cm-Raster. Fahrbahn, Gehweg und Bordstein gehören zum glatten Untergrund: Ihre Ränder sind Kurven aus der
+    Mittellinie und der Breite (geglättet, mit Radien an Einmündungen und Kreuzungen). Das Geländenetz wird an diesen Linien geschnitten, der Bordstein
+    ist ein Profil (12–15 cm hoch, abgesenkt an Einfahrten) entlang der Kurve. Voxel werden sie erst, wo hineingegriffen wird (hart, wie beim Gelände).
+  - *Gerade Fronten in jedem Winkel*: Die Voxel bekommen neben den Eckhöhen oben auch einen **senkrechten Schnitt im Grundriss** – eine Linie durch
+    den Voxel, angegeben über zwei Randpunkte in Vierteln (wie die Eckhöhen; benachbarte Voxel teilen die Punkte). Eine Fassade, die schräg zum
+    Weltgitter steht, wird so eine glatte Ebene statt einer Treppe; Fenster und Geschosse werden entlang der Wand gemessen. Die Grundstücksgrenze ist
+    dann eine Linie wie jede andere – dort wird schräg abgeschnitten.
+  - *Ausrichten zur Straße*: Die Front eines Grundstücks (ALKIS-Flurstück, sonst die Kante des Grundrisses zur Straße) wird leicht gedreht (wenige
+    Grad), bis sie parallel zur Straßenkante liegt; Häuser einer Zeile bekommen dieselbe Fluchtlinie. Größere Abweichungen bleiben, wie sie sind.
+  - *Alternative*, falls Fenster in schrägen Wänden mit Schnitten nicht gut aussehen: ein eigenes, zur Straße gedrehtes Voxelgitter je Grundstück
+    (eigene Chunks mit Drehung), das an der Grundstücksgrenze per Schnitt im Grundriss ans Weltgitter anschließt. Mehr Aufwand bei Physik, Baumodus
+    und Zerstörung – daher erst die Schnitte.
 - **Fahrphysik auf derselben Geometrie:** Das Kollisionsmesh für Fahrzeuge entsteht aus denselben geschnittenen Voxeln wie die Optik. Was man sieht, ist auch das, worauf man fährt. Wo Fahrzeuge ganz glatte Flächen brauchen (Autobahn, enge Kurven), darf ein Override-Mesh aus dem Zwischenlayer einspringen (siehe Abschnitt 9).
 
 ## 2. Weltpipeline

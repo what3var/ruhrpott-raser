@@ -24,6 +24,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Gemeinsame Vorlagen für wiederkehrende Gebäude (gleicher Grundriss und gleiche Dachform nach Drehung/Verschiebung): eine Außenhülle für alle, nur Abweichungen einzeln
 - [ ] Vegetation und Stadtmöbel als grobe 3D-Pixelgrafik (Voxel-Modelle wie in Minecraft gebaut): Bäume prozedural in Varianten, Bänke, Laternen, Papierkörbe; Standorte aus OSM, Wälder und Parks deterministisch bestreut; Modelle geteilt
 - [ ] Straßenraum wie in Deutschland: Bordsteinkanten mit Höhenunterschied (Gehweg über der Fahrbahn, abgesenkt an Einfahrten und Übergängen), Laternen entlang der Straßen, Straßenschilder (Verkehrszeichen aus OSM `traffic_sign` und an Kreuzungen, Straßennamensschilder, Ortstafeln)
+- [ ] Natürliche Straßenkanten: Ränder von Fahrbahn und Gehweg als geglättete Kurven (Radien an Einmündungen) im glatten Untergrund, Bordstein als Profil entlang der Kurve (Konzept, Abschnitt 1)
+- [ ] Gerade Fronten in jedem Winkel: senkrechter Schnitt im Grundriss je Voxel (zwei Randpunkte in Vierteln, mit den Nachbarn geteilt), Fassaden schräg zum Gitter glatt, Fenster entlang der Wand; Grundstücke zur Straße ausrichten (gemeinsame Fluchtlinie), an der Grundstücksgrenze schräg abschneiden
 - [ ] Gehwege nach Bauzeit erkennen und bauen (aus OSM `sidewalk`/`surface`, Straßentyp, Baujahr des Viertels, später Luftbild): alt geteert nur mit Bordstein und Höhenunterschied; grobes Pflaster der 80er/90er; heute schmale Pflastersteine, bei genug Breite mit rotem Radweg (`cycleway=track`)
 - [ ] Fassaden-Grammatik + parametrische Materialien
 - [ ] Fenster ab Stufe 1 als Fassaden-Textur (gleiches Raster wie die Voxel-Fenster, 1 Texel je Voxel); nachts einzelne Fenster als Lichtquellen
@@ -99,6 +101,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - Läuft der Client nativ oder im Browser?
 - Wie viele Spieler soll ein Regionsserver tragen, und was ist das Ziel für ganz NRW?
 - Konkrete Schwellenwerte je Material (Balancing gegen Griefing)
-- Grundstücksgrenzen: ALKIS-Daten verfügbar oder Ableitung aus Grundrissen?
+- Grundstücksgrenzen: ALKIS-Daten verfügbar oder Ableitung aus Grundrissen? (gebraucht auch zum Ausrichten der Fronten zur Straße)
+- Gerade Fronten: reichen Schnitte im Grundriss im Weltgitter, oder braucht es gedrehte Gitter je Grundstück? (Konzept, Abschnitt 1)
 - Altersfreigabe (USK/PEGI) prüfen; Glücksspiel bleibt rein virtuell ohne Echtgeld
 - Lizenzen der Datenquellen final prüfen (NRW Open Data, OSM/ODbL, Mapillary/Panoramax)
