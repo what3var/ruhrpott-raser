@@ -204,6 +204,12 @@ je Bild, Rendern rund 18 ms, rund 46 Bilder je Sekunde; nur in 51 von 718 Bilder
 
 *Nah die Voxel (mit Fenstern), weiter weg die Gebäude aus Grundriss und LoD2-Dächern (noch ohne Fassade).*
 
+**Texturen:** Alle Blöcke teilen eine Textur von 2048 x 2048 (`Raser.Atlas`): je Farbe der Palette (die benannten und ihre Dreckstufen, 32 .. 127) eine
+Materialkachel von 64 x 64 Voxeln mit 2 x 2 Texeln je Voxel, je Farbe eine Fassadenkachel im Fensterraster (9 x 14 Voxel) und die Palette selbst. Die
+Texturkoordinaten entstehen beim Bau der Arrays aus Lage und Farbe eines Vierecks (Ebene nach der größten Richtung der Normale, an Chunk-Grenzen
+ausgerichtet); Vierecke, die über einen Chunk hinausgehen (LoD2-Dächer der fernen Stufe), und freie Farben nehmen die Palette. Die ferne Stufe zeigt
+die Fenster in den Ringen bis 2 als Fassade (Wände geteilt an den Grenzen des Rasters und je Geschoss), genau dort, wo die Voxel sie haben.
+
 Offen: eine mittlere Stufe (Voxel 40/80 cm), der nahe Radius nach dem Tempo, die Fassaden-Textur mit den Fenstern ab der fernen Stufe; mit `--db`
 liest der Netz-Cache die Kacheln noch aus den Dateien.
 

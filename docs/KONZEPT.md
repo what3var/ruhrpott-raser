@@ -75,6 +75,12 @@ Fassadentexturen sind sehr klein (< 100 px breit). Sie werden in drei Ebenen bes
 
 **Ausstattung:** Jedes Gebäude bekommt eine zufällige, aber stabile Ausstattung (aus Gebäude-ID und Seed, passend zu Nutzung und Viertel). Für das Vorbeifahren mit hohem Tempo reichen ein paar vorgerenderte Innenansichten hinter den Fenstern (Wohnzimmer, Büro, Laden, Treppenhaus - als Textur mit Tiefe, ohne Geometrie); läuft man nah vorbei oder betritt das Gebäude, entsteht die detaillierte Ausstattung (Möbel und Objekte, Abschnitt 7) - dieselbe Wahl, nur genauer.
 
+**Materialien mit Leben:** Kein Voxel eines Materials sieht aus wie der nächste. Jede Materialfarbe hat eine weltfest liegende Textur von 64 x 64
+Voxeln (ein Chunk), aus der jede Voxel-Fläche ihren Ton nimmt - Ziegel versetzt mit eigenem Ton je Stein, Dachziegel in Reihen, Holz mit Maserung,
+Platten mit Fugen, Putz und Beton mit ruhigen Flecken, Gras und Erde mit Körnung. Dazu je Gebäude (aus Gebäude-ID und Seed) eine Farbvariante und eine
+Dreckstufe (sauber bis stark verrußt: dunkler, Flecken, Laufspuren) für Wand und Dach. Alles prozedural; gleiche Flächen bleiben große Rechtecke, die
+Abwechslung kommt aus der Textur.
+
 **Rendering:** Pixel werden nearest-neighbor gerendert, aber antialiased. Das geschieht als „sharp bilinear“ direkt im Shader (Pixel-Art-AA über `fwidth`) statt mit vorab hochskalierten Texturen. Der Effekt ist derselbe, es braucht keinen zusätzlichen Speicher und funktioniert in jeder Entfernung.
 
 ## 4. Nacht-Atmosphäre
