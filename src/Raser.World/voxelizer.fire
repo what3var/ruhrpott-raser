@@ -181,7 +181,8 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
-        static readonly defined int Version = 6
+        // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
+        static readonly defined int Version = 7
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -296,6 +297,23 @@ namespace Raser {
                 int x1 = Math.Min(mx + m.sx, kx + 64)
                 int y0 = Math.Max(my, ky)
                 int y1 = Math.Min(my + m.sy, ky + 64)
+                // die unterste Lage reicht ein Voxel in den Boden (in das oberste Gelände-Voxel, das oft nur zum Teil gefüllt ist): keine Lücke
+                // unter Stamm, Mast und Füßen
+                int below = mz - 1
+                if (below >= kz && below < kz + 64) {
+                    for (int y = Math.Max(my, ky); y < Math.Min(my + m.sy, ky + 64); y++) {
+                        for (int x = Math.Max(mx, kx); x < Math.Min(mx + m.sx, kx + 64); x++) {
+                            int src = (x - mx) + (y - my) * m.sx
+                            int mat = mm[src]
+                            if (mat == 0) { continue }
+                            int dst = (x - kx) + ((y - ky) << 6) + ((below - kz) << 12)
+                            if (mats[dst] > 8) { continue }          // Bauwerke bleiben
+                            mats[dst] = mat
+                            cols[dst] = mc[src]
+                            chunk.shapes.Remove(dst)
+                        }
+                    }
+                }
                 int z0 = Math.Max(mz, kz)
                 int z1 = Math.Min(mz + m.sz, kz + 64)
                 for (int z = z0; z < z1; z++) {
@@ -568,6 +586,10 @@ namespace Raser {
                         plan.ground[c] = ground
                         plan.cellar[c] = ground - bd.cellars * storey
                         plan.shape[c] = Raser.Shape.Make(Raser.Voxelizer.Quarter(r0, roof), Raser.Voxelizer.Quarter(r1, roof), Raser.Voxelizer.Quarter(r2, roof), Raser.Voxelizer.Quarter(r3, roof))
+                        // steile Dächer fallen in einer Säule um mehr als ein Voxel: bis zur tiefsten Ecke darunter voll mit Dachmaterial (sonst sieht man
+                        // durch das Dach auf die Decken darunter)
+                        float lowest = Math.Min(Math.Min(r0, r1), Math.Min(r2, r3))
+                        plan.roofLow[c] = Math.Max(ground, Math.Floor(lowest * 5.0)!int)
                         plan.material[c] = bd.roof!int
                         plan.color[c] = model.roofColor
                         plan.below[c] = bd.wall!int
@@ -635,6 +657,7 @@ namespace Raser {
         int belowColor[4096]
         int ground[4096]
         int cellar[4096]        // Gebäude: das unterste Voxel des untersten Kellers (= ground ohne Keller)
+        defined int roofLow[4096]       // Gebäude: ab hier bis unter das Dach-Voxel voll mit Dachmaterial (steile Dächer)
         int floor[4096]
         int flags[4096]
         defined int storey
@@ -721,6 +744,11 @@ namespace Raser {
                         chunk.materials[i] = this.material[c]
                         chunk.colors[i] = this.color[c]
                         if (this.shape[c] != 255) { chunk.shapes[i] = this.shape[c] }
+                        continue
+                    }
+                    if (vz >= this.roofLow[c] && !wall) {
+                        chunk.materials[i] = this.material[c]
+                        chunk.colors[i] = this.color[c]
                         continue
                     }
                     int inStorey = (vz - ground) % this.storey

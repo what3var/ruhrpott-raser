@@ -233,7 +233,9 @@ class VoxelizerTests {
         // Gelände bei x 20 m: 60 + 21 * 0,02 = 60,42 m - oberstes Gelände-Voxel 302, der Stamm ab 303 (z 47 im Chunk 4); Säule 100 = x 0 im Chunk 1
         Testing.Assert.AreEqual(Raser.Material.Wood!int, low.MaterialAt(100 - 64, 100 - 64, 47))
         Testing.Assert.AreEqual(Raser.Palette.Bark, low.ColorAt(100 - 64, 100 - 64, 47))
-        Testing.Assert.IsTrue(low.MaterialAt(100 - 64, 100 - 64, 46) != Raser.Material.Wood!int)
+        // eine Lage reicht in den Boden (das oberste Gelände-Voxel), darunter bleibt das Gelände
+        Testing.Assert.AreEqual(Raser.Material.Wood!int, low.MaterialAt(100 - 64, 100 - 64, 46))
+        Testing.Assert.IsTrue(low.MaterialAt(100 - 64, 100 - 64, 45) != Raser.Material.Wood!int)
         // die Krone reicht in den Chunk darüber: Laub
         var high = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 5))
         int leaves = 0
@@ -254,6 +256,22 @@ class VoxelizerTests {
         // gleiche Daten, gleicher Chunk
         var again = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
         Testing.Assert.IsTrue(again.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)).ContentHash() == new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)).ContentHash())
+    }
+
+    [Test "Steiles Dach: die Säule unter dem Dach-Voxel ist bis zur tiefsten Ecke gefüllt"]
+    undefined SteepRoof() {
+        var tile = Sample.Make()
+        // das Haus mit 60° steilem Satteldach: Traufe 64 m, First 69 m bei 3,5 m halber Breite (y 4 .. 11)
+        tile.data.buildings[0].eaves = 64.0
+        tile.data.buildings[0].ridge = 70.0
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var high = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 5))
+        // in jeder Säule zwischen Traufe und First: unter dem obersten Dach-Voxel kein Loch bis zur tiefsten Ecke
+        for (int y = 22; y < 37; y++) {
+            int top = VoxelizerTests.Top(high, 30, y)
+            if (top < 1) { continue }
+            Testing.Assert.AreEqual(Raser.Material.RoofTiles!int, high.MaterialAt(30, y, top - 1))
+        }
     }
 
     [Test "Straße und Fläche"]
