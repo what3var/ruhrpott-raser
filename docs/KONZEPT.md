@@ -19,6 +19,9 @@
     den Voxel, angegeben über zwei Randpunkte in Vierteln (wie die Eckhöhen; benachbarte Voxel teilen die Punkte). Eine Fassade, die schräg zum
     Weltgitter steht, wird so eine glatte Ebene statt einer Treppe; Fenster und Geschosse werden entlang der Wand gemessen. Die Grundstücksgrenze ist
     dann eine Linie wie jede andere – dort wird schräg abgeschnitten.
+  - *Eckbauten mit Winkeln ungleich 90°*: Im Eckvoxel treffen zwei Schnittlinien aufeinander. Erst einmal reicht dort eine Linie (Fehler höchstens
+    ein Voxel, 20 cm); wo es auffällt, im Einzelfall lösen – etwa ein Eckvoxel mit zwei Linien oder die im Ruhrgebiet typische abgeschrägte Ecke
+    (oft mit Eingang, Eckkneipe), die den spitzen Winkel ohnehin aufnimmt.
   - *Ausrichten zur Straße*: Die Front eines Grundstücks (ALKIS-Flurstück, sonst die Kante des Grundrisses zur Straße) wird leicht gedreht (wenige
     Grad), bis sie parallel zur Straßenkante liegt; Häuser einer Zeile bekommen dieselbe Fluchtlinie. Größere Abweichungen bleiben, wie sie sind.
   - *Alternative*, falls Fenster in schrägen Wänden mit Schnitten nicht gut aussehen: ein eigenes, zur Straße gedrehtes Voxelgitter je Grundstück
