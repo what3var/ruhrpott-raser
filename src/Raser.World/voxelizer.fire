@@ -221,7 +221,8 @@ namespace Raser {
             foreach (m in this.models) {
                 if (m.building.ridge > high) { high = m.building.ridge }
                 if (m.building.eaves > high) { high = m.building.eaves }
-                if (m.building.ground < low) { low = m.building.ground }
+                float bottom = m.building.ground - m.building.cellars * Raser.Voxelizer.StoreyHeight
+                if (bottom < low) { low = bottom }
             }
             int result[] = [Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(low - 3.0), 64), Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(high + 1.0), 64)]
             return result
@@ -453,6 +454,7 @@ namespace Raser {
                         plan.kind[c] = 1
                         plan.top[c] = roof
                         plan.ground[c] = ground
+                        plan.cellar[c] = ground - bd.cellars * storey
                         plan.shape[c] = Raser.Shape.Make(Raser.Voxelizer.Quarter(r0, roof), Raser.Voxelizer.Quarter(r1, roof), Raser.Voxelizer.Quarter(r2, roof), Raser.Voxelizer.Quarter(r3, roof))
                         plan.material[c] = bd.roof!int
                         plan.color[c] = model.roofColor
@@ -520,6 +522,7 @@ namespace Raser {
         int below[4096]
         int belowColor[4096]
         int ground[4096]
+        int cellar[4096]        // Gebäude: das unterste Voxel des untersten Kellers (= ground ohne Keller)
         int floor[4096]
         int flags[4096]
         defined int storey
@@ -568,17 +571,29 @@ namespace Raser {
                 }
                 // Gebäude
                 int ground = this.ground[c]
+                int cellar = this.cellar[c]
                 bool wall = (this.flags[c] & 1) != 0
                 bool windows = (this.flags[c] & 2) != 0
                 int bottom = floor
-                if (ground - 1 < bottom) { bottom = ground - 1 }
+                if (cellar - 1 < bottom) { bottom = cellar - 1 }
                 int zEnd = top - vz0
                 if (zEnd > 63) { zEnd = 63 }
                 for (int z = 0; z <= zEnd; z++) {
                     int vz = vz0 + z
                     int i = c + (z << 12)
+                    if (vz < ground && vz >= cellar) {
+                        // Keller: das Gelände ist ausgehoben, die Außenwand läuft durch, je Geschoss eine Decke
+                        if (wall) {
+                            chunk.materials[i] = this.below[c]
+                            chunk.colors[i] = this.belowColor[c]
+                        } else if ((vz - cellar) % this.storey == 0) {
+                            chunk.materials[i] = concrete
+                            chunk.colors[i] = concreteColor
+                        }
+                        continue
+                    }
                     if (vz < ground) {
-                        if (vz >= ground - 1 || vz > floor) {
+                        if (vz >= cellar - 1 || vz > floor) {
                             chunk.materials[i] = concrete           // Fundament (auch wo das Gelände tiefer liegt)
                             chunk.colors[i] = concreteColor
                         } else if (bottom - vz <= 10) {

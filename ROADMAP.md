@@ -16,7 +16,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Fahrbare Kamera durch die Testregion (`Raser.Viewer` mit scene3d: fliegende Kamera, Nachladen und Entladen von Chunk-Säulen um den Blickpunkt, `--shot`, `--fly` mit Zeiten; Laden in Worker-Threads; offen: bei 15 m/s kommt das Laden nicht nach - Netze vorab speichern, LOD)
 - [ ] Detailstufen nach Entfernung: Voxel nah (Stufe 0), gröbere Voxel (Stufen 1-2), fern direkt aus dem Zwischenlayer (Höhenraster-Netz, Gebäude aus Grundriss und Dachflächen) - Stufe 0 und fern gebaut (`Raser.FarMesher`), mittlere Stufen offen
 - [ ] Laden entlang der Route: Kegel in Fahrtrichtung, Nähe-Radius nach Tempo, grob vor fein, Korridor vorab bei bekanntem Ziel; Ziel: Autobahn mit 250-300 km/h - grob vor fein und Ladepunkt voraus gebaut; 83 m/s halten die fernen Stufen (Messflug); offen: Nähe-Radius nach Tempo, Korridor vorab
-- [ ] Untergrund glatt: das Gelände ist in jeder Stufe ein Netz aus dem Höhenraster (mit Diagonalen), Voxel nur für das, was darauf steht
+- [x] Untergrund glatt: das Gelände ist in jeder Stufe ein Netz aus dem Höhenraster (mit Diagonalen), Voxel nur für das, was darauf steht; hart (Voxel) nur, wo etwas hineingreift
+- [x] Keller: `cellars` je Gebäude (Zwischenlayer, Override, PostGIS); das Gelände ist dort ausgehoben, die Außenwand läuft hinunter
+- [ ] Keller aus OSM (`building:levels:underground`), Graben und Absenken im Baumodus
 - [ ] Gemeinsame Vorlagen für wiederkehrende Gebäude (gleicher Grundriss und gleiche Dachform nach Drehung/Verschiebung): eine Außenhülle für alle, nur Abweichungen einzeln
 - [ ] Vegetation und Stadtmöbel als grobe 3D-Pixelgrafik (Voxel-Modelle wie in Minecraft gebaut): Bäume prozedural in Varianten, Bänke, Laternen, Papierkörbe; Standorte aus OSM, Wälder und Parks deterministisch bestreut; Modelle geteilt
 - [ ] Fassaden-Grammatik + parametrische Materialien

@@ -45,6 +45,15 @@ Rohdaten ──► Zwischenlayer (semantisch, vektorbasiert) ──► Voxel-Chu
 - **Vorausgenerierung in Fahrtrichtung:** Bei 200 km/h sind es etwa 55 m/s. Mehrere Kilometer Vorlauf entlang der Route, nicht nur ein Radius um den Spieler.
 - **Deterministische Voxelisierung:** Zwischenlayer + Seed ergeben immer denselben Chunk. Der Client voxelisiert selbst, der Server schickt nur den Zwischenlayer und Spieler-Deltas.
 
+### Gelände und was darauf steht
+
+- **Das Gelände ist glatt:** ein Netz aus dem Höhenraster, mit Diagonalen statt Stufen, in jeder Detailstufe. Stufig (Voxel) ist nur, was darauf steht.
+- **Gebaut wird im globalen Voxel-Raster:** Die Unterkante eines Gebäudes rastet auf ein Voxel (20 cm) ein, und zwar nach unten: Es versinkt eher halb im Gelände,
+  als dass es schwebt. Wo das Gelände unter dem Grundriss tiefer liegt, füllt ein Fundament die Lücke.
+- **Das Gelände ist hart, wo etwas hineingreift:** Fundamente, Keller, Gruben und Aufschüttungen. Dort bekommt das Gelände seine Voxel-Flächen mit harter
+  Kante, und das glatte Netz spart die Stelle aus (in Zellen von 80 cm). Darum kann man das Gelände in einem Gebäude abtragen oder mit harter Kante absenken,
+  zum Beispiel für Keller. Das gilt für Gebäude aus den Daten (`cellars` im Zwischenlayer bzw. als Override) und für den Baumodus.
+
 ### Speicherung
 
 - **PostGIS:** Zwischenlayer, räumliche Abfragen

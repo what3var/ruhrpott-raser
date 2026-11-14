@@ -154,6 +154,7 @@ namespace Raser {
                         b.roofType = Raser.RoofType.Parse(v)
                         b.roofs.Clear()
                     case "levels": b.levels = v
+                    case "cellars": b.cellars = v
                     case "function": b.function = v
                     case "name": b.name = v
                     case "wall": b.wall = Raser.Material.Parse(v)

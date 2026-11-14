@@ -72,8 +72,9 @@ namespace Raser {
             return color + (material << 8)
         }
 
-        // Ein Block: x0, y0 kachel-lokal, Kantenlänge size, Geländeraster spacing.
-        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing, defined bool buildings = true) {
+        // Ein Block: x0, y0 kachel-lokal, Kantenlänge size, Geländeraster spacing. skip: ausgesparte Zellen (side x side, x + side y, 1 = keine
+        // Fläche - dort ist das Gelände hart, Raser.GroundCut); undefined: keine.
+        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing, defined bool buildings = true, byte skip[] = undefined) {
             var part = new Raser.MeshPart()
             int n = Math.Round(size / spacing)!int
             // nur die Flächen und Straßen, die den Block berühren
@@ -86,8 +87,11 @@ namespace Raser {
                 if (this.roadBoxes[i].Overlaps(x0, y0, x0 + size, y0 + size)) { this.roads.Add(this.tile.data.roads[i]) }
             }
             // Gelände
+            int side = 0
+            if (skip != undefined) { side = Math.Round(Math.Sqrt(skip.length))!int }
             for (int j = 0; j < n; j++) {
                 for (int i = 0; i < n; i++) {
+                    if (side > 0 && skip[(i * side / n) + (j * side / n) * side] != 0) { continue }
                     float ax = x0 + i * spacing
                     float ay = y0 + j * spacing
                     float bx = ax + spacing

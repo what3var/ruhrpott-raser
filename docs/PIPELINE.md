@@ -162,6 +162,10 @@ Textur (die Farbe steckt in den Texturkoordinaten):
 
 - **Stufe 0** (`--near`, Blöcke um den Ladepunkt): die Voxel-Chunks, vernetzt mit `Raser.Mesh`, Säule für Säule über mehrere Bilder aufgebaut; bis ein
   Block fertig ist, bleibt seine ferne Version stehen. Ein Block kostet rund 2,4 s - für Tempo ist diese Stufe zu teuer (ohne Worker-Threads, docs/FIRE.md).
+  Das Gelände kommt auch hier glatt aus dem Höhenraster (Raster 0,8 m, mit Diagonalen). Die Gelände-Voxel bekommen nur dort Flächen, wo etwas in den
+  Boden greift oder gegraben ist (`Raser.GroundCut`: ein Voxel, das nicht Gelände ist, bis 20 cm über der Rasterhöhe, oder eine Geländeoberkante mehr als
+  45 cm neben der Rasterhöhe). Dort ist die Kante hart, und das glatte Netz spart die Zelle (80 cm) aus. Am Rathaus kostet ein naher Block damit rund 104 000
+  statt 107 000 Dreiecke; die Zeit bleibt gleich, sie geht in Laden und Vernetzen der Gebäude.
 - **Fern** (`--far`): `Raser.FarMesher` baut den Block direkt aus dem Zwischenlayer - Gelände als Raster (`--spacing`, Standard 3,2 m, ab dem dritten Ring
   doppelt so grob) mit den Farben der Flächen und Straßen, Gebäude als Wände bis unter die Dachfläche (in Stücken von höchstens 2 m, so folgen sie Giebeln)
   und die LoD2-Dachflächen (trianguliert). Rund 6 ms je Block.

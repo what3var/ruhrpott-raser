@@ -201,4 +201,30 @@ class FarTests {
         // ein Block ohne die Mitte des Gebäudes hat nur Gelände
         Testing.Assert.AreEqual(256, far.Block(51.2, 0.0, 51.2, 3.2).Count)
     }
+
+    [Test "Hartes Gelände: wo etwas in den Boden greift oder gegraben ist"]
+    undefined GroundCut() {
+        var far = new Raser.FarMesher(FarTests.Sample(), 1)
+        // ein Chunk bei 38,4..51,2 m: Gelände bis 50 m (Voxel 249 = z 57), ein Fundament bei 4 m / 4 m, eine Grube bei 8 m / 8 m
+        var c = new Raser.Chunk(new Raser.ChunkKey(0, 0, 3))
+        c.Fill(0, 0, 0, 63, 63, 57, Raser.Material.Soil!int, Raser.Palette.Soil)
+        c.Fill(20, 20, 57, 21, 21, 57, Raser.Material.Concrete!int, Raser.Palette.Concrete)
+        c.Fill(40, 40, 50, 41, 41, 57, 0, 0)
+        var cut = new Raser.GroundCut()
+        cut.Add(c)
+        var hard = cut.Hard(far, 0.0, 0.0)
+        // je eine Zelle von 4 x 4 Säulen
+        Testing.Assert.AreEqual(1, hard[20 + 20 * 64])
+        Testing.Assert.AreEqual(1, hard[23 + 23 * 64])
+        Testing.Assert.AreEqual(1, hard[40 + 43 * 64])
+        Testing.Assert.AreEqual(0, hard[24 + 20 * 64])
+        Testing.Assert.AreEqual(0, hard[5 + 5 * 64])
+        int count = 0
+        for (int k = 0; k < 4096; k++) { count = count + hard[k] }
+        Testing.Assert.AreEqual(32, count)
+        // das glatte Gelände spart die beiden Zellen aus
+        byte skip[] = new byte[256]
+        for (int k = 0; k < 256; k++) { skip[k] = hard[(k & 15) * 4 + (k >> 4) * 4 * 64] }
+        Testing.Assert.AreEqual(254, far.Block(0.0, 0.0, 12.8, 0.8, false, skip).Count)
+    }
 }

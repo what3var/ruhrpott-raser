@@ -45,8 +45,8 @@ namespace Raser {
                 foreach (b in d.buildings) {
                     any roofs = undefined
                     if (b.roofs.Count > 0) { roofs = Raser.Wkb.MultiPolygonZ(Raser.PostgresTileStore.Shift(b.roofs, e0, n0)) }
-                    this.db.Execute("insert into building (id, source, footprint, ground, eaves, ridge, roof_type, roofs, function, name, levels, wall, wall_color, roof, roof_color) values (?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ?, ?, ?) on conflict (source) do update set footprint = excluded.footprint, ground = excluded.ground, eaves = excluded.eaves, ridge = excluded.ridge, roof_type = excluded.roof_type, roofs = excluded.roofs, function = excluded.function, name = excluded.name, levels = excluded.levels, wall = excluded.wall, wall_color = excluded.wall_color, roof = excluded.roof, roof_color = excluded.roof_color",
-                        [b.id, b.source, Raser.Wkb.Polygon(Raser.PostgresTileStore.Offset(b.footprint, e0, n0)), b.ground, b.eaves, b.ridge, b.roofType!int, roofs, b.function, b.name, b.levels, b.wall!int, b.wallColor, b.roof!int, b.roofColor])
+                    this.db.Execute("insert into building (id, source, footprint, ground, eaves, ridge, roof_type, roofs, function, name, levels, cellars, wall, wall_color, roof, roof_color) values (?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ?, ?, ?, ?) on conflict (source) do update set footprint = excluded.footprint, ground = excluded.ground, eaves = excluded.eaves, ridge = excluded.ridge, roof_type = excluded.roof_type, roofs = excluded.roofs, function = excluded.function, name = excluded.name, levels = excluded.levels, cellars = excluded.cellars, wall = excluded.wall, wall_color = excluded.wall_color, roof = excluded.roof, roof_color = excluded.roof_color",
+                        [b.id, b.source, Raser.Wkb.Polygon(Raser.PostgresTileStore.Offset(b.footprint, e0, n0)), b.ground, b.eaves, b.ridge, b.roofType!int, roofs, b.function, b.name, b.levels, b.cellars, b.wall!int, b.wallColor, b.roof!int, b.roofColor])
                 }
                 foreach (r in d.roads) {
                     this.db.Execute("insert into road (id, source, kind, line, width, surface, color, lanes, layer) values (?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ?) on conflict (source) do update set kind = excluded.kind, line = excluded.line, width = excluded.width, surface = excluded.surface, color = excluded.color, lanes = excluded.lanes, layer = excluded.layer",
@@ -88,7 +88,7 @@ namespace Raser {
             float maxX = e0 + 257.0
             float maxY = n0 + 257.0
 
-            foreach (r in this.db.Query("select id, source, ST_AsBinary(footprint, 'NDR') as fp, ground, eaves, ridge, roof_type, ST_AsBinary(roofs, 'NDR') as rf, function, name, levels, wall, wall_color, roof, roof_color from building where footprint && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [minX, minY, maxX, maxY])) {
+            foreach (r in this.db.Query("select id, source, ST_AsBinary(footprint, 'NDR') as fp, ground, eaves, ridge, roof_type, ST_AsBinary(roofs, 'NDR') as rf, function, name, levels, cellars, wall, wall_color, roof, roof_color from building where footprint && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [minX, minY, maxX, maxY])) {
                 var b = new Raser.Building()
                 b.id = r.Int("id")
                 b.source = r.Text("source")
@@ -108,6 +108,7 @@ namespace Raser {
                 b.function = r.Text("function")
                 b.name = r.Text("name")
                 b.levels = r.Int("levels")
+                b.cellars = r.Int("cellars")
                 b.wall = r.Int("wall")!Material
                 b.wallColor = r.Int("wall_color")
                 b.roof = r.Int("roof")!Material

@@ -194,6 +194,22 @@ class VoxelizerTests {
         Testing.Assert.IsTrue(high.CountShaped() > 0)
     }
 
+    [Test "Keller: Gelände ausgehoben, Wand läuft hinunter"]
+    undefined Cellar() {
+        var set = new Raser.OverrideSet()
+        set.AddText("{ \"overrides\": [ { \"target\": \"test:haus1\", \"set\": { \"cellars\": 1 } } ] }", "keller.json")
+        var c = new Raser.Voxelizer(Sample.Make(), set, 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // Boden bei Voxel 301 (z 45), ein Geschoss (2,8 m = 14 Voxel) tiefer: Kellerboden bei z 31, darunter das Fundament
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(30, 37, 31))
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(30, 37, 30))
+        Testing.Assert.AreEqual(0, c.MaterialAt(30, 37, 32))
+        Testing.Assert.AreEqual(0, c.MaterialAt(30, 37, 44))
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(30, 37, 45))
+        Testing.Assert.AreEqual(Raser.Material.Brick!int, c.MaterialAt(10, 37, 35))
+        // daneben bleibt das Gelände
+        Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(5, 37, 35))
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)

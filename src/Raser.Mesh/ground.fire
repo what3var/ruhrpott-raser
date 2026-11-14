@@ -1,0 +1,78 @@
+// Raser.Mesh: wo das Gelände hart bleibt.
+//
+// Das Gelände kommt glatt aus dem Höhenraster (mit Diagonalen); stufig ist nur, was darauf steht. Wo aber etwas in den Boden greift - ein Gebäude mit
+// Fundament oder Keller, eine Grube, ein Aufschüttung -, passt das glatte Netz nicht mehr zu den Voxeln. Dort bleibt das Gelände hart: Die Voxel
+// bekommen ihre Flächen (mit harter Kante) und das glatte Netz spart die Stelle aus.
+//
+// Eine Säule (20 x 20 cm) ist hart, wenn
+// - ein Voxel, das nicht Gelände ist (Material ab 9: Beton, Holz, Glas, Metall, Ziegel, Putz, Dach), bis auf 20 cm über die Rasterhöhe herunterreicht
+//   (eine Brücke darüber nicht), oder
+// - die Oberkante des Geländes in der Säule mehr als `tolerance` von der Rasterhöhe abweicht (abgegraben oder aufgeschüttet), oder sie gar kein Gelände hat.
+// Hart wird dann die ganze Zelle von 4 x 4 Säulen (80 cm) - so passt die Aussparung auf das Raster des glatten Netzes (Abstand 0,8 m).
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class GroundCut {
+        int terrainTop[4096]        // je Säule das oberste Voxel aus Gelände (absolut), -1000000: keines
+        int structureLow[4096]      // je Säule das unterste Voxel, das nicht Gelände ist, 1000000: keines
+        defined float tolerance
+
+        construct() {
+            for (int i = 0; i < 4096; i++) {
+                this.terrainTop[i] = -1000000
+                this.structureLow[i] = 1000000
+            }
+            this.tolerance = 0.45
+        }
+
+        static defined bool IsTerrain(defined int m) { return m >= 1 && m <= 8 }
+
+        // Nimmt einen Chunk der Säule auf (die Chunks einer Säule in beliebiger Reihenfolge).
+        undefined Add(Chunk c) {
+            if (c == undefined || c.IsEmpty) { return }
+            int vz0 = c.key.VoxelZ
+            byte mats[] = c.materials
+            for (int z = 0; z < 64; z++) {
+                int vz = vz0 + z
+                int at = z << 12
+                for (int k = 0; k < 4096; k++) {
+                    int m = mats[at + k]
+                    if (m == 0) { continue }
+                    if (m <= 8) {
+                        if (vz > this.terrainTop[k]) { this.terrainTop[k] = vz }
+                    } else if (vz < this.structureLow[k]) {
+                        this.structureLow[k] = vz
+                    }
+                }
+            }
+        }
+
+        // Die harten Säulen (4096 Bytes, x + 64 y; 1 = hart), schon auf Zellen von 4 x 4 erweitert. x0, y0: die Ecke der Säule kachel-lokal (m),
+        // die Rasterhöhen aus fm.
+        byte[] Hard(FarMesher fm, defined float x0, defined float y0) {
+            byte cells[256]
+            for (int y = 0; y < 64; y++) {
+                for (int x = 0; x < 64; x++) {
+                    int k = x + (y << 6)
+                    int cell = (x >> 2) + ((y >> 2) << 4)
+                    if (cells[cell] != 0) { continue }
+                    float g = fm.GroundAt(x0 + x * 0.2 + 0.1, y0 + y * 0.2 + 0.1)
+                    bool hard = this.structureLow[k] * 0.2 <= g + 0.2
+                    if (!hard) {
+                        if (this.terrainTop[k] < -999999) {
+                            hard = true
+                        } else {
+                            float top = (this.terrainTop[k] + 1) * 0.2
+                            hard = top > g + this.tolerance || top < g - this.tolerance
+                        }
+                    }
+                    if (hard) { cells[cell] = 1 }
+                }
+            }
+            byte result[] = new byte[4096]
+            for (int k = 0; k < 4096; k++) { result[k] = cells[((k & 63) >> 2) + (((k >> 6) >> 2) << 4)] }
+            return result
+        }
+    }
+}

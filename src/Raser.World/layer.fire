@@ -31,6 +31,7 @@ namespace Raser {
         string function           // Nutzung (OSM-Tags wie "amenity=fuel", sonst die LoD2-Funktion)
         string name
         defined int levels        // Geschosse (0: aus der Höhe)
+        defined int cellars       // Kellergeschosse unter ground: dort ist das Gelände ausgehoben (harte Kante), die Außenwand läuft hinunter
         Material wall
         defined int wallColor
         Material roof

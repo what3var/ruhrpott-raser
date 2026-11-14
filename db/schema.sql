@@ -30,11 +30,13 @@ CREATE TABLE IF NOT EXISTS building (
     function    text,                                   -- 'amenity=fuel', 'alkis=31001_1000', ...
     name        text,
     levels      smallint NOT NULL DEFAULT 0,
+    cellars     smallint NOT NULL DEFAULT 0,
     wall        smallint NOT NULL,                      -- Raser.Material
     wall_color  smallint NOT NULL,
     roof        smallint NOT NULL,
     roof_color  smallint NOT NULL
 );
+ALTER TABLE building ADD COLUMN IF NOT EXISTS cellars smallint NOT NULL DEFAULT 0;   -- für Datenbanken von vor den Kellern
 CREATE INDEX IF NOT EXISTS building_footprint ON building USING gist (footprint);
 
 CREATE TABLE IF NOT EXISTS road (

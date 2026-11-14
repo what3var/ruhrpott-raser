@@ -57,6 +57,7 @@ class ColumnBuilder {
     Dictionary<string, byte[]> faces                  // die Randschichten der Nachbarn (.rrb, entpackt)
     Dictionary<string, List<int>> layers
     HashSet<string> manifests
+    byte hard[]                                       // die harten Säulen der zuletzt gebauten Säule (Raser.GroundCut)
 
     construct(Raser.FileTileStore store) {
         this.store = store
@@ -114,16 +115,27 @@ class ColumnBuilder {
         return this.layers[key]
     }
 
-    List<ChunkParts> Parts(defined int cx, defined int cy) {
+    // Die Netze einer Chunk-Säule. Mit fm (die Kachel, kachel-lokal ab tileE, tileN) kommt das Gelände glatt von dort: Gelände-Voxel bekommen nur
+    // in den harten Säulen Flächen (danach in this.hard).
+    List<ChunkParts> Parts(defined int cx, defined int cy, Raser.FarMesher fm = undefined, defined float tileE = 0.0, defined float tileN = 0.0) {
         var result = new List<ChunkParts>()
         if (this.chunks.Count > 200) { this.chunks.Clear() }
         if (this.faces.Count > 2000) { this.faces.Clear() }
+        this.hard = undefined
+        if (fm != undefined) {
+            var cut = new Raser.GroundCut()
+            foreach (z in this.LayersOf(cx, cy)) { cut.Add(this.ChunkAt(cx, cy, z)) }
+            this.hard = cut.Hard(fm, cx * 12.8 - tileE, cy * 12.8 - tileN)
+        }
         foreach (z in this.LayersOf(cx, cy)) {
             var chunk = this.ChunkAt(cx, cy, z)
             if (chunk == undefined) { continue }
             // von den Nachbarn nur die Randschicht, die diesen Chunk berührt
             var mesher = new Raser.Mesher(chunk, this.FaceOf(cx - 1, cy, z, 1), this.FaceOf(cx + 1, cy, z, 0), this.FaceOf(cx, cy - 1, z, 3), this.FaceOf(cx, cy + 1, z, 2), this.FaceOf(cx, cy, z - 1, 5), this.FaceOf(cx, cy, z + 1, 4))
-            mesher.skipTerrain = true          // das Gelände kommt glatt aus dem Höhenraster
+            if (this.hard != undefined) {
+                mesher.skipTerrain = true          // das Gelände kommt glatt aus dem Höhenraster, nur die harten Säulen als Voxel
+                mesher.hardColumns = this.hard
+            }
             var mesh = mesher.Build()
             var p = new ChunkParts()
             p.key = new Raser.ChunkKey(cx, cy, z)
@@ -206,6 +218,7 @@ class BlockState {
     // Stufe 0 im Aufbau (Säule für Säule, über mehrere Bilder): bis sie fertig ist, bleibt die ferne Version stehen
     BlockMesh nearOpaque
     BlockMesh nearGlass
+    byte groundSkip[]               // die harten Zellen (80 cm) des Blocks: dort spart das glatte Gelände aus
     defined int nextColumn
 
     construct(defined int bx, defined int by) {
@@ -329,22 +342,27 @@ class WorldView {
         if (b.nextColumn < 0) {
             b.nearOpaque = new BlockMesh()
             b.nearGlass = new BlockMesh()
+            b.groundSkip = new byte[4096]
             b.nextColumn = 0
-            // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein; die Voxel bringen nur, was darauf steht
-            float east = b.bx * 51.2
-            float north = b.by * 51.2
-            var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
-            var fm = this.FarFor(tileKey)
-            if (fm != undefined) {
-                var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false)
-                b.nearOpaque.Add(ground, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
-            }
-            this.nearTicks = this.nearTicks + (DateTime.Now.Ticks - t0)
-            return
         }
+        float east = b.bx * 51.2
+        float north = b.by * 51.2
+        var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
+        var fm = this.FarFor(tileKey)
         int cx = b.bx * 4 + (b.nextColumn % 4)
         int cy = b.by * 4 + (b.nextColumn / 4)
-        foreach (p in this.columns.Parts(cx, cy)) {
+        var parts = this.columns.Parts(cx, cy, fm, trust tileKey.East, trust tileKey.North)
+        if (this.columns.hard != undefined) {
+            // die harten Zellen der Säule in die Karte des Blocks (64 x 64 Zellen à 80 cm, je Säule 16 x 16)
+            int sx = (b.nextColumn % 4) * 16
+            int sy = (b.nextColumn / 4) * 16
+            for (int k = 0; k < 256; k++) {
+                int x = k & 15
+                int y = k >> 4
+                if (this.columns.hard[x * 4 + y * 4 * 64] != 0) { b.groundSkip[(sx + x) + (sy + y) * 64] = 1 }
+            }
+        }
+        foreach (p in parts) {
             float ox = p.key.VoxelX * 0.2 - this.originE
             float oy = p.key.VoxelY * 0.2 - this.originN
             float oz = p.key.VoxelZ * 0.2 - this.originZ
@@ -353,6 +371,11 @@ class WorldView {
         }
         b.nextColumn++
         if (b.nextColumn == 16) {
+            // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein, ohne die harten Zellen; die Voxel bringen, was darauf steht
+            if (fm != undefined) {
+                var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, b.groundSkip)
+                b.nearOpaque.Add(ground, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
+            }
             this.Present(b, b.nearOpaque, b.nearGlass, 0)
             b.nearOpaque = undefined
             b.nearGlass = undefined
