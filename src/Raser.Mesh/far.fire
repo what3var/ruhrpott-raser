@@ -74,7 +74,8 @@ namespace Raser {
 
         // Ein Block: x0, y0 kachel-lokal, Kantenlänge size, Geländeraster spacing. skip: ausgesparte Zellen (side x side, x + side y, 1 = keine
         // Fläche - dort ist das Gelände hart, Raser.GroundCut); undefined: keine.
-        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing, defined bool buildings = true, byte skip[] = undefined) {
+        // windows: die Wände mit der Fassaden-Textur (Fenster im Raster der Voxel, Raser.Atlas) statt einfarbig.
+        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing, defined bool buildings = true, byte skip[] = undefined, defined bool windows = false) {
             var part = new Raser.MeshPart()
             int n = Math.Round(size / spacing)!int
             // nur die Flächen und Straßen, die den Block berühren
@@ -114,12 +115,13 @@ namespace Raser {
                 float cy = (m.box.minY + m.box.maxY) / 2.0
                 if (cx < x0 || cy < y0 || cx >= x0 + size || cy >= y0 + size) { continue }
                 if (cx < 0.0 || cy < 0.0 || cx >= 256.0 || cy >= 256.0) { continue }
-                Raser.FarMesher.Building(part, m)
+                Raser.FarMesher.Building(part, m, windows, this.tile.key.x * 1280, this.tile.key.y * 1280)
             }
             return part
         }
 
-        static undefined Building(MeshPart part, RoofModel m) {
+        // vx0, vy0: die Kachel in Voxeln der Welt (für das Fensterraster).
+        static undefined Building(MeshPart part, RoofModel m, defined bool windows = false, defined int vx0 = 0, defined int vy0 = 0) {
             Building b = m.building
             float fp[] = b.footprint
             int n = fp.length / 2
@@ -143,6 +145,10 @@ namespace Raser {
                 if (len < 0.001) { continue }
                 float onx = dy / len           // nach außen (Ring gegen den Uhrzeigersinn)
                 float ony = -dx / len
+                if (windows && Raser.Atlas.HasTile(m.wallColor)) {
+                    Raser.FarMesher.FacadeWall(part, m, ax, ay, bx, by, onx, ony, vx0, vy0)
+                    continue
+                }
                 int pieces = Math.Max(1, Math.Ceiling(len / 2.0)!int)
                 for (int p = 0; p < pieces; p++) {
                     float t0 = p * 1.0 / pieces
@@ -157,6 +163,72 @@ namespace Raser {
                     part.Quad(px, py, g, qx, qy, g, qx, qy, tq, px, py, tp, onx, ony, 0.0, m.wallColor, wall)
                 }
             }
+            Raser.FarMesher.Roof(part, m)
+        }
+
+        // Eine Wand von a nach b mit der Fassaden-Textur: geteilt an den Grenzen des Fensterrasters (alle 9 Voxel von x + y in der Welt), in
+        // Stücken von höchstens 2 m (so folgen sie Giebeln) und je Geschoss (2,8 m ab dem Boden-Voxel des Gebäudes) - jedes Stück liegt so in einer
+        // Kachel des Atlas.
+        static undefined FacadeWall(MeshPart part, RoofModel m, defined float ax, defined float ay, defined float bx, defined float by, defined float onx, defined float ony, defined int vx0, defined int vy0) {
+            Building b = m.building
+            int wall = b.wall!int
+            int color = m.wallColor
+            float dx = bx - ax
+            float dy = by - ay
+            float len = Math.Sqrt(dx * dx + dy * dy)
+            // das Raster entlang der Wand (in Voxeln): A(t) = A(a) + t * (A(b) - A(a))
+            float aa = vx0 + vy0 + (ax + ay) / 0.2
+            float ab = vx0 + vy0 + (bx + by) / 0.2
+            var cuts = new List<float>()
+            cuts.Add(0.0)
+            int steps = Math.Max(1, Math.Ceiling(len / 2.0)!int)
+            for (int p = 1; p < steps; p++) { cuts.Add(p * 1.0 / steps) }
+            if (Math.Abs(ab - aa) > 0.0001) {
+                float lo = Math.Min(aa, ab)
+                float hi = Math.Max(aa, ab)
+                for (float g = Math.Floor(lo / 9.0) * 9.0 + 9.0; g < hi; g = g + 9.0) { cuts.Add((g - aa) / (ab - aa)) }
+            }
+            cuts.Add(1.0)
+            cuts.Sort()
+            float floor0 = m.groundVoxel * 0.2
+            float g0 = b.ground
+            for (int k = 0; k + 1 < cuts.Count; k++) {
+                float t0 = cuts[k]
+                float t1 = cuts[k + 1]
+                if (t1 - t0 < 0.0001) { continue }
+                float px = ax + dx * t0
+                float py = ay + dy * t0
+                float qx = ax + dx * t1
+                float qy = ay + dy * t1
+                float tp = m.RoofAt(px - onx * 0.05, py - ony * 0.05)
+                float tq = m.RoofAt(qx - onx * 0.05, qy - ony * 0.05)
+                // entlang: im Raster des Stücks (die Mitte bestimmt die Kachel)
+                float a0 = aa + (ab - aa) * t0
+                float a1 = aa + (ab - aa) * t1
+                float start = Math.Floor((a0 + a1) / 2.0 / 9.0) * 9.0
+                float u0 = a0 - start
+                float u1 = a1 - start
+                float top = Math.Max(tp, tq)
+                int first = Math.Floor((g0 - floor0) / 2.8)!int
+                for (int st = first; floor0 + st * 2.8 < top; st++) {
+                    float zb = Math.Max(g0, floor0 + st * 2.8)
+                    float zt = floor0 + (st + 1) * 2.8
+                    float zp = Math.Min(tp, zt)
+                    float zq = Math.Min(tq, zt)
+                    if (zp < zb) { zp = zb }
+                    if (zq < zb) { zq = zb }
+                    if (zp <= zb && zq <= zb) { continue }
+                    float sb = (zb - floor0) / 0.2 - st * 14.0
+                    float sp = (zp - floor0) / 0.2 - st * 14.0
+                    float sq = (zq - floor0) / 0.2 - st * 14.0
+                    part.QuadUV(px, py, zb, qx, qy, zb, qx, qy, zq, px, py, zp, onx, ony, 0.0, color, wall, Raser.Atlas.FacadeU(color, u0), Raser.Atlas.FacadeV(color, sb), Raser.Atlas.FacadeU(color, u1), Raser.Atlas.FacadeV(color, sb), Raser.Atlas.FacadeU(color, u1), Raser.Atlas.FacadeV(color, sq), Raser.Atlas.FacadeU(color, u0), Raser.Atlas.FacadeV(color, sp))
+                }
+            }
+        }
+
+        static undefined Roof(MeshPart part, RoofModel m) {
+            Building b = m.building
+            float fp[] = b.footprint
             int roof = b.roof!int
             if (b.roofs.Count > 0) {
                 foreach (f in b.roofs) {

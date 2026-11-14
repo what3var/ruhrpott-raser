@@ -1,0 +1,260 @@
+// Raser.Mesh: die Textur der Blöcke (ein Atlas) - je Materialfarbe eine Kachel von 64 x 64 Voxeln mit Leben im Muster, die Fassaden mit Fenstern
+// für die ferne Stufe und die Palette.
+//
+// Materialkacheln: Jede benannte Farbe der Palette (Index 1 .. 31) hat eine Kachel von 64 x 64 Voxeln, weltfest ausgerichtet - eine Kachel ist genau
+// ein Chunk (12,8 m), Flächen liegen nie über einer Chunk-Grenze hinweg. Die Dreckstufen (Palette 32 .. 127, je Gebäude gewählt) haben eigene Kacheln:
+// dunkler, mit Flecken und Laufspuren, je Stufe mehr. So bekommt jede Voxel-Fläche ihren eigenen Ton aus dem Muster des Materials
+// (Ziegel versetzt mit eigenem Ton je Stein, Dachziegel in Reihen, Holz mit Maserung, Platten mit Fugen, Putz und Beton mit ruhigen Flecken, Gras
+// und Erde mit Körnung), und gleiche Flächen werden trotzdem zu großen Rechtecken zusammengefasst - die Abwechslung kommt aus der Textur. Je Voxel
+// 2 x 2 Texel gleicher Farbe: die Textur wird bilinear gefiltert, so bleibt jeder Voxel fast scharf (mit Filter "nächster Texel" in scene3d reichte 1).
+//
+// Fassaden (ferne Stufe): je Farbe eine Kachel von 9 x 14 Voxeln - das Fensterraster des Voxelizers (entlang der Wand alle 9 Voxel aus x + y in der
+// Welt, Fenster bei 3..6; je Geschoss 14 Voxel, Fenster bei 5..11), die Wand mit demselben Muster wie die Materialkachel.
+//
+// Aufbau (2048 x 2048 Texel, die Textur wiederholt sich): Materialkacheln 132 x 132 (128 innen, 2 Rand, der das Muster fortsetzt) in Reihen zu 15
+// ab (0, 0); die Palette ab Zeile 1192 (je Farbe 8 Texel breit, 3 Zeilen); die Fassadenkacheln 22 x 32 (18 x 28 innen) in Reihen zu 90 ab Zeile 1200.
+// Farben ab 128 (frei für Pinsel und Spieler) bekommen keine Kachel: dort gilt die Palette.
+#import "raser.core"
+
+namespace Raser {
+    class Atlas {
+        static defined int Size = 2048
+        // Farben mit Kachel: die benannten (1 .. 26) und ihre Dreckstufen.
+        static defined bool HasTile(defined int c) {
+            if (c <= 0 || c >= 128) { return false }
+            int b = c % 32
+            return b >= 1 && b <= 26
+        }
+
+        // Die linke obere Ecke des Inneren der Materialkachel der Farbe c (Texel).
+        static defined int TileX(defined int c) { return (c % 15) * 132 + 2 }
+        static defined int TileY(defined int c) { return (c / 15) * 132 + 2 }
+
+        // Die Fassadenkachel der Farbe c (Inneres, Texel).
+        static defined int FacadeX(defined int c) { return (c % 90) * 22 + 2 }
+        static defined int FacadeY(defined int c) { return 1200 + (c / 90) * 32 + 2 }
+
+        // Palette: die Mitte des Felds der Farbe c.
+        static defined float PaletteU(defined int c) { return ((c & 255) * 8 + 4) / 2048.0 }
+        static defined float PaletteV() { return 1193.5 / 2048.0 }
+
+        // Materialkachel: (a, b) in Voxeln im Chunk (0 .. 64), b nach oben.
+        static defined float TileU(defined int c, defined float a) { return (Raser.Atlas.TileX(c) + a * 2.0) / 2048.0 }
+        static defined float TileV(defined int c, defined float b) { return (Raser.Atlas.TileY(c) + (64.0 - b) * 2.0) / 2048.0 }
+
+        // Fassade: a entlang der Wand (Voxel, 0 .. 9 im Raster), s in der Höhe (Voxel, 0 .. 14 im Geschoss, von unten).
+        static defined float FacadeU(defined int c, defined float a) { return (Raser.Atlas.FacadeX(c) + a * 2.0) / 2048.0 }
+        static defined float FacadeV(defined int c, defined float s) { return (Raser.Atlas.FacadeY(c) + (14.0 - s) * 2.0) / 2048.0 }
+
+        // Ist (i entlang, j in der Höhe, im Fensterraster) ein Fenster?
+        static defined bool IsWindow(defined int i, defined int j) { return i >= 3 && i <= 6 && j >= 5 && j <= 11 }
+
+        // Die Texturkoordinaten eines Vierecks (12 Koordinaten ab at in p: Meter, x Ost, y Nord, z oben, an Chunk-Grenzen ausgerichtet) nach uv
+        // ab t (8 Werte): in der Materialkachel seiner Farbe, über die Ebene seiner größten Normalen-Richtung (x: y und z, y: x und z, z: x und y);
+        // passt es nicht in einen Chunk oder hat die Farbe keine Kachel, aus der Palette.
+        static undefined QuadUV(float p[], defined int at, defined int color, float uv[], defined int t) {
+            defined int c = color & 255
+            bool plain = !Raser.Atlas.HasTile(c)
+            float ex = p[at + 3] - p[at]
+            float ey = p[at + 4] - p[at + 1]
+            float ez = p[at + 5] - p[at + 2]
+            float fx = p[at + 9] - p[at]
+            float fy = p[at + 10] - p[at + 1]
+            float fz = p[at + 11] - p[at + 2]
+            float nx = Math.Abs(ey * fz - ez * fy)
+            float ny = Math.Abs(ez * fx - ex * fz)
+            float nz = Math.Abs(ex * fy - ey * fx)
+            // die beiden Achsen in der Ebene: 0 = x, 1 = y, 2 = z
+            defined int ua = 0
+            defined int va = 1
+            if (nx >= ny && nx >= nz) {
+                ua = 1
+                va = 2
+            } else if (ny >= nz) {
+                ua = 0
+                va = 2
+            }
+            float baseU = 0.0
+            float baseV = 0.0
+            if (!plain) {
+                float minU = 1.0e30
+                float maxU = -1.0e30
+                float minV = 1.0e30
+                float maxV = -1.0e30
+                for (int e = 0; e < 4; e++) {
+                    float cu = p[at + e * 3 + ua]
+                    float cv = p[at + e * 3 + va]
+                    if (cu < minU) { minU = cu }
+                    if (cu > maxU) { maxU = cu }
+                    if (cv < minV) { minV = cv }
+                    if (cv > maxV) { maxV = cv }
+                }
+                baseU = Math.Floor((minU + 0.001) / 12.8) * 12.8
+                baseV = Math.Floor((minV + 0.001) / 12.8) * 12.8
+                if (maxU > baseU + 12.801 || maxV > baseV + 12.801) { plain = true }
+            }
+            if (plain) {
+                float u = Raser.Atlas.PaletteU(c)
+                float v = Raser.Atlas.PaletteV()
+                for (int e = 0; e < 4; e++) {
+                    uv[t + e * 2] = u
+                    uv[t + e * 2 + 1] = v
+                }
+                return
+            }
+            for (int e = 0; e < 4; e++) {
+                uv[t + e * 2] = Raser.Atlas.TileU(c, (p[at + e * 3 + ua] - baseU) / 0.2)
+                uv[t + e * 2 + 1] = Raser.Atlas.TileV(c, (p[at + e * 3 + va] - baseV) / 0.2)
+            }
+        }
+
+        // --- die Muster ---
+
+        // Ein Wert in [0, 1) aus zwei Zahlen und einem Salz.
+        static defined float Hash(defined int x, defined int y, defined int salt) {
+            int h = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), x), y), salt)
+            return ((h >> 20) & 65535) / 65536.0
+        }
+
+        // Weiches Rauschen mit der Periode 64 (Gitter alle `cell` Voxel, bilinear), in [-1, 1].
+        static defined float Smooth(defined int x, defined int y, defined int cell, defined int salt) {
+            int n = 64 / cell
+            int gx = x / cell
+            int gy = y / cell
+            float fx = (x % cell) * 1.0 / cell
+            float fy = (y % cell) * 1.0 / cell
+            float a = Raser.Atlas.Hash(gx % n, gy % n, salt)
+            float b = Raser.Atlas.Hash((gx + 1) % n, gy % n, salt)
+            float c = Raser.Atlas.Hash(gx % n, (gy + 1) % n, salt)
+            float d = Raser.Atlas.Hash((gx + 1) % n, (gy + 1) % n, salt)
+            float top = a + (b - a) * fx
+            float bottom = c + (d - c) * fx
+            return (top + (bottom - top) * fy) * 2.0 - 1.0
+        }
+
+        // Die Helligkeit (Faktor um 1) des Voxels (x, y) der Kachel der Farbe c - x entlang, y nach oben (an Wänden) bzw. Nord (am Boden).
+        static defined float Shade(defined int c, defined int x, defined int y) {
+            float f = Raser.Atlas.Clean(Raser.Palette.BaseOf(c), c, x, y)
+            int dirt = Raser.Palette.DirtOf(c)
+            if (dirt == 0) { return f }
+            // Dreck: Flecken (größer und dunkler je Stufe) und Laufspuren (senkrecht, in einzelnen Spalten), aus der Farbe als Salz
+            float stain = Math.Min(0.0, Raser.Atlas.Smooth(x, y, 8, c + 800) + 0.2) * 0.07 * dirt
+            float streak = 0.0
+            float column = Raser.Atlas.Hash(x, 0, c + 900)
+            if (column > 0.75) { streak = -(column - 0.75) * 0.5 * dirt * (0.6 + 0.4 * Raser.Atlas.Smooth(x, y, 16, c + 950)) }
+            return f + stain + streak
+        }
+
+        // Das Muster einer sauberen Farbe b (Salz s: der ganze Index, so hat jede Dreckstufe ihr eigenes Muster).
+        static defined float Clean(defined int c, defined int s, defined int x, defined int y) {
+            float grain = Raser.Atlas.Hash(x, y, s) * 2.0 - 1.0          // je Voxel
+            float blot = Raser.Atlas.Smooth(x, y, 16, s + 100)            // große Flecken
+            float mid = Raser.Atlas.Smooth(x, y, 4, s + 200)              // kleine Flecken
+            // Ziegel: Steine 2 Voxel breit, je Reihe versetzt, jeder Stein mit eigenem Ton; dazu ein wenig Korn
+            if (c == 13 || c == 17 || c == 18) {
+                int brick = (x + (y % 2)) / 2
+                float stone = Raser.Atlas.Hash(brick, y, s + 300) * 2.0 - 1.0
+                return 1.0 + stone * 0.10 + grain * 0.03 + blot * 0.04
+            }
+            // Putz: ruhig, große Flecken (Wetter), kaum Korn
+            if (c == 14 || c == 19 || c == 20 || c == 21) { return 1.0 + blot * 0.05 + mid * 0.02 + grain * 0.015 }
+            // Dachziegel: Reihen, die Ziegel gegeneinander leicht verschieden
+            if (c == 15 || c == 22) {
+                float row = 0.0
+                if (y % 2 == 1) { row = -0.07 }
+                int tile = (x + (y / 2) % 2) / 2
+                return 1.0 + row + (Raser.Atlas.Hash(tile, y / 2, c + 400) * 2.0 - 1.0) * 0.06 + blot * 0.04
+            }
+            // Holz: Maserung entlang y (Bretter 1 Voxel breit)
+            if (c == 10) { return 1.0 + (Raser.Atlas.Hash(x, 0, c + 500) * 2.0 - 1.0) * 0.08 + Raser.Atlas.Smooth(x * 4 % 64, y, 4, c + 600) * 0.05 }
+            // Pflaster: Platten 2 x 2 Voxel, Fugen dunkler
+            if (c == 8) {
+                float joint = 0.0
+                if (x % 2 == 0 || y % 2 == 0) { joint = -0.05 }
+                return 1.0 + joint + (Raser.Atlas.Hash(x / 2, y / 2, c + 700) * 2.0 - 1.0) * 0.06 + blot * 0.04
+            }
+            // Beton: Platten 16 Voxel mit Fugen, Flecken
+            if (c == 9) {
+                float joint = 0.0
+                if (x % 16 == 0 || y % 16 == 0) { joint = -0.08 }
+                return 1.0 + joint + blot * 0.06 + grain * 0.025
+            }
+            // Asphalt: feines Korn, dunklere Flicken
+            if (c == 7) { return 1.0 + grain * 0.06 + Math.Min(0.0, blot) * 0.12 }
+            // Gras, Wald, Feld: Korn und Flecken
+            if (c == 2 || c == 24 || c == 25) { return 1.0 + grain * 0.09 + blot * 0.08 + mid * 0.05 }
+            // Erde, Sand, Schotter, Fels, Gleis
+            if (c == 1 || c == 3 || c == 4 || c == 5 || c == 26) { return 1.0 + grain * 0.10 + blot * 0.06 }
+            // Wasser: ruhige Wellen
+            if (c == 6) { return 1.0 + Raser.Atlas.Smooth(x, y, 8, c) * 0.05 }
+            // der Rest (Glas, Metall, Markierung, Flachdach ...): leises Korn
+            return 1.0 + grain * 0.03 + blot * 0.03
+        }
+
+        static defined int Scaled(defined int rgb, defined float f) {
+            int r = Math.Clamp(Math.Round(((rgb >> 16) & 255) * f)!int, 0, 255)
+            int g = Math.Clamp(Math.Round(((rgb >> 8) & 255) * f)!int, 0, 255)
+            int b = Math.Clamp(Math.Round((rgb & 255) * f)!int, 0, 255)
+            return (r << 16) | (g << 8) | b
+        }
+
+        // Die Textur als RGBA-Bytes (Zeile 0 oben).
+        static byte[] Rgba() {
+            byte data[] = new byte[2048 * 2048 * 4]
+            // Materialkacheln (mit Rand: -2 .. 129 Texel setzen das Muster fort)
+            for (int c = 1; c < 128; c++) {
+                if (!Raser.Atlas.HasTile(c)) { continue }
+                int baseRgb = Raser.Palette.Rgb(c)
+                int x0 = Raser.Atlas.TileX(c)
+                int y0 = Raser.Atlas.TileY(c)
+                int shades[] = new int[4096]
+                for (int vy = 0; vy < 64; vy++) {
+                    for (int vx = 0; vx < 64; vx++) { shades[vx + vy * 64] = Raser.Atlas.Scaled(baseRgb, Raser.Atlas.Shade(c, vx, vy)) }
+                }
+                for (int ty = -2; ty < 130; ty++) {
+                    for (int tx = -2; tx < 130; tx++) {
+                        int vx = ((tx + 128) % 128) / 2
+                        int vy = 63 - ((ty + 128) % 128) / 2         // Zeile 0 der Kachel ist oben
+                        Raser.Atlas.Put(data, x0 + tx, y0 + ty, shades[vx + vy * 64])
+                    }
+                }
+            }
+            // Palette
+            for (int c = 0; c < 256; c++) {
+                for (int dy = 0; dy < 3; dy++) {
+                    for (int dx = 0; dx < 8; dx++) { Raser.Atlas.Put(data, c * 8 + dx, 1192 + dy, Raser.Palette.Rgb(c)) }
+                }
+            }
+            // Fassaden: Wand mit dem Muster der Materialkachel, Fenster als Glas über dem dunklen Inneren (wie die Voxel: Glas mit Deckkraft 0,45)
+            int glass = Raser.Palette.Rgb(Raser.Palette.Glass)
+            int wr = Math.Round(((glass >> 16) & 255) * 0.45 + 40 * 0.55)!int
+            int wg = Math.Round(((glass >> 8) & 255) * 0.45 + 42 * 0.55)!int
+            int wbl = Math.Round((glass & 255) * 0.45 + 48 * 0.55)!int
+            int window = (wr << 16) | (wg << 8) | wbl
+            for (int c = 1; c < 128; c++) {
+                if (!Raser.Atlas.HasTile(c)) { continue }
+                int baseRgb = Raser.Palette.Rgb(c)
+                int x0 = Raser.Atlas.FacadeX(c)
+                int y0 = Raser.Atlas.FacadeY(c)
+                for (int ty = -2; ty < 30; ty++) {
+                    for (int tx = -2; tx < 20; tx++) {
+                        int i = ((tx + 18) % 18) / 2
+                        int j = 13 - ((ty + 28) % 28) / 2
+                        int rgb = Raser.Atlas.Scaled(baseRgb, Raser.Atlas.Shade(c, i, j))
+                        if (Raser.Atlas.IsWindow(i, j)) { rgb = window }
+                        Raser.Atlas.Put(data, x0 + tx, y0 + ty, rgb)
+                    }
+                }
+            }
+            return data
+        }
+
+        static undefined Put(byte data[], defined int x, defined int y, defined int rgb) {
+            int at = (y * 2048 + x) * 4
+            data[at] = (rgb >> 16) & 255
+            data[at + 1] = (rgb >> 8) & 255
+            data[at + 2] = rgb & 255
+            data[at + 3] = 255
+        }
+    }
+}

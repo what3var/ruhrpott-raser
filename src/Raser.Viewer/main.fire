@@ -230,15 +230,8 @@ class WorldView {
         this.nearAhead = 2
         this.spacing = spacing
         this.opaqueOnly = opaqueOnly
-        byte rgba[1024]
-        for (int i = 0; i < 256; i++) {
-            int c = Raser.Palette.Rgb(i)
-            rgba[i * 4] = (c >> 16) & 255
-            rgba[i * 4 + 1] = (c >> 8) & 255
-            rgba[i * 4 + 2] = c & 255
-            rgba[i * 4 + 3] = 255
-        }
-        this.palette = new Texture(256, 1, rgba)
+        // die Textur aller Blöcke: Materialkacheln, Fassaden, Palette (Raser.Atlas)
+        this.palette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba())
     }
 
     // Schließt den Auftragskanal: die Worker enden, wenn sie fertig sind.
@@ -308,7 +301,8 @@ class WorldView {
         var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
         var fm = this.local.FarFor(tileKey)
         if (fm != undefined) {
-            var part = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, sp)
+            // die Fenster als Textur nur nah (feines Raster): weiter weg sind sie kleiner als ein Pixel
+            var part = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, sp, true, undefined, sp <= this.spacing)
             mesh.Add(take part, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
         }
         var batches = new List<Raser.MeshBatch>()

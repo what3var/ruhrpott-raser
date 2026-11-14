@@ -58,6 +58,9 @@ namespace Raser {
             this.wallColor = Raser.RoofModel.Variant(b.wallColor, h)
             this.roofColor = b.roofColor
             if (!this.pitched && b.roof == Raser.Material.RoofTiles) { this.roofColor = Raser.Palette.RoofFlat }
+            // je Gebäude eine Dreckstufe für Wand und Dach (Raser.Palette.Dirty; aus ID und Seed, also stabil)
+            this.wallColor = Raser.Palette.Dirty(this.wallColor, Raser.RoofModel.DirtLevel(h >> 8))
+            this.roofColor = Raser.Palette.Dirty(this.roofColor, Raser.RoofModel.DirtLevel(h >> 16))
             int nf = b.roofs.Count
             this.planes = new float[nf * 4]
             this.faceBoxes = new float[nf * 4]
@@ -71,6 +74,15 @@ namespace Raser {
                 this.faceBoxes[f * 4 + 2] = box.maxX
                 this.faceBoxes[f * 4 + 3] = box.maxY
             }
+        }
+
+        // Wie schmutzig: 0 sauber (35 %), 1 (35 %), 2 (20 %), 3 stark (10 %).
+        static defined int DirtLevel(defined int h) {
+            int p = (h & 1023) % 100
+            if (p < 35) { return 0 }
+            if (p < 70) { return 1 }
+            if (p < 90) { return 2 }
+            return 3
         }
 
         // Ziegel und Putz in leichten Varianten (aus ID und Seed, also stabil).
@@ -166,7 +178,7 @@ namespace Raser {
     class Voxelizer {
         // 2: neu erzeugt, weil native Builds vor fire 8a0292a die unterste Ebene zu hoch setzten (HeightRaster.Min falsch gelesen)
         // 3: bei Gleichstand (Straßenbreite, Flächenpriorität, überlappende Gebäude) gewinnt die kleinere ID - unabhängig von der Reihenfolge der Merkmale
-        static defined int Version = 3
+        static defined int Version = 4
         static defined float StoreyHeight = 2.8
 
         Tile tile

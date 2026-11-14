@@ -174,25 +174,20 @@ namespace Raser {
                 float uv[] = new float[n * 8]
                 int idx[] = new int[n * 6]
                 defined int r = at + first * 48
+                float lp[12]
                 for (int q = 0; q < n; q++) {
-                    float u = (data[colAt + first + q] + 0.5) / 256.0
+                    defined int color = data[colAt + first + q]
                     defined int d = q * 12
+                    for (int e = 0; e < 12; e++) { lp[e] = data.ReadFloat32(r + e * 4) }
                     for (int e = 0; e < 4; e++) {
-                        pos[d] = sx + data.ReadFloat32(r)
-                        pos[d + 1] = sz + data.ReadFloat32(r + 8)
-                        pos[d + 2] = -(sy + data.ReadFloat32(r + 4))
-                        r = r + 12
+                        pos[d] = sx + lp[e * 3]
+                        pos[d + 1] = sz + lp[e * 3 + 2]
+                        pos[d + 2] = -(sy + lp[e * 3 + 1])
                         d = d + 3
                     }
-                    defined int t = q * 8
-                    uv[t] = u
-                    uv[t + 1] = 0.5
-                    uv[t + 2] = u
-                    uv[t + 3] = 0.5
-                    uv[t + 4] = u
-                    uv[t + 5] = 0.5
-                    uv[t + 6] = u
-                    uv[t + 7] = 0.5
+                    r = r + 48
+                    // die Texturkoordinaten aus der Lage (blocklokal: an Chunk-Grenzen ausgerichtet) und der Farbe (Raser.Atlas)
+                    Raser.Atlas.QuadUV(lp, 0, color, uv, q * 8)
                     // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
                     defined int k = q * 6
                     defined int v = q * 4
@@ -220,6 +215,7 @@ namespace Raser {
             defined int pq = 0
             float src[] = undefined
             int col[] = undefined
+            float pu[] = undefined
             defined float ox = 0.0
             defined float oy = 0.0
             defined float oz = 0.0
@@ -227,6 +223,7 @@ namespace Raser {
             if (this.parts.Count > 0) {
                 src = this.parts[0].positions
                 col = this.parts[0].colors
+                pu = this.parts[0].uvs
                 partCount = this.parts[0].Count
                 ox = this.offsets[0]
                 oy = this.offsets[1]
@@ -243,12 +240,12 @@ namespace Raser {
                         pq = 0
                         src = this.parts[pi].positions
                         col = this.parts[pi].colors
+                        pu = this.parts[pi].uvs
                         partCount = this.parts[pi].Count
                         ox = this.offsets[pi * 3]
                         oy = this.offsets[pi * 3 + 1]
                         oz = this.offsets[pi * 3 + 2]
                     }
-                    float u = (col[pq] + 0.5) / 256.0
                     defined int s = pq * 12
                     defined int d = q * 12
                     for (int c = 0; c < 4; c++) {
@@ -259,14 +256,12 @@ namespace Raser {
                         d = d + 3
                     }
                     defined int t = q * 8
-                    uv[t] = u
-                    uv[t + 1] = 0.5
-                    uv[t + 2] = u
-                    uv[t + 3] = 0.5
-                    uv[t + 4] = u
-                    uv[t + 5] = 0.5
-                    uv[t + 6] = u
-                    uv[t + 7] = 0.5
+                    // eigene Texturkoordinaten (Fassade) oder aus der Lage (die Netze sind kachellokal: an Chunk-Grenzen ausgerichtet) und der Farbe
+                    if (pu != undefined && pu[pq * 8] >= 0.0) {
+                        for (int e = 0; e < 8; e++) { uv[t + e] = pu[pq * 8 + e] }
+                    } else {
+                        Raser.Atlas.QuadUV(src, pq * 12, col[pq], uv, t)
+                    }
                     // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
                     defined int k = q * 6
                     defined int v = q * 4

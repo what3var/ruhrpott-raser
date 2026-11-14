@@ -257,7 +257,7 @@ class FarTests {
     undefined CacheBytes() {
         var part = new Raser.MeshPart()
         part.Quad(0.0, 0.0, 1.0, 0.2, 0.0, 1.0, 0.2, 0.2, 1.0, 0.0, 0.2, 1.0, 0.0, 0.0, 1.0, 7, Raser.Material.Brick!int)
-        part.Quad(1.0, 0.0, 0.0, 1.0, 0.4, 0.0, 1.0, 0.4, 0.6, 1.0, 0.0, 0.6, 1.0, 0.0, 0.0, 9, Raser.Material.Brick!int)
+        part.Quad(1.0, 0.0, 0.0, 1.0, 0.4, 0.0, 1.0, 0.4, 0.6, 1.0, 0.0, 0.6, 1.0, 0.0, 0.0, 200, Raser.Material.Brick!int)
         var mesh = new Raser.BlockMesh()
         mesh.Add(take part, 10.0, 20.0, 100.0)
         byte data[] = new byte[mesh.quads * 49]
@@ -271,9 +271,11 @@ class FarTests {
         Testing.Assert.AreEqual(5.0, b.positions[0])
         Testing.Assert.AreEqual(51.0, b.positions[1])
         Testing.Assert.AreEqual(-14.0, b.positions[2])
-        // die Farbe steckt in u: (7 + 0,5) / 256
-        Testing.Assert.AreEqual(7.5 / 256.0, b.uvs[0])
-        Testing.Assert.AreEqual(9.5 / 256.0, b.uvs[8])
+        // Farbe 7 (Asphalt) hat eine Kachel: die Ecke liegt blocklokal bei x 10 m = Voxel 50 im Chunk
+        Testing.Assert.AreEqual(Raser.Atlas.TileU(7, 50.0), b.uvs[0])
+        // Farbe 200 hat keine: die Palette
+        Testing.Assert.AreEqual(Raser.Atlas.PaletteU(200), b.uvs[8])
+        Testing.Assert.AreEqual(Raser.Atlas.PaletteV(), b.uvs[9])
         Testing.Assert.AreEqual(4, b.indices[6])
     }
 }

@@ -18,6 +18,7 @@ namespace Raser {
         float normals[]           // 3 je Viereck
         int colors[]              // 1 je Viereck (Palettenindex)
         int materials[]           // 1 je Viereck
+        float uvs[]               // 8 je Viereck (u, v je Ecke) - nur, wenn ein Viereck eigene Texturkoordinaten hat (QuadUV), sonst undefined
         defined int count
 
         construct() {
@@ -50,6 +51,43 @@ namespace Raser {
             this.normals = take nn
             this.colors = take c
             this.materials = take m
+            if (this.uvs != undefined) {
+                float uv[] = new float[n * 16]
+                float ou[] = this.uvs
+                for (int i = 0; i < n * 8; i++) { uv[i] = ou[i] }
+                this.uvs = take uv
+            }
+        }
+
+        // Ein Viereck mit eigenen Texturkoordinaten je Ecke (a, b, c, d wie bei Quad). Die übrigen Vierecke behalten ihre Farbe aus der Palette
+        // (u, v = -1: aus der Farbe).
+        undefined QuadUV(defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float cx, defined float cy, defined float cz, defined float dx, defined float dy, defined float dz, defined float nx, defined float ny, defined float nz, defined int color, defined int material, defined float ua, defined float va, defined float ub, defined float vb, defined float uc, defined float vc, defined float ud, defined float vd) {
+            if (this.uvs == undefined) {
+                float fresh[] = new float[this.colors.length * 8]
+                for (int i = 0; i < this.count * 8; i++) { fresh[i] = -1.0 }
+                this.uvs = take fresh
+            }
+            defined int q = this.count
+            this.Quad(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, nx, ny, nz, color, material)
+            float uv[] = this.uvs
+            defined int at = q * 8
+            uv[at] = ua
+            uv[at + 1] = va
+            uv[at + 4] = uc
+            uv[at + 5] = vc
+            // Quad dreht b und d, wenn die Ecken andersherum laufen als die Normale
+            float p[] = this.positions
+            if (p[q * 12 + 3] == bx && p[q * 12 + 4] == by && p[q * 12 + 5] == bz) {
+                uv[at + 2] = ub
+                uv[at + 3] = vb
+                uv[at + 6] = ud
+                uv[at + 7] = vd
+            } else {
+                uv[at + 2] = ud
+                uv[at + 3] = vd
+                uv[at + 6] = ub
+                uv[at + 7] = vb
+            }
         }
 
         // Ein Viereck; die Reihenfolge der Ecken wird so gedreht, dass es zur Normale (nx, ny, nz) zeigt.
@@ -95,6 +133,10 @@ namespace Raser {
             c[this.count] = color
             int m[] = this.materials
             m[this.count] = material
+            if (this.uvs != undefined) {
+                float uv[] = this.uvs
+                for (int k = this.count * 8; k < this.count * 8 + 8; k++) { uv[k] = -1.0 }
+            }
             this.count++
         }
     }

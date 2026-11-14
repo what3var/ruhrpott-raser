@@ -47,7 +47,8 @@ namespace Raser {
         }
     }
 
-    // Die Palette: 256 Farben (0xRRGGBB). Die ersten Einträge sind benannt; der Rest ist frei für Fassaden, Pinsel und Spieler.
+    // Die Palette: 256 Farben (0xRRGGBB). Die ersten 32 Einträge sind benannt; 32 .. 127 sind dieselben Farben in Dreckstufen 1 .. 3 (Index + 32 *
+    // Stufe: dunkler, grauer - das Muster der Textur bringt Flecken und Laufspuren dazu, Raser.Atlas); der Rest ist frei für Pinsel und Spieler.
     class Palette {
         static defined int None = 0
         static defined int Soil = 1
@@ -109,10 +110,39 @@ namespace Raser {
             c[24] = 0x2F5226
             c[25] = 0x8E9A4A
             c[26] = 0x5A4A40
+            for (int level = 1; level < 4; level++) {
+                for (int i = 1; i < 32; i++) { c[i + 32 * level] = Raser.Palette.Soiled(c[i], level) }
+            }
             return c
         }
 
         static defined int Rgb(defined int index) { return Raser.Palette.colors[index & 255] }
+
+        // Eine Farbe in der Dreckstufe level (0 .. 3): je Stufe 8 % dunkler und 10 % zum Grau des Rußes hin.
+        static defined int Soiled(defined int rgb, defined int level) {
+            float f = 1.0 - 0.08 * level
+            float g = 0.10 * level
+            int r = Math.Round((((rgb >> 16) & 255) * (1.0 - g) + 70 * g) * f)!int
+            int gr = Math.Round((((rgb >> 8) & 255) * (1.0 - g) + 66 * g) * f)!int
+            int b = Math.Round(((rgb & 255) * (1.0 - g) + 60 * g) * f)!int
+            return (r << 16) | (gr << 8) | b
+        }
+
+        // Der Index einer benannten Farbe (unter 32) in der Dreckstufe level; andere Farben bleiben.
+        static defined int Dirty(defined int index, defined int level) {
+            if (index <= 0 || index >= 32 || level <= 0) { return index }
+            return index + 32 * Math.Min(level, 3)
+        }
+
+        // Die benannte Grundfarbe und die Dreckstufe eines Index.
+        static defined int BaseOf(defined int index) {
+            if (index < 128) { return index % 32 }
+            return index
+        }
+        static defined int DirtOf(defined int index) {
+            if (index < 128) { return index / 32 }
+            return 0
+        }
     }
 
     class Materials {
