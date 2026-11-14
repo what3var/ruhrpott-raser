@@ -12,6 +12,8 @@ namespace Raser {
     class StreetField {
         static readonly defined float Curb = 0.15        // Höhe des Bordsteins (m)
         static readonly defined float Blend = 3.0        // smooth-min: so weit (m) runden sich Einmündungen aus
+        static readonly defined float Kerb = 0.12        // die Oberseite des Bordsteins (m breit)
+        static readonly defined float Gutter = 0.3       // die Pflasterrinne vor dem Bordstein (m)
 
         List<Road> roads                // die Straßen nahe dem Block (Fahrbahnen)
         List<float[]> lines             // ihre geglätteten Mittellinien
@@ -22,12 +24,19 @@ namespace Raser {
         defined float d                 // nach At: der Abstand zum Fahrbahnrand (smooth-min)
         defined float walk              // nach At: die Breite des Gehwegs der nächsten Straße (0: keiner)
         defined int nearest             // nach At: der Index der nächsten Straße (-1: keine in Reichweite)
+        defined float g                 // nach At: der Wert der Grünstreifen (< 0 im Beet, Raser.Strips.Value)
+        List<Strip> strips              // die Grünstreifen an den Straßen des Bereichs
+        List<float[]> stripLines        // die Punkte ihrer Straßen
+        StripProbe probe
 
         construct() {
             this.roads = new List<Road>()
             this.lines = new List<float[]>()
             this.paths = new List<Road>()
             this.pathLines = new List<float[]>()
+            this.strips = new List<Strip>()
+            this.stripLines = new List<float[]>()
+            this.probe = new Raser.StripProbe()
         }
 
         // Eine Fahrbahn für das Feld? (Straßen der Autos auf Höhe 0; Fuß- und Radwege, Bahnen, Brücken bleiben wie bisher)
@@ -49,6 +58,15 @@ namespace Raser {
             if (k == "primary" || k == "secondary") { return 3.0 }
             if (k == "tertiary" || k == "residential" || k == "unclassified") { return 2.5 }
             return 0.0
+        }
+
+        // Eine Pflasterrinne vor dem Bordstein? Bei manchen moderneren Wohn- und Nebenstraßen (aus der ID der Straße: etwa 4 von 10), sonst liegen
+        // die Gullis im Asphalt am Bordstein.
+        static defined bool HasGutter(Road r) {
+            if (r.kind.Length < 9) { return false }
+            string k = r.kind.Substring(8)
+            if (!(k == "residential" || k == "tertiary" || k == "unclassified" || k == "living_street" || k == "secondary")) { return false }
+            return Raser.Props.Rand(r.id, 90, 0) < 0.4
         }
 
         // Zwei Runden Chaikin: jede Kante wird durch zwei Punkte bei 1/4 und 3/4 ersetzt; die Enden bleiben.
@@ -88,12 +106,14 @@ namespace Raser {
             return cur
         }
 
-        // Die Straßen eines Bereichs übernehmen (mit Rand für Gehweg und Ausrundung).
-        undefined Collect(List<Road> all, defined float minX, defined float minY, defined float maxX, defined float maxY) {
+        // Die Straßen eines Bereichs übernehmen (mit Rand für Gehweg und Ausrundung); strips: die Grünstreifen der Kachel (undefined: keine).
+        undefined Collect(List<Road> all, defined float minX, defined float minY, defined float maxX, defined float maxY, List<Strip> strips = undefined) {
             this.roads.Clear()
             this.lines.Clear()
             this.paths.Clear()
             this.pathLines.Clear()
+            this.strips.Clear()
+            this.stripLines.Clear()
             foreach (r in all) {
                 if (!Raser.StreetField.IsStreet(r)) {
                     if (r.layer != 0) { continue }
@@ -109,10 +129,18 @@ namespace Raser {
                 if (!box.Overlaps(minX, minY, maxX, maxY)) { continue }
                 this.roads.Add(r)
                 this.lines.Add(Raser.StreetField.Smooth(r.points))
+                if (strips != undefined) {
+                    foreach (st in strips) {
+                        if (st.road != r.id) { continue }
+                        this.strips.Add(st)
+                        this.stripLines.Add(r.points)
+                    }
+                }
             }
         }
 
         defined bool Empty { get { return this.roads.Count == 0 && this.paths.Count == 0 } }
+        defined bool HasStrips { get { return this.strips.Count > 0 } }
 
         // Die Wege an (x, y): setzt dp und pathNearest (der breiteste gewinnt bei Überlappung, wie in der Voxelisierung).
         undefined PathAt(defined float x, defined float y) {
@@ -134,6 +162,7 @@ namespace Raser {
             if (this.roads.Count == 0) {
                 this.d = 1.0e30
                 this.walk = 0.0
+                this.g = 1.0e30
                 this.nearest = -1
                 return
             }
@@ -157,6 +186,19 @@ namespace Raser {
                 }
             }
             this.d = smooth
+            // Grünstreifen: das Beet; an seiner Straßenseite liegt der Gehweg dahinter (breiter um den Streifen)
+            this.g = 1.0e30
+            if (this.strips.Count > 0 && this.nearest >= 0) {
+                int nid = this.roads[this.nearest].id
+                float widen = 0.0
+                for (int k = 0; k < this.strips.Count; k++) {
+                    var st = this.strips[k]
+                    float v = Raser.Strips.Value(st, this.stripLines[k], x, y, this.probe)
+                    if (v < this.g) { this.g = v }
+                    if (st.road == nid && this.probe.off * st.side > 0.0) { widen = Math.Max(widen, st.width) }
+                }
+                this.walk = this.walk + widen
+            }
         }
 
         // Ein Polygon (n Punkte in px, py mit Werten pv) an pv = t beschneiden: below behält pv < t, sonst pv >= t. Gibt die Zahl der Punkte in ox, oy, ov.

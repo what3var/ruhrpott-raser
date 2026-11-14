@@ -181,6 +181,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 15: Grünstreifen mit Sträuchern (Raser.Strips)
         // 14: Grundrisse bereinigt (Raser.Footprints: Punkte rasten ein), Bäume rücken mit ihrer Baumscheibe von der Fahrbahn weg (Raser.Props.Settle beim Laden)
         // 13: Schnitte mit Versatz (Raser.Plan.Cut) statt Diagonalen und Rundungen - Kanten ohne Stufen in jedem Winkel
         // 12: Rundungen (Raser.Plan.Arc) an Ketten kurzer, gleichmäßig drehender Kanten; der Sockel unter Bauelementen bündig mit dem Gelände
@@ -189,7 +190,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 14
+        static readonly defined int Version = 15
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -233,6 +234,7 @@ namespace Raser {
             this.propAt = new List<int>()
             this.propIndex = new Dictionary<string, int>()
             this.AddProps(this.tile, 0.0, 0.0)
+            this.AddBushes()
         }
 
         Dictionary<string, int> propIndex
@@ -241,46 +243,86 @@ namespace Raser {
         // ihrer Säule. (ox, oy): wo die Kachel `t` liegt, von dieser aus (m) - für die Nachbarn, deren Bäume über die Grenze ragen; von ihnen nur
         // die Props bis 12 m an dieser Kachel.
         undefined AddProps(Tile t, defined float ox, defined float oy) {
+            foreach (p in t.data.props) { this.AddProp(t, ox, oy, p.kind, p.height, p.id, p.angle, p.detail, p.x + ox, p.y + oy) }
+        }
+
+        // Die Sträucher in den Grünstreifen der Kachel (Raser.Strips): in Reihen alle 0,6 m, quer alle 0,5 m, ein Teil frei; nicht auf der
+        // Einfassung und nicht dicht an Bäumen und Laternen. Deterministisch aus der Straße und der Lage im Streifen.
+        undefined AddBushes() {
+            if (this.tile.strips == undefined) { return }
+            var probe = new Raser.StripProbe()
+            foreach (strip in this.tile.strips) {
+                float line[] = undefined
+                foreach (r in this.tile.data.roads) {
+                    if (r.id == strip.road) { line = r.points }
+                }
+                if (line == undefined) { continue }
+                int row = 0
+                for (float s = strip.s0 + 0.4; s < strip.s1 - 0.3; s = s + 0.6) {
+                    int col = 0
+                    for (float q = Raser.Strips.Edge + 0.35; q < strip.width - Raser.Strips.Edge - 0.2; q = q + 0.5) {
+                        int seed = strip.road + row * 7919 + col * 104729
+                        col++
+                        if (Raser.Props.Rand(seed, 70, 0) < 0.3) { continue }
+                        float js = (Raser.Props.Rand(seed, 71, 0) - 0.5) * 0.3
+                        float jq = (Raser.Props.Rand(seed, 72, 0) - 0.5) * 0.2
+                        Raser.Strips.PointAt(line, s + js, strip.side * (strip.half + q + jq), probe)
+                        float x = probe.x
+                        float y = probe.y
+                        if (x < -1.0 || y < -1.0 || x > 257.0 || y > 257.0) { continue }
+                        bool near = false
+                        foreach (p in this.tile.data.props) {
+                            if ((p.kind == "tree" || p.kind == "lamp" || p.kind == "sign") && (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y) < 0.36) {
+                                near = true
+                                break
+                            }
+                        }
+                        if (near) { continue }
+                        this.AddProp(this.tile, 0.0, 0.0, "bush", 0.0, seed, 0.0, undefined, x, y)
+                    }
+                    row++
+                }
+            }
+        }
+
+        // Ein Prop an (px, py) (kachel-lokal hier); t, ox, oy: die Kachel, aus deren Höhenraster der Fußpunkt kommt, und wo sie liegt.
+        undefined AddProp(Tile t, defined float ox, defined float oy, string kind, defined float pheight, defined int id, defined float angle, string detail, defined float px, defined float py) {
             int vx0 = this.tile.key.x * 1280
             int vy0 = this.tile.key.y * 1280
-            foreach (p in t.data.props) {
-                float px = p.x + ox
-                float py = p.y + oy
-                if (px < -12.0 || py < -12.0 || px > 268.0 || py > 268.0) { continue }
-                int variant = Math.Abs(p.id) % 6
-                float height = Math.Round(p.height)
-                int quarters = (Math.Round(p.angle / 90.0)!int % 4 + 4) % 4
-                string key = p.kind + "/" + height + "/" + variant + "/" + quarters + "/" + p.detail
-                if (!this.propIndex.ContainsKey(key)) {
-                    var m = Raser.Props.Make(p.kind, height, Raser.Fnv.AddInt(Raser.Fnv.Start(), variant + 17 * p.kind.Length), quarters * 90.0, p.detail)
-                    if (m == undefined) { continue }
-                    this.propIndex[key] = this.propModels.Count
-                    this.propModels.Add(take m)
-                }
-                int mi = this.propIndex[key]
-                int cx = Math.Floor(px / 0.2)!int
-                int cy = Math.Floor(py / 0.2)!int
-                // das Gelände aus dem Raster der Kachel des Props (kachel-lokal dort)
-                float lx = cx * 0.2 - ox
-                float ly = cy * 0.2 - oy
-                float h0 = 0.0
-                float h1 = 0.0
-                float h2 = 0.0
-                float h3 = 0.0
-                if (t.heights != undefined) {
-                    h0 = t.heights.At(lx, ly)
-                    h1 = t.heights.At(lx + 0.2, ly)
-                    h2 = t.heights.At(lx + 0.2, ly + 0.2)
-                    h3 = t.heights.At(lx, ly + 0.2)
-                }
-                int z = Raser.Voxelizer.TopVoxel(h0, h1, h2, h3) + 1
-                this.propAt.Add(vx0 + cx)
-                this.propAt.Add(vy0 + cy)
-                this.propAt.Add(z)
-                this.propAt.Add(mi)
-                float top = (z + this.propModels[mi].sz) * 0.2
-                if (top > this.propTop) { this.propTop = top }
+            if (px < -12.0 || py < -12.0 || px > 268.0 || py > 268.0) { return }
+            int variant = Math.Abs(id) % 6
+            float height = Math.Round(pheight)
+            int quarters = (Math.Round(angle / 90.0)!int % 4 + 4) % 4
+            string key = kind + "/" + height + "/" + variant + "/" + quarters + "/" + detail
+            if (!this.propIndex.ContainsKey(key)) {
+                var m = Raser.Props.Make(kind, height, Raser.Fnv.AddInt(Raser.Fnv.Start(), variant + 17 * kind.Length), quarters * 90.0, detail)
+                if (m == undefined) { return }
+                this.propIndex[key] = this.propModels.Count
+                this.propModels.Add(take m)
             }
+            int mi = this.propIndex[key]
+            int cx = Math.Floor(px / 0.2)!int
+            int cy = Math.Floor(py / 0.2)!int
+            // das Gelände aus dem Raster der Kachel des Props (kachel-lokal dort)
+            float lx = cx * 0.2 - ox
+            float ly = cy * 0.2 - oy
+            float h0 = 0.0
+            float h1 = 0.0
+            float h2 = 0.0
+            float h3 = 0.0
+            if (t.heights != undefined) {
+                h0 = t.heights.At(lx, ly)
+                h1 = t.heights.At(lx + 0.2, ly)
+                h2 = t.heights.At(lx + 0.2, ly + 0.2)
+                h3 = t.heights.At(lx, ly + 0.2)
+            }
+            int z = Raser.Voxelizer.TopVoxel(h0, h1, h2, h3) + 1
+            this.propAt.Add(vx0 + cx)
+            this.propAt.Add(vy0 + cy)
+            this.propAt.Add(z)
+            this.propAt.Add(mi)
+            float top = (z + this.propModels[mi].sz) * 0.2
+            if (top > this.propTop) { this.propTop = top }
         }
 
         // Stempelt die Props in einen Chunk: nur in Luft (Gebäude und Gelände bleiben).

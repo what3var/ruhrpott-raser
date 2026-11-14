@@ -35,7 +35,10 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
   - [ ] Dieselben Regeln im Baumodus, in Client und Server: beim Umbauen rasten neue Ecken an Nachbarn und bestehende Kanten ein (eine gemeinsame Funktion in Raser.World), damit auch Umgebautes stimmig bleibt
   - [ ] Bodennetz an Gebäuden genau am Grundriss ausschneiden statt in harten Zellen von 80 cm - heute bleibt an schrägen Wänden eine Treppe aus Voxel-Gelände (ohne Gehweg-Erhöhung) am Wandfuß
   - [ ] Stufe 2: Torbögen, Türen zwischen zwei Wänden, 3D-Dachziegel, Traufzähne
-- [x] Baumscheiben: jeder Baum in einem grünen Kreis (0,7 m Radius, mindestens 30 cm um den Stamm), im Gehweg mit Einfassung; zu nahe Bäume rücken beim Laden von der Fahrbahn weg (Raser.Props.Settle) - `docs/images/viewer-baumscheiben.png`
+- [x] Baumscheiben: einzelne Bäume (Plätze, Fußgängerzonen) in einem Quadrat aus Gras (1,4 m), an der nächsten Straße ausgerichtet, mit schmalen Kantensteinen (6 cm); zu nahe Bäume rücken beim Laden von der Fahrbahn weg (Raser.Props.Settle)
+- [x] Grünstreifen (Raser.Strips): Baumreihen an Straßen werden Beete zwischen Fahrbahn und Gehweg - zur Straße direkt am Bordstein, sonst schmale Kantensteine, Erde mit niedrigen Sträuchern (Voxel, zum Teil mit Blüten); der Gehweg liegt dahinter - `docs/images/viewer-gruenstreifen.png`
+- [x] Bordstein oben als Band von 12 cm; Pflasterrinne (30 cm) vor dem Bordstein bei etwa 4 von 10 Wohn- und Nebenstraßen; eckige Gullis etwa alle 30 m je Seite (in der Rinne, sonst im Asphalt am Bordstein)
+- [ ] Grünstreifen ohne Bäume (Luftbild-Abgleich), Laternen und Schilder im Streifen, Sträucher aus Grünstreifen der Nachbarkachel; Gullis auf der geglätteten Kante (heute auf der Mittellinie der Rohdaten)
 - [ ] Fenster und Türen
   - [ ] Fensterraster entlang der Wand (nach der Länge auf der Grundrisskante, nicht nach x + y im Gitter): heute gehen Fenster an schrägen und runden Wänden schief um die Ecke, die Laibungen treppen
   - [ ] Fenster je Nutzung und Geschoss: Läden in Einkaufsstraßen fast immer mit Schaufenstern im Erdgeschoss, Pavillons mit hohen, schaufensterartigen Fenstern, Wohnhäuser mit Lochfenstern

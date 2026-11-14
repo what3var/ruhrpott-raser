@@ -72,7 +72,7 @@ namespace Raser {
     }
 
     class Props {
-        static readonly defined float TreePit = 0.7       // Radius der Baumscheibe (m): grün um den Stamm, mindestens 30 cm neben dem dicksten Stamm
+        static readonly defined float TreePit = 0.7       // halbe Kantenlänge der Baumscheibe (m): grün um den Stamm, mindestens 30 cm neben dem dicksten Stamm
 
         // Fährt eine Straße für Autos hier? (keine Fuß- und Radwege, Bahnen, Brücken)
         static defined bool IsCarRoad(Road r) {
@@ -163,11 +163,40 @@ namespace Raser {
                 return Raser.Props.Tree(height, variant)
             }
             if (kind == "lamp") { return Raser.Props.Lamp().Turned(quarters) }
+            if (kind == "bush") { return Raser.Props.Bush(variant) }
             if (kind == "bench") { return Raser.Props.Bench().Turned(quarters) }
             if (kind == "bin") { return Raser.Props.Bin() }
             if (kind == "sign") { return Raser.Props.Sign(detail).Turned(quarters) }
             if (kind == "signal") { return Raser.Props.Signal().Turned(quarters) }
             return undefined
+        }
+
+        // Ein niedriger Strauch im Beet (0,4 .. 0,6 m): ein löchriger Hügel aus Blättern, bei manchen ein paar Blüten (rosa, gelb oder weiß).
+        static VoxelModel Bush(defined int v) {
+            int r = 2 + Math.Floor(Raser.Props.Rand(v, 40, 0) * 2.0)!int          // Radius 2 .. 3 Voxel
+            int h = 2 + Math.Floor(Raser.Props.Rand(v, 41, 0) * 2.0)!int          // Höhe 2 .. 3 Voxel
+            int size = r * 2 + 1
+            var m = new Raser.VoxelModel(size, size, h + 1)
+            int flower = 0
+            float pick = Raser.Props.Rand(v, 42, 0)
+            if (pick < 0.3) { flower = Raser.Palette.FlowerPink } else if (pick < 0.45) { flower = Raser.Palette.FlowerYellow } else if (pick < 0.6) { flower = Raser.Palette.FlowerWhite }
+            int leaves = Raser.Material.Leaves!int
+            for (int z = 0; z < h; z++) {
+                for (int y = 0; y < size; y++) {
+                    for (int x = 0; x < size; x++) {
+                        float dx = (x - r) * 1.0
+                        float dy = (y - r) * 1.0
+                        float dz = z * 1.0
+                        float d = Math.Sqrt(dx * dx + dy * dy) / (r + 0.5) + dz / (h + 0.5)
+                        if (d > 1.0 || Raser.Props.Rand(v, 43 + z, x * 31 + y) < 0.2) { continue }
+                        int color = Raser.Palette.LeavesDark
+                        if (z == h - 1 || Raser.Props.Rand(v, 50 + z, x * 31 + y) < 0.35) { color = Raser.Palette.Leaves }
+                        if (flower != 0 && z >= h - 2 && Raser.Props.Rand(v, 60 + z, x * 31 + y) < 0.18) { color = flower }
+                        m.Set(x - r, y - r, z, leaves, color)
+                    }
+                }
+            }
+            return m
         }
 
         // Ein Laubbaum: Stamm, schräg aufsteigende Äste, an ihren Enden und oben löchrige Blattbüschel (oben heller, unten dunkler).

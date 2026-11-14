@@ -94,11 +94,12 @@ namespace Raser {
             int side = 0
             if (skip != undefined) { side = Math.Round(Math.Sqrt(skip.length))!int }
             var field = this.streets
-            field.Collect(this.tile.data.roads, x0, y0, x0 + size, y0 + size)
+            field.Collect(this.tile.data.roads, x0, y0, x0 + size, y0 + size, this.tile.strips)
             int nv = n + 1
             defined float dg[] = new float[nv * nv]
             defined float wg[] = new float[nv * nv]
             defined float pg[] = new float[nv * nv]
+            defined float sg[] = new float[nv * nv]
             if (!field.Empty) {
                 for (int j = 0; j <= n; j++) {
                     for (int i = 0; i <= n; i++) {
@@ -107,6 +108,7 @@ namespace Raser {
                         dg[i + j * nv] = field.d
                         wg[i + j * nv] = field.walk
                         pg[i + j * nv] = field.dp
+                        sg[i + j * nv] = field.g
                     }
                 }
             }
@@ -129,10 +131,10 @@ namespace Raser {
                         part.Quad(ax, ay, h0, bx, ay, h1, bx, by, h2, ax, by, h3, nx / len, ny / len, 1.0 / len, s & 255, s >> 8)
                         continue
                     }
-                    this.StreetCell(part, field, ax, ay, spacing, h0, h1, h2, h3, nx / len, ny / len, 1.0 / len, dg[i + j * nv], dg[i + 1 + j * nv], dg[i + 1 + (j + 1) * nv], dg[i + (j + 1) * nv], Math.Max(Math.Max(wg[i + j * nv], wg[i + 1 + j * nv]), Math.Max(wg[i + 1 + (j + 1) * nv], wg[i + (j + 1) * nv])), pg[i + j * nv], pg[i + 1 + j * nv], pg[i + 1 + (j + 1) * nv], pg[i + (j + 1) * nv])
+                    this.StreetCell(part, field, ax, ay, spacing, h0, h1, h2, h3, nx / len, ny / len, 1.0 / len, dg[i + j * nv], dg[i + 1 + j * nv], dg[i + 1 + (j + 1) * nv], dg[i + (j + 1) * nv], Math.Max(Math.Max(wg[i + j * nv], wg[i + 1 + j * nv]), Math.Max(wg[i + 1 + (j + 1) * nv], wg[i + (j + 1) * nv])), pg[i + j * nv], pg[i + 1 + j * nv], pg[i + 1 + (j + 1) * nv], pg[i + (j + 1) * nv], sg[i + j * nv], sg[i + 1 + j * nv], sg[i + 1 + (j + 1) * nv], sg[i + (j + 1) * nv])
                 }
             }
-            // Baumscheiben: grün um jeden Stamm (Raser.Props.TreePit); im Gehweg auf seiner Höhe, mit Einfassung
+            // Baumscheiben: ein grünes Quadrat um jeden Stamm, der nicht in einem Grünstreifen steht (Raser.Props.TreePit); im Gehweg auf seiner Höhe
             foreach (p in this.tile.data.props) {
                 if (p.kind != "tree") { continue }
                 if (p.x < x0 || p.y < y0 || p.x >= x0 + size || p.y >= y0 + size) { continue }
@@ -144,9 +146,41 @@ namespace Raser {
                 float raise = 0.0
                 if (!field.Empty) {
                     field.At(p.x, p.y)
+                    if (field.g < 0.0) { continue }                 // im Grünstreifen: das Beet ist schon da
                     if (field.d >= 0.0 && field.d < field.walk) { raise = Raser.StreetField.Curb }
                 }
                 this.TreePit(part, p.x, p.y, raise)
+            }
+            // Gullis: eckige Roste am Fahrbahnrand, je Straßenseite etwa alle 30 m (in der Pflasterrinne, sonst im Asphalt am Bordstein)
+            if (!field.Empty) {
+                var probe = new Raser.StripProbe()
+                foreach (r in field.roads) {
+                    if (Raser.StreetField.WalkWidth(r) <= 0.0 && !Raser.StreetField.HasGutter(r)) { continue }
+                    float total = 0.0
+                    for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                        float ex = r.points[k + 2] - r.points[k]
+                        float ey = r.points[k + 3] - r.points[k + 1]
+                        total = total + Math.Sqrt(ex * ex + ey * ey)
+                    }
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float start = 6.0 + Raser.Props.Rand(r.id, 80, side + 1) * 20.0
+                        for (float at = start; at < total - 3.0; at = at + 30.0) {
+                            float off = side * (r.width / 2.0 - 0.25)
+                            Raser.Strips.PointAt(r.points, at, off, probe)
+                            float gx = probe.x
+                            float gy = probe.y
+                            if (gx < x0 || gy < y0 || gx >= x0 + size || gy >= y0 + size) { continue }
+                            Raser.Strips.PointAt(r.points, at + 0.5, off, probe)
+                            float ux = probe.x - gx
+                            float uy = probe.y - gy
+                            float ul = Math.Sqrt(ux * ux + uy * uy)
+                            if (ul < 0.0001) { continue }
+                            ux = ux / ul
+                            uy = uy / ul
+                            this.Gully(part, gx, gy, ux, uy)
+                        }
+                    }
+                }
             }
             // Gebäude
             if (!buildings) { return part }
@@ -179,37 +213,98 @@ namespace Raser {
             return part
         }
 
-        // Eine Baumscheibe: ein Zwölfeck aus Gras knapp über dem Boden (raise: auf dem Gehweg), im Gehweg mit einer Einfassung aus Beton.
+        // Eine Baumscheibe: ein Quadrat (Kantenlänge 2 x TreePit), ausgerichtet an der nächsten Straße oder dem nächsten Weg, innen Gras knapp über
+        // dem Boden (raise: auf dem Gehweg), außen schmale Kantensteine (Raser.Strips.Edge, 3 cm hoch, mit Seitenflächen).
         undefined TreePit(MeshPart part, defined float cx, defined float cy, defined float raise) {
-            float r = Raser.Props.TreePit
-            float zc = this.GroundAt(cx, cy) + raise + 0.012
-            for (int k = 0; k < 12; k++) {
-                float a0 = k * Math.PI / 6.0
-                float a1 = (k + 1) * Math.PI / 6.0
-                float ax = cx + r * Math.Cos(a0)
-                float ay = cy + r * Math.Sin(a0)
-                float bx = cx + r * Math.Cos(a1)
-                float by = cy + r * Math.Sin(a1)
-                float za = this.GroundAt(ax, ay) + raise + 0.012
-                float zb = this.GroundAt(bx, by) + raise + 0.012
-                part.Quad(cx, cy, zc, ax, ay, za, bx, by, zb, bx, by, zb, 0.0, 0.0, 1.0, Raser.Palette.Grass, Raser.Material.Grass!int)
-                if (raise > 0.0) {
-                    // die Einfassung: ein schmaler Ring, etwas höher
-                    float w = 0.08
-                    float ox = cx + (r + w) * Math.Cos(a0)
-                    float oy = cy + (r + w) * Math.Sin(a0)
-                    float px = cx + (r + w) * Math.Cos(a1)
-                    float py = cy + (r + w) * Math.Sin(a1)
-                    float zo = this.GroundAt(ox, oy) + raise + 0.03
-                    float zp = this.GroundAt(px, py) + raise + 0.03
-                    part.Quad(ax, ay, za + 0.018, ox, oy, zo, px, py, zp, bx, by, zb + 0.018, 0.0, 0.0, 1.0, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+            // die Richtung der nächsten Straße oder des nächsten Wegs
+            float ux = 1.0
+            float uy = 0.0
+            float best = 1.0e30
+            foreach (r in this.roads) {
+                for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                    float ax = r.points[k]
+                    float ay = r.points[k + 1]
+                    float ex = r.points[k + 2] - ax
+                    float ey = r.points[k + 3] - ay
+                    float len2 = ex * ex + ey * ey
+                    if (len2 <= 0.0) { continue }
+                    float t = Math.Clamp(((cx - ax) * ex + (cy - ay) * ey) / len2, 0.0, 1.0)
+                    float qx = ax + ex * t - cx
+                    float qy = ay + ey * t - cy
+                    float d2 = qx * qx + qy * qy
+                    if (d2 < best) {
+                        best = d2
+                        float len = Math.Sqrt(len2)
+                        ux = ex / len
+                        uy = ey / len
+                    }
                 }
+            }
+            float vx = -uy
+            float vy = ux
+            float a = Raser.Props.TreePit
+            float e = Raser.Strips.Edge
+            float lift = 0.03
+            float lawn = raise + 0.012
+            // die Ecken innen (a) und außen (a + e), gegen den Uhrzeigersinn
+            defined float sx[4]
+            defined float sy[4]
+            sx[0] = -1.0
+            sy[0] = -1.0
+            sx[1] = 1.0
+            sy[1] = -1.0
+            sx[2] = 1.0
+            sy[2] = 1.0
+            sx[3] = -1.0
+            sy[3] = 1.0
+            defined float ix[4]
+            defined float iy[4]
+            defined float ox[4]
+            defined float oy[4]
+            for (int k = 0; k < 4; k++) {
+                ix[k] = cx + (ux * sx[k] + vx * sy[k]) * a
+                iy[k] = cy + (uy * sx[k] + vy * sy[k]) * a
+                ox[k] = cx + (ux * sx[k] + vx * sy[k]) * (a + e)
+                oy[k] = cy + (uy * sx[k] + vy * sy[k]) * (a + e)
+            }
+            part.Quad(ix[0], iy[0], this.GroundAt(ix[0], iy[0]) + lawn, ix[1], iy[1], this.GroundAt(ix[1], iy[1]) + lawn, ix[2], iy[2], this.GroundAt(ix[2], iy[2]) + lawn, ix[3], iy[3], this.GroundAt(ix[3], iy[3]) + lawn, 0.0, 0.0, 1.0, Raser.Palette.Grass, Raser.Material.Grass!int)
+            for (int k = 0; k < 4; k++) {
+                int l = (k + 1) % 4
+                float zi0 = this.GroundAt(ix[k], iy[k]) + raise
+                float zi1 = this.GroundAt(ix[l], iy[l]) + raise
+                float zo0 = this.GroundAt(ox[k], oy[k]) + raise
+                float zo1 = this.GroundAt(ox[l], oy[l]) + raise
+                // oben auf dem Stein
+                part.Quad(ix[k], iy[k], zi0 + lift, ox[k], oy[k], zo0 + lift, ox[l], oy[l], zo1 + lift, ix[l], iy[l], zi1 + lift, 0.0, 0.0, 1.0, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                // außen und innen senkrecht
+                float ex = ox[l] - ox[k]
+                float ey = oy[l] - oy[k]
+                float el = Math.Sqrt(ex * ex + ey * ey)
+                part.Quad(ox[k], oy[k], zo0, ox[l], oy[l], zo1, ox[l], oy[l], zo1 + lift, ox[k], oy[k], zo0 + lift, ey / el, -ex / el, 0.0, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                part.Quad(ix[l], iy[l], zi1, ix[k], iy[k], zi0, ix[k], iy[k], zi0 + lift, ix[l], iy[l], zi1 + lift, -ey / el, ex / el, 0.0, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+            }
+        }
+
+        // Ein Gulli: ein dunkler Rost 50 x 35 cm (längs der Straße), knapp über dem Belag; quer hellere Stäbe als Muster.
+        undefined Gully(MeshPart part, defined float cx, defined float cy, defined float ux, defined float uy) {
+            float vx = -uy
+            float vy = ux
+            float a = 0.25
+            float b = 0.175
+            float z = this.GroundAt(cx, cy) + 0.006
+            part.Quad(cx - ux * a - vx * b, cy - uy * a - vy * b, z, cx + ux * a - vx * b, cy + uy * a - vy * b, z, cx + ux * a + vx * b, cy + uy * a + vy * b, z, cx - ux * a + vx * b, cy - uy * a + vy * b, z, 0.0, 0.0, 1.0, Raser.Palette.Metal + 64, Raser.Material.Metal!int)
+            // die Stäbe: schmale Streifen quer, etwas heller
+            for (int k = -3; k <= 3; k++) {
+                float c = k * 0.065
+                float w = 0.012
+                float z2 = z + 0.002
+                part.Quad(cx + ux * (c - w) - vx * (b - 0.03), cy + uy * (c - w) - vy * (b - 0.03), z2, cx + ux * (c + w) - vx * (b - 0.03), cy + uy * (c + w) - vy * (b - 0.03), z2, cx + ux * (c + w) + vx * (b - 0.03), cy + uy * (c + w) + vy * (b - 0.03), z2, cx + ux * (c - w) + vx * (b - 0.03), cy + uy * (c - w) + vy * (b - 0.03), z2, 0.0, 0.0, 1.0, Raser.Palette.Metal, Raser.Material.Metal!int)
             }
         }
 
         // vx0, vy0: die Kachel in Voxeln der Welt (für das Fensterraster).
         // Eine Zelle des Geländes mit Fahrbahn (d < 0), Gehweg (0 <= d < w, 15 cm höher) und Rest - geteilt an d = 0 und d = w, mit Bordsteinen.
-        undefined StreetCell(MeshPart part, StreetField field, defined float ax, defined float ay, defined float sp, defined float h0, defined float h1, defined float h2, defined float h3, defined float nx, defined float ny, defined float nz, defined float d0, defined float d1, defined float d2, defined float d3, defined float w, defined float p0, defined float p1, defined float p2, defined float p3) {
+        undefined StreetCell(MeshPart part, StreetField field, defined float ax, defined float ay, defined float sp, defined float h0, defined float h1, defined float h2, defined float h3, defined float nx, defined float ny, defined float nz, defined float d0, defined float d1, defined float d2, defined float d3, defined float w, defined float p0, defined float p1, defined float p2, defined float p3, defined float g0, defined float g1, defined float g2, defined float g3) {
             defined float px[8]
             defined float py[8]
             defined float pv[8]
@@ -240,11 +335,23 @@ namespace Raser {
                 field.At(Raser.FarMesher.Mean(qx, m), Raser.FarMesher.Mean(qy, m))
                 int color = Raser.Palette.Asphalt
                 int material = Raser.Material.Asphalt!int
+                bool gutter = false
                 if (field.nearest >= 0) {
-                    color = field.roads[field.nearest].color
-                    material = field.roads[field.nearest].surface!int
+                    var nr = field.roads[field.nearest]
+                    color = nr.color
+                    material = nr.surface!int
+                    gutter = w > 0.0 && Raser.StreetField.HasGutter(nr)
                 }
-                Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, color, material)
+                float gw = Raser.StreetField.Gutter
+                if (gutter && hi > -gw) {
+                    // die Pflasterrinne am Bordstein (moderne Straßen): kleine Steine statt Asphalt
+                    int ma = Raser.StreetField.Clip(qx, qy, qv, m, -gw, true, rx, ry, rv)
+                    Raser.FarMesher.Poly(part, rx, ry, ma, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, color, material)
+                    int mg = Raser.StreetField.Clip(qx, qy, qv, m, -gw, false, rx, ry, rv)
+                    Raser.FarMesher.Poly(part, rx, ry, mg, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, Raser.Palette.Paving + 32, Raser.Material.Paving!int)
+                } else {
+                    Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, color, material)
+                }
             }
             // Gehweg
             if (w > 0.0 && hi >= 0.0 && lo < w) {
@@ -254,7 +361,7 @@ namespace Raser {
                     m = Raser.StreetField.Clip(qx, qy, qv, m, w, true, rx, ry, rv)
                     m = Raser.FarMesher.CopyPoly(rx, ry, rv, m, qx, qy, qv)
                 }
-                Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, Raser.StreetField.Curb, nx, ny, nz, Raser.Palette.Sidewalk, Raser.Material.Paving!int)
+                Raser.FarMesher.Walkway(part, qx, qy, qv, m, ax, ay, sp, h0, h1, h2, h3, nx, ny, nz, g0, g1, g2, g3)
                 // Bordsteine: Kanten auf d = 0 (zur Fahrbahn) und d = w (Hinterkante), senkrecht von der Höhe des Geländes bis zum Gehweg
                 for (int k = 0; k < m; k++) {
                     int l = (k + 1) % m
@@ -305,6 +412,89 @@ namespace Raser {
                     int s = this.SurfaceAt(Raser.FarMesher.Mean(qx, mr), Raser.FarMesher.Mean(qy, mr), false)
                     Raser.FarMesher.Poly(part, qx, qy, mr, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, s & 255, s >> 8)
                 }
+            }
+        }
+
+        // Der Gehweg einer Zelle (Polygon q), darin die Grünstreifen (g < 0, bilinear aus den Ecken): außen eine Einfassung aus Kantensteinen
+        // (Raser.Strips.Edge breit, 3 cm über dem Gehweg, mit Seitenflächen; Fugen etwa alle 80 cm als Wechsel der Tönung), innen Erde - die
+        // Sträucher darauf kommen als Voxel (nah); von weitem ist das Beet grün.
+        static undefined Walkway(MeshPart part, defined float px[], defined float py[], defined float pd[], defined int pm, defined float ax, defined float ay, defined float sp, defined float h0, defined float h1, defined float h2, defined float h3, defined float nx, defined float ny, defined float nz, defined float g0, defined float g1, defined float g2, defined float g3) {
+            float curb = Raser.StreetField.Curb
+            // vorn der Bordstein: oben ein Band von 12 cm (d < Kerb), der Rest ist Gehweg
+            defined float qx[12]
+            defined float qy[12]
+            defined float qd[12]
+            float dlo = 1.0e30
+            for (int k = 0; k < pm; k++) { dlo = Math.Min(dlo, pd[k]) }
+            int m = Raser.FarMesher.CopyPoly(px, py, pd, pm, qx, qy, qd)
+            if (dlo < Raser.StreetField.Kerb) {
+                defined float kx[12]
+                defined float ky[12]
+                defined float kd[12]
+                int mk = Raser.StreetField.Clip(px, py, pd, pm, Raser.StreetField.Kerb, true, kx, ky, kd)
+                Raser.FarMesher.Poly(part, kx, ky, mk, ax, ay, sp, h0, h1, h2, h3, curb, nx, ny, nz, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                m = Raser.StreetField.Clip(px, py, pd, pm, Raser.StreetField.Kerb, false, qx, qy, qd)
+                if (m < 3) { return }
+            }
+            defined float gv[12]
+            float lo = 1.0e30
+            float hi = -1.0e30
+            for (int k = 0; k < m; k++) {
+                float u = (qx[k] - ax) / sp
+                float v = (qy[k] - ay) / sp
+                gv[k] = g0 * (1.0 - u) * (1.0 - v) + g1 * u * (1.0 - v) + g2 * u * v + g3 * (1.0 - u) * v
+                lo = Math.Min(lo, gv[k])
+                hi = Math.Max(hi, gv[k])
+            }
+            if (lo >= 0.0) {
+                Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, curb, nx, ny, nz, Raser.Palette.Sidewalk, Raser.Material.Paving!int)
+                return
+            }
+            defined float wx[12]
+            defined float wy[12]
+            defined float wv[12]
+            if (hi >= 0.0) {
+                int mw = Raser.StreetField.Clip(qx, qy, gv, m, 0.0, false, wx, wy, wv)
+                Raser.FarMesher.Poly(part, wx, wy, mw, ax, ay, sp, h0, h1, h2, h3, curb, nx, ny, nz, Raser.Palette.Sidewalk, Raser.Material.Paving!int)
+            }
+            defined float bx[12]
+            defined float by[12]
+            defined float bv[12]
+            int mb = Raser.FarMesher.CopyPoly(qx, qy, gv, m, bx, by, bv)
+            if (hi >= 0.0) { mb = Raser.StreetField.Clip(qx, qy, gv, m, 0.0, true, bx, by, bv) }
+            float edge = Raser.Strips.Edge
+            float lift = 0.03
+            // die Einfassung
+            int me = Raser.StreetField.Clip(bx, by, bv, mb, -edge, false, wx, wy, wv)
+            if (me >= 3) {
+                int stone = Math.Floor((Raser.FarMesher.Mean(wx, me) + Raser.FarMesher.Mean(wy, me)) / 0.8)!int
+                int tone = Raser.Palette.Concrete
+                if ((stone & 1) != 0) { tone = Raser.Palette.Concrete + 32 }
+                Raser.FarMesher.Poly(part, wx, wy, me, ax, ay, sp, h0, h1, h2, h3, curb + lift, nx, ny, nz, tone, Raser.Material.Concrete!int)
+                for (int k = 0; k < me; k++) {
+                    int l = (k + 1) % me
+                    bool outer = Math.Abs(wv[k]) < 0.000001 && Math.Abs(wv[l]) < 0.000001
+                    bool inner = Math.Abs(wv[k] + edge) < 0.000001 && Math.Abs(wv[l] + edge) < 0.000001
+                    if (!outer && !inner) { continue }
+                    float za = Raser.FarMesher.Bilinear(wx[k], wy[k], ax, ay, sp, h0, h1, h2, h3) + curb
+                    float zb = Raser.FarMesher.Bilinear(wx[l], wy[l], ax, ay, sp, h0, h1, h2, h3) + curb
+                    float ex = wx[l] - wx[k]
+                    float ey = wy[l] - wy[k]
+                    float el = Math.Sqrt(ex * ex + ey * ey)
+                    if (el < 0.0001) { continue }
+                    part.Quad(wx[k], wy[k], za, wx[l], wy[l], zb, wx[l], wy[l], zb + lift, wx[k], wy[k], za + lift, ey / el, -ex / el, 0.0, tone, Raser.Material.Concrete!int)
+                }
+            }
+            // das Beet
+            int mi = Raser.StreetField.Clip(bx, by, bv, mb, -edge, true, wx, wy, wv)
+            if (mi >= 3) {
+                int color = Raser.Palette.Soil
+                int material = Raser.Material.Soil!int
+                if (sp > 1.0) {
+                    color = Raser.Palette.LeavesDark
+                    material = Raser.Material.Grass!int
+                }
+                Raser.FarMesher.Poly(part, wx, wy, mi, ax, ay, sp, h0, h1, h2, h3, curb, nx, ny, nz, color, material)
             }
         }
 

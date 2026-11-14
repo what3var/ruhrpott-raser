@@ -249,6 +249,53 @@ class FarTests {
         Testing.Assert.AreEqual(256, far.Block(51.2, 0.0, 51.2, 3.2).Count)
     }
 
+    [Test "Straßenraum: Bordstein, Grünstreifen mit Kantensteinen, Gullis, Baumscheibe"]
+    undefined StreetSpace() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var raster = new Raser.HeightRaster(-0.5, -0.5, 1.0, 258, 258, 50.0)
+        tile.heights = take raster
+        var road = new Raser.Road()
+        road.source = "test:allee"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 25.0, 51.2, 25.0]
+        road.width = 7.0
+        road.surface = Raser.Material.Asphalt
+        road.color = Raser.Palette.Asphalt
+        tile.data.roads.Add(take road)
+        // drei Bäume links in einer Reihe (Grünstreifen), einer allein auf einem Platz weit weg von der Straße
+        float xs[] = [15.0, 23.0, 31.0, 40.0]
+        float ys[] = [29.5, 29.5, 29.5, 45.0]
+        for (int k = 0; k < 4; k++) {
+            var p = new Raser.Prop()
+            p.source = "test:baum" + k
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = "tree"
+            p.x = xs[k]
+            p.y = ys[k]
+            tile.data.props.Add(take p)
+        }
+        Raser.Strips.Build(tile)
+        Testing.Assert.AreEqual(1, tile.strips.Count)
+        var far = new Raser.FarMesher(tile, 1)
+        var part = far.Block(0.0, 0.0, 51.2, 0.8, false)
+        int soil = 0
+        int metal = 0
+        int grass = 0
+        int kerb = 0
+        for (int q = 0; q < part.Count; q++) {
+            float y = (part.positions[q * 12 + 1] + part.positions[q * 12 + 7]) / 2.0
+            if (part.materials[q] == Raser.Material.Soil!int) { soil++ }
+            if (part.materials[q] == Raser.Material.Metal!int) { metal++ }
+            if (part.materials[q] == Raser.Material.Grass!int && y > 40.0 && part.positions[q * 12 + 2] > 50.005) { grass++ }
+            if (part.materials[q] == Raser.Material.Concrete!int) { kerb++ }
+        }
+        Testing.Assert.IsTrue(soil > 10)        // das Beet
+        Testing.Assert.IsTrue(metal >= 8)       // Gullis (je 1 Rost + 7 Stäbe) auf beiden Seiten
+        Testing.Assert.IsTrue(grass >= 1)       // die Baumscheibe auf dem Platz
+        Testing.Assert.IsTrue(kerb > 20)        // Bordstein, Kantensteine
+    }
+
     [Test "Hartes Gelände: wo etwas in den Boden greift oder gegraben ist"]
     undefined GroundCut() {
         var far = new Raser.FarMesher(FarTests.Sample(), 1)

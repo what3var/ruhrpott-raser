@@ -140,6 +140,7 @@ namespace Raser {
         TileKey key
         TileData data
         HeightRaster heights
+        List<Strip> strips          // die Grünstreifen (beim Laden aus den Bäumen, Raser.Strips; nicht gespeichert)
 
         construct(TileKey key) {
             this.key = key

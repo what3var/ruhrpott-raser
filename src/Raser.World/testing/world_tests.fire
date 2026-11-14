@@ -424,6 +424,47 @@ class VoxelizerTests {
         Testing.Assert.IsTrue(Math.Abs(tile.data.buildings[0].footprint[2] - 6.0) < 0.0001)
     }
 
+    [Test "Grünstreifen: Baumreihen werden Beete zwischen Fahrbahn und Gehweg"]
+    undefined Strips() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var road = new Raser.Road()
+        road.source = "test:allee"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=secondary"
+        road.points = [0.0, 50.0, 200.0, 50.0]
+        road.width = 7.0
+        tile.data.roads.Add(take road)
+        // links (y > 50) drei Bäume alle 8 m, 1 m hinter dem Rand; weit dahinter einer allein; rechts einer; einer zu weit weg vom Rand
+        float xs[] = [20.0, 28.0, 36.0, 90.0, 50.0, 120.0]
+        float ys[] = [54.5, 54.5, 54.5, 54.5, 45.5, 60.0]
+        for (int k = 0; k < 6; k++) {
+            var p = new Raser.Prop()
+            p.source = "test:baum" + k
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = "tree"
+            p.x = xs[k]
+            p.y = ys[k]
+            tile.data.props.Add(take p)
+        }
+        Raser.Strips.Build(tile)
+        Testing.Assert.AreEqual(3, tile.strips.Count)
+        var first = tile.strips[0]
+        foreach (st in tile.strips) {
+            if (st.side == 1 && st.s0 < 30.0) { first = st }
+        }
+        Testing.Assert.AreEqual(1, first.side)
+        Testing.Assert.IsTrue(Math.Abs(first.s0 - 18.4) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(first.s1 - 37.6) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(first.width - 1.7) < 0.001)
+        // im Beet negativ, auf dem Gehweg dahinter und auf der Fahrbahn positiv
+        var probe = new Raser.StripProbe()
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 54.0, probe) < 0.0)
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 56.0, probe) > 0.0)
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 52.0, probe) > 0.0)
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 46.0, probe) > 0.0)
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 45.0, 54.0, probe) > 0.0)
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
