@@ -24,24 +24,40 @@ namespace Raser {
 
         static defined bool IsTerrain(defined int m) { return m >= 1 && m <= 8 }
 
-        // Nimmt einen Chunk der Säule auf (die Chunks einer Säule in beliebiger Reihenfolge).
+        // Nimmt einen Chunk der Säule auf (die Chunks einer Säule in beliebiger Reihenfolge). Gesucht wird je Säule nur bis zum ersten Treffer -
+        // Gelände von oben, das andere von unten -, geschrieben wird nur dann (ein Merker je Säule in einem Byte-Puffer).
         undefined Add(Chunk c) {
             if (c == undefined || c.IsEmpty) { return }
-            defined int vz0 = c.key.VoxelZ
+            defined int vz0 = c.key.VoxelZ + Raser.GroundCut.Offset
             byte mats[] = c.materials
-            // über lokale Namen der Felder: so schreibt der native Code direkt in die gepackten Arrays
             word top[] = this.terrainTop
             word low[] = this.structureLow
-            for (int z = 0; z < 64; z++) {
-                word vz = vz0 + z + Raser.GroundCut.Offset
+            byte done[4096]
+            defined int left = 4096
+            for (int z = 63; z >= 0 && left > 0; z--) {
                 defined int at = z << 12
                 for (int k = 0; k < 4096; k++) {
+                    if (done[k] != 0) { continue }
                     defined int m = mats[at + k]
-                    if (m == 0) { continue }
-                    if (m <= 8) {
-                        if (vz > top[k]) { top[k] = vz }
-                    } else if (low[k] == 0 || vz < low[k]) {
-                        low[k] = vz
+                    if (m >= 1 && m <= 8) {
+                        done[k] = 1
+                        left--
+                        defined int v = vz0 + z
+                        if (top[k] == 0 || v > top[k]!int) { top[k] = v }
+                    }
+                }
+            }
+            done.Fill(0)
+            left = 4096
+            for (int z = 0; z < 64 && left > 0; z++) {
+                defined int at = z << 12
+                for (int k = 0; k < 4096; k++) {
+                    if (done[k] != 0) { continue }
+                    if (mats[at + k] > 8) {
+                        done[k] = 1
+                        left--
+                        defined int v = vz0 + z
+                        if (low[k] == 0 || v < low[k]!int) { low[k] = v }
                     }
                 }
             }

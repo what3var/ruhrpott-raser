@@ -63,6 +63,9 @@ print("end")
 
 Mit einer globalen Variable statt `self` (oder `store` als Parameter der Lambda): `a`, `after holder`, `a`, `end`, `destroy a`.
 | `new Object(Model.FromArrays(...))` setzt die Mitte des Netzes auf die Position (Anker 0,5): die Koordinaten des Netzes gelten nur relativ. Für Welt-Koordinaten muss man das Minimum selbst rechnen und `SetAnchor(0, 0, 0)` + `SetPosition(min)` setzen. | war Minimum + `SetAnchor` | behoben (68e9a69): `obj.KeepMeshCoordinates = true` im Viewer, Bild pixelgleich |
+| **Nativ generisch: Werte aus `Word.Bits` und statischen Feldern.** `int wb = Word.Bits` (auch als `defined int`) ist im erzeugten C ein `Value`; alles, was davon abhängt, läuft über die allgemeinen Operationen (`mul`, `add`, `ov__x002B` samt `claimToListP`) - im Mesher war das die Hälfte der Zeit. Ebenso ein `static defined int` in einem Ausdruck: `word vz = vz0 + z + R.Offset` wird zu `add(s0, s1)`. Der Vergleich zweier `word` dagegen ist einfaches C (`s0_w > s1_w`). Nachbau unten (`R.StaticInExpr`, `FromWordBits`). | `wb` nur aus Literalen (`defined int wb = 64; if (Word.Bits == 32) { wb = 32 }`), Konstanten als Literal | an fire gemeldet (Vorschlag: `Word.Bits` und `static defined`-Konstanten als C-Konstanten) |
+| **Nativ teuer: `List<float>.Add` und typisierte Arrays gegenüber Puffern.** Gemessen (eine Million Elemente): `List<float>.Add` 127 ns je Aufruf, Schreiben in ein `float`-Array über das Feld 117 ns, über einen lokalen Namen 73 ns, Kopieren Element für Element zwischen zwei lokalen `float`-Arrays 22 ns - ein `byte`- oder `word`-Puffer schafft rund 2 ns. Ein Netz von 35.000 Vierecken braucht so mehrere hundert ms nur für die Arrays. | `MeshPart` auf mitwachsenden typisierten Arrays über lokale Namen, ein Durchgang beim Bau der scene3d-Arrays; Zähler und Merker in `byte`/`word`-Puffern | an fire gemeldet (Wunsch: Element-Zugriff auf gepackte Arrays so direkt wie bei Puffern; `Model.FromArrays` auch aus einem Puffer mit float32) |
+| `int`-Arrays sind beim Anlegen `undefined` (`int a[4096]` im Mesher: `'<<' expects int, not Undefined`), `byte`/`word`-Puffer sind 0. Das ist dokumentiert; `defined int a[...]` gibt es nicht (E4000). | Puffer für Bits und Zähler, sonst ausdrücklich füllen | Wunsch: `defined int a[n]` (mit 0 vorbelegt, nativ ohne Prüfung) |
 
 
 Nachbau: ein Thread rechnet, das Hauptprogramm rendert (`threads.fire`; ein Projekt, das `Raser.Core` und `Raser.World` referenziert, nativ gebaut;
@@ -143,3 +146,31 @@ print(results.Receive())
 fire dedicated with results { results.Send(B.Run("fire dedicated")) }
 print(results.Receive())
 ```
+
+Nachbau zu den generischen Werten (`forge build ... --engine native -m RELEASE --keep`, dann im erzeugten `fire_program.c` nach `add(` und `mul(` suchen):
+
+```fire
+class R {
+    word buf[4096]
+    static defined int Offset = 1048576
+    construct() { }
+    defined int StaticInExpr(defined int vz0) {
+        word b[] = this.buf
+        defined int n = 0
+        for (int z = 0; z < 64; z++) {
+            word vz = vz0 + z + R.Offset            // add(s0, s1): R.Offset ist ein Value
+            if (vz > b[z]) { n++ }                  // einfaches C
+        }
+        return n
+    }
+    defined int FromWordBits() {
+        int wb = Word.Bits
+        defined int s = 0
+        for (int k = 0; k < 4096; k++) { s = s + k * wb }    // mul(s1, P0)
+        return s
+    }
+}
+var r = new R()
+print(r.StaticInExpr(5) + " " + r.FromWordBits())
+```
+
