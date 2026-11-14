@@ -17,10 +17,10 @@ Das Projekt ist der Extremtest für fire. Hier steht, was dabei an fire auffäll
 | Nativ sind Elementzugriffe auf Byte-Puffer und typisierte Arrays in Schleifen generisch: `aget_g`, die Zahl wird verpackt (`Int(...)`), `opEq`, `poolMark()`/`leave()` je Durchlauf. Gemessen (Release, gcc): Zählen der Nicht-Null-Bytes in 256 K: `byte[]`-Feld 2,6 ms, lokal 2,4 ms, `int[8]` 1,4 ms - 5 bis 10 ns je Element (C: unter 0,5 ns). Chunk füllen und kodieren kosten so je 6 ms. | keiner | verbessert (fbfa060): Voxelisierung einer Kachel 47 → 40 s |
 | `base` ist ein Schlüsselwort (Variablenname „Expected an identifier“). | Umbenannt | Meldung könnte das Schlüsselwort nennen |
 | **Nativ falsch:** Im Werkzeug (`Raser.Tool`, Release) liefert `float h0 = z0 + Raser.Shape.CornerMeters(shape, 0)` statt 0,2 den Wert 4596373779694328320 (die Bits von 0,2 als Ganzzahl). Im generierten C gibt `f322_c` (der C-Körper von `CornerMeters`, Rückgabe `defined float`) korrekt `Float(...)` zurück, die Aufrufstelle liest aber `(Real)(FireInt)s1.i` - sie hält das Ergebnis für eine Ganzzahl. `shape` ist dort ein lokales `int` aus einer Methode mit `defined int`. In kleinen Nachbauten (gleiche Datei, oder Bibliothek + Programm) tritt es nicht auf; die VM rechnet richtig. | war `Corner(...) * 0.05` | behoben (8a0292a), wieder `CornerMeters`. Folge: native Builds vorher setzten auch die unterste Chunk-Ebene falsch (`HeightRaster.Min`) - Generator 2 erzeugt neu |
-| **Besitz falsch (VM und nativ):** Ein Objekt, das einem anderen gehört (z. B. einem `Dictionary`), wird übergeben, wenn es eine Lambda zurückgibt und das Ergebnis in einem Feld landet: `construct(Item lambda<int> f) { this.a = f(1) }` mit `f = (x) => store.Get("a")` - mit dem Halter stirbt `a` ("destroy a"), obwohl `store.items` es besitzt. Im Viewer zerstörte das die Chunks und danach (über die frei gewordenen Nummern) den Framebuffer: „No resource with ID 1“ bzw. „The framebuffer has no usable size“. Nachbau: `own.fire` unten. | Nachbarn als einzelne Parameter (`Raser.Mesher`) | an fire gemeldet |
+| **Kein Fehler, mein Irrtum:** `(x) => self.Get("a")` fängt `self` ohne Wort ein, und das heißt: die Lambda bekommt eine **tiefe Kopie** (hier des ganzen Stores samt Dictionary und Items). Was sie zurückgibt, gehört zur Kopie und stirbt mit ihr - `store.items` selbst blieb heil. Im Viewer war die Kopie die des `WorldView` mit den Chunks; die Kopie eines Objekts, das eine Ressource über ihre Nummer hält, gibt beim Sterben die echte Ressource frei - daher „No resource with ID 1“ bzw. „The framebuffer has no usable size“. Richtig: das Objekt als Parameter der Lambda übergeben, eine globale Variable nehmen oder mit `on` binden. | Nachbarn als einzelne Parameter (`Raser.Mesher`) - bleibt so, ist ohnehin klarer | geklärt; fire warnt jetzt mit TC023 ausdrücklich vor der tiefen Kopie, die Doku zu Lambdas ist ergänzt |
 | **Besitz falsch (nur nativ):** `store.Get("a")` als Anweisung (Ergebnis verworfen) zerstört das Objekt, das `Get` aus dem Dictionary zurückgibt (VM: nicht). | Ergebnis nicht verwerfen | an fire gemeldet |
 
-Nachbau zu den beiden Besitz-Fehlern (`forge run own.fire` und nativ):
+Nachbau (`forge run own.fire` und nativ) - der erste Teil ist das dokumentierte Einfangen als tiefe Kopie (siehe oben), der zweite (das verworfene `store.Get("a")`, nur nativ) ist gemeldet:
 
 ```fire
 class Item {
@@ -47,7 +47,7 @@ class Holder {
 class Run {
     static undefined Go(Store store) {
         var self = store
-        print(new Holder((x) => self.Get("a")).Name())   // VM und nativ: danach "destroy a"
+        print(new Holder((x) => self.Get("a")).Name())   // VM und nativ: danach "destroy a" - das Item der Kopie von store (richtig so)
         print("after holder")
         print(store.Get("a").n)
     }
@@ -58,5 +58,5 @@ Run.Go(store)
 print("end")
 ```
 
-Erwartet: `a`, `after holder`, `a`, `end`, `destroy a` (einmal, am Ende).
+Mit einer globalen Variable statt `self` (oder `store` als Parameter der Lambda): `a`, `after holder`, `a`, `end`, `destroy a`.
 | `new Object(Model.FromArrays(...))` setzt die Mitte des Netzes auf die Position (Anker 0,5): die Koordinaten des Netzes gelten nur relativ. Für Welt-Koordinaten muss man das Minimum selbst rechnen und `SetAnchor(0, 0, 0)` + `SetPosition(min)` setzen. | so gemacht (`Raser.Viewer`) | Verhalten; ein Schalter „Koordinaten des Netzes behalten“ wäre praktisch |
