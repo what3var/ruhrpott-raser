@@ -117,10 +117,38 @@ namespace Raser {
                 if (cx < 0.0 || cy < 0.0 || cx >= 256.0 || cy >= 256.0) { continue }
                 Raser.FarMesher.Building(part, m, windows, this.tile.key.x * 1280, this.tile.key.y * 1280)
             }
+            // Bäume grob: Stamm und Krone als Quader (Laternen, Bänke und Schilder sind von weitem kleiner als ein Pixel)
+            foreach (p in this.tile.data.props) {
+                if (p.kind != "tree") { continue }
+                if (p.x < x0 || p.y < y0 || p.x >= x0 + size || p.y >= y0 + size) { continue }
+                float h = p.height
+                if (h <= 0.0) { h = 12.0 }
+                if (p.detail == "needleleaved") { h = Math.Max(h, 14.0) }
+                float g = this.GroundAt(p.x, p.y)
+                float r = h * 0.3
+                float trunk = h * 0.4
+                if (p.detail == "needleleaved") {
+                    r = h * 0.2
+                    trunk = h * 0.15
+                }
+                Raser.FarMesher.Box(part, p.x - 0.2, p.y - 0.2, g, p.x + 0.2, p.y + 0.2, g + trunk, Raser.Palette.Bark, Raser.Material.Wood!int)
+                int leaf = Raser.Palette.Leaves
+                if (p.detail == "needleleaved") { leaf = Raser.Palette.LeavesDark }
+                Raser.FarMesher.Box(part, p.x - r, p.y - r, g + trunk, p.x + r, p.y + r, g + h, leaf, Raser.Material.Leaves!int)
+            }
             return part
         }
 
         // vx0, vy0: die Kachel in Voxeln der Welt (für das Fensterraster).
+        // Ein Quader (fünf Seiten, ohne Boden).
+        static undefined Box(MeshPart part, defined float x0, defined float y0, defined float z0, defined float x1, defined float y1, defined float z1, defined int color, defined int material) {
+            part.Quad(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, 0.0, 0.0, 1.0, color, material)
+            part.Quad(x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, 0.0, -1.0, 0.0, color, material)
+            part.Quad(x1, y1, z0, x0, y1, z0, x0, y1, z1, x1, y1, z1, 0.0, 1.0, 0.0, color, material)
+            part.Quad(x0, y1, z0, x0, y0, z0, x0, y0, z1, x0, y1, z1, -1.0, 0.0, 0.0, color, material)
+            part.Quad(x1, y0, z0, x1, y1, z0, x1, y1, z1, x1, y0, z1, 1.0, 0.0, 0.0, color, material)
+        }
+
         static undefined Building(MeshPart part, RoofModel m, defined bool windows = false, defined int vx0 = 0, defined int vy0 = 0) {
             Building b = m.building
             float fp[] = b.footprint

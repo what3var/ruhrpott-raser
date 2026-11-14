@@ -63,13 +63,17 @@ Zwischenlayer in PostGIS statt in `world/tiles`; die Chunks bleiben Dateien unte
 
 ## Zwischenlayer: `world/tiles/<x>_<y>.json` und `.rrh`
 
-`TileData` als JSON (ohne `$type`): `quarter`, `mood`, `sources`, `buildings`, `roads`, `areas`, `pois`. Jedes Merkmal hat `id` (stabil, `Raser.Ids.Stable`) und `source`.
+`TileData` als JSON (ohne `$type`): `quarter`, `mood`, `sources`, `buildings`, `roads`, `areas`, `pois`, `props`. Jedes Merkmal hat `id` (stabil, `Raser.Ids.Stable`) und `source`.
 Merkmale, die über den Rand reichen, stehen in jeder Kachel, die ihr Rechteck berührt.
 
 - Gebäude: aus jedem `bldg:Building`/`bldg:BuildingPart` mit eigener Geometrie, je Grundfläche eines. `footprint` (Ring), `ground` (tiefster Punkt der Grundfläche),
   `eaves`/`ridge` (tiefster/höchster Dachpunkt), `roofs` (die LoD2-Dachflächen), `roofType` (ALKIS-Dachform), `function` (`alkis=<code>`, oder ein OSM-POI im Grundriss: `amenity=fuel` ...), `name`.
 - Straßen: OSM `highway=*` (ohne Tunnel, ohne `proposed`/`construction`), Bahnen (`railway=rail|light_rail|subway|tram`, ohne eingebettete Straßenbahn); Breite aus `width` oder nach Art.
 - Flächen: Wasser, Parkplätze, Plätze, Sport- und Spielplätze, Wald, Grün, Felder, Bahngelände, Gewerbe/Handel - mit Priorität bei Überlappung.
+- Props (Stadtmöbel und Vegetation): OSM-Knoten `natural=tree` (Höhe aus `height`, Laub/Nadel aus `leaf_type`), `highway=street_lamp`, `amenity=bench`,
+  `amenity=waste_basket`, `traffic_sign=*` (das Zeichen in `detail`), `highway=traffic_signals`. Laternen, Bänke und Schilder zeigen zur nächsten Straße;
+  eine Ampel auf der Fahrbahn rückt an den rechten Rand. Wälder werden alle 5 m mit einem Baum bestreut (30 % Nadelbäume), Parks alle 12 m mit jedem
+  zweiten - verrückt, aus der ID der Fläche, nicht in Gebäuden und nicht auf Straßen.
 - `.rrh`: das Höhenraster, 258 × 258 Höhen im Abstand von 1 m auf den Pixelmitten des DGM1 (-0,5 .. 256,5 m), in Zentimetern als Differenzen (Varints).
 
 ## Voxel-Chunks: `world/chunks/<x>_<y>/<cx>_<cy>_<cz>.rrc`
@@ -89,6 +93,10 @@ Je Chunk-Säule wird einmal ein Plan der 64 × 64 Voxel-Säulen gerechnet (gilt 
 - Flächen und Grundrisse werden zeilenweise gerastert, Straßen segmentweise; die breiteste Straße und die Fläche mit der höchsten Priorität gewinnen.
 - Gebäude: Säulen, deren Mitte im Grundriss liegt; Rand = Wand mit Fensterreihen (Glas) je Geschoss (2,8 m), innen Decken; das Dach-Voxel mit Eckhöhen aus den LoD2-Ebenen
   (sonst aus Dachform, Traufe und First). Wohnhäuser (ALKIS 31001_1xxx) in Ziegel, der Rest verputzt; Farbvarianten aus ID und Seed.
+- Props: prozedurale Voxel-Modelle (`Raser.Props`: Laubbaum aus Stamm, Ästen und löchrigen Blattbüscheln, Nadelbaum als Kegel aus Ringen, Laterne,
+  Bank, Papierkorb, Schild als 3 x 3-Pixelbild, Ampel), je Art, Höhe, Variante (aus der ID) und Vierteldrehung einmal gebaut; gestempelt auf das oberste
+  Gelände-Voxel ihrer Säule, nur in Luft. Props der Nachbarkacheln bis 12 m an der Grenze stempelt die Kachel mit, so ragen Bäume über die Grenze.
+  Die ferne Stufe zeigt Bäume als Stamm und Krone (Quader).
 - Alle Lagen werden aus dem kachel-lokalen Voxel-Index gerechnet, damit Nachbar-Chunks dieselbe Säule gleich sehen. Zwei Läufe mit denselben Daten ergeben dieselben Bytes.
 
 ## Export zur Kontrolle
