@@ -90,6 +90,36 @@ class VoxelizerTests {
         Testing.Assert.AreEqual(Raser.Voxelizer.Version, ca.generatorVersion)
     }
 
+    [Test "Die Reihenfolge der Merkmale ändert nichts"]
+    undefined OrderIndependent() {
+        // Zwei gleich breite Straßen und zwei gleich wichtige Flächen, die sich überlappen - einmal so, einmal andersherum gespeichert.
+        var a = Sample.Make()
+        var b = Sample.Make()
+        foreach (t in [a, b]) {
+            var r2 = new Raser.Road()
+            r2.source = "test:strasse2"
+            r2.id = Raser.Ids.Stable(Raser.IdKind.Road, r2.source)
+            r2.points = [0.0, 1.5, 40.0, 1.5]
+            r2.width = 2.0
+            r2.surface = Raser.Material.Paving
+            r2.color = Raser.Palette.Paving
+            t.data.roads.Add(take r2)
+            var a2 = new Raser.Area()
+            a2.source = "test:flaeche2"
+            a2.id = Raser.Ids.Stable(Raser.IdKind.Area, a2.source)
+            a2.ring = [0.0, 11.0, 12.8, 11.0, 12.8, 20.0, 0.0, 20.0]
+            a2.surface = Raser.Material.Gravel
+            a2.color = Raser.Palette.Gravel
+            t.data.areas.Add(take a2)
+        }
+        b.data.roads.Insert(0, b.data.roads.TakeAt(1))
+        b.data.areas.Insert(0, b.data.areas.TakeAt(1))
+        var key = new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)
+        var ca = new Raser.Voxelizer(a, new Raser.OverrideSet(), 7).Generate(key)
+        var cb = new Raser.Voxelizer(b, new Raser.OverrideSet(), 7).Generate(key)
+        Testing.Assert.AreEqual(ca.ContentHash(), cb.ContentHash())
+    }
+
     [Test "Gelände: Oberfläche mit Höhen-Schnitten"]
     undefined Terrain() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)

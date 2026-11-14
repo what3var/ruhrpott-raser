@@ -1,6 +1,6 @@
 // Raser.Import: GeoTIFF-Höhenraster lesen (DGM1 von Geobasis NRW: 1000 x 1000 Float32, LZW, Streifen, ETRS89 / UTM 32N).
 //
-// Unterstützt: Little und Big Endian, Streifen (keine Kacheln), 1 Kanal mit 32-Bit-Float (SampleFormat 3) oder 16/32-Bit-Ganzzahlen,
+// Die Zahlen liest fire selbst (ReadFloat32/ReadUInt16/... auf dem Puffer). Unterstützt: Little und Big Endian, Streifen (keine Kacheln), 1 Kanal mit 32-Bit-Float (SampleFormat 3) oder 16/32-Bit-Ganzzahlen,
 // Kompression keine (1), LZW (5) und Deflate (8, 32946), Predictor 1 (keiner). Lage aus ModelTiepoint + ModelPixelScale (Pixel als Fläche).
 #import "compression"
 #import "raser.core"
@@ -54,28 +54,10 @@ namespace Raser {
     }
 
     class GeoTiff {
-        static float pow2[] = Raser.GeoTiff.Powers()
-
-        static float[] Powers() {
-            float p[256]
-            for (int e = 0; e < 256; e++) { p[e] = 2.0 ^ (e - 150) }    // 2^(e - 127) / 2^23: für (2^23 + Mantisse) * p[e]
-            return p
-        }
-
-        // Eine 32-Bit-Float aus ihren Bits.
+        // Eine 32-Bit-Float aus ihren Bits (NaN und Unendlich: wie "keine Daten").
         static defined float Float32(defined int bits) {
-            int e = (bits >> 23) & 255
-            int m = bits & 8388607
-            float v = 0.0
-            if (e == 0) {
-                v = m * 1.401298464324817e-45
-            } else if (e == 255) {
-                v = -1.0e30          // NaN und Unendlich: wie "keine Daten"
-            } else {
-                v = (8388608 + m) * Raser.GeoTiff.pow2[e]
-            }
-            if ((bits & 2147483648) != 0) { v = -v }
-            return v
+            if (((bits >> 23) & 255) == 255) { return -1.0e30 }
+            return Bits.ToFloat32(bits)
         }
 
         static GeoRaster Read(byte data[]) {
@@ -110,22 +92,9 @@ namespace Raser {
 
         defined int U8(defined int at) { return this.data[at] }
 
-        defined int U16(defined int at) {
-            if (this.little) { return this.data[at] | (this.data[at + 1] << 8) }
-            return (this.data[at] << 8) | this.data[at + 1]
-        }
+        defined int U16(defined int at) { return this.data.ReadUInt16(at, this.little) }
 
-        defined int U32(defined int at) {
-            if (this.little) { return this.data[at] | (this.data[at + 1] << 8) | (this.data[at + 2] << 16) | (this.data[at + 3] << 24) }
-            return (this.data[at] << 24) | (this.data[at + 1] << 16) | (this.data[at + 2] << 8) | this.data[at + 3]
-        }
-
-        defined int U64(defined int at) {
-            int lo = this.U32(at)
-            int hi = this.U32(at + 4)
-            if (this.little) { return lo | (hi << 32) }
-            return (lo << 32) | hi
-        }
+        defined int U32(defined int at) { return this.data.ReadUInt32(at, this.little) }
 
         undefined ReadIfd(defined int offset) {
             int count = this.U16(offset)
@@ -140,7 +109,7 @@ namespace Raser {
                 if (type == 12) {
                     // DOUBLE: ModelPixelScale, ModelTiepoint
                     var list = new List<float>()
-                    for (int k = 0; k < n; k++) { list.Add(Raser.TiffFile.Float64(this.U64(at + k * 8))) }
+                    for (int k = 0; k < n; k++) { list.Add(this.data.ReadFloat64(at + k * 8, this.little)) }
                     if (tag == 33550) { this.scale = take list }
                     if (tag == 33922) { this.tiepoint = take list }
                     continue
@@ -192,16 +161,6 @@ namespace Raser {
             return 1
         }
 
-        // Eine 64-Bit-Float aus ihren Bits.
-        static defined float Float64(defined int bits) {
-            int e = (bits >> 52) & 2047
-            int m = bits & 4503599627370495
-            if (e == 0 && m == 0) { return 0.0 }
-            float v = (1.0 + m / 4503599627370496.0) * (2.0 ^ (e - 1023))
-            if (bits < 0) { v = -v }
-            return v
-        }
-
         defined int Tag(defined int tag, defined int fallback) {
             if (!this.tags.ContainsKey(tag)) { return fallback }
             return this.tags[tag][0]
@@ -249,19 +208,12 @@ namespace Raser {
                     int b = k * bytesPerPixel
                     float v = 0.0
                     if (format == 3 && bits == 32) {
-                        int u = 0
-                        if (this.little) { u = strip[b] | (strip[b + 1] << 8) | (strip[b + 2] << 16) | (strip[b + 3] << 24) } else { u = (strip[b] << 24) | (strip[b + 1] << 16) | (strip[b + 2] << 8) | strip[b + 3] }
-                        v = Raser.GeoTiff.Float32(u)
+                        v = strip.ReadFloat32(b, this.little)
+                        if (Math.Abs(v) > 1.0e30 || v != v) { v = -1.0e30 }    // NaN und Unendlich: wie "keine Daten"
                     } else if (bits == 16) {
-                        int u = 0
-                        if (this.little) { u = strip[b] | (strip[b + 1] << 8) } else { u = (strip[b] << 8) | strip[b + 1] }
-                        if (format == 2 && u >= 32768) { u = u - 65536 }
-                        v = u
+                        if (format == 2) { v = strip.ReadInt16(b, this.little) } else { v = strip.ReadUInt16(b, this.little) }
                     } else if (bits == 32) {
-                        int u = 0
-                        if (this.little) { u = strip[b] | (strip[b + 1] << 8) | (strip[b + 2] << 16) | (strip[b + 3] << 24) } else { u = (strip[b] << 24) | (strip[b + 1] << 16) | (strip[b + 2] << 8) | strip[b + 3] }
-                        if (format == 2 && u >= 2147483648) { u = u - 4294967296 }
-                        v = u
+                        if (format == 2) { v = strip.ReadInt32(b, this.little) } else { v = strip.ReadUInt32(b, this.little) }
                     } else {
                         v = strip[b]
                     }
@@ -275,11 +227,10 @@ namespace Raser {
         byte[] Strip(defined int offset, defined int count, defined int compression, defined int expected) {
             if (compression == 1) {
                 byte raw[] = new byte[expected]
-                for (int i = 0; i < expected && i < count; i++) { raw[i] = this.data[offset + i] }
+                this.data.CopyTo(raw, 0, offset, Math.Min(expected, count))
                 return raw
             }
-            byte packed[] = new byte[count]
-            for (int i = 0; i < count; i++) { packed[i] = this.data[offset + i] }
+            byte packed[] = this.data.Slice(offset, count)
             if (compression == 5) { return Raser.Lzw.Decode(packed, expected) }
             if (compression == 8 || compression == 32946) { return Compression.ZLib.Decompress(packed) }
             throw new Raser.DataException("TIFF: compression " + compression + " is not supported.")
@@ -332,7 +283,7 @@ namespace Raser {
                     int s = starts[code]
                     length = lengths[code]
                     if (pos + length > expected) { length = expected - pos }
-                    for (int k = 0; k < length; k++) { out[pos + k] = out[s + k] }
+                    out.CopyTo(out, pos, s, length)
                     if (prev >= 0 && next < 4096) {
                         starts[next] = prevStart
                         lengths[next] = prevLength + 1
@@ -341,7 +292,7 @@ namespace Raser {
                 } else if (code == next && prev >= 0) {
                     length = prevLength + 1
                     if (pos + length > expected) { length = expected - pos }
-                    for (int k = 0; k < length - 1; k++) { out[pos + k] = out[prevStart + k] }
+                    if (length > 1) { out.CopyTo(out, pos, prevStart, length - 1) }
                     if (length > 0) { out[pos + length - 1] = out[prevStart] }
                     if (next < 4096) {
                         starts[next] = pos

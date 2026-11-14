@@ -90,11 +90,12 @@ class BytesTests {
 
     [Test "Sortieren"]
     undefined Sort() {
+        // (List<T>.Sort aus fire - früher eigenes Raser.Sorting)
         var l = new List<int>([5, -1, 3, 3, 0, 100, -7])
-        Raser.Sorting.Ints(l)
+        l.Sort()
         Testing.Assert.AreEqual("-7,-1,0,3,3,5,100", ",".Join(l))
         var t = new List<string>(["b", "a", "c"])
-        Raser.Sorting.Texts(t)
+        t.Sort()
         Testing.Assert.AreEqual("a,b,c", ",".Join(t))
     }
 }

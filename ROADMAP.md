@@ -5,7 +5,7 @@ Details zur Architektur stehen im [Konzept](docs/KONZEPT.md).
 ## M1: Pipeline-Prototyp
 Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten über den Zwischenlayer zu Voxel-Chunks verarbeitet. Stand und Formate: [Weltpipeline](docs/PIPELINE.md).
 - [x] Import: DGM1, LoD2, OSM für die Testregion (DGM1 als GeoTIFF, LoD2 als CityGML, OSM als XML; `tools/fetch-bochum.sh`)
-- [ ] Schema des Zwischenlayers in PostGIS (Entwurf in `db/schema.sql`; bis fire einen PostgreSQL-Treiber hat, liegt der Zwischenlayer in Dateien mit derselben Aufteilung)
+- [x] Schema des Zwischenlayers in PostGIS (`db/schema.sql`, `Raser.Store` mit `data.postgres`: Merkmale global, eine Kachel ist eine räumliche Abfrage; `--db postgres://...`; Dateien bleiben als Alternative)
 - [x] Deterministische Voxelisierung (Gelände, Gebäude, Straßen)
 - [x] Voxel mit diagonalen Höhen-Schnitten (vier Eckhöhen, geteilt mit Nachbarn)
 - [x] Override-Layer + Generator-Versionierung pro Kachel (von Anfang an, nicht nachrüsten)

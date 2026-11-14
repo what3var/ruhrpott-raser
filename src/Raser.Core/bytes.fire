@@ -17,7 +17,7 @@ namespace Raser {
             int cap = this.data.length * 2
             while (cap < need) { cap = cap * 2 }
             byte bigger[] = new byte[cap]
-            for (int i = 0; i < this.length; i++) { bigger[i] = this.data[i] }
+            this.data.CopyTo(bigger, 0, 0, this.length)
             this.data = take bigger
         }
 
@@ -34,13 +34,13 @@ namespace Raser {
 
         undefined Int32(defined int v) {
             this.Reserve(4)
-            for (int i = 0; i < 4; i++) { this.data[this.length + i] = (v >> (i * 8)) & 255 }
+            this.data.WriteInt32(this.length, v, true)
             this.length = this.length + 4
         }
 
         undefined Int64(defined int v) {
             this.Reserve(8)
-            for (int i = 0; i < 8; i++) { this.data[this.length + i] = (v >> (i * 8)) & 255 }
+            this.data.WriteInt64(this.length, v, true)
             this.length = this.length + 8
         }
 
@@ -61,7 +61,7 @@ namespace Raser {
 
         undefined Bytes(byte b[]) {
             this.Reserve(b.length)
-            for (int i = 0; i < b.length; i++) { this.data[this.length + i] = b[i] }
+            b.CopyTo(this.data, this.length)
             this.length = this.length + b.length
         }
 
@@ -72,11 +72,7 @@ namespace Raser {
         }
 
         // Das Geschriebene als neuer Puffer.
-        byte[] ToBytes() {
-            byte result[] = new byte[this.length]
-            for (int i = 0; i < this.length; i++) { result[i] = this.data[i] }
-            return result
-        }
+        byte[] ToBytes() { return this.data.Slice(0, this.length) }
     }
 
     // Liest, was ein ByteWriter geschrieben hat.
@@ -99,24 +95,28 @@ namespace Raser {
             return v
         }
 
+        undefined Need(defined int n) {
+            if (this.position + n > this.data.length) { throw new Raser.DataException("The data ends too early (at byte " + this.position + ").") }
+        }
+
         defined int Int16() {
-            int lo = this.Byte()
-            int hi = this.Byte()
-            int v = lo | (hi << 8)
-            if (v >= 32768) { v = v - 65536 }
+            this.Need(2)
+            int v = this.data.ReadInt16(this.position, true)
+            this.position = this.position + 2
             return v
         }
 
         defined int Int32() {
-            int v = 0
-            for (int i = 0; i < 4; i++) { v = v | (this.Byte() << (i * 8)) }
-            if (v >= 2147483648) { v = v - 4294967296 }
+            this.Need(4)
+            int v = this.data.ReadInt32(this.position, true)
+            this.position = this.position + 4
             return v
         }
 
         defined int Int64() {
-            int v = 0
-            for (int i = 0; i < 8; i++) { v = v | (this.Byte() << (i * 8)) }
+            this.Need(8)
+            int v = this.data.ReadInt64(this.position, true)
+            this.position = this.position + 8
             return v
         }
 
@@ -191,42 +191,6 @@ namespace Raser {
             byte one[1]
             one[0] = code
             return one.ToString()
-        }
-    }
-}
-
-namespace Raser {
-    // Sortieren ohne Hilfe der Standardbibliothek (List<T> hat kein Sort).
-    class Sorting {
-        // Sortiert eine Liste ganzer Zahlen aufsteigend, an Ort und Stelle (Shellsort mit der Folge von Ciura).
-        static undefined Ints(List<int> list) {
-            int gaps[] = [701, 301, 132, 57, 23, 10, 4, 1]
-            int n = list.Count
-            foreach (gap in gaps) {
-                for (int i = gap; i < n; i++) {
-                    int v = list[i]
-                    int j = i
-                    while (j >= gap && list[j - gap] > v) {
-                        list[j] = list[j - gap]
-                        j = j - gap
-                    }
-                    list[j] = v
-                }
-            }
-        }
-
-        // Sortiert Texte aufsteigend (ordinal), an Ort und Stelle.
-        static undefined Texts(List<string> list) {
-            int n = list.Count
-            for (int i = 1; i < n; i++) {
-                string v = list[i]
-                int j = i
-                while (j > 0 && list[j - 1].CompareTo(v) > 0) {
-                    list[j] = list[j - 1]
-                    j = j - 1
-                }
-                list[j] = v
-            }
         }
     }
 }

@@ -164,7 +164,9 @@ namespace Raser {
     }
 
     class Voxelizer {
-        static defined int Version = 1
+        // 2: neu erzeugt, weil native Builds vor fire 8a0292a die unterste Ebene zu hoch setzten (HeightRaster.Min falsch gelesen)
+        // 3: bei Gleichstand (Straßenbreite, Flächenpriorität, überlappende Gebäude) gewinnt die kleinere ID - unabhängig von der Reihenfolge der Merkmale
+        static defined int Version = 3
         static defined float StoreyHeight = 2.8
 
         Tile tile
@@ -297,7 +299,7 @@ namespace Raser {
                 for (int i = 0; i <= 64; i++) { corners[j * 65 + i] = this.TerrainAt((lx0 + i) * 0.2, (ly0 + j) * 0.2) }
             }
 
-            // Welches Gebäude in welcher Säule steht (-1: keins); eine Spalte und Zeile Rand rundherum für die Wände. Das erste Gebäude gewinnt.
+            // Welches Gebäude in welcher Säule steht (-1: keins); eine Spalte und Zeile Rand rundherum für die Wände. Bei Überlappung gewinnt die kleinere ID (unabhängig von der Reihenfolge der Merkmale).
             int owner[4356]
             for (int k = 0; k < 4356; k++) { owner[k] = -1 }
             var crossings = new List<float>()
@@ -312,20 +314,22 @@ namespace Raser {
                         if (i1 > 64) { i1 = 64 }
                         for (int i = i0; i <= i1; i++) {
                             int o = (j + 1) * 66 + (i + 1)
-                            if (owner[o] < 0) { owner[o] = m }
+                            if (owner[o] < 0 || models[m].building.id < models[owner[o]].building.id) { owner[o] = m }
                         }
                     }
                 }
             }
 
-            // Flächen: die höchste Priorität gewinnt, bei gleicher die erste.
+            // Flächen: die höchste Priorität gewinnt, bei gleicher die kleinere ID.
             int areaPriority[4096]
             int areaMaterial[4096]
             int areaColor[4096]
+            int areaId[4096]
             for (int k = 0; k < 4096; k++) {
                 areaPriority[k] = -1000000
                 areaMaterial[k] = Raser.Material.Grass!int
                 areaColor[k] = Raser.Palette.Grass
+                areaId[k] = 0
             }
             for (int ai = 0; ai < this.tile.data.areas.Count; ai++) {
                 if (!this.areaBoxes[ai].Overlaps(mx0, my0, mx1, my1)) { continue }
@@ -339,8 +343,9 @@ namespace Raser {
                         if (i1 > 63) { i1 = 63 }
                         for (int i = i0; i <= i1; i++) {
                             int k = j * 64 + i
-                            if (a.priority > areaPriority[k]) {
+                            if (a.priority > areaPriority[k] || (a.priority == areaPriority[k] && a.id < areaId[k])) {
                                 areaPriority[k] = a.priority
+                                areaId[k] = a.id
                                 areaMaterial[k] = a.surface!int
                                 areaColor[k] = a.color
                             }
@@ -349,11 +354,15 @@ namespace Raser {
                 }
             }
 
-            // Straßen: die breiteste gewinnt, bei gleicher Breite die erste.
+            // Straßen: die breiteste gewinnt, bei gleicher Breite die kleinere ID.
             float[32] roadWidth[4096]
             int roadMaterial[4096]
             int roadColor[4096]
-            for (int k = 0; k < 4096; k++) { roadWidth[k] = 0.0 }
+            int roadId[4096]
+            for (int k = 0; k < 4096; k++) {
+                roadWidth[k] = 0.0
+                roadId[k] = 0
+            }
             for (int ri = 0; ri < this.tile.data.roads.Count; ri++) {
                 if (!this.roadBoxes[ri].Overlaps(mx0, my0, mx1, my1)) { continue }
                 var r = this.tile.data.roads[ri]
@@ -381,10 +390,11 @@ namespace Raser {
                         float py = (ly0 + j + 0.5) * 0.2
                         for (int i = i0; i <= i1; i++) {
                             int k = j * 64 + i
-                            if (r.width <= roadWidth[k]) { continue }
+                            if (r.width < roadWidth[k] || (r.width == roadWidth[k] && r.id >= roadId[k])) { continue }
                             float px = (lx0 + i + 0.5) * 0.2
                             if (Raser.Geo.DistanceToSegment(px, py, ax, ay, bx, by) <= hw) {
                                 roadWidth[k] = r.width
+                                roadId[k] = r.id
                                 roadMaterial[k] = r.surface!int
                                 roadColor[k] = r.color
                             }

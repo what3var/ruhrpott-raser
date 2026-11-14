@@ -15,6 +15,9 @@
     },
     {
       "project": "../Raser.Mesh/Raser.Mesh.fireproj"
+    },
+    {
+      "project": "../Raser.Store/Raser.Store.fireproj"
     }
   ],
   "settings": {

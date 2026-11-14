@@ -160,10 +160,10 @@ class ObjExport {
                     float y0 = (vy - vy0) * 0.2
                     float y1 = y0 + 0.2
                     float z0 = (vz - vz0) * 0.2
-                    float h0 = z0 + Raser.Shape.Corner(shape, 0) * 0.05
-                    float h1 = z0 + Raser.Shape.Corner(shape, 1) * 0.05
-                    float h2 = z0 + Raser.Shape.Corner(shape, 2) * 0.05
-                    float h3 = z0 + Raser.Shape.Corner(shape, 3) * 0.05
+                    float h0 = z0 + Raser.Shape.CornerMeters(shape, 0)
+                    float h1 = z0 + Raser.Shape.CornerMeters(shape, 1)
+                    float h2 = z0 + Raser.Shape.CornerMeters(shape, 2)
+                    float h3 = z0 + Raser.Shape.CornerMeters(shape, 3)
                     bool full = Raser.Shape.IsFull(shape)
                     var quads = new List<float>()
                     // oben (bei einem Schnitt immer sichtbar)

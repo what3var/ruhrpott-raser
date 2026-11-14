@@ -5,6 +5,7 @@
 //   raser export png [--world world] [--tile x_y | --all] [--step n] [--out datei.png]
 //   raser export obj [--world world] --at ost,nord [--size meter] [--out datei.obj]
 //   raser info      [--world world]
+//   (alle Befehle: --db postgres://host/raser [--db-user u] - der Zwischenlayer in PostGIS, Passwort in RASER_DB_PASSWORD)
 //
 // Mit forge: forge run RuhrpottRaser.firesln -- import --dgm data/raw/dgm1 ...
 #import "filesystem"
@@ -13,6 +14,7 @@
 #import "raser.world"
 #import "raser.import"
 #import "raser.mesh"
+#import "raser.store"
 
 class Args {
     List<string> positional
@@ -55,6 +57,18 @@ class Tool {
 
     static undefined Log(string text) { print("[" + Tool.Seconds() + "] " + text) }
 
+    // Der Speicher: Dateien unter --world; mit --db postgres://... liegt der Zwischenlayer in PostGIS (Benutzer --db-user, Passwort aus RASER_DB_PASSWORD).
+    static Raser.FileTileStore Store(Args args) {
+        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        if (args.Has("db")) {
+            string password = Environment.Get("RASER_DB_PASSWORD")
+            var pg = new Raser.PostgresTileStore(args.Get("db"), args.Get("db-user", "postgres"), password)
+            pg.EnsureSchema()
+            store.source = take pg
+        }
+        return store
+    }
+
     static List<string> Files(string folder, string pattern) {
         var result = new List<string>()
         if (folder == undefined) { return result }
@@ -88,7 +102,7 @@ class Tool {
         }
         var keys = region.TileKeys()
         if (args.Has("tiles")) { keys = Tool.TileRange(args.Get("tiles")) }
-        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        var store = Tool.Store(args)
         int n = 0
         foreach (k in keys) {
             var tile = region.Build(k)
@@ -117,7 +131,7 @@ class Tool {
     }
 
     static undefined Voxelize(Args args) {
-        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        var store = Tool.Store(args)
         var overrides = Raser.TileGenerator.LoadOverrides(args.Get("overrides", "overrides"))
         int seed = args.Get("seed", "1").ToInt()
         var generator = new Raser.TileGenerator(store, overrides, seed)
@@ -133,7 +147,7 @@ class Tool {
     }
 
     static undefined ExportPng(Args args) {
-        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        var store = Tool.Store(args)
         var keys = Tool.Chosen(args, store)
         if (keys.Count == 0) { throw new Raser.DataException("There are no tiles.") }
         int step = args.Get("step", "1").ToInt()
@@ -167,7 +181,7 @@ class Tool {
     }
 
     static undefined ExportObj(Args args) {
-        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        var store = Tool.Store(args)
         if (!args.Has("at")) { throw new Raser.DataException("export obj needs --at ost,nord.") }
         var at = args.Get("at").Split(",")
         float e = at[0].ToFloat()
@@ -201,7 +215,7 @@ class Tool {
     }
 
     static undefined Info(Args args) {
-        var store = new Raser.FileTileStore(args.Get("world", "world"))
+        var store = Tool.Store(args)
         var keys = store.Keys()
         print(keys.Count + " Kacheln in " + store.root)
         foreach (k in keys) {

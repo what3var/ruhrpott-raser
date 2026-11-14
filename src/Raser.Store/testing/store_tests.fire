@@ -1,0 +1,144 @@
+// Die Tests von Raser.Store (forge test src/Raser.Store/Raser.Store.fireproj).
+// Die Tests gegen eine Datenbank laufen nur, wenn RASER_TEST_POSTGRES eine leere Datenbank mit PostGIS nennt
+// (postgres://127.0.0.1:5432/raser_test; RASER_TEST_POSTGRES_USER, RASER_TEST_POSTGRES_PASSWORD) - ihre Tabellen werden geleert.
+#import "testing"
+#import "raser.core"
+#import "raser.world"
+
+class StoreSample {
+    static Raser.Tile Make() {
+        var tile = new Raser.Tile(new Raser.TileKey(1469, 22284))
+        var raster = new Raser.HeightRaster(-0.5, -0.5, 1.0, 258, 258)
+        for (int r = 0; r < 258; r++) {
+            for (int c = 0; c < 258; c++) { raster.Set(c, r, 90.0 + c * 0.01 + r * 0.02) }
+        }
+        tile.heights = take raster
+        tile.data.quarter = "innenstadt"
+        tile.data.sources.Add("test")
+        var b = new Raser.Building()
+        b.source = "lod2:TEST1"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [10.125, 20.25, 30.5, 20.25, 30.5, 40.75, 10.125, 40.75]
+        b.ground = 90.5
+        b.eaves = 99.0
+        b.ridge = 103.25
+        b.roofType = Raser.RoofType.Gable
+        var f1 = new Raser.RoofFace()
+        f1.points = [10.125, 20.25, 99.0, 30.5, 20.25, 99.0, 30.5, 30.5, 103.25, 10.125, 30.5, 103.25]
+        b.roofs.Add(take f1)
+        var f2 = new Raser.RoofFace()
+        f2.points = [10.125, 30.5, 103.25, 30.5, 30.5, 103.25, 30.5, 40.75, 99.0, 10.125, 40.75, 99.0]
+        b.roofs.Add(take f2)
+        b.function = "amenity=fuel"
+        b.name = "Tanke"
+        tile.data.buildings.Add(take b)
+        var road = new Raser.Road()
+        road.source = "osm:way/1"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [-20.0, 5.0, 100.0, 5.5, 300.0, 6.0]
+        road.width = 5.5
+        tile.data.roads.Add(take road)
+        var area = new Raser.Area()
+        area.source = "osm:way/2"
+        area.id = Raser.Ids.Stable(Raser.IdKind.Area, area.source)
+        area.kind = "landuse=grass"
+        area.ring = [50.0, 50.0, 80.0, 50.0, 80.0, 90.0]
+        area.surface = Raser.Material.Grass
+        area.color = Raser.Palette.Grass
+        area.priority = 10
+        tile.data.areas.Add(take area)
+        var poi = new Raser.Poi()
+        poi.source = "osm:node/3"
+        poi.id = Raser.Ids.Stable(Raser.IdKind.Poi, poi.source)
+        poi.kind = "amenity=fuel"
+        poi.name = "Tanke"
+        poi.x = 20.0
+        poi.y = 30.0
+        tile.data.pois.Add(take poi)
+        return tile
+    }
+}
+
+class WkbTests {
+    [Test "Polygon, Linie, Punkt: hin und zurück"]
+    undefined RoundTrip() {
+        float ring[] = [376000.125, 5704000.5, 376010.0, 5704000.5, 376010.0, 5704010.75]
+        var back = Raser.Wkb.ReadPolygon(Raser.Wkb.Polygon(ring))
+        Testing.Assert.AreEqual(6, back.length)
+        for (int i = 0; i < 6; i++) { Testing.Assert.AreEqual(ring[i], back[i]) }
+        float line[] = [1.0, 2.0, 3.5, 4.25]
+        var l = Raser.Wkb.ReadLineString(Raser.Wkb.LineString(line))
+        Testing.Assert.AreEqual(4.25, l[3])
+        var p = Raser.Wkb.ReadPoint(Raser.Wkb.Point(376122.83, 5704914.23))
+        Testing.Assert.AreEqual(5704914.23, p[1])
+    }
+
+    [Test "Dachflächen als MultiPolygonZ"]
+    undefined Roofs() {
+        var tile = StoreSample.Make()
+        var faces = tile.data.buildings[0].roofs
+        var bytes = Raser.Wkb.MultiPolygonZ(faces)
+        // Kopf: Byte-Reihenfolge 1, Typ 1006 (MultiPolygon Z)
+        Testing.Assert.AreEqual(1, bytes[0])
+        Testing.Assert.AreEqual(1006, bytes.ReadInt32(1, true))
+        var back = Raser.Wkb.ReadMultiPolygonZ(bytes)
+        Testing.Assert.AreEqual(2, back.Count)
+        Testing.Assert.AreEqual(12, back[1].points.length)
+        Testing.Assert.AreEqual(103.25, back[1].points[2])
+    }
+}
+
+class PostgresTests {
+    static string Url() { return Environment.Get("RASER_TEST_POSTGRES") }
+
+    static Raser.PostgresTileStore Open() {
+        string user = Environment.Get("RASER_TEST_POSTGRES_USER")
+        string password = Environment.Get("RASER_TEST_POSTGRES_PASSWORD")
+        if (user == undefined) { user = "postgres" }
+        var store = new Raser.PostgresTileStore(PostgresTests.Url(), user, password)
+        store.EnsureSchema()
+        store.Clear()
+        return store
+    }
+
+    [Test "Kachel speichern und als räumliche Abfrage laden"]
+    undefined SaveLoad() {
+        if (PostgresTests.Url() == undefined) { return }
+        var store = PostgresTests.Open()
+        var tile = StoreSample.Make()
+        store.Save(tile)
+        store.Save(tile)                    // ein zweites Mal: dieselben Zeilen (Quellen sind Schlüssel)
+        Testing.Assert.IsTrue(store.Has(new Raser.TileKey(1469, 22284)))
+        Testing.Assert.AreEqual(1, store.Keys().Count)
+        var back = store.Load(new Raser.TileKey(1469, 22284))
+        Testing.Assert.AreEqual("innenstadt", back.data.quarter)
+        Testing.Assert.AreEqual(1, back.data.buildings.Count)
+        var b = back.data.buildings[0]
+        Testing.Assert.AreEqual("lod2:TEST1", b.source)
+        Testing.Assert.AreEqual(10.125, b.footprint[0])
+        Testing.Assert.AreEqual(40.75, b.footprint[7])
+        Testing.Assert.AreEqual(Raser.RoofType.Gable, b.roofType)
+        Testing.Assert.AreEqual(2, b.roofs.Count)
+        Testing.Assert.AreEqual(103.25, b.roofs[0].points[8])
+        Testing.Assert.AreEqual("Tanke", b.name)
+        Testing.Assert.AreEqual(1, back.data.roads.Count)
+        Testing.Assert.AreEqual(5.5, back.data.roads[0].width)
+        Testing.Assert.AreEqual(1, back.data.areas.Count)
+        Testing.Assert.AreEqual(1, back.data.pois.Count)
+        Testing.Assert.AreEqual(back.heights.At(100.0, 100.0), tile.heights.At(100.0, 100.0))
+        // Die Nachbarkachel im Osten sieht die Straße (sie reicht bis x = 300 m), aber nicht das Gebäude.
+        var east = new Raser.Tile(new Raser.TileKey(1470, 22284))
+        store.Save(east)
+        var e = store.Load(new Raser.TileKey(1470, 22284))
+        Testing.Assert.AreEqual(0, e.data.buildings.Count)
+        Testing.Assert.AreEqual(1, e.data.roads.Count)
+        Testing.Assert.AreEqual(-20.0 - 256.0, e.data.roads[0].points[0])
+        // Gleiche Daten, gleiche Chunks: die Kachel aus der Datenbank voxelisiert wie das Original (nach Quellen sortiert wie dort).
+        var a = new Raser.Voxelizer(StoreSample.Make(), new Raser.OverrideSet(), 1)
+        var c = new Raser.Voxelizer(store.Load(new Raser.TileKey(1469, 22284)), new Raser.OverrideSet(), 1)
+        var key = new Raser.ChunkKey(1469 * 20 + 1, 22284 * 20 + 2, 7)
+        Testing.Assert.AreEqual(a.Generate(key).ContentHash(), c.Generate(key).ContentHash())
+        store.Close()
+    }
+}

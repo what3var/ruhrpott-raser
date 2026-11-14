@@ -1,0 +1,195 @@
+// Raser.Store: der Zwischenlayer in PostGIS (Roadmap M1: "Schema des Zwischenlayers in PostGIS"), mit dem PostgreSQL-Treiber von fire (data.postgres).
+//
+// Gebäude, Straßen, Flächen und POIs liegen global mit absoluten Koordinaten (db/schema.sql); Save schreibt die Merkmale einer Kachel dazu (eine Quelle
+// ist ein Schlüssel: dasselbe Gebäude aus zwei Kacheln ist eine Zeile), Load fragt sie über das Rechteck der Kachel ab und rechnet sie kachel-lokal.
+// Die Reihenfolge ist die der Quellen (ORDER BY source) - deterministisch, aber eine andere als in den Kachel-Dateien des Imports.
+// Geometrien gehen als WKB hin und zurück (Raser.Wkb), also ohne Rundung über Text.
+#import "data.postgres"
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class PostgresTileStore : ITileStore {
+        Data.Connection db
+
+        construct(string url, string user, string password) {
+            this.db = new Data.Connection(url, new Data.Credentials(user, password))
+        }
+
+        // Legt Tabellen und Indizes an, wenn sie fehlen (db/schema.sql).
+        undefined EnsureSchema() { this.db.Execute(new Resource("../../db/schema.sql").Text()) }
+
+        // Löscht alle Merkmale und Kacheln (für Tests und einen neuen Import).
+        undefined Clear() { this.db.Execute("truncate tile, building, road, area, poi") }
+
+        undefined Close() { this.db.Close() }
+
+        bool Has(TileKey key) { return this.db.Scalar("select count(*) from tile where x = ? and y = ?", [key.x, key.y]) > 0 }
+
+        List<TileKey> Keys() {
+            var keys = new List<TileKey>()
+            foreach (row in this.db.Query("select x, y from tile order by y, x")) { keys.Add(new Raser.TileKey(row.Int("x"), row.Int("y"))) }
+            return keys
+        }
+
+        undefined Save(Tile tile) {
+            float e0 = tile.key.East
+            float n0 = tile.key.North
+            var d = tile.data
+            any heights = undefined
+            if (tile.heights != undefined) { heights = tile.heights.Encode() }
+            this.db.Execute("begin")
+            try {
+                this.db.Execute("insert into tile (x, y, format, quarter, mood, sources, heights) values (?, ?, ?, ?, ?, ?, ?) on conflict (x, y) do update set format = excluded.format, quarter = excluded.quarter, mood = excluded.mood, sources = excluded.sources, heights = excluded.heights, imported_at = now()",
+                    [tile.key.x, tile.key.y, d.format, d.quarter, d.mood, "\n".Join(d.sources), heights])
+                foreach (b in d.buildings) {
+                    any roofs = undefined
+                    if (b.roofs.Count > 0) { roofs = Raser.Wkb.MultiPolygonZ(Raser.PostgresTileStore.Shift(b.roofs, e0, n0)) }
+                    this.db.Execute("insert into building (id, source, footprint, ground, eaves, ridge, roof_type, roofs, function, name, levels, wall, wall_color, roof, roof_color) values (?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ?, ?, ?) on conflict (source) do update set footprint = excluded.footprint, ground = excluded.ground, eaves = excluded.eaves, ridge = excluded.ridge, roof_type = excluded.roof_type, roofs = excluded.roofs, function = excluded.function, name = excluded.name, levels = excluded.levels, wall = excluded.wall, wall_color = excluded.wall_color, roof = excluded.roof, roof_color = excluded.roof_color",
+                        [b.id, b.source, Raser.Wkb.Polygon(Raser.PostgresTileStore.Offset(b.footprint, e0, n0)), b.ground, b.eaves, b.ridge, b.roofType!int, roofs, b.function, b.name, b.levels, b.wall!int, b.wallColor, b.roof!int, b.roofColor])
+                }
+                foreach (r in d.roads) {
+                    this.db.Execute("insert into road (id, source, kind, line, width, surface, color, lanes, layer) values (?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?, ?, ?) on conflict (source) do update set kind = excluded.kind, line = excluded.line, width = excluded.width, surface = excluded.surface, color = excluded.color, lanes = excluded.lanes, layer = excluded.layer",
+                        [r.id, r.source, r.kind, Raser.Wkb.LineString(Raser.PostgresTileStore.Offset(r.points, e0, n0)), r.width, r.surface!int, r.color, r.lanes, r.layer])
+                }
+                foreach (a in d.areas) {
+                    this.db.Execute("insert into area (id, source, kind, ring, surface, color, priority) values (?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?) on conflict (source) do update set kind = excluded.kind, ring = excluded.ring, surface = excluded.surface, color = excluded.color, priority = excluded.priority",
+                        [a.id, a.source, a.kind, Raser.Wkb.Polygon(Raser.PostgresTileStore.Offset(a.ring, e0, n0)), a.surface!int, a.color, a.priority])
+                }
+                foreach (p in d.pois) {
+                    this.db.Execute("insert into poi (id, source, kind, name, position) values (?, ?, ?, ?, ST_GeomFromWKB(?, 25832)) on conflict (source) do update set kind = excluded.kind, name = excluded.name, position = excluded.position",
+                        [p.id, p.source, p.kind, p.name, Raser.Wkb.Point(p.x + e0, p.y + n0)])
+                }
+                this.db.Execute("commit")
+            } catch (Exception e) {
+                this.db.Execute("rollback")
+                throw e
+            }
+        }
+
+        Tile Load(TileKey key) {
+            var head = this.db.Rows("select format, quarter, mood, sources, heights from tile where x = ? and y = ?", [key.x, key.y])
+            if (head.Count == 0) { return undefined }
+            var tile = new Raser.Tile(new Raser.TileKey(key.x, key.y))
+            float e0 = key.East
+            float n0 = key.North
+            var row = head[0]
+            tile.data.format = row.Int("format")
+            tile.data.quarter = row.Text("quarter")
+            tile.data.mood = row.Text("mood")
+            string sources = row.Text("sources")
+            if (sources != undefined && sources != "") {
+                foreach (s in sources.Split("\n")) { tile.data.sources.Add(s) }
+            }
+            if (!row.IsNull("heights")) { tile.heights = Raser.HeightRaster.Decode(row.Bytes("heights")) }
+            // dasselbe Rechteck wie der Import (Region.Build): die Kachel mit 1 m Rand
+            float minX = e0 - 1.0
+            float minY = n0 - 1.0
+            float maxX = e0 + 257.0
+            float maxY = n0 + 257.0
+
+            foreach (r in this.db.Query("select id, source, ST_AsBinary(footprint, 'NDR') as fp, ground, eaves, ridge, roof_type, ST_AsBinary(roofs, 'NDR') as rf, function, name, levels, wall, wall_color, roof, roof_color from building where footprint && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [minX, minY, maxX, maxY])) {
+                var b = new Raser.Building()
+                b.id = r.Int("id")
+                b.source = r.Text("source")
+                b.footprint = Raser.PostgresTileStore.Offset(Raser.Wkb.ReadPolygon(r.Bytes("fp")), -e0, -n0)
+                b.ground = r.Float("ground")
+                b.eaves = r.Float("eaves")
+                b.ridge = r.Float("ridge")
+                b.roofType = r.Int("roof_type")!RoofType
+                if (!r.IsNull("rf")) {
+                    var faces = Raser.Wkb.ReadMultiPolygonZ(r.Bytes("rf"))
+                    foreach (f in faces) {
+                        var face = new Raser.RoofFace()
+                        face.points = Raser.PostgresTileStore.Offset3(f.points, -e0, -n0)
+                        b.roofs.Add(take face)
+                    }
+                }
+                b.function = r.Text("function")
+                b.name = r.Text("name")
+                b.levels = r.Int("levels")
+                b.wall = r.Int("wall")!Material
+                b.wallColor = r.Int("wall_color")
+                b.roof = r.Int("roof")!Material
+                b.roofColor = r.Int("roof_color")
+                tile.data.buildings.Add(take b)
+            }
+
+            // Straßen: wie der Import - das Rechteck der Linie um die halbe Breite vergrößert muss die Kachel berühren
+            foreach (r in this.db.Query("select id, source, kind, ST_AsBinary(line, 'NDR') as ln, width, surface, color, lanes, layer from road where line && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [minX - 50.0, minY - 50.0, maxX + 50.0, maxY + 50.0])) {
+                float width = r.Float("width")
+                var points = Raser.Wkb.ReadLineString(r.Bytes("ln"))
+                var box = Raser.Box2.Of(points)
+                box.Grow(width / 2.0)
+                if (!box.Overlaps(minX, minY, maxX, maxY)) { continue }
+                var road = new Raser.Road()
+                road.id = r.Int("id")
+                road.source = r.Text("source")
+                road.kind = r.Text("kind")
+                road.points = Raser.PostgresTileStore.Offset(points, -e0, -n0)
+                road.width = width
+                road.surface = r.Int("surface")!Material
+                road.color = r.Int("color")
+                road.lanes = r.Int("lanes")
+                road.layer = r.Int("layer")
+                tile.data.roads.Add(take road)
+            }
+
+            foreach (r in this.db.Query("select id, source, kind, ST_AsBinary(ring, 'NDR') as rg, surface, color, priority from area where ring && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [minX, minY, maxX, maxY])) {
+                var a = new Raser.Area()
+                a.id = r.Int("id")
+                a.source = r.Text("source")
+                a.kind = r.Text("kind")
+                a.ring = Raser.PostgresTileStore.Offset(Raser.Wkb.ReadPolygon(r.Bytes("rg")), -e0, -n0)
+                a.surface = r.Int("surface")!Material
+                a.color = r.Int("color")
+                a.priority = r.Int("priority")
+                tile.data.areas.Add(take a)
+            }
+
+            foreach (r in this.db.Query("select id, source, kind, name, ST_AsBinary(position, 'NDR') as pos from poi where position && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [e0, n0, e0 + 256.0, n0 + 256.0])) {
+                var pt = Raser.Wkb.ReadPoint(r.Bytes("pos"))
+                if (pt[0] < e0 || pt[1] < n0 || pt[0] >= e0 + 256.0 || pt[1] >= n0 + 256.0) { continue }
+                var poi = new Raser.Poi()
+                poi.id = r.Int("id")
+                poi.source = r.Text("source")
+                poi.kind = r.Text("kind")
+                poi.name = r.Text("name")
+                poi.x = pt[0] - e0
+                poi.y = pt[1] - n0
+                tile.data.pois.Add(take poi)
+            }
+            return tile
+        }
+
+        // Punkte (x, y, ...) verschoben.
+        static float[] Offset(float points[], defined float dx, defined float dy) {
+            float result[] = new float[points.length]
+            for (int i = 0; i + 1 < points.length; i = i + 2) {
+                result[i] = points[i] + dx
+                result[i + 1] = points[i + 1] + dy
+            }
+            return result
+        }
+
+        static float[] Offset3(float points[], defined float dx, defined float dy) {
+            float result[] = new float[points.length]
+            for (int i = 0; i + 2 < points.length; i = i + 3) {
+                result[i] = points[i] + dx
+                result[i + 1] = points[i + 1] + dy
+                result[i + 2] = points[i + 2]
+            }
+            return result
+        }
+
+        static List<RoofFace> Shift(List<RoofFace> faces, defined float dx, defined float dy) {
+            var result = new List<RoofFace>()
+            foreach (f in faces) {
+                var face = new Raser.RoofFace()
+                face.points = Raser.PostgresTileStore.Offset3(f.points, dx, dy)
+                result.Add(take face)
+            }
+            return result
+        }
+    }
+}

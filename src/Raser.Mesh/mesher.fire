@@ -271,10 +271,10 @@ namespace Raser {
             float y0 = y * 0.2
             float y1 = y0 + 0.2
             float z0 = z * 0.2
-            float h0 = z0 + Raser.Shape.Corner(shape, 0) * 0.05
-            float h1 = z0 + Raser.Shape.Corner(shape, 1) * 0.05
-            float h2 = z0 + Raser.Shape.Corner(shape, 2) * 0.05
-            float h3 = z0 + Raser.Shape.Corner(shape, 3) * 0.05
+            float h0 = z0 + Raser.Shape.CornerMeters(shape, 0)
+            float h1 = z0 + Raser.Shape.CornerMeters(shape, 1)
+            float h2 = z0 + Raser.Shape.CornerMeters(shape, 2)
+            float h3 = z0 + Raser.Shape.CornerMeters(shape, 3)
             // Oberseite: Normale aus den Diagonalen
             float nx = ((h0 + h3) - (h1 + h2)) * 0.5 / 0.2
             float ny = ((h0 + h1) - (h2 + h3)) * 0.5 / 0.2

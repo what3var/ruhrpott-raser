@@ -139,7 +139,7 @@ namespace Raser {
 
         static undefined EncodeTable(ByteWriter w, Dictionary<int, int> table) {
             var keys = table.Keys
-            Raser.Sorting.Ints(keys)
+            keys.Sort()
             w.Varint(keys.Count)
             int last = 0
             foreach (k in keys) {
@@ -196,7 +196,7 @@ namespace Raser {
                 h = Raser.Fnv.AddBytes(h, this.colors)
             }
             var keys = this.shapes.Keys
-            Raser.Sorting.Ints(keys)
+            keys.Sort()
             foreach (k in keys) {
                 h = Raser.Fnv.AddInt(h, k)
                 h = Raser.Fnv.AddByte(h, this.shapes[k])

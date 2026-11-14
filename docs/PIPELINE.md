@@ -16,6 +16,7 @@ data/raw/osm/*.osm   ─┘                    (Zwischenlayer)               ▲
 | `src/Raser.Core` | Bibliothek (`raser.core`) | Raster und Schlüssel (`Grid`, `TileKey`, `ChunkKey`), Voxel (`Material`, `Materials`, `Palette`, `Shape`), `Chunk` mit Kodierung, globale IDs, `ByteWriter`/`ByteReader`, FNV-1a, Sortieren |
 | `src/Raser.World` | Bibliothek (`raser.world`) | Zwischenlayer (`Tile`, `TileData`, `Building`, `Road`, `Area`, `Poi`, `HeightRaster`), Geometrie, Override-Layer, `Voxelizer`, `FileTileStore`, `TileGenerator` |
 | `src/Raser.Import` | Bibliothek (`raser.import`) | XML-Pull-Parser, GeoTIFF (LZW, Float32), WGS84 → UTM 32, CityGML LoD2, OSM-XML, `Region` (schneidet alles in Kacheln) |
+| `src/Raser.Store` | Bibliothek (`raser.store`) | der Zwischenlayer in PostGIS (`data.postgres` von fire): Merkmale global mit Geometrie (WKB, verlustfrei), eine Kachel ist eine räumliche Abfrage |
 | `src/Raser.Mesh` | Bibliothek (`raser.mesh`) | Chunk-Meshing: Greedy Meshing für volle Voxel, Höhen-Schnitte als schräge Oberseiten und Trapez-Seiten, Glas und Wasser in einem eigenen Teil |
 | `src/Raser.Viewer` | Programm | Betrachter mit scene3d: lädt und vernetzt die Chunk-Säulen um einen Punkt, fliegende Kamera (W/A/S/D, Q/E, Pfeile), `--shot bild.png` rendert ohne Fenster |
 | `src/Raser.Tool` | Programm | `raser import`, `voxelize`, `export png`, `export obj`, `info` |
@@ -34,11 +35,25 @@ baut `src/Raser.Tool/bin/linux-rel/Raser.Tool`. Gemessen an der Testregion (Boch
 
 | Schritt | Dauer (nativ) |
 |---|---|
-| Import (4 DGM1-Kacheln, 4 LoD2-Kacheln mit rund 10.000 Gebäuden und Gebäudeteilen, 16 OSM-Ausschnitte) | rund 40 s |
+| Import (4 DGM1-Kacheln, 4 LoD2-Kacheln mit rund 10.000 Gebäuden und Gebäudeteilen, 16 OSM-Ausschnitte) | rund 32 s (in PostGIS rund 80 s) |
 | Voxelisierung je Kachel (rund 1.200 Chunks, 155 Mio. Voxel) | rund 47 s (49 Kacheln: 31 min, 193 MB Chunks) |
 | Draufsicht je Kachel | rund 24 s |
 
 Die Zeit der Voxelisierung geht fast ganz in die Elementzugriffe auf Byte-Puffer (docs/FIRE.md).
+
+## PostGIS
+
+Mit `--db postgres://host:5432/raser` (Benutzer `--db-user`, Standard `postgres`; Passwort in `RASER_DB_PASSWORD`) liest und schreibt jeder Befehl den
+Zwischenlayer in PostGIS statt in `world/tiles`; die Chunks bleiben Dateien unter `--world`. Das Schema (`db/schema.sql`) legt der Store selbst an.
+
+- Gebäude, Straßen, Flächen und POIs liegen **global** mit absoluten Koordinaten und GiST-Index; die Quelle (`lod2:...`, `osm:way/...`) ist der Schlüssel,
+  dasselbe Gebäude aus zwei Kacheln ist eine Zeile. Eine Kachel ist die Abfrage über ihr Rechteck mit 1 m Rand (`&&` mit `ST_MakeEnvelope`).
+- Geometrien gehen als WKB hin und zurück (`Raser.Wkb`, mit den typisierten Pufferzugriffen von fire): keine Rundung über Text.
+- Testregion: 49 Kacheln, 9.165 Gebäude, 3.963 Straßen, 575 Flächen, 3.396 POIs, 30 MB; Import mit Datenbank rund 80 s (Dateien: 32 s).
+- Die Voxelisierung aus PostGIS ergibt dieselben Chunks wie aus den Dateien (an der Rathaus-Kachel geprüft: 1.227 von 1.227 byte-gleich). Dafür hängt sie
+  seit Generator 3 nicht mehr von der Reihenfolge der Merkmale ab: bei Gleichstand gewinnt die kleinere ID.
+- Tests gegen eine Datenbank: `RASER_TEST_POSTGRES=postgres://127.0.0.1:5432/raser_test RASER_TEST_POSTGRES_PASSWORD=... forge test src/Raser.Store/Raser.Store.fireproj`
+  (eine leere Datenbank mit PostGIS; ihre Tabellen werden geleert).
 
 ## Koordinaten
 
@@ -103,6 +118,5 @@ sind das 273 Objekte mit rund 1 Mio. Dreiecken; ein Bild von 960 × 600 braucht 
 
 ## Offen (für M1 und danach)
 
-- PostGIS: Schema steht in `db/schema.sql`; der Store kommt, wenn fire einen PostgreSQL-Treiber hat (die Datenschicht `data` in fire hat SQLite, MySQL, SQL Server).
 - Brücken und Tunnel (`layer`), Gebäudeteile über Durchfahrten, Fassaden-Grammatik (M2), Viertel-Typen aus den Daten.
 - Kacheln am Rand der Region kommen erst mit den Daten der Nachbarregion.

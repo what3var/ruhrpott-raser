@@ -33,7 +33,7 @@ namespace Raser {
             if (this.set != undefined) {
                 var keys = new List<string>()
                 foreach (k in this.set.Keys()) { keys.Add(k) }
-                Raser.Sorting.Texts(keys)
+                keys.Sort()
                 foreach (k in keys) { s = s + ";" + k + "=" + Json.Serialize(this.set.Get(k)) }
             }
             return s
@@ -90,7 +90,7 @@ namespace Raser {
             if (list.Count == 0) { return 0 }
             var texts = new List<string>()
             foreach (o in list) { texts.Add(o.Canonical()) }
-            Raser.Sorting.Texts(texts)
+            texts.Sort()
             int h = Raser.Fnv.Start()
             foreach (t in texts) { h = Raser.Fnv.AddText(h, t) }
             return h

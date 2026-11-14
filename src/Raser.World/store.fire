@@ -34,6 +34,7 @@ namespace Raser {
 
     class FileTileStore : ITileStore {
         string root
+        ITileStore source       // wenn gesetzt: der Zwischenlayer kommt von dort (z. B. PostGIS); die Chunks bleiben Dateien unter root
 
         construct(string root) {
             this.root = root
@@ -44,9 +45,13 @@ namespace Raser {
 
         string ChunkFolder(TileKey key) { return IO.Path.Combine(this.root, "chunks", key.ToString()) }
 
-        bool Has(TileKey key) { return IO.File.Exists(this.TilePath(key, ".json")) }
+        bool Has(TileKey key) {
+            if (this.source != undefined) { return this.source.Has(key) }
+            return IO.File.Exists(this.TilePath(key, ".json"))
+        }
 
         Tile Load(TileKey key) {
+            if (this.source != undefined) { return this.source.Load(key) }
             string path = this.TilePath(key, ".json")
             if (!IO.File.Exists(path)) { return undefined }
             var tile = new Raser.Tile(new Raser.TileKey(key.x, key.y))
@@ -57,6 +62,10 @@ namespace Raser {
         }
 
         undefined Save(Tile tile) {
+            if (this.source != undefined) {
+                this.source.Save(tile)
+                return
+            }
             var options = new JsonOptions(true)
             options.typeNames = false
             IO.File.WriteAllText(this.TilePath(tile.key, ".json"), Json.Serialize(tile.data, options))
@@ -64,6 +73,7 @@ namespace Raser {
         }
 
         List<TileKey> Keys() {
+            if (this.source != undefined) { return this.source.Keys() }
             var keys = new List<TileKey>()
             var files = IO.Directory.GetFiles(IO.Path.Combine(this.root, "tiles"), "*.json")
             foreach (f in files) {

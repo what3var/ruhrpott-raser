@@ -57,18 +57,19 @@ namespace Raser {
                 if (c != 60) {
                     // Text bis zum nächsten '<'.
                     int start = this.pos
+                    int end = this.data.IndexOf(60, start)
+                    if (end < 0) { end = this.length }
+                    this.pos = end
                     bool blank = true
-                    bool amp = false
-                    while (this.pos < this.length) {
-                        int d = this.data[this.pos]
-                        if (d == 60) { break }
-                        if (d == 38) { amp = true }
-                        if (blank && !Raser.XmlReader.IsSpace(d)) { blank = false }
-                        this.pos++
+                    for (int p = start; p < end; p++) {
+                        if (!Raser.XmlReader.IsSpace(this.data[p])) {
+                            blank = false
+                            break
+                        }
                     }
                     if (blank) { continue }
-                    this.text = this.Slice(start, this.pos)
-                    if (amp) { this.text = Raser.XmlReader.Unescape(this.text) }
+                    this.text = this.Slice(start, end)
+                    if (this.text.IndexOf('&') >= 0) { this.text = Raser.XmlReader.Unescape(this.text) }
                     this.kind = Raser.XmlEvent.Text
                     return true
                 }
