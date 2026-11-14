@@ -11,6 +11,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Override-Layer + Generator-Versionierung pro Kachel (von Anfang an, nicht nachrüsten)
 - [x] Export/Viewer zur Kontrolle (noch ohne eigenen Renderer): Draufsicht als PNG, Ausschnitte als OBJ
 - [ ] Gegencheck mit Luftbildern (NRW DOP, Orthofotos): Untergründe genauer bestimmen (Rasen, Pflaster, Asphalt, Schotter, Wasser - wo OSM nichts oder zu grob sagt) und fehlende Gebäude finden (im Bild ein Dach, in LoD2 nichts: z. B. Neubauten) - daraus Vorschläge als Patches im Override-Layer, nicht direkt in den Rohdaten; mit nDOM/DGM-Differenz für die Höhe
+- [ ] Parkhäuser erkennen und einbauen (OSM `amenity=parking` + `parking=multi-storey`, LoD2-Funktion, spätestens über den Luftbild-Abgleich): offene Geschosse mit Stützen, Rampen, Brüstungen, Einfahrt - befahrbar
 
 ## M2: Renderer
 - [x] Chunk-Meshing inkl. Höhen-Schnitten (`Raser.Mesh`: Greedy Meshing, schräge Oberseiten, Trapez-Seiten, Glas/Wasser getrennt)
@@ -22,6 +23,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Keller aus OSM (`building:levels:underground`), Graben und Absenken im Baumodus
 - [ ] Gemeinsame Vorlagen für wiederkehrende Gebäude (gleicher Grundriss und gleiche Dachform nach Drehung/Verschiebung): eine Außenhülle für alle, nur Abweichungen einzeln
 - [ ] Vegetation und Stadtmöbel als grobe 3D-Pixelgrafik (Voxel-Modelle wie in Minecraft gebaut): Bäume prozedural in Varianten, Bänke, Laternen, Papierkörbe; Standorte aus OSM, Wälder und Parks deterministisch bestreut; Modelle geteilt
+- [ ] Straßenraum wie in Deutschland: Bordsteinkanten mit Höhenunterschied (Gehweg über der Fahrbahn, abgesenkt an Einfahrten und Übergängen), Laternen entlang der Straßen, Straßenschilder (Verkehrszeichen aus OSM `traffic_sign` und an Kreuzungen, Straßennamensschilder, Ortstafeln)
+- [ ] Gehwege nach Bauzeit erkennen und bauen (aus OSM `sidewalk`/`surface`, Straßentyp, Baujahr des Viertels, später Luftbild): alt geteert nur mit Bordstein und Höhenunterschied; grobes Pflaster der 80er/90er; heute schmale Pflastersteine, bei genug Breite mit rotem Radweg (`cycleway=track`)
 - [ ] Fassaden-Grammatik + parametrische Materialien
 - [ ] Fenster ab Stufe 1 als Fassaden-Textur (gleiches Raster wie die Voxel-Fenster, 1 Texel je Voxel); nachts einzelne Fenster als Lichtquellen
 - [ ] Ausstattung der Gebäude, zufällig aber stabil (aus ID und Seed): vorgerenderte Innenansichten hinter den Fenstern für das schnelle Vorbeifahren, detaillierte Ausstattung in der Nähe und beim Betreten
