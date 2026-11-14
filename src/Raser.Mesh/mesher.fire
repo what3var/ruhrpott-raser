@@ -151,6 +151,11 @@ namespace Raser {
             // ganz verschüttet: ein voller Chunk zwischen vollen Nachbarn hat keine sichtbare Fläche
             if (Raser.Mesher.Solid(this.center) && Raser.Mesher.Solid(this.west) && Raser.Mesher.Solid(this.east) && Raser.Mesher.Solid(this.south) && Raser.Mesher.Solid(this.north) && Raser.Mesher.Solid(this.below) && Raser.Mesher.Solid(this.above)) { return mesh }
             int mask[4096]
+            // Direkt auf die Puffer des Chunks; die geschnittenen Voxel einmal als Byte-Karte (statt je Voxel im Dictionary nachzuschlagen).
+            byte mats[] = this.center.materials
+            byte cols[] = this.center.colors
+            byte cut[262144]
+            foreach (pair in this.center.shapes) { cut[pair.Key] = 1 }
             // Richtungen: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z
             for (int dir = 0; dir < 6; dir++) {
                 int axis = dir / 2
@@ -176,17 +181,23 @@ namespace Raser {
                                 z = s
                             }
                             int value = 0
-                            int m = this.center.MaterialAt(x, y, z)
-                            if (m != 0) {
-                                bool full = Raser.Shape.IsFull(this.center.ShapeAt(x, y, z))
-                                // geschnittene Voxel: nur die Unterseite läuft hier mit
-                                if (full || dir == 4) {
-                                    int nx = x
-                                    int ny = y
-                                    int nz = z
-                                    if (axis == 0) { nx = x + sign } else if (axis == 1) { ny = y + sign } else { nz = z + sign }
-                                    if (!this.Hides(nx, ny, nz, m, dir == 5)) { value = 1 + this.center.ColorAt(x, y, z) + (m << 8) }
+                            int i = x + (y << 6) + (z << 12)
+                            int m = mats[i]
+                            // geschnittene Voxel: nur die Unterseite läuft hier mit
+                            if (m != 0 && (cut[i] == 0 || dir == 4)) {
+                                int nx = x
+                                int ny = y
+                                int nz = z
+                                if (axis == 0) { nx = x + sign } else if (axis == 1) { ny = y + sign } else { nz = z + sign }
+                                bool hidden = false
+                                if (nx >= 0 && ny >= 0 && nz >= 0 && nx < 64 && ny < 64 && nz < 64) {
+                                    int ni = nx + (ny << 6) + (nz << 12)
+                                    int nm = mats[ni]
+                                    hidden = nm != 0 && (dir == 5 || cut[ni] == 0) && (!Raser.Mesher.IsTransparent(nm) || nm == m)
+                                } else {
+                                    hidden = this.Hides(nx, ny, nz, m, dir == 5)
                                 }
+                                if (!hidden) { value = 1 + cols[i] + (m << 8) }
                             }
                             mask[v * 64 + u] = value
                             if (value != 0) { found = true }

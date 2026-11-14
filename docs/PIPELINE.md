@@ -112,7 +112,7 @@ src/Raser.Viewer/bin/linux-rel/Raser.Viewer --world world --at 376130,5704900 --
 ```
 
 Je Chunk und Farbe wird ein scene3d-Modell aus `Model.FromArrays` gebaut (Anker auf der unteren Ecke, damit die Lage stimmt). Um das Rathaus (Radius 2, 5 × 5 Chunk-Säulen)
-sind das 273 Objekte mit rund 1 Mio. Dreiecken; ein Bild von 960 × 600 braucht 240 ms im Software-Renderer, das Vernetzen beim Laden rund 50 s.
+sind das 273 Objekte mit rund 1 Mio. Dreiecken; ein Bild von 960 × 600 braucht rund 250 ms im Software-Renderer, Laden und Vernetzen rund 10 s.
 
 ![Betrachter](images/viewer-rathaus.png)
 
