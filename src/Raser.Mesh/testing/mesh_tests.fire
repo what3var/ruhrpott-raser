@@ -65,6 +65,30 @@ class MeshTests {
         Testing.Assert.AreEqual(6 + 6, again.opaque.Count)       // auch der Ziegel zeigt seine Unterseite: der Schnitt darunter verdeckt sie nicht
     }
 
+    [Test "Gleiche Schnitte werden zu einer Fläche, verdeckte Seiten fallen weg"]
+    undefined MergedSlopes() {
+        var c = MeshTests.Empty()
+        c.Fill(0, 0, 0, 9, 9, 4, Raser.Material.Soil!int, Raser.Palette.Soil)
+        // eine flach geschnittene Schicht (alle Ecken auf 2/4) über 10 x 10 Voxeln
+        for (int y = 0; y < 10; y++) {
+            for (int x = 0; x < 10; x++) { c.Set(x, y, 5, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(2, 2, 2, 2)) }
+        }
+        var mesh = new Raser.Mesher(c).Build()
+        // Erde: Unterseite + 4 Seiten (die Oberseite verdeckt der Schnitt); Gras: 1 Oberseite + 40 Außenseiten (innen verdeckt)
+        Testing.Assert.AreEqual(1 + 4 + 1 + 40, mesh.opaque.Count)
+        // eine Rampe, die in x steigt (1/4 -> 2/4) und in y gleich bleibt: je Spalte eine Fläche entlang y
+        var r = MeshTests.Empty()
+        for (int y = 0; y < 10; y++) {
+            for (int x = 0; x < 10; x++) { r.Set(x, y, 5, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 2, 1)) }
+        }
+        var rm = new Raser.Mesher(r).Build()
+        int tops = 0
+        for (int q = 0; q < rm.opaque.Count; q++) {
+            if (rm.opaque.normals[q * 3 + 2] > 0.5) { tops++ }
+        }
+        Testing.Assert.AreEqual(10, tops)              // 10 schräge Streifen, je einer pro Spalte
+    }
+
     [Test "Glas: eigener Teil, keine Flächen zwischen Glas"]
     undefined Glass() {
         var c = MeshTests.Empty()

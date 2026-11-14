@@ -114,6 +114,24 @@ src/Raser.Viewer/bin/linux-rel/Raser.Viewer --world world --at 376130,5704900 --
 Je Chunk und Farbe wird ein scene3d-Modell aus `Model.FromArrays` gebaut (Anker auf der unteren Ecke, damit die Lage stimmt). Um das Rathaus (Radius 2, 5 × 5 Chunk-Säulen)
 sind das 273 Objekte mit rund 1 Mio. Dreiecken; ein Bild von 960 × 600 braucht rund 250 ms im Software-Renderer, Laden und Vernetzen rund 10 s.
 
+**Größe der Netze.** Geschnittene Voxel werden zusammengefasst: gleiche Oberseiten einer Schicht zu einem Viereck, solange die Fläche eben bleibt
+(flach: in beide Richtungen, Rampen entlang ihrer Höhenlinie), und die Trapez-Seite zwischen zwei geschnittenen Voxeln fällt weg, wenn der Nachbar
+an der gemeinsamen Kante mindestens so hoch ist. Gemessen an drei Kacheln (jede dritte Chunk-Säule, hochgerechnet):
+
+| | vorher | jetzt |
+|---|---|---|
+| Vierecke je Kachel | rund 8 Mio. | 1,1 - 1,6 Mio. |
+| kompakt gespeichert (12 × uint16 + Farbe + Material je Viereck, Deflate) | rund 47 MB | 10 - 14 MB |
+| Rathaus, Radius 2 (Dreiecke / ein Bild 960 × 600) | 1.003.432 / 270 ms | 108.832 / 39 ms |
+| Dächer östlich davon, Radius 3 | 2.208.894 / 651 ms | 588.678 / 219 ms |
+
+Was bleibt (Innenstadt-Kachel): Gebäudeseiten rund 570.000 (Fensterreihen aus Glas-Voxeln zerschneiden die Wände, innen wie außen), Gebäude-Unterseiten
+(Decken) rund 90.000, Gelände schräg oben 125.000 - 285.000 und Gelände-Seiten 120.000 - 320.000 (diagonale Formen, Stufen zwischen Schichten).
+Hochgerechnet auf NRW (34.110 km²) wären das noch rund 5 - 7 TB Netze - gespeichert wird also nur um den Spieler herum. Die Chunks selbst brauchen
+rund 1,3 MB je Kachel (20 MB je km², NRW grob 700 GB, eher weniger außerhalb der Städte).
+
+![Dächer](images/viewer-dächer.png)
+
 **Nachladen.** Geladen wird um den Punkt, auf den die Kamera am Boden blickt (höchstens 150 m voraus), in Ringen um seine Chunk-Säule. Lesen,
 Vernetzen und das Bauen der Arrays für scene3d laufen in Worker-Threads (`--workers`, Standard 3; 0: im Hauptprogramm): das Hauptprogramm schickt die
 nächsten fehlenden Säulen über einen `Channel` (höchstens zwei je Worker unterwegs), übernimmt je Bild höchstens `--budget` fertige Säulen (Ergebnisse,

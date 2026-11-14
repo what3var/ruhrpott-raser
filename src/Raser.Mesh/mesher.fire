@@ -235,17 +235,8 @@ namespace Raser {
                     if (found) { this.Greedy(mesh, mask, axis, sign, s) }
                 }
             }
-            // die schrägen Oberseiten und Trapez-Seiten der geschnittenen Voxel
-            foreach (pair in this.center.shapes) {
-                int i = pair.Key
-                int shape = pair.Value
-                int x = i & 63
-                int y = (i >> 6) & 63
-                int z = i >> 12
-                int m = this.center.MaterialAt(x, y, z)
-                if (m == 0) { continue }
-                this.Sloped(mesh, x, y, z, m, this.center.ColorAt(x, y, z), shape)
-            }
+            // die schrägen Oberseiten (je Schicht zusammengefasst) und die Trapez-Seiten der geschnittenen Voxel
+            this.SlopedFaces(mesh, mats, cols, cut, cutsPerLayer)
             return mesh
         }
 
@@ -302,29 +293,122 @@ namespace Raser {
             }
         }
 
-        // Oberseite und Seiten eines geschnittenen Voxels.
-        undefined Sloped(ChunkMesh mesh, defined int x, defined int y, defined int z, defined int material, defined int color, defined int shape) {
+        // Die geschnittenen Voxel Schicht für Schicht: die Seiten je Voxel, die Oberseiten zusammengefasst (GreedyTops).
+        undefined SlopedFaces(ChunkMesh mesh, byte mats[], byte cols[], byte cut[], int cutsPerLayer[]) {
+            int top[4096]
+            for (int z = 0; z < 64; z++) {
+                if (cutsPerLayer[z] == 0) { continue }
+                for (int k = 0; k < 4096; k++) { top[k] = 0 }
+                for (int k = 0; k < 4096; k++) {
+                    int i = k + (z << 12)
+                    if (cut[i] == 0) { continue }
+                    int m = mats[i]
+                    if (m == 0) { continue }
+                    int x = k & 63
+                    int y = k >> 6
+                    int shape = this.center.ShapeAt(x, y, z)
+                    top[k] = 1 + shape + (cols[i] << 8) + (m << 16)
+                    this.SlopedSides(mesh, x, y, z, m, cols[i], shape)
+                }
+                this.GreedyTops(mesh, top, z)
+            }
+        }
+
+        // Fasst die Oberseiten einer Schicht zu Rechtecken zusammen, solange die Fläche eben bleibt: gleiche Form, Farbe und Material, und
+        // eine Form, die in der Richtung des Zusammenfassens nicht steigt (flach: in beide Richtungen; steigt sie nur in x: entlang y; nur in y:
+        // entlang x; schräg in beide: einzeln). Weil Nachbarn ihre Ecken teilen, ist eine Reihe gleicher Formen dann eine durchgehende Ebene.
+        undefined GreedyTops(ChunkMesh mesh, int top[], defined int z) {
+            float z0 = z * 0.2
+            for (int v = 0; v < 64; v++) {
+                int u = 0
+                while (u < 64) {
+                    int value = top[v * 64 + u]
+                    if (value == 0) {
+                        u++
+                        continue
+                    }
+                    int shape = (value - 1) & 255
+                    int color = ((value - 1) >> 8) & 255
+                    int material = (value - 1) >> 16
+                    int c0 = Raser.Shape.Corner(shape, 0)
+                    int c1 = Raser.Shape.Corner(shape, 1)
+                    int c2 = Raser.Shape.Corner(shape, 2)
+                    int c3 = Raser.Shape.Corner(shape, 3)
+                    bool alongX = c0 == c1 && c3 == c2
+                    bool alongY = c0 == c3 && c1 == c2
+                    int w = 1
+                    if (alongX) {
+                        while (u + w < 64 && top[v * 64 + u + w] == value) { w++ }
+                    }
+                    int h = 1
+                    if (alongY) {
+                        bool grow = true
+                        while (v + h < 64 && grow) {
+                            for (int k = 0; k < w; k++) {
+                                if (top[(v + h) * 64 + u + k] != value) {
+                                    grow = false
+                                    break
+                                }
+                            }
+                            if (grow) { h++ }
+                        }
+                    }
+                    for (int dv = 0; dv < h; dv++) {
+                        for (int k = 0; k < w; k++) { top[(v + dv) * 64 + u + k] = 0 }
+                    }
+                    var part = mesh.opaque
+                    if (Raser.Mesher.IsTransparent(material)) { part = mesh.transparent }
+                    float x0 = u * 0.2
+                    float x1 = (u + w) * 0.2
+                    float y0 = v * 0.2
+                    float y1 = (v + h) * 0.2
+                    float h0 = z0 + c0 * 0.05
+                    float h1 = z0 + c1 * 0.05
+                    float h2 = z0 + c2 * 0.05
+                    float h3 = z0 + c3 * 0.05
+                    // Normale aus der Neigung eines Voxels (die Ebene ist dieselbe)
+                    float nx = ((c0 + c3) - (c1 + c2)) * 0.05 * 0.5 / 0.2
+                    float ny = ((c0 + c1) - (c2 + c3)) * 0.05 * 0.5 / 0.2
+                    float len = Math.Sqrt(nx * nx + ny * ny + 1.0)
+                    part.Quad(x0, y0, h0, x1, y0, h1, x1, y1, h2, x0, y1, h3, nx / len, ny / len, 1.0 / len, color, material)
+                    u = u + w
+                }
+            }
+        }
+
+        // Verdeckt der Nachbar (nx, ny, nz) die Seite eines geschnittenen Voxels, deren Oberkante die Viertel a und b hat? Ein voller
+        // undurchsichtiger Nachbar immer; ein geschnittener, wenn seine Kante dort (seine Ecken ca, cb) mindestens so hoch ist.
+        defined bool HidesSide(defined int nx, defined int ny, defined int nz, defined int material, defined int a, defined int b, defined int ca, defined int cb) {
+            int m = this.MaterialAt(nx, ny, nz)
+            if (m == 0) { return false }
+            if (Raser.Mesher.IsTransparent(m) && m != material) { return false }
+            int ns = this.ShapeAt(nx, ny, nz)
+            if (Raser.Shape.IsFull(ns)) { return true }
+            return Raser.Shape.Corner(ns, ca) >= a && Raser.Shape.Corner(ns, cb) >= b
+        }
+
+        // Die Trapez-Seiten eines geschnittenen Voxels (bis zu seinen Eckhöhen), wo der Nachbar sie nicht verdeckt.
+        undefined SlopedSides(ChunkMesh mesh, defined int x, defined int y, defined int z, defined int material, defined int color, defined int shape) {
             var part = mesh.opaque
             if (Raser.Mesher.IsTransparent(material)) { part = mesh.transparent }
+            int c0 = Raser.Shape.Corner(shape, 0)
+            int c1 = Raser.Shape.Corner(shape, 1)
+            int c2 = Raser.Shape.Corner(shape, 2)
+            int c3 = Raser.Shape.Corner(shape, 3)
             float x0 = x * 0.2
             float x1 = x0 + 0.2
             float y0 = y * 0.2
             float y1 = y0 + 0.2
             float z0 = z * 0.2
-            float h0 = z0 + Raser.Shape.CornerMeters(shape, 0)
-            float h1 = z0 + Raser.Shape.CornerMeters(shape, 1)
-            float h2 = z0 + Raser.Shape.CornerMeters(shape, 2)
-            float h3 = z0 + Raser.Shape.CornerMeters(shape, 3)
-            // Oberseite: Normale aus den Diagonalen
-            float nx = ((h0 + h3) - (h1 + h2)) * 0.5 / 0.2
-            float ny = ((h0 + h1) - (h2 + h3)) * 0.5 / 0.2
-            float len = Math.Sqrt(nx * nx + ny * ny + 1.0)
-            part.Quad(x0, y0, h0, x1, y0, h1, x1, y1, h2, x0, y1, h3, nx / len, ny / len, 1.0 / len, color, material)
-            // Seiten
-            if (!this.Hides(x - 1, y, z, material)) { part.Quad(x0, y1, z0, x0, y0, z0, x0, y0, h0, x0, y1, h3, -1.0, 0.0, 0.0, color, material) }
-            if (!this.Hides(x + 1, y, z, material)) { part.Quad(x1, y0, z0, x1, y1, z0, x1, y1, h2, x1, y0, h1, 1.0, 0.0, 0.0, color, material) }
-            if (!this.Hides(x, y - 1, z, material)) { part.Quad(x0, y0, z0, x1, y0, z0, x1, y0, h1, x0, y0, h0, 0.0, -1.0, 0.0, color, material) }
-            if (!this.Hides(x, y + 1, z, material)) { part.Quad(x1, y1, z0, x0, y1, z0, x0, y1, h3, x1, y1, h2, 0.0, 1.0, 0.0, color, material) }
+            float h0 = z0 + c0 * 0.05
+            float h1 = z0 + c1 * 0.05
+            float h2 = z0 + c2 * 0.05
+            float h3 = z0 + c3 * 0.05
+            // Ecken: 0 = (x0, y0), 1 = (x1, y0), 2 = (x1, y1), 3 = (x0, y1); der Nachbar teilt die gegenüberliegenden
+            if (!this.HidesSide(x - 1, y, z, material, c0, c3, 1, 2)) { part.Quad(x0, y1, z0, x0, y0, z0, x0, y0, h0, x0, y1, h3, -1.0, 0.0, 0.0, color, material) }
+            if (!this.HidesSide(x + 1, y, z, material, c1, c2, 0, 3)) { part.Quad(x1, y0, z0, x1, y1, z0, x1, y1, h2, x1, y0, h1, 1.0, 0.0, 0.0, color, material) }
+            if (!this.HidesSide(x, y - 1, z, material, c0, c1, 3, 2)) { part.Quad(x0, y0, z0, x1, y0, z0, x1, y0, h1, x0, y0, h0, 0.0, -1.0, 0.0, color, material) }
+            if (!this.HidesSide(x, y + 1, z, material, c3, c2, 0, 1)) { part.Quad(x1, y1, z0, x0, y1, z0, x0, y1, h3, x1, y1, h2, 0.0, 1.0, 0.0, color, material) }
         }
     }
 }
