@@ -3,6 +3,8 @@
 #import "raser.core"
 #import "raser.world"
 #import "time"
+#import "filesystem"
+#import "compression"
 
 namespace Raser {
     // Die Netze eines Chunks (Stufe 0).
@@ -136,6 +138,81 @@ namespace Raser {
             this.offsets.Add(oz)
         }
 
+        // Die Vierecke als Bytes: je Viereck 12 float32 (die Ecken, mit der Verschiebung des Netzes - beim nahen Block blocklokal), dann je Viereck
+        // die Farbe (ein Byte). Für den Netz-Cache; schreibt ab `at` in data.
+        undefined EncodeTo(byte data[], defined int at) {
+            defined int p = at
+            defined int c = at + this.quads * 48
+            for (int k = 0; k < this.parts.Count; k++) {
+                var part = this.parts[k]
+                float src[] = part.positions
+                int col[] = part.colors
+                float ox = this.offsets[k * 3]
+                float oy = this.offsets[k * 3 + 1]
+                float oz = this.offsets[k * 3 + 2]
+                for (int q = 0; q < part.Count; q++) {
+                    defined int s = q * 12
+                    for (int e = 0; e < 4; e++) {
+                        data.WriteFloat32(p, ox + src[s])
+                        data.WriteFloat32(p + 4, oy + src[s + 1])
+                        data.WriteFloat32(p + 8, oz + src[s + 2])
+                        p = p + 12
+                        s = s + 3
+                    }
+                    data[c] = col[q]
+                    c++
+                }
+            }
+        }
+
+        // Die Arrays für scene3d aus Bytes von EncodeTo (quads Vierecke ab at), verschoben um (sx, sy, sz) - Szene: x = Ost, y = oben, z = -Nord.
+        static undefined BatchesFrom(byte data[], defined int at, defined int quads, defined float opacity, defined float sx, defined float sy, defined float sz, List<MeshBatch> out) {
+            defined int colAt = at + quads * 48
+            for (int first = 0; first < quads; first = first + 16000) {
+                defined int n = Math.Min(16000, quads - first)
+                float pos[] = new float[n * 12]
+                float uv[] = new float[n * 8]
+                int idx[] = new int[n * 6]
+                defined int r = at + first * 48
+                for (int q = 0; q < n; q++) {
+                    float u = (data[colAt + first + q] + 0.5) / 256.0
+                    defined int d = q * 12
+                    for (int e = 0; e < 4; e++) {
+                        pos[d] = sx + data.ReadFloat32(r)
+                        pos[d + 1] = sz + data.ReadFloat32(r + 8)
+                        pos[d + 2] = -(sy + data.ReadFloat32(r + 4))
+                        r = r + 12
+                        d = d + 3
+                    }
+                    defined int t = q * 8
+                    uv[t] = u
+                    uv[t + 1] = 0.5
+                    uv[t + 2] = u
+                    uv[t + 3] = 0.5
+                    uv[t + 4] = u
+                    uv[t + 5] = 0.5
+                    uv[t + 6] = u
+                    uv[t + 7] = 0.5
+                    // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
+                    defined int k = q * 6
+                    defined int v = q * 4
+                    idx[k] = v
+                    idx[k + 1] = v + 1
+                    idx[k + 2] = v + 2
+                    idx[k + 3] = v
+                    idx[k + 4] = v + 2
+                    idx[k + 5] = v + 3
+                }
+                var batch = new MeshBatch()
+                batch.opacity = opacity
+                batch.quads = n
+                batch.positions = take pos
+                batch.uvs = take uv
+                batch.indices = take idx
+                out.Add(take batch)
+            }
+        }
+
         // Die Arrays für scene3d (höchstens 16.000 Vierecke je Netz: die Indizes sind 16 Bit), in einem Durchgang über lokale Arrays - geht auch in
         // einem Worker. Szene: x = Ost, y = oben, z = -Nord.
         undefined Batches(defined float opacity, List<MeshBatch> out) {
@@ -238,6 +315,7 @@ namespace Raser {
         defined int by
         List<MeshBatch> batches
         defined int ticks
+        defined bool cached         // aus dem Netz-Cache
         construct(defined int bx, defined int by) {
             this.bx = bx
             this.by = by
@@ -256,6 +334,8 @@ namespace Raser {
         defined float originZ
         defined float nearSpacing       // Geländeraster der nahen Stufe
         defined bool opaqueOnly
+        defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
+        static defined int CacheVersion = 1     // das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)
@@ -266,7 +346,17 @@ namespace Raser {
             this.originZ = z
             this.nearSpacing = 0.8
             this.opaqueOnly = opaqueOnly
+            this.useCache = true
         }
+
+        // Wo der Netz-Cache eines Blocks liegt: <welt>/meshes/<kachel>/<bx>_<by>.rrn (Deflate). Beim Voxelisieren einer Kachel wird ihr Ordner gelöscht.
+        string CachePath(defined int bx, defined int by) {
+            var tile = Raser.TileKey.Of(bx * 51.2 + 1.0, by * 51.2 + 1.0)
+            return IO.Path.Combine(this.store.root, "meshes", tile.ToString(), bx + "_" + by + ".rrn")
+        }
+
+        // Der Kopf: "RRN1", Version (Cache, Generator), Geländeraster in cm, Vierecke undurchsichtig, durchsichtig.
+        defined int Stamp() { return Raser.NearBuilder.CacheVersion * 1000 + Raser.Voxelizer.Version }
 
         Raser.FarMesher FarFor(Raser.TileKey key) {
             string name = key.ToString()
@@ -285,6 +375,22 @@ namespace Raser {
         NearResult Build(defined int bx, defined int by) {
             int t0 = DateTime.Now.Ticks
             var result = new NearResult(bx, by)
+            float sx = bx * 51.2 - this.originE
+            float sy = by * 51.2 - this.originN
+            float sz = -this.originZ
+            string path = this.CachePath(bx, by)
+            if (this.useCache && IO.File.Exists(path)) {
+                byte cached[] = Compression.Deflate.Decompress(IO.File.ReadAllBytes(path))
+                if (cached.length >= 24 && cached[0] == 82 && cached[1] == 82 && cached[2] == 78 && cached[3] == 49 && cached.ReadInt32(4) == this.Stamp() && cached.ReadInt32(8) == Math.Round(this.nearSpacing * 100.0)!int) {
+                    defined int no = cached.ReadInt32(12)
+                    defined int ng = cached.ReadInt32(16)
+                    BlockMesh.BatchesFrom(cached, 24, no, 1.0, sx, sy, sz, result.batches)
+                    if (!this.opaqueOnly) { BlockMesh.BatchesFrom(cached, 24 + no * 49, ng, 0.45, sx, sy, sz, result.batches) }
+                    result.cached = true
+                    result.ticks = DateTime.Now.Ticks - t0
+                    return result
+                }
+            }
             var opaque = new BlockMesh()
             var glass = new BlockMesh()
             byte skip[] = new byte[4096]          // die harten Zellen (80 cm) des Blocks: dort spart das glatte Gelände aus
@@ -307,27 +413,45 @@ namespace Raser {
                     }
                 }
                 foreach (p in parts) {
-                    float ox = p.key.VoxelX * 0.2 - this.originE
-                    float oy = p.key.VoxelY * 0.2 - this.originN
-                    float oz = p.key.VoxelZ * 0.2 - this.originZ
+                    // blocklokal: x, y ab der Südwest-Ecke des Blocks, z absolut
+                    float ox = p.key.VoxelX * 0.2 - east
+                    float oy = p.key.VoxelY * 0.2 - north
+                    float oz = p.key.VoxelZ * 0.2
                     opaque.Add(take p.opaque, ox, oy, oz)
-                    if (!this.opaqueOnly) { glass.Add(take p.transparent, ox, oy, oz) }
+                    glass.Add(take p.transparent, ox, oy, oz)
                 }
             }
             // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein, ohne die harten Zellen; die Voxel bringen, was darauf steht
             if (fm != undefined) {
                 var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip)
-                opaque.Add(take ground, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
+                opaque.Add(take ground, tileKey.East - east, tileKey.North - north, 0.0)
             }
-            opaque.Batches(1.0, result.batches)
-            glass.Batches(0.45, result.batches)
+            // als Bytes (so wie im Cache), daraus die Arrays: gebaut und geladen ist dasselbe
+            byte data[] = new byte[24 + (opaque.quads + glass.quads) * 49]
+            data[0] = 82
+            data[1] = 82
+            data[2] = 78
+            data[3] = 49
+            data.WriteInt32(4, this.Stamp())
+            data.WriteInt32(8, Math.Round(this.nearSpacing * 100.0)!int)
+            data.WriteInt32(12, opaque.quads)
+            data.WriteInt32(16, glass.quads)
+            opaque.EncodeTo(data, 24)
+            glass.EncodeTo(data, 24 + opaque.quads * 49)
+            if (this.useCache) {
+                IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(path))
+                IO.File.WriteAllBytes(path, Compression.Deflate.Compress(data))
+            }
+            BlockMesh.BatchesFrom(data, 24, opaque.quads, 1.0, sx, sy, sz, result.batches)
+            if (!this.opaqueOnly) { BlockMesh.BatchesFrom(data, 24 + opaque.quads * 49, glass.quads, 0.45, sx, sy, sz, result.batches) }
             result.ticks = DateTime.Now.Ticks - t0
             return result
         }
 
         // Der Worker-Thread: Aufträge, bis der Kanal zu ist.
-        static undefined Work(Channel<NearJob> jobs, Channel<NearResult> results, string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
+        static undefined Work(Channel<NearJob> jobs, Channel<NearResult> results, string root, defined float e, defined float n, defined float z, defined bool opaqueOnly, defined bool useCache) {
             var builder = new NearBuilder(root, e, n, z, opaqueOnly)
+            builder.useCache = useCache
             foreach (job in jobs) { results.Send(builder.Build(job.bx, job.by)) }
         }
     }

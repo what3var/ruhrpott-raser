@@ -5,6 +5,7 @@
 //   raser export png [--world world] [--tile x_y | --all] [--step n] [--out datei.png]
 //   raser export obj [--world world] --at ost,nord [--size meter] [--out datei.obj]
 //   raser faces     [--world world] [--tile x_y]    die Randschichten (.rrb) für schon voxelisierte Chunks
+//   raser meshes    [--world world] [--tile x_y | --all] [--force]   die nahe Stufe je Block vorab bauen (Netz-Cache <welt>/meshes)
 //   raser info      [--world world]
 //   (alle Befehle: --db postgres://host/raser [--db-user u] - der Zwischenlayer in PostGIS, Passwort in RASER_DB_PASSWORD)
 //
@@ -161,6 +162,32 @@ class Tool {
         }
     }
 
+    // Baut die nahe Stufe aller Blöcke (5 x 5 je Kachel) in den Netz-Cache; vorhandene bleiben, außer mit --force.
+    static undefined Meshes(Args args) {
+        var store = Tool.Store(args)
+        var builder = new Raser.NearBuilder(args.Get("world", "world"), 0.0, 0.0, 0.0, false)
+        foreach (k in Tool.Chosen(args, store)) {
+            if (store.LoadManifest(k) == undefined) {
+                Tool.Log("Kachel " + k + ": nicht voxelisiert")
+                continue
+            }
+            if (args.Has("force")) {
+                string folder = IO.Path.Combine(args.Get("world", "world"), "meshes", k.ToString())
+                if (IO.Directory.Exists(folder)) { IO.Directory.Delete(folder, true) }
+            }
+            int built = 0
+            int quads = 0
+            for (int j = 0; j < 5; j++) {
+                for (int i = 0; i < 5; i++) {
+                    var res = builder.Build(k.x * 5 + i, k.y * 5 + j)
+                    if (!res.cached) { built++ }
+                    foreach (b in res.batches) { quads = quads + b.quads }
+                }
+            }
+            Tool.Log("Kachel " + k + ": " + built + " Blöcke gebaut, " + quads + " Vierecke")
+        }
+    }
+
     static undefined ExportPng(Args args) {
         var store = Tool.Store(args)
         var keys = Tool.Chosen(args, store)
@@ -246,7 +273,7 @@ class Tool {
         Tool.started = DateTime.Now.Ticks
         var args = new Args(items)
         if (args.positional.Count == 0) {
-            print("raser import | voxelize | faces | export png | export obj | info  (siehe src/Raser.Tool/main.fire)")
+            print("raser import | voxelize | faces | meshes | export png | export obj | info  (siehe src/Raser.Tool/main.fire)")
             return 1
         }
         try {
@@ -256,6 +283,7 @@ class Tool {
                 case "voxelize": Tool.Voxelize(args)
                 case "info": Tool.Info(args)
                 case "faces": Tool.Faces(args)
+                case "meshes": Tool.Meshes(args)
                 case "export":
                     string what = "png"
                     if (args.positional.Count > 1) { what = args.positional[1] }

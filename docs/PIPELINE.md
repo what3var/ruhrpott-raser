@@ -186,6 +186,17 @@ Gemessen (Rathaus, 9 nahe Blöcke, 4 Kerne): ein naher Block kostet im Hauptprog
 Laden, harte Säulen und Arrays. Im Flug mit 83 m/s und Rendern auf denselben Kernen braucht ein Block 4 bis 7 s - ein Block ist bei dem Tempo in 0,6 s
 durchflogen. Für Tempo bleibt es bei der fernen Stufe; die nahe ist (noch) für Fuß und Stadtverkehr.
 
+Schneller vernetzen (Profil mit callgrind, Bild jeweils gleich): ein naher Block 2,27 s -> unter 1 s. Die sichtbaren Flächen findet der Mesher über
+Bit-Zeilen (je Zeile in x die 64 Voxel als Bits in Maschinenwörtern: nicht Luft, verdeckt, bringt Flächen; eine Richtung ist dann ein paar
+Bit-Operationen je Zeile; breitenunabhängig, ein Test stellt 32 und 16 Bit nach); Gelände und harte Säulen sind Bits je Zeile statt eines Aufrufs je
+Voxel; `GroundCut` sucht je Säule nur bis zum ersten Treffer; Formen kommen aus einer Byte-Karte statt aus dem Dictionary des Chunks; die Netze
+wachsen in typisierten Arrays, die Arrays für scene3d entstehen in einem Durchgang. Was nativ teuer war, steht in docs/FIRE.md.
+
+**Netz-Cache:** Ein gebauter naher Block wird unter `<welt>/meshes/<kachel>/<bx>_<by>.rrn` gespeichert (Deflate; Kopf `RRN1`, Version aus Cache-Format
+und Generator, Geländeraster; dann je Viereck 12 float32 blocklokal und die Farbe). Gebaute und geladene Blöcke laufen durch dieselben Bytes, das Bild
+ist dasselbe. Laden statt Bauen: rund 38 ms statt 1.100 ms je Block. `raser meshes [--tile x_y | --all] [--force]` baut vorab (eine Kachel rund 36 s,
+8,6 MB); `voxelize` löscht den Cache der Kachel und ihrer Nachbarn. `--no-mesh-cache` im Viewer baut immer neu.
+
 Gemessen: Flug mit 83 m/s (300 km/h) über 1,3 km quer durch die Testregion (`--near -1 --far 6`, 480 x 300): 533 ferne Blöcke, Nachladen im Mittel 3,9 ms
 je Bild, Rendern rund 18 ms, rund 46 Bilder je Sekunde; nur in 51 von 718 Bildern fehlte noch ein Block.
 
@@ -193,8 +204,8 @@ je Bild, Rendern rund 18 ms, rund 46 Bilder je Sekunde; nur in 51 von 718 Bilder
 
 *Nah die Voxel (mit Fenstern), weiter weg die Gebäude aus Grundriss und LoD2-Dächern (noch ohne Fassade).*
 
-Offen: das Vernetzen schneller (Bitmasken je Zeile statt Voxel für Voxel), eine mittlere Stufe (Voxel 40/80 cm), der nahe Radius nach dem Tempo, die
-Fassaden-Textur mit den Fenstern ab der fernen Stufe.
+Offen: eine mittlere Stufe (Voxel 40/80 cm), der nahe Radius nach dem Tempo, die Fassaden-Textur mit den Fenstern ab der fernen Stufe; mit `--db`
+liest der Netz-Cache die Kacheln noch aus den Dateien.
 
 ## Offen (für M1 und danach)
 

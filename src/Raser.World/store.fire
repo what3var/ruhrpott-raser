@@ -4,6 +4,7 @@
 //   <world>/tiles/<x>_<y>.json        die Merkmale der Kachel (TileData)
 //   <world>/tiles/<x>_<y>.rrh         das Höhenraster (HeightRaster.Encode)
 //   <world>/chunks/<x>_<y>/<cx>_<cy>_<cz>.rrc   die Chunks (Chunk.Encode, mit Deflate)
+//   <world>/meshes/<x>_<y>/<bx>_<by>.rrn        der Netz-Cache der nahen Stufe je Block (Raser.NearBuilder; beim Voxelisieren gelöscht)
 //   <world>/chunks/<x>_<y>/manifest.json        womit sie erzeugt wurden (Generator-Version, Overrides, Seed, Daten)
 // ITileStore ist die Grenze: ein PostGIS-Store setzt sie später um, ohne dass Import und Voxelisierung sich ändern.
 #import "raser.core"
@@ -128,6 +129,13 @@ namespace Raser {
         undefined ClearChunks(TileKey key) {
             string folder = this.ChunkFolder(key)
             if (IO.Directory.Exists(folder)) { IO.Directory.Delete(folder, true) }
+            // der Netz-Cache (Raser.NearBuilder: <root>/meshes/<kachel>) - auch der Nachbarn, deren Randblöcke diese Chunks berühren
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    string meshes = IO.Path.Combine(this.root, "meshes", new Raser.TileKey(key.x + dx, key.y + dy).ToString())
+                    if (IO.Directory.Exists(meshes)) { IO.Directory.Delete(meshes, true) }
+                }
+            }
         }
     }
 

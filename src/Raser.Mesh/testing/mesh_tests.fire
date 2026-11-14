@@ -252,4 +252,28 @@ class FarTests {
         for (int k = 0; k < 256; k++) { skip[k] = hard[(k & 15) * 4 + (k >> 4) * 4 * 64] }
         Testing.Assert.AreEqual(254, far.Block(0.0, 0.0, 12.8, 0.8, false, skip).Count)
     }
+
+    [Test "Netz-Cache: Bytes und zurück, verschoben in Szenen-Koordinaten"]
+    undefined CacheBytes() {
+        var part = new Raser.MeshPart()
+        part.Quad(0.0, 0.0, 1.0, 0.2, 0.0, 1.0, 0.2, 0.2, 1.0, 0.0, 0.2, 1.0, 0.0, 0.0, 1.0, 7, Raser.Material.Brick!int)
+        part.Quad(1.0, 0.0, 0.0, 1.0, 0.4, 0.0, 1.0, 0.4, 0.6, 1.0, 0.0, 0.6, 1.0, 0.0, 0.0, 9, Raser.Material.Brick!int)
+        var mesh = new Raser.BlockMesh()
+        mesh.Add(take part, 10.0, 20.0, 100.0)
+        byte data[] = new byte[mesh.quads * 49]
+        mesh.EncodeTo(data, 0)
+        var batches = new List<Raser.MeshBatch>()
+        Raser.BlockMesh.BatchesFrom(data, 0, mesh.quads, 1.0, -5.0, -6.0, -50.0, batches)
+        Testing.Assert.AreEqual(1, batches.Count)
+        var b = batches[0]
+        Testing.Assert.AreEqual(2, b.quads)
+        // erste Ecke: (0, 0, 1) + (10, 20, 100) + (-5, -6, -50) = Ost 5, Nord 14, oben 51 -> Szene (5, 51, -14)
+        Testing.Assert.AreEqual(5.0, b.positions[0])
+        Testing.Assert.AreEqual(51.0, b.positions[1])
+        Testing.Assert.AreEqual(-14.0, b.positions[2])
+        // die Farbe steckt in u: (7 + 0,5) / 256
+        Testing.Assert.AreEqual(7.5 / 256.0, b.uvs[0])
+        Testing.Assert.AreEqual(9.5 / 256.0, b.uvs[8])
+        Testing.Assert.AreEqual(4, b.indices[6])
+    }
 }

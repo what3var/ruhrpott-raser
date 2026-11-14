@@ -6,6 +6,7 @@
 //   raser-viewer ... --opaque             ohne Glas und Wasser
 //   raser-viewer ... --render-threads 1   so viele Threads rendern (0: alle Kerne)
 //   raser-viewer ... --workers 3          so viele Threads bauen die nahen Blöcke (0: im Hauptprogramm)
+//   raser-viewer ... --no-mesh-cache      nahe Blöcke immer neu bauen (sonst aus <welt>/meshes, gebaute werden dort gespeichert)
 //   raser-viewer ... [--far-ahead far] [--near-ahead 2] [--min-free 20] [--memory-mb 0]
 //                                         ist Zeit übrig, so viele Ringe über die Radien hinaus vorausladen (versteckt); was aus den Radien fällt, bleibt
 //                                         im Vorrat, bis weniger als min-free Prozent des Speichers frei sind (oder der Viewer mehr als memory-mb belegt)
@@ -201,9 +202,10 @@ class WorldView {
     defined int stillSince
     defined bool filling            // in Fill: vorausladen auch ohne Stillstand
 
-    construct(string root, Scene scene, defined float e, defined float n, defined float z, defined int near, defined int far, defined float spacing, defined bool opaqueOnly, defined int workers) {
+    construct(string root, Scene scene, defined float e, defined float n, defined float z, defined int near, defined int far, defined float spacing, defined bool opaqueOnly, defined int workers, defined bool useCache) {
         this.scene = scene
         this.local = new Raser.NearBuilder(root, e, n, z, opaqueOnly)
+        this.local.useCache = useCache
         this.inWork = new HashSet<string>()
         this.memory = new MemoryWatch()
         this.workers = workers
@@ -213,8 +215,8 @@ class WorldView {
             var jobs = this.jobs
             var results = this.results
             for (int i = 0; i < workers; i++) {
-                fire taking root taking e taking n taking z taking opaqueOnly with jobs, results {
-                    Raser.NearBuilder.Work(jobs, results, root, e, n, z, opaqueOnly)
+                fire taking root taking e taking n taking z taking opaqueOnly taking useCache with jobs, results {
+                    Raser.NearBuilder.Work(jobs, results, root, e, n, z, opaqueOnly, useCache)
                 }
             }
         }
@@ -557,7 +559,7 @@ class Viewer {
         int far = options.Get("far", "6").ToInt()
         float spacing = options.Get("spacing", "3.2").ToFloat()
         int workers = options.Get("workers", "3").ToInt()
-        var view = new WorldView(options.Get("world", "world"), scene, e, n, ground, near, far, spacing, options.Get("opaque", "") != "", workers)
+        var view = new WorldView(options.Get("world", "world"), scene, e, n, ground, near, far, spacing, options.Get("opaque", "") != "", workers, options.Get("no-mesh-cache", "") == "")
         view.farAhead = options.Get("far-ahead", far + "").ToInt()
         view.nearAhead = options.Get("near-ahead", "2").ToInt()
         view.memory.minFree = options.Get("min-free", "20").ToFloat()
