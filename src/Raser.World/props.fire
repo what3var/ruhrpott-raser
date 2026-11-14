@@ -18,11 +18,8 @@ namespace Raser {
             this.sx = sx
             this.sy = sy
             this.sz = sz
-            // (über lokale Werte: fire schreibt nativ im Konstruktor bei `this.ox = sx / 2` den Parameter statt des Quotienten - docs/FIRE.md)
-            defined int hx = sx / 2
-            defined int hy = sy / 2
-            this.ox = hx
-            this.oy = hy
+            this.ox = sx / 2
+            this.oy = sy / 2
             this.materials = new byte[sx * sy * sz]
             this.colors = new byte[sx * sy * sz]
         }
