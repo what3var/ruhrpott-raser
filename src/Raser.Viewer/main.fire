@@ -149,19 +149,9 @@ class WorldView {
                 indices[i * 6 + 4] = i * 4 + 2
                 indices[i * 6 + 5] = i * 4 + 3
             }
-            // scene3d setzt den Anker eines Objekts (Standard: die Mitte seines Netzes) auf die Position: die untere Ecke des Netzes auf sein Minimum
-            float minX = 1.0e30
-            float minY = 1.0e30
-            float minZ = 1.0e30
-            for (int v = 0; v < n * 4; v++) {
-                minX = Math.Min(minX, positions[v * 3])
-                minY = Math.Min(minY, positions[v * 3 + 1])
-                minZ = Math.Min(minZ, positions[v * 3 + 2])
-            }
             var model = Model.FromArrays(positions, uvs, indices)
             var obj = new Object(model)
-            obj.SetAnchor(0.0, 0.0, 0.0)
-            obj.SetPosition(minX * 1m, minY * 1m, minZ * 1m)
+            obj.KeepMeshCoordinates = true          // die Koordinaten des Netzes sind Welt-Koordinaten (Ursprung des Netzes an der Position 0, 0, 0)
             this.models.Add(take model)
             int rgb = Raser.Palette.Rgb(color)
             obj.Color = S3D.Rgb((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255)
