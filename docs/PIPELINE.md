@@ -144,10 +144,12 @@ Ohne Fenster misst `--fly` einen Flug in Echtzeit:
 Raser.Viewer --world world --at 376130,5704900 --radius 3 --distance 60 --pitch -25 --yaw 200 --size 480x300 --fly 300 --speed 15 --workers 3 --shot ende.png
 ```
 
-Gemessen: das Startbild (Radius 2, 125 Chunks) 6,9 s im Hauptprogramm, 4,2 s mit 3 Workern. Beim Flug mit 15 m/s kommen die Worker nicht nach:
-eine Säule kostet in einem Worker rund 500 ms Lesen (jeder Worker hat seinen eigenen Cache, die Nachbar-Chunks kommen meist von der Platte) und
-300-370 ms Vernetzen - fire-Threads laufen nativ rund 1,75-mal langsamer als das Hauptprogramm (docs/FIRE.md). Nächste Schritte: die Netze beim
-Voxelisieren mit erzeugen und speichern (dann lesen die Worker nur noch fertige Netze), und LOD für die Ferne.
+Für die Nachbarn liest ein Worker nur deren Randschichten (`.rrb`, 6 x 64 x 64 Zellen je Chunk; für die Testregion 18 MB neben 64 MB Chunks;
+`raser faces` schreibt sie zu schon voxelisierten Welten). Ein Chunk lädt in rund 1 ms (Lauflängen mit `Fill`), eine Randschicht in 0,1 ms.
+
+Gemessen im Hauptprogramm (`--workers 0`) je Säule: Lesen rund 13 ms, Vernetzen rund 110 ms. In Workern kommt das nicht an: fire-Threads stehen, solange
+das Hauptprogramm in `cam.Render()` steckt (docs/FIRE.md) - beim Flug mit 15 m/s kamen die Ergebnisse kaum an. Bis das in fire gelöst ist, ist
+`--workers 0` (Laden im Hauptprogramm, `--budget` Säulen je Bild) die ehrliche Wahl; das Vernetzen ist dann der nächste Engpass.
 
 ![Betrachter](images/viewer-rathaus.png)
 

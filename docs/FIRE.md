@@ -19,7 +19,7 @@ Das Projekt ist der Extremtest für fire. Hier steht, was dabei an fire auffäll
 | **Nativ falsch:** Im Werkzeug (`Raser.Tool`, Release) liefert `float h0 = z0 + Raser.Shape.CornerMeters(shape, 0)` statt 0,2 den Wert 4596373779694328320 (die Bits von 0,2 als Ganzzahl). Im generierten C gibt `f322_c` (der C-Körper von `CornerMeters`, Rückgabe `defined float`) korrekt `Float(...)` zurück, die Aufrufstelle liest aber `(Real)(FireInt)s1.i` - sie hält das Ergebnis für eine Ganzzahl. `shape` ist dort ein lokales `int` aus einer Methode mit `defined int`. In kleinen Nachbauten (gleiche Datei, oder Bibliothek + Programm) tritt es nicht auf; die VM rechnet richtig. | war `Corner(...) * 0.05` | behoben (8a0292a), wieder `CornerMeters`. Folge: native Builds vorher setzten auch die unterste Chunk-Ebene falsch (`HeightRaster.Min`) - Generator 2 erzeugt neu |
 | **Kein Fehler, mein Irrtum:** `(x) => self.Get("a")` fängt `self` ohne Wort ein, und das heißt: die Lambda bekommt eine **tiefe Kopie** (hier des ganzen Stores samt Dictionary und Items). Was sie zurückgibt, gehört zur Kopie und stirbt mit ihr - `store.items` selbst blieb heil. Im Viewer war die Kopie die des `WorldView` mit den Chunks; die Kopie eines Objekts, das eine Ressource über ihre Nummer hält, gibt beim Sterben die echte Ressource frei - daher „No resource with ID 1“ bzw. „The framebuffer has no usable size“. Richtig: das Objekt als Parameter der Lambda übergeben, eine globale Variable nehmen oder mit `on` binden. | Nachbarn als einzelne Parameter (`Raser.Mesher`) - bleibt so, ist ohnehin klarer | geklärt; fire warnt jetzt mit TC023 ausdrücklich vor der tiefen Kopie, die Doku zu Lambdas ist ergänzt |
 | **Besitz falsch (nur nativ):** `store.Get("a")` als Anweisung (Ergebnis verworfen) zerstört das Objekt, das `Get` aus dem Dictionary zurückgibt (VM: nicht). | Ergebnis nicht verwerfen | an fire gemeldet |
-| **Langsamer in Threads (nativ):** Derselbe Code (Chunks lesen und entpacken, Vernetzen) läuft in einem fire-Thread rund 1,75-mal langsamer als im Hauptprogramm, während das Hauptprogramm nur wartet: Hauptprogramm 23 ms lesen / 45 ms vernetzen je Chunk, `fire` 42 / 78 ms, `fire dedicated` 39 / 72 ms (Release, gcc, 4 Kerne). Nachbau `threads.fire` unten. | keiner (der Viewer lädt trotzdem in Workern: beim Start 6,9 → 4,2 s mit 3 Workern) | an fire gemeldet |
+| **Threads stehen, solange das Hauptprogramm in einem langen nativen Aufruf steckt (nativ):** Ein fire-Thread, der nur rechnet (Chunk dekodieren, Randschichten - Schleifen, Felder, Dictionary, keine Dateien), kommt nur voran, wenn das Hauptprogramm einen Haltepunkt erreicht. Rendert das Hauptprogramm in einer Schleife (`cam.Render()`, je rund 160 ms), bleibt der Thread ganz stehen; mit `Sleep(0ms)` nach jedem Bild schafft er je Bild ein Stück: `Chunk.Decode` 2,3 → 20 ms, `ChunkFace.Of` 1,0 → 20 ms. Gleich mit `scene.Threads = 1` (3 Kerne frei) und mit `--global-jobs sleep`/`sync`. Dateizugriffe, Deflate und `new byte[]` allein sind nicht betroffen. Im Viewer kommen die Ergebnisse der Worker deshalb kaum an (bei 15 m/s fehlten in 1.150 von 1.160 Bildern Säulen), und die gemessenen Zeiten in den Workern sind 10- bis 20-mal zu hoch. Der frühere Eintrag „1,75-mal langsamer“ war derselbe Effekt mit einem Hauptprogramm, das gerade wartete. Nachbau `threads.fire` unten. | keiner (der Viewer lädt mit `--workers 0` im Hauptprogramm) | an fire gemeldet |
 
 Nachbau (`forge run own.fire` und nativ) - der erste Teil ist das dokumentierte Einfangen als tiefe Kopie (siehe oben), der zweite (das verworfene `store.Get("a")`, nur nativ) ist gemeldet:
 
@@ -62,6 +62,50 @@ print("end")
 Mit einer globalen Variable statt `self` (oder `store` als Parameter der Lambda): `a`, `after holder`, `a`, `end`, `destroy a`.
 | `new Object(Model.FromArrays(...))` setzt die Mitte des Netzes auf die Position (Anker 0,5): die Koordinaten des Netzes gelten nur relativ. Für Welt-Koordinaten muss man das Minimum selbst rechnen und `SetAnchor(0, 0, 0)` + `SetPosition(min)` setzen. | war Minimum + `SetAnchor` | behoben (68e9a69): `obj.KeepMeshCoordinates = true` im Viewer, Bild pixelgleich |
 
+
+Nachbau: ein Thread rechnet, das Hauptprogramm rendert (`threads.fire`; ein Projekt, das `Raser.Core` und `Raser.World` referenziert, nativ gebaut;
+die Datei ist ein Chunk der Testregion). Ohne `Sleep(0ms)` in der Schleife kommt der Thread nie zum Ende:
+
+```fire
+#import "time"
+#import "windows"
+#import "scene3d"
+#import "filesystem"
+#import "compression"
+#import "raser.core"
+#import "raser.world"
+class L {
+    static string Run() {
+        var raw = Compression.Deflate.Decompress(IO.File.ReadAllBytes("world/chunks/1469_22284/29386_445690_7.rrc"))
+        int t1 = DateTime.Now.Ticks
+        for (int i = 0; i < 5; i++) { var c = Raser.Chunk.Decode(raw) }
+        int t2 = DateTime.Now.Ticks
+        var chunk = Raser.Chunk.Decode(raw)
+        int t3 = DateTime.Now.Ticks
+        for (int i = 0; i < 5; i++) { var f = Raser.ChunkFace.Of(chunk, i) }
+        int t4 = DateTime.Now.Ticks
+        return "Decode " + (t2 - t1) / 50000.0 + " ms, Face.Of " + (t4 - t3) / 50000.0 + " ms"
+    }
+}
+var fb = new Framebuffer(960, 600)
+var scene = new Scene()
+scene.Threads = 1
+for (int i = 0; i < 300; i++) { scene.Add(new Object(Template.Sphere, (i % 20) * 1m, 0m, (i / 20) * -1m, 0.8m, 0.8m, 0.8m, 48)) }
+scene.Add(Light.Directional(-0.5, -1.0, -0.4))
+var cam = new Camera(fb)
+cam.SetPosition(10m, 8m, 10m)
+cam.LookAt(10m, 0m, -7m)
+scene.Add(cam)
+var results = new Channel<string>()
+fire with results { results.Send(L.Run()) }
+print("Hauptprogramm wartet:  " + results.Receive())    // Decode 2,4 ms, Face.Of 1,1 ms
+fire with results { results.Send(L.Run()) }
+while (results.Count == 0) {
+    cam.Render()
+    Sleep(0ms)                                          // ohne diese Zeile: der Thread steht
+}
+print("Hauptprogramm rendert: " + results.Receive())    // Decode 28,6 ms, Face.Of 28,1 ms
+```
 
 Nachbau zur Geschwindigkeit in Threads (ein Projekt, das `Raser.Core`, `Raser.World` und `Raser.Mesh` referenziert; `forge build ... --engine native -m RELEASE`):
 

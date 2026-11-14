@@ -4,6 +4,7 @@
 //   raser-viewer ... --shot bild.png      ein Bild ohne Fenster
 //   raser-viewer ... --opaque             ohne Glas und Wasser
 //   raser-viewer ... --workers 3          so viele Threads laden und vernetzen (0: im Hauptprogramm)
+//   raser-viewer ... --render-threads 1   so viele Threads rendern (0: alle Kerne)
 //   raser-viewer ... --fly 300 [--speed 15] [--budget 2] [--shot ende.png]
 //                                         ohne Fenster geradeaus fliegen, nachladen und rendern; die Zeiten am Ende
 //
@@ -66,6 +67,8 @@ class ColumnMesh {
     defined int chunks
     defined int loadTicks
     defined int meshTicks
+    defined int layerTicks
+    defined int centerTicks
     List<MeshBatch> batches
     construct(defined int cx, defined int cy) {
         this.cx = cx
@@ -153,9 +156,13 @@ class ColumnBuilder {
         // ein einfacher Cache: zu groß geworden, fängt er neu an (die Nachbarn der nächsten Säulen kommen von der Platte)
         if (this.chunks.Count > 200) { this.chunks.Clear() }
         if (this.faces.Count > 2000) { this.faces.Clear() }
-        foreach (z in this.LayersOf(cx, cy)) {
+        int tl0 = DateTime.Now.Ticks
+        var layerList = this.LayersOf(cx, cy)
+        result.layerTicks = DateTime.Now.Ticks - tl0
+        foreach (z in layerList) {
             int t0 = DateTime.Now.Ticks
             var chunk = this.ChunkAt(cx, cy, z)
+            result.centerTicks = result.centerTicks + (DateTime.Now.Ticks - t0)
             if (chunk == undefined) { continue }
             // von den Nachbarn nur die Randschicht, die diesen Chunk berührt
             var w = this.FaceOf(cx - 1, cy, z, 1)
@@ -255,6 +262,8 @@ class WorldView {
     defined int loadTicks       // Zeit für Chunks lesen und entpacken (in den Workern)
     defined int meshTicks       // Zeit für Vernetzen und Arrays (in den Workern)
     defined int modelTicks      // Zeit für die scene3d-Modelle (im Hauptprogramm)
+    defined int layerTicks
+    defined int centerTicks
 
     construct(string root, Scene scene, defined float e, defined float n, defined float z, defined int radius, defined int workers, defined bool opaqueOnly) {
         this.scene = scene
@@ -326,6 +335,8 @@ class WorldView {
         this.loadedColumns++
         this.loadTicks = this.loadTicks + cm.loadTicks
         this.meshTicks = this.meshTicks + cm.meshTicks
+        this.layerTicks = this.layerTicks + cm.layerTicks
+        this.centerTicks = this.centerTicks + cm.centerTicks
         this.modelTicks = this.modelTicks + (DateTime.Now.Ticks - t0)
     }
 
@@ -421,6 +432,7 @@ class Viewer {
         var fb = new Framebuffer(width, height)
         var scene = new Scene()
         scene.Shadows = false
+        scene.Threads = options.Get("render-threads", "0").ToInt()     // 0: so viele wie die Maschine hat (scene3d); weniger lässt den Workern Kerne
         scene.AmbientIntensity = 0.45
         scene.Add(Light.Directional(-0.45, -1.0, -0.3))
         var cam = new Camera(fb)
@@ -482,6 +494,7 @@ class Viewer {
                 frames++
             }
             print(frames + " Bilder über " + fly + " m: Nachladen im Mittel " + (updateTicks / frames / 10000.0) + " ms (höchstens " + (worstUpdate / 10000.0) + " ms), Rendern " + (renderTicks / frames / 10000.0) + " ms (höchstens " + (worstRender / 10000.0) + " ms)")
+            print("   davon Ebenen " + (view.layerTicks / view.loadedColumns / 10000.0) + " ms, eigene Chunks " + (view.centerTicks / view.loadedColumns / 10000.0) + " ms")
             print("je Säule: Chunks lesen " + (view.loadTicks / view.loadedColumns / 10000.0) + " ms, vernetzen " + (view.meshTicks / view.loadedColumns / 10000.0) + " ms (Worker), scene3d-Modelle " + (view.modelTicks / view.loadedColumns / 10000.0) + " ms (Hauptprogramm); " + view.droppedColumns + " Ergebnisse kamen zu spät")
             print(view.loadedColumns + " Säulen geladen, " + view.unloadedColumns + " entladen, jetzt " + view.objects + " Objekte mit " + view.triangles + " Dreiecken; in " + behind + " Bildern fehlten noch Säulen")
         }
