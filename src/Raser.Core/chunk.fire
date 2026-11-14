@@ -122,10 +122,10 @@ namespace Raser {
         // Die Daten als Bytes: Kopf, dann Material + Farbe als Lauflängen, dann Formen und Schaden als (Abstand zum vorigen Index, Wert).
         byte[] Encode() {
             var w = new ByteWriter(4096)
-            w.Byte(82)    // "RRC2" (RRC1 ohne die Tabelle der Grundriss-Formen)
+            w.Byte(82)    // "RRC3" (RRC1 ohne die Tabelle der Grundriss-Formen, RRC2 mit ihr als Bytes)
             w.Byte(82)
             w.Byte(67)
-            w.Byte(50)
+            w.Byte(51)
             w.SignedVarint(this.key.x)
             w.SignedVarint(this.key.y)
             w.SignedVarint(this.key.z)
@@ -148,20 +148,21 @@ namespace Raser {
                     i = j
                 }
             }
-            Raser.Chunk.EncodeTable(w, this.shapes)
-            Raser.Chunk.EncodeTable(w, this.damage)
-            Raser.Chunk.EncodeTable(w, this.plans)
+            Raser.Chunk.EncodeTable(w, this.shapes, false)
+            Raser.Chunk.EncodeTable(w, this.damage, false)
+            Raser.Chunk.EncodeTable(w, this.plans, true)
             return w.ToBytes()
         }
 
-        static undefined EncodeTable(ByteWriter w, Dictionary<int, int> table) {
+        // wide: die Werte als Varint (Grundriss-Formen gehen über 255), sonst ein Byte
+        static undefined EncodeTable(ByteWriter w, Dictionary<int, int> table, defined bool wide) {
             var keys = table.Keys
             keys.Sort()
             w.Varint(keys.Count)
             int last = 0
             foreach (k in keys) {
                 w.Varint(k - last)
-                w.Byte(table[k])
+                if (wide) { w.Varint(table[k]) } else { w.Byte(table[k]) }
                 last = k
             }
         }
@@ -170,7 +171,7 @@ namespace Raser {
             var r = new ByteReader(data)
             if (r.Byte() != 82 || r.Byte() != 82 || r.Byte() != 67) { throw new DataException("Not a chunk (RRC).") }
             int format = r.Byte()
-            if (format != 49 && format != 50) { throw new DataException("Not a chunk (RRC1 or RRC2).") }
+            if (format < 49 || format > 51) { throw new DataException("Not a chunk (RRC1 .. RRC3).") }
             int kx = r.SignedVarint()
             int ky = r.SignedVarint()
             int kz = r.SignedVarint()
@@ -191,18 +192,18 @@ namespace Raser {
                     i = i + n
                 }
             }
-            Raser.Chunk.DecodeTable(r, chunk.shapes)
-            Raser.Chunk.DecodeTable(r, chunk.damage)
-            if (format == 50) { Raser.Chunk.DecodeTable(r, chunk.plans) }
+            Raser.Chunk.DecodeTable(r, chunk.shapes, false)
+            Raser.Chunk.DecodeTable(r, chunk.damage, false)
+            if (format >= 50) { Raser.Chunk.DecodeTable(r, chunk.plans, format >= 51) }
             return chunk
         }
 
-        static undefined DecodeTable(ByteReader r, Dictionary<int, int> table) {
+        static undefined DecodeTable(ByteReader r, Dictionary<int, int> table, defined bool wide) {
             int n = r.Varint()
             int k = 0
             for (int i = 0; i < n; i++) {
                 k = k + r.Varint()
-                table[k] = r.Byte()
+                if (wide) { table[k] = r.Varint() } else { table[k] = r.Byte() }
             }
         }
 
@@ -223,7 +224,7 @@ namespace Raser {
             pk.Sort()
             foreach (k in pk) {
                 h = Raser.Fnv.AddInt(h, k + 262144)
-                h = Raser.Fnv.AddByte(h, this.plans[k])
+                h = Raser.Fnv.AddInt(h, this.plans[k])
             }
             return h
         }

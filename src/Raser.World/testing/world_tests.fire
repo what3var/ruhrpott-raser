@@ -306,6 +306,45 @@ class VoxelizerTests {
         }
     }
 
+    [Test "Runder Turm: der Kreis wird als Rundung eingepasst"]
+    undefined RoundTower() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:turm"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        // ein Kreis mit 2 m Radius um (6, 6) aus 32 Punkten: im Raster der Mittelpunkt (30, 30), Radius 10 Voxel
+        float fp[] = new float[64]
+        for (int k = 0; k < 32; k++) {
+            float a = k * Math.PI / 16.0
+            fp[k * 2] = 6.0 + 2.0 * Math.Cos(a)
+            fp[k * 2 + 1] = 6.0 + 2.0 * Math.Sin(a)
+        }
+        b.footprint = fp
+        b.ground = 60.0
+        b.eaves = 64.0
+        b.ridge = 64.0
+        b.roofType = Raser.RoofType.Flat
+        tile.data.buildings.Add(take b)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        Testing.Assert.AreEqual(Raser.Plan.Arc(10, 9, 0, 0), c.PlanAt(39, 30, 47))
+        Testing.Assert.AreEqual(Raser.Plan.Arc(10, 9, 0, 2), c.PlanAt(20, 30, 47))
+        Testing.Assert.AreEqual(Raser.Plan.Arc(10, 0, 9, 4), c.PlanAt(30, 20, 47))
+        Testing.Assert.AreEqual(Raser.Plan.Arc(10, 6, 7, 0), c.PlanAt(36, 37, 47))
+        // außerhalb des Kreises nichts, auf ihm überall eine Rundung
+        Testing.Assert.AreEqual(0, c.MaterialAt(40, 30, 47))
+        Testing.Assert.AreEqual(0, c.MaterialAt(38, 38, 47))
+        // hinter der Rundung ist die Wand dicker
+        Testing.Assert.IsTrue(c.MaterialAt(38, 30, 47) != 0)
+        int arcs = 0
+        foreach (pair in c.plans) {
+            if (Raser.Plan.IsArc(pair.Value)) { arcs++ }
+        }
+        Testing.Assert.IsTrue(arcs > 40)
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)

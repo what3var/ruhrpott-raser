@@ -17,7 +17,8 @@
     ist ein Profil (12–15 cm hoch, abgesenkt an Einfahrten) entlang der Kurve. Voxel werden sie erst, wo hineingegriffen wird (hart, wie beim Gelände).
   - **Entschieden: Bauelemente** (statt freier Schnittlinien oder gedrehter Gitter). Neben den Eckhöhen oben hat ein Voxel eine
     **Grundriss-Form aus einem Katalog**: Diagonalen über 1×1 bis 6×1 Voxel (die Kante steigt auf n Voxel um einen; jedes Voxel trägt seinen
-    Teil k von n, 8 Ausrichtungen - 168 Formen, ein Byte), später Rundungen (Viertelkreise mit Radius 1–6, für Eckkneipen), Torbögen (eine Form in
+    Teil k von n, 8 Ausrichtungen - 168 Formen), Rundungen (Viertelkreise mit Radius 1–32 Voxel um eine Rasterecke, innen oder außen gefüllt -
+    für Eckkneipen, runde Türme, Innenecken; jedes Voxel trägt seine Zelle im Viertel; gespeichert als Varint), später Torbögen (eine Form in
     der Ansicht) und Türen (Objekte, die zwischen zwei Wand-Voxeln definiert und automatisch passend eingehängt werden). Der Voxelizer nähert die
     Kanten der Gebäude damit an (Steigung 1:1 bis 1:6 oder achsparallel - wenige Grad Abweichung), der Baumodus bietet dieselben Elemente als
     Fertigteile aus dem Baumarkt an. Dazu 3D-Dachziegel: ein Relief in Pixel-Art auf den Dach-Voxeln.

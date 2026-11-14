@@ -7,12 +7,20 @@
 //   im Voxel k läuft die Kante von k/n bis (k+1)/n. 8 Ausrichtungen o: Bit 0 die Seite (0: unter der Kante gefüllt, 1: darüber), Bit 1 gespiegelt
 //   (die Kante fällt statt zu steigen), Bit 2 die Achse (0: das Element läuft in x, 1: in y). 21 Paare (n, k) × 8 = 168 Formen.
 //
-// Gespeichert als ein Byte je Voxel (0: voll, 1 .. 168: Diagonale) in einer Tabelle des Chunks, wie die Eckhöhen. Weitere Elemente (Rundungen,
-// Bögen) bekommen die Werte ab 169.
+// - Rundungen (Eckkneipen, runde Türme, Ausfahrten): ein Viertelkreis mit Radius r (1..32 Voxel) um eine Ecke des Rasters. Jedes Voxel, durch
+//   das der Bogen läuft, trägt seine Zelle (i, j) im Viertel (0..r-1) und eine Ausrichtung o: Bit 0 die Seite (0: im Kreis gefüllt - die runde
+//   Ecke; 1: außerhalb - die ausgerundete Innenecke), Bit 1 das Viertel links vom Mittelpunkt (x gespiegelt), Bit 2 unterhalb (y gespiegelt).
+//   Werte ab 169: 169 + ((r - 1) * 32 + i) * 32 + j) * 8 + o.
+//
+// Gespeichert als Zahl je Voxel (0: voll) in einer Tabelle des Chunks, wie die Eckhöhen. Weitere Elemente (Bögen) bekommen die Werte danach.
 namespace Raser {
     class Plan {
         static readonly defined int None = 0
         static readonly defined int Diagonals = 168
+        static readonly defined int ArcBase = 169
+        static readonly defined int ArcRadius = 32       // der größte Radius einer Rundung (Voxel)
+        static readonly defined int ArcEnd = 262313      // 169 + 32 * 32 * 32 * 8
+        static readonly defined int MaxPoints = 8        // so viele Punkte hat ein Polygon höchstens
 
         // Die Form der Diagonale: Länge n (1..6), Teil k (0..n-1), Ausrichtung o (0..7).
         static defined int Diagonal(defined int n, defined int k, defined int o) {
@@ -37,10 +45,32 @@ namespace Raser {
             return (p - 1) / 8 - n * (n - 1) / 2
         }
 
-        static defined int OrientationOf(defined int p) { return (p - 1) % 8 }
+        static defined int OrientationOf(defined int p) {
+            if (Raser.Plan.IsArc(p)) { return (p - 169) % 8 }
+            return (p - 1) % 8
+        }
+
+        // Die Rundung: Radius r (1..32), Zelle (i, j) im Viertel, Ausrichtung o (0..7).
+        static defined int Arc(defined int r, defined int i, defined int j, defined int o) {
+            int rr = Math.Clamp(r, 1, 32)
+            int ii = Math.Clamp(i, 0, rr - 1)
+            int jj = Math.Clamp(j, 0, rr - 1)
+            return 169 + (((rr - 1) * 32 + ii) * 32 + jj) * 8 + (o & 7)
+        }
+
+        static defined bool IsArc(defined int p) { return p >= 169 && p < 262313 }
+        static defined int RadiusOf(defined int p) { return (p - 169) / 8192 + 1 }
+        static defined int ArcI(defined int p) { return ((p - 169) / 256) % 32 }
+        static defined int ArcJ(defined int p) { return ((p - 169) / 8) % 32 }
+
+        // Läuft der Bogen mit Radius r durch die Zelle (i, j)? (sonst ist sie ganz innen oder ganz außen)
+        static defined bool ArcCrosses(defined int r, defined int i, defined int j) {
+            return i * i + j * j < r * r && (i + 1) * (i + 1) + (j + 1) * (j + 1) > r * r
+        }
 
         // Das Polygon der gefüllten Fläche im Voxel (Koordinaten 0..1, gegen den Uhrzeigersinn) nach xs/ys; gibt die Zahl der Punkte (3..5).
         static defined int Polygon(defined int p, defined float xs[], defined float ys[]) {
+            if (Raser.Plan.IsArc(p)) { return Raser.Plan.ArcPolygon(p, xs, ys) }
             if (!Raser.Plan.IsDiagonal(p)) {
                 xs[0] = 0.0
                 ys[0] = 0.0
@@ -109,6 +139,122 @@ namespace Raser {
             return m
         }
 
+        // Das Polygon einer Rundung: das Quadrat der Zelle am Kreis beschnitten; zwischen Austritt und Eintritt zwei Punkte auf dem Bogen. Der erste
+        // Punkt ist die Ecke fern vom Mittelpunkt, wenn sie dazugehört - von ihr aus sieht man jeden Punkt der Fläche (auch der nicht konvexen
+        // Innenecke), so bleibt der Fächer der Deckfläche richtig.
+        static defined int ArcPolygon(defined int p, defined float xs[], defined float ys[]) {
+            int r = Raser.Plan.RadiusOf(p)
+            int ci = Raser.Plan.ArcI(p)
+            int cj = Raser.Plan.ArcJ(p)
+            int o = Raser.Plan.OrientationOf(p)
+            bool outside = (o & 1) != 0
+            float rr = r * r * 1.0
+            // die Ecken gegen den Uhrzeigersinn, ab der fernen (1, 1)
+            defined float cx[4]
+            defined float cy[4]
+            cx[0] = 1.0
+            cy[0] = 1.0
+            cx[1] = 0.0
+            cy[1] = 1.0
+            cx[2] = 0.0
+            cy[2] = 0.0
+            cx[3] = 1.0
+            cy[3] = 0.0
+            defined bool keep[4]
+            for (int k = 0; k < 4; k++) {
+                float u = ci + cx[k]
+                float v = cj + cy[k]
+                bool inside = u * u + v * v < rr
+                keep[k] = inside != outside
+            }
+            // die zwei Schnittpunkte mit dem Kreis (Zellkoordinaten) und welcher davon der Eintritt ist
+            defined float ix[2]
+            defined float iy[2]
+            int found = 0
+            int entry = 0
+            for (int k = 0; k < 4; k++) {
+                int l = (k + 1) % 4
+                if (keep[k] == keep[l] || found >= 2) { continue }
+                float px = 0.0
+                float py = 0.0
+                if (cx[k] == cx[l]) {
+                    // senkrechte Kante bei u = ci + cx
+                    float u = ci + cx[k]
+                    px = cx[k]
+                    py = Math.Sqrt(Math.Max(rr - u * u, 0.0)) - cj
+                } else {
+                    float v = cj + cy[k]
+                    py = cy[k]
+                    px = Math.Sqrt(Math.Max(rr - v * v, 0.0)) - ci
+                }
+                ix[found] = Math.Clamp(px, 0.0, 1.0)
+                iy[found] = Math.Clamp(py, 0.0, 1.0)
+                if (!keep[k]) { entry = found }
+                found++
+            }
+            int m = 0
+            if (found < 2) {
+                // der Bogen streift die Zelle nicht: ganz oder gar nicht
+                if (!keep[0]) { return 0 }
+                for (int k = 0; k < 4; k++) {
+                    xs[m] = cx[k]
+                    ys[m] = cy[k]
+                    m++
+                }
+                return m
+            }
+            int exit = 1 - entry
+            int seen = 0
+            for (int k = 0; k < 4; k++) {
+                int l = (k + 1) % 4
+                if (keep[k]) {
+                    xs[m] = cx[k]
+                    ys[m] = cy[k]
+                    m++
+                }
+                if (keep[k] == keep[l]) { continue }
+                int at = seen
+                seen++
+                xs[m] = ix[at]
+                ys[m] = iy[at]
+                m++
+                if (at == exit) {
+                    // auf dem Bogen vom Austritt zum Eintritt
+                    float a0 = Math.Atan2(cj + iy[exit], ci + ix[exit])
+                    float a1 = Math.Atan2(cj + iy[entry], ci + ix[entry])
+                    for (int s = 1; s <= 2; s++) {
+                        float a = a0 + (a1 - a0) * s / 3.0
+                        xs[m] = Math.Clamp(r * Math.Cos(a) - ci, 0.0, 1.0)
+                        ys[m] = Math.Clamp(r * Math.Sin(a) - cj, 0.0, 1.0)
+                        m++
+                    }
+                }
+            }
+            // das Viertel: gespiegelt in x und/oder y (der erste Punkt bleibt vorn, der Umlauf wieder gegen den Uhrzeigersinn)
+            if ((o & 2) != 0) {
+                for (int k = 0; k < m; k++) { xs[k] = 1.0 - xs[k] }
+                Raser.Plan.ReverseTail(xs, ys, m)
+            }
+            if ((o & 4) != 0) {
+                for (int k = 0; k < m; k++) { ys[k] = 1.0 - ys[k] }
+                Raser.Plan.ReverseTail(xs, ys, m)
+            }
+            return m
+        }
+
+        // die Punkte 1 .. m-1 umkehren (der Umlauf dreht sich, der erste Punkt bleibt)
+        static undefined ReverseTail(defined float xs[], defined float ys[], defined int m) {
+            for (int i = 1; i < 1 + (m - 1) / 2; i++) {
+                int j = m - i
+                float tx = xs[i]
+                float ty = ys[i]
+                xs[i] = xs[j]
+                ys[i] = ys[j]
+                xs[j] = tx
+                ys[j] = ty
+            }
+        }
+
         static undefined Reverse(defined float xs[], defined float ys[], defined int m) {
             for (int i = 0; i < m / 2; i++) {
                 float tx = xs[i]
@@ -122,8 +268,8 @@ namespace Raser {
 
         // Die gefüllte Fläche (Anteil am Voxel).
         static defined float Area(defined int p) {
-            defined float xs[6]
-            defined float ys[6]
+            defined float xs[8]
+            defined float ys[8]
             int m = Raser.Plan.Polygon(p, xs, ys)
             float s = 0.0
             for (int i = 0; i < m; i++) {

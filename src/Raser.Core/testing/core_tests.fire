@@ -71,13 +71,55 @@ class PlanTests {
         }
     }
 
+    [Test "Rundungen: Katalog, Gegenstücke, Viertelkreis-Fläche"]
+    undefined Arcs() {
+        int p = Raser.Plan.Arc(17, 9, 14, 5)
+        Testing.Assert.IsTrue(Raser.Plan.IsArc(p))
+        Testing.Assert.IsTrue(!Raser.Plan.IsDiagonal(p))
+        Testing.Assert.AreEqual(17, Raser.Plan.RadiusOf(p))
+        Testing.Assert.AreEqual(9, Raser.Plan.ArcI(p))
+        Testing.Assert.AreEqual(14, Raser.Plan.ArcJ(p))
+        Testing.Assert.AreEqual(5, Raser.Plan.OrientationOf(p))
+        Testing.Assert.IsTrue(Raser.Plan.IsArc(Raser.Plan.Arc(32, 31, 31, 7)))
+        Testing.Assert.AreEqual(Raser.Plan.ArcEnd - 1, Raser.Plan.Arc(32, 31, 31, 7))
+        defined float xs[8]
+        defined float ys[8]
+        for (int r = 1; r <= 12; r++) {
+            float sum = 0.0
+            for (int i = 0; i < r; i++) {
+                for (int j = 0; j < r; j++) {
+                    if ((i + 1) * (i + 1) + (j + 1) * (j + 1) <= r * r) {
+                        sum = sum + 1.0
+                        continue
+                    }
+                    if (!Raser.Plan.ArcCrosses(r, i, j)) { continue }
+                    for (int o = 0; o < 8; o = o + 2) {
+                        float a = Raser.Plan.Area(Raser.Plan.Arc(r, i, j, o))
+                        float b = Raser.Plan.Area(Raser.Plan.Arc(r, i, j, o + 1))
+                        Testing.Assert.IsTrue(a >= 0.0 && b >= 0.0)
+                        Testing.Assert.IsTrue(Math.Abs(a + b - 1.0) < 0.0001)
+                        Testing.Assert.IsTrue(Raser.Plan.Polygon(Raser.Plan.Arc(r, i, j, o + 1), xs, ys) <= Raser.Plan.MaxPoints)
+                    }
+                    sum = sum + Raser.Plan.Area(Raser.Plan.Arc(r, i, j, 0))
+                }
+            }
+            // der Viertelkreis, bis auf die Sehnen des Bogens (drei je Zelle)
+            float exact = Math.PI * r * r / 4.0
+            Testing.Assert.IsTrue(sum <= exact + 0.0001)
+            Testing.Assert.IsTrue(sum > exact - 0.04 * r)
+        }
+    }
+
     [Test "Grundriss-Formen im Chunk: Kodieren, Dekodieren, Hash"]
     undefined InChunk() {
         var c = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))
         c.Set(5, 6, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
         c.SetPlan(5, 6, 7, Raser.Plan.Diagonal(4, 2, 5))
+        c.Set(5, 7, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(5, 7, 7, Raser.Plan.Arc(20, 3, 19, 6))
         var back = Raser.Chunk.Decode(c.Encode())
         Testing.Assert.AreEqual(Raser.Plan.Diagonal(4, 2, 5), back.PlanAt(5, 6, 7))
+        Testing.Assert.AreEqual(Raser.Plan.Arc(20, 3, 19, 6), back.PlanAt(5, 7, 7))
         Testing.Assert.AreEqual(0, back.PlanAt(5, 6, 8))
         Testing.Assert.AreEqual(c.ContentHash(), back.ContentHash())
         var plain = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))

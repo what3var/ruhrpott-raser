@@ -600,9 +600,9 @@ namespace Raser {
         // Die Voxel mit Grundriss-Form (Raser.Plan): das Polygon oben (mit den Eckhöhen, bilinear) und unten, die schräge Kante und die Seiten auf dem
         // Rand des Voxels, wo der Nachbar sie nicht verdeckt.
         undefined PlanFaces(ChunkMesh mesh, byte mats[], byte cols[], byte cut[]) {
-            defined float xs[6]
-            defined float ys[6]
-            defined float hz[6]
+            defined float xs[8]
+            defined float ys[8]
+            defined float hz[8]
             foreach (pair in this.center.plans) {
                 defined int i = pair.Key
                 defined int p = pair.Value
