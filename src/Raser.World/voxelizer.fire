@@ -181,10 +181,12 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 11: die Grundriss-Formen erst über dem Gelände (Sockel), keine Löcher am Wandfuß
+        // 10: Diagonalen nach Bresenham - je Voxelreihe ein Element, lückenlos und ohne Drift
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 9
+        static readonly defined int Version = 11
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -411,52 +413,82 @@ namespace Raser {
         // Alle Lagen werden aus dem kachel-lokalen Voxel-Index gerechnet ((lx + 0,5) * 0,2), damit jeder Chunk dieselbe Säule gleich sieht.
         // Grundrisse und Flächen werden zeilenweise gerastert (Schnittpunkte der Zeile mit dem Ring, Gerade-Ungerade wie Geo.Inside),
         // Straßen segmentweise (nur die Säulen im Rechteck um das Segment).
-        // Gibt den Säulen an schrägen Kanten der Grundrisse eine Diagonale aus dem Katalog (Raser.Plan): Länge n aus der Steigung (1:1 .. 1:6; flacher
-        // bleibt achsparallel), Teil k aus der Lage der Kante in der Säule, die gefüllte Seite aus dem Inneren des Grundrisses. Säulen direkt außerhalb,
-        // durch die die Kante läuft, kommen zum Gebäude dazu (owner). Raster wie owner: 66 x 66 mit Rand, (i, j) ab -1.
+        // Gibt den Säulen an schrägen Kanten der Grundrisse Diagonalen aus dem Katalog (Raser.Plan) - wie eine Linie nach Bresenham: je Voxelreihe,
+        // die die Kante durchquert, ein Element; seine Länge (1..6) ergibt sich aus den Schnittpunkten der Kante mit den Reihengrenzen, so schließen die
+        // Elemente lückenlos aneinander und folgen der echten Linie ohne Drift (bei Steigung 0,47 meist 2er, ab und zu ein 3er). Flacher als 1:6,5
+        // bleibt achsparallel. Die gefüllte Seite kommt aus dem Inneren des Grundrisses; Säulen direkt außerhalb, durch die die Kante läuft, kommen zum
+        // Gebäude dazu (owner). Raster wie owner: 66 x 66 mit Rand, (i, j) ab -1.
         static undefined FitDiagonals(List<RoofModel> models, int owner[], defined int planOf[], defined int lx0, defined int ly0) {
             for (int m = 0; m < models.Count; m++) {
                 float ring[] = models[m].building.footprint
                 int pts = ring.length / 2
                 for (int e = 0; e < pts; e++) {
-                    float ax = ring[e * 2]
-                    float ay = ring[e * 2 + 1]
-                    float bx = ring[((e + 1) % pts) * 2]
-                    float by = ring[((e + 1) % pts) * 2 + 1]
-                    float dx = bx - ax
-                    float dy = by - ay
-                    float len2 = dx * dx + dy * dy
-                    if (len2 < 0.09) { continue }
-                    bool axisY = Math.Abs(dy) > Math.Abs(dx)
-                    float slope = dy / dx
-                    if (axisY) { slope = dx / dy }
-                    if (Math.Abs(slope) < 1.0 / 6.5) { continue }          // achsparallel genug
-                    int n = Math.Clamp(Math.Round(1.0 / Math.Abs(slope))!int, 1, 6)
+                    // in Voxeln, kachel-lokal
+                    float ax = ring[e * 2] / 0.2
+                    float ay = ring[e * 2 + 1] / 0.2
+                    float bx = ring[((e + 1) % pts) * 2] / 0.2
+                    float by = ring[((e + 1) % pts) * 2 + 1] / 0.2
+                    bool axisY = Math.Abs(by - ay) > Math.Abs(bx - ax)
+                    // Laufrichtung u (die längere Achse), quer dazu v
+                    float au = ax
+                    float av = ay
+                    float bu = bx
+                    float bv = by
+                    if (axisY) {
+                        au = ay
+                        av = ax
+                        bu = by
+                        bv = bx
+                    }
+                    if (bu < au) {
+                        float t = au
+                        au = bu
+                        bu = t
+                        t = av
+                        av = bv
+                        bv = t
+                    }
+                    float du = bu - au
+                    float dv = bv - av
+                    if (du < 1.5) { continue }                            // kurz: bleibt, wie es ist
+                    float slope = dv / du
+                    if (Math.Abs(slope) < 1.0 / 6.5) { continue }         // achsparallel genug
                     bool rising = slope > 0.0
-                    int i0 = Math.Max(-1, Math.Floor(Math.Min(ax, bx) * 5.0)!int - lx0 - 1)
-                    int i1 = Math.Min(64, Math.Floor(Math.Max(ax, bx) * 5.0)!int - lx0 + 1)
-                    int j0 = Math.Max(-1, Math.Floor(Math.Min(ay, by) * 5.0)!int - ly0 - 1)
-                    int j1 = Math.Min(64, Math.Floor(Math.Max(ay, by) * 5.0)!int - ly0 + 1)
-                    for (int j = j0; j <= j1; j++) {
-                        for (int i = i0; i <= i1; i++) {
-                            float x0 = (lx0 + i) * 0.2
-                            float y0 = (ly0 + j) * 0.2
-                            // nur im Bereich der Kante (die Mitte der Säule auf die Kante projiziert)
-                            float t = ((x0 + 0.1 - ax) * dx + (y0 + 0.1 - ay) * dy) / len2
-                            if (t < -0.01 || t > 1.01) { continue }
-                            // die Kante in der Säule: a beim Eintritt (Voxel), b beim Austritt
-                            float a = 0.0
-                            if (axisY) { a = (ax + slope * (y0 - ay) - x0) / 0.2 } else { a = (ay + slope * (x0 - ax) - y0) / 0.2 }
-                            int k = Math.Round(a * n)!int
-                            if (!rising) { k = k - 1 }
-                            if (k < 0 || k >= n) { continue }
-                            // welche Seite innen liegt: ein Punkt knapp unter der Kante (im Muster: kleineres v)
-                            float lineV = a + slope * 0.5
-                            float wx = x0 + 0.1
-                            float wy = y0 + (lineV - 0.15) * 0.2
+                    // die Reihen (v), die die Kante durchquert
+                    int r0 = Math.Floor(Math.Min(av, bv))!int
+                    int r1 = Math.Floor(Math.Max(av, bv))!int
+                    for (int r = r0; r <= r1; r++) {
+                        // wo die Kante die Reihengrenzen r und r + 1 schneidet (u), auf ganze Säulen gerundet
+                        float u0 = au + (r - av) / slope
+                        float u1 = au + (r + 1 - av) / slope
+                        int c0 = Math.Round(Math.Min(u0, u1))!int
+                        int c1 = Math.Round(Math.Max(u0, u1))!int
+                        int len = c1 - c0
+                        if (len < 1 || len > 6) { continue }
+                        for (int q = 0; q < len; q++) {
+                            int cu = c0 + q
+                            // nur im Bereich der Kante
+                            if (cu + 1 < Math.Floor(au)!int || cu > Math.Ceiling(bu)!int) { continue }
+                            int k = q
+                            if (!rising) { k = len - 1 - q }
+                            // die Säule im owner-Raster
+                            int i = cu - lx0
+                            int j = r - ly0
                             if (axisY) {
-                                wx = x0 + (lineV - 0.15) * 0.2
-                                wy = y0 + 0.1
+                                i = r - lx0
+                                j = cu - ly0
+                            }
+                            if (i < -1 || j < -1 || i > 64 || j > 64) { continue }
+                            // welche Seite innen liegt: ein Punkt knapp unter der Kante (v kleiner) in der Mitte der Säule
+                            float lineV = 0.0
+                            if (rising) { lineV = (k + 0.5) / len } else { lineV = (k + 0.5) / len }
+                            float pu = cu + 0.5
+                            float pv = r + lineV - 0.3 / len - 0.05
+                            float wx = pu * 0.2
+                            float wy = pv * 0.2
+                            if (axisY) {
+                                wx = pv * 0.2
+                                wy = pu * 0.2
                             }
                             int side = 1
                             if (Raser.Geo.Inside(ring, wx, wy)) { side = 0 }
@@ -466,7 +498,7 @@ namespace Raser {
                             int cell = (j + 1) * 66 + (i + 1)
                             if (owner[cell] >= 0 && owner[cell] != m) { continue }
                             owner[cell] = m
-                            planOf[cell] = Raser.Plan.Diagonal(n, k, o)
+                            planOf[cell] = Raser.Plan.Diagonal(len, k, o)
                         }
                     }
                 }
@@ -862,12 +894,15 @@ namespace Raser {
                         chunk.colors[i] = concreteColor
                     }
                 }
-                // die Grundriss-Form der Säule für alles ab dem Boden (Wand, Fenster, Dach)
+                // die Grundriss-Form der Säule für alles über dem Gelände (Wand, Fenster, Dach); bis zur Geländeoberfläche bleibt die Säule voll - ein
+                // Sockel, sonst blieben am Fuß der Wand die abgeschnittenen Dreiecke als Löcher im Boden
                 int ps = this.planShape[c]
                 if (ps != 0) {
+                    int planFrom = ground
+                    if (floor + 1 > planFrom) { planFrom = floor + 1 }
                     for (int z = 0; z <= zEnd; z++) {
                         int vz = vz0 + z
-                        if (vz < ground) { continue }
+                        if (vz < planFrom) { continue }
                         int i = c + (z << 12)
                         if (chunk.materials[i] != 0) { chunk.plans[i] = ps }
                     }

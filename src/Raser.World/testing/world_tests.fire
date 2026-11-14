@@ -276,6 +276,36 @@ class VoxelizerTests {
         }
     }
 
+    [Test "Schräge Wand: Diagonalen 2x1 lückenlos, die Fläche innen, am Fuß ein voller Sockel"]
+    undefined SlantedWall() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:schraeg"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        // ein Parallelogramm: die untere Kante steigt 1:2 von (2, 2) nach (10, 6)
+        b.footprint = [2.0, 2.0, 10.0, 6.0, 10.0, 11.0, 2.0, 11.0]
+        b.ground = 60.0
+        b.eaves = 64.0
+        b.ridge = 64.0
+        b.roofType = Raser.RoofType.Flat
+        tile.data.buildings.Add(take b)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // je Voxelreihe y zwei Teile (k = 0, 1) eines 2x1-Elements, gefüllt über der Kante (Ausrichtung 1)
+        for (int y = 11; y < 22; y++) {
+            int x = 10 + (y - 10) * 2
+            int p0 = c.PlanAt(x, y, 47)
+            int p1 = c.PlanAt(x + 1, y, 47)
+            Testing.Assert.AreEqual(Raser.Plan.Diagonal(2, 0, 1), p0)
+            Testing.Assert.AreEqual(Raser.Plan.Diagonal(2, 1, 1), p1)
+            // auf der Höhe des Geländes (Voxel 299, die Oberfläche liegt bei 60,0 m): voll
+            Testing.Assert.AreEqual(0, c.PlanAt(x, y, 43))
+            Testing.Assert.IsTrue(c.MaterialAt(x, y, 43) != 0)
+        }
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
