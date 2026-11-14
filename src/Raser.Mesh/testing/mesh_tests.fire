@@ -102,6 +102,31 @@ class MeshTests {
         Testing.Assert.AreEqual(5, mesh.opaque.Count)
     }
 
+    [Test "Bit-Zeilen in 64, 32 und 16 Bit: dasselbe Netz"]
+    undefined WordWidths() {
+        var c = MeshTests.Empty()
+        // gemischt: Gelände mit Schnitten, eine Wand mit Glas, Wasser, Lücken über die Wortgrenzen (x 15/16, 31/32, 47/48) und den Rand
+        c.Fill(0, 0, 0, 63, 63, 3, Raser.Material.Soil!int, Raser.Palette.Soil)
+        for (int x = 0; x < 64; x = x + 3) { c.Set(x, (x * 7) % 64, 4, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 3, 4)) }
+        c.Fill(10, 20, 4, 50, 21, 20, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.Fill(14, 20, 8, 17, 21, 12, Raser.Material.Glass!int, Raser.Palette.Glass)
+        c.Fill(30, 20, 8, 33, 21, 12, Raser.Material.Glass!int, Raser.Palette.Glass)
+        c.Fill(46, 20, 8, 49, 21, 12, 0, 0)
+        c.Fill(0, 40, 4, 63, 45, 5, Raser.Material.Water!int, Raser.Palette.Water)
+        c.Fill(60, 0, 4, 63, 63, 63, Raser.Material.Concrete!int, Raser.Palette.Concrete)
+        var a = new Raser.Mesher(c).Build()
+        foreach (bits in [32, 16]) {
+            var m = new Raser.Mesher(c)
+            m.wordBits = bits
+            var b = m.Build()
+            Testing.Assert.AreEqual(a.opaque.Count, b.opaque.Count)
+            Testing.Assert.AreEqual(a.transparent.Count, b.transparent.Count)
+            for (int i = 0; i < a.opaque.Count * 12; i++) { Testing.Assert.AreEqual(a.opaque.positions[i], b.opaque.positions[i]) }
+        }
+        Testing.Assert.IsTrue(a.opaque.Count > 20)
+        Testing.Assert.IsTrue(a.transparent.Count > 4)
+    }
+
     [Test "Glas: eigener Teil, keine Flächen zwischen Glas"]
     undefined Glass() {
         var c = MeshTests.Empty()
@@ -137,7 +162,7 @@ class MeshTests {
         var bytes = Raser.ChunkFace.EncodeAll(east)
         var b = new Raser.Mesher(c, undefined, Raser.ChunkFace.Decode(bytes, 0)).Build()
         Testing.Assert.AreEqual(a.opaque.Count, b.opaque.Count)
-        for (int i = 0; i < a.opaque.positions.Count; i++) { Testing.Assert.AreEqual(a.opaque.positions[i], b.opaque.positions[i]) }
+        for (int i = 0; i < a.opaque.Count * 12; i++) { Testing.Assert.AreEqual(a.opaque.positions[i], b.opaque.positions[i]) }
         Testing.Assert.IsFalse(Raser.ChunkFace.Of(east, 0).solid)
         Testing.Assert.IsTrue(Raser.ChunkFace.Of(east, 4).solid)
     }

@@ -153,55 +153,100 @@ class ColumnBuilder {
     }
 }
 
-// Sammelt die Vierecke eines Blocks in Szenen-Koordinaten; die Farbe steckt in den Texturkoordinaten (die Palette ist eine Textur von 256 x 1),
-// so wird ein Block ein Objekt statt einem je Farbe.
+// Sammelt die Netze eines Blocks (samt Verschiebung) und macht daraus die Arrays für scene3d in Szenen-Koordinaten; die Farbe steckt in den
+// Texturkoordinaten (die Palette ist eine Textur von 256 x 1), so wird ein Block ein Objekt statt einem je Farbe.
 class BlockMesh {
-    List<float> positions
-    List<float> uvs
+    List<Raser.MeshPart> parts
+    List<float> offsets             // je Netz ox, oy, oz
     defined int quads
 
     construct() {
-        this.positions = new List<float>()
-        this.uvs = new List<float>()
+        this.parts = new List<Raser.MeshPart>()
+        this.offsets = new List<float>()
     }
 
-    // Die Vierecke eines Netzes (Raser: x Ost, y Nord, z oben), verschoben um (ox, oy, oz) - Szene: x = Ost, y = oben, z = -Nord.
+    // Ein Netz (Raser: x Ost, y Nord, z oben), verschoben um (ox, oy, oz) - mit take übergeben, der Block behält es bis Batches.
     undefined Add(Raser.MeshPart part, defined float ox, defined float oy, defined float oz) {
-        for (int q = 0; q < part.Count; q++) {
-            float u = (part.colors[q] + 0.5) / 256.0
-            for (int c = 0; c < 4; c++) {
-                int src = q * 12 + c * 3
-                this.positions.Add(ox + part.positions[src])
-                this.positions.Add(oz + part.positions[src + 2])
-                this.positions.Add(-(oy + part.positions[src + 1]))
-                this.uvs.Add(u)
-                this.uvs.Add(0.5)
-            }
-            this.quads++
-        }
+        if (part == undefined || part.Count == 0) { return }
+        this.quads = this.quads + part.Count
+        this.parts.Add(part)
+        try part.TakeTo(this.parts)
+        this.offsets.Add(ox)
+        this.offsets.Add(oy)
+        this.offsets.Add(oz)
     }
 
-    // Die Arrays für scene3d (höchstens 16.000 Vierecke je Netz: die Indizes sind 16 Bit) - geht auch in einem Worker.
+    // Die Arrays für scene3d (höchstens 16.000 Vierecke je Netz: die Indizes sind 16 Bit), in einem Durchgang über lokale Arrays - geht auch in
+    // einem Worker. Szene: x = Ost, y = oben, z = -Nord.
     undefined Batches(defined float opacity, List<MeshBatch> out) {
+        defined int pi = 0          // das Netz und das Viereck darin, bei dem es weitergeht
+        defined int pq = 0
+        float src[] = undefined
+        int col[] = undefined
+        defined float ox = 0.0
+        defined float oy = 0.0
+        defined float oz = 0.0
+        defined int partCount = 0
+        if (this.parts.Count > 0) {
+            src = this.parts[0].positions
+            col = this.parts[0].colors
+            partCount = this.parts[0].Count
+            ox = this.offsets[0]
+            oy = this.offsets[1]
+            oz = this.offsets[2]
+        }
         for (int first = 0; first < this.quads; first = first + 16000) {
-            int n = Math.Min(16000, this.quads - first)
+            defined int n = Math.Min(16000, this.quads - first)
+            float pos[] = new float[n * 12]
+            float uv[] = new float[n * 8]
+            int idx[] = new int[n * 6]
+            for (int q = 0; q < n; q++) {
+                while (pq >= partCount) {
+                    pi++
+                    pq = 0
+                    src = this.parts[pi].positions
+                    col = this.parts[pi].colors
+                    partCount = this.parts[pi].Count
+                    ox = this.offsets[pi * 3]
+                    oy = this.offsets[pi * 3 + 1]
+                    oz = this.offsets[pi * 3 + 2]
+                }
+                float u = (col[pq] + 0.5) / 256.0
+                defined int s = pq * 12
+                defined int d = q * 12
+                for (int c = 0; c < 4; c++) {
+                    pos[d] = ox + src[s]
+                    pos[d + 1] = oz + src[s + 2]
+                    pos[d + 2] = -(oy + src[s + 1])
+                    s = s + 3
+                    d = d + 3
+                }
+                defined int t = q * 8
+                uv[t] = u
+                uv[t + 1] = 0.5
+                uv[t + 2] = u
+                uv[t + 3] = 0.5
+                uv[t + 4] = u
+                uv[t + 5] = 0.5
+                uv[t + 6] = u
+                uv[t + 7] = 0.5
+                // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
+                defined int k = q * 6
+                defined int v = q * 4
+                idx[k] = v
+                idx[k + 1] = v + 1
+                idx[k + 2] = v + 2
+                idx[k + 3] = v
+                idx[k + 4] = v + 2
+                idx[k + 5] = v + 3
+                pq++
+            }
             var batch = new MeshBatch()
             batch.opacity = opacity
             batch.quads = n
-            batch.positions = new float[n * 12]
-            batch.uvs = new float[n * 8]
-            batch.indices = new int[n * 6]
-            for (int i = 0; i < n * 12; i++) { batch.positions[i] = this.positions[first * 12 + i] }
-            for (int i = 0; i < n * 8; i++) { batch.uvs[i] = this.uvs[first * 8 + i] }
-            for (int i = 0; i < n; i++) {
-                // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
-                batch.indices[i * 6] = i * 4
-                batch.indices[i * 6 + 1] = i * 4 + 1
-                batch.indices[i * 6 + 2] = i * 4 + 2
-                batch.indices[i * 6 + 3] = i * 4
-                batch.indices[i * 6 + 4] = i * 4 + 2
-                batch.indices[i * 6 + 5] = i * 4 + 3
-            }
+            batch.positions = take pos
+            batch.uvs = take uv
+            batch.indices = take idx
             out.Add(take batch)
         }
     }
@@ -305,14 +350,14 @@ class NearBuilder {
                 float ox = p.key.VoxelX * 0.2 - this.originE
                 float oy = p.key.VoxelY * 0.2 - this.originN
                 float oz = p.key.VoxelZ * 0.2 - this.originZ
-                opaque.Add(p.opaque, ox, oy, oz)
-                if (!this.opaqueOnly) { glass.Add(p.transparent, ox, oy, oz) }
+                opaque.Add(take p.opaque, ox, oy, oz)
+                if (!this.opaqueOnly) { glass.Add(take p.transparent, ox, oy, oz) }
             }
         }
         // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein, ohne die harten Zellen; die Voxel bringen, was darauf steht
         if (fm != undefined) {
             var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip)
-            opaque.Add(ground, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
+            opaque.Add(take ground, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
         }
         opaque.Batches(1.0, result.batches)
         glass.Batches(0.45, result.batches)
@@ -588,7 +633,7 @@ class WorldView {
         var fm = this.local.FarFor(tileKey)
         if (fm != undefined) {
             var part = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, sp)
-            mesh.Add(part, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
+            mesh.Add(take part, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
         }
         var batches = new List<MeshBatch>()
         mesh.Batches(1.0, batches)

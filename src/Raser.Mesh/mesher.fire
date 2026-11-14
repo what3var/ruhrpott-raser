@@ -11,23 +11,50 @@
 #import "raser.core"
 
 namespace Raser {
+    // Die Vierecke eines Netzes in Arrays, die wie eine Liste mitwachsen (gefüllt bis Count; typisierte Arrays sind nativ dicht gepackt und
+    // schneller gefüllt als List<float>).
     class MeshPart {
-        List<float> positions     // 12 je Viereck (4 Ecken x, y, z)
-        List<float> normals       // 3 je Viereck
-        List<int> colors          // 1 je Viereck (Palettenindex)
-        List<int> materials       // 1 je Viereck
+        float positions[]         // 12 je Viereck (4 Ecken x, y, z)
+        float normals[]           // 3 je Viereck
+        int colors[]              // 1 je Viereck (Palettenindex)
+        int materials[]           // 1 je Viereck
+        defined int count
 
         construct() {
-            this.positions = new List<float>()
-            this.normals = new List<float>()
-            this.colors = new List<int>()
-            this.materials = new List<int>()
+            this.positions = new float[96]
+            this.normals = new float[24]
+            this.colors = new int[8]
+            this.materials = new int[8]
         }
 
-        defined int Count { get { return this.colors.Count } }
+        defined int Count { get { return this.count } }
+
+        // Platz für doppelt so viele Vierecke.
+        undefined Grow() {
+            defined int n = this.count
+            float p[] = new float[n * 24]
+            float nn[] = new float[n * 6]
+            int c[] = new int[n * 2]
+            int m[] = new int[n * 2]
+            float op[] = this.positions
+            float onn[] = this.normals
+            int oc[] = this.colors
+            int om[] = this.materials
+            for (int i = 0; i < n * 12; i++) { p[i] = op[i] }
+            for (int i = 0; i < n * 3; i++) { nn[i] = onn[i] }
+            for (int i = 0; i < n; i++) {
+                c[i] = oc[i]
+                m[i] = om[i]
+            }
+            this.positions = take p
+            this.normals = take nn
+            this.colors = take c
+            this.materials = take m
+        }
 
         // Ein Viereck; die Reihenfolge der Ecken wird so gedreht, dass es zur Normale (nx, ny, nz) zeigt.
         undefined Quad(defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float cx, defined float cy, defined float cz, defined float dx, defined float dy, defined float dz, defined float nx, defined float ny, defined float nz, defined int color, defined int material) {
+            if (this.count == this.colors.length) { this.Grow() }
             float ux = bx - ax
             float uy = by - ay
             float uz = bz - az
@@ -37,28 +64,38 @@ namespace Raser {
             float px = uy * vz - uz * vy
             float py = uz * vx - ux * vz
             float pz = ux * vy - uy * vx
+            float p[] = this.positions
+            defined int at = this.count * 12
+            p[at] = ax
+            p[at + 1] = ay
+            p[at + 2] = az
             if (px * nx + py * ny + pz * nz < 0.0) {
-                this.Add(ax, ay, az)
-                this.Add(dx, dy, dz)
-                this.Add(cx, cy, cz)
-                this.Add(bx, by, bz)
+                p[at + 3] = dx
+                p[at + 4] = dy
+                p[at + 5] = dz
+                p[at + 9] = bx
+                p[at + 10] = by
+                p[at + 11] = bz
             } else {
-                this.Add(ax, ay, az)
-                this.Add(bx, by, bz)
-                this.Add(cx, cy, cz)
-                this.Add(dx, dy, dz)
+                p[at + 3] = bx
+                p[at + 4] = by
+                p[at + 5] = bz
+                p[at + 9] = dx
+                p[at + 10] = dy
+                p[at + 11] = dz
             }
-            this.normals.Add(nx)
-            this.normals.Add(ny)
-            this.normals.Add(nz)
-            this.colors.Add(color)
-            this.materials.Add(material)
-        }
-
-        undefined Add(defined float x, defined float y, defined float z) {
-            this.positions.Add(x)
-            this.positions.Add(y)
-            this.positions.Add(z)
+            p[at + 6] = cx
+            p[at + 7] = cy
+            p[at + 8] = cz
+            float nn[] = this.normals
+            nn[this.count * 3] = nx
+            nn[this.count * 3 + 1] = ny
+            nn[this.count * 3 + 2] = nz
+            int c[] = this.colors
+            c[this.count] = color
+            int m[] = this.materials
+            m[this.count] = material
+            this.count++
         }
     }
 
@@ -80,6 +117,7 @@ namespace Raser {
     class Mesher {
         Chunk center
         defined bool skipTerrain    // Gelände-Voxel (Material 1..8: Erde bis Pflaster, Wasser) bekommen keine Flächen - das Gelände kommt als glattes Netz
+        defined int wordBits        // Breite der Bit-Wörter (0: Word.Bits; kleiner nur für Tests, die ein 32- oder 16-Bit-Ziel nachstellen)
         byte hardColumns[]          // mit skipTerrain: Säulen (x + 64 y, 1), in denen das Gelände doch Flächen bekommt (Raser.GroundCut); undefined: keine
         ChunkFace west          // die Randschichten der Nachbarn, die diesen Chunk berühren (undefined: Luft)
         ChunkFace east
@@ -219,7 +257,7 @@ namespace Raser {
             if (this.center.IsEmpty) { return mesh }
             // ganz verschüttet: ein voller Chunk zwischen vollen Nachbarn hat keine sichtbare Fläche
             if (Raser.Mesher.Solid(this.center) && Raser.Mesher.SolidFace(this.west) && Raser.Mesher.SolidFace(this.east) && Raser.Mesher.SolidFace(this.south) && Raser.Mesher.SolidFace(this.north) && Raser.Mesher.SolidFace(this.below) && Raser.Mesher.SolidFace(this.above)) { return mesh }
-            int mask[4096]
+            word mask[4096]         // je Zelle der Schicht: 0 oder 1 + Farbe + (Material << 8) (ein Puffer: ohne undefined, mit 0 vorbelegt)
             // Direkt auf die Puffer des Chunks; die geschnittenen Voxel einmal als Byte-Karte (statt je Voxel im Dictionary nachzuschlagen).
             byte mats[] = this.center.materials
             byte cols[] = this.center.colors
@@ -232,61 +270,173 @@ namespace Raser {
             }
             var states = Raser.Mesher.LayerStates(mats, cut, cutsPerLayer)
             var quiet = this.QuietLayers(mats)
+            // Je Zeile (y, z) die 64 Voxel in x als Bits: nicht Luft, verdeckt alles (voll, undurchsichtig, ungeschnitten), bringt Flächen (ungeschnitten /
+            // geschnitten - die nur nach unten). Danach findet jede Richtung ihre Flächen mit ein paar Bit-Operationen je Zeile statt Voxel für Voxel.
+            // Die Bits liegen in Maschinenwörtern (Puffer ohne undefined, mit 0 vorbelegt): eine Zeile sind 64 / Word.Bits Wörter - auf dem Desktop eins,
+            // auf einem 32-Bit-Ziel zwei. Wort k einer Zeile r liegt bei r * per + k und hält x = k * wb .. k * wb + wb - 1.
+            // (wb nur aus Literalen: Word.Bits ist für den nativen Übersetzer ein unbekannter Wert, und alles, was davon abhinge, liefe über die
+            // allgemeinen Laufzeit-Operationen - die Hälfte der Zeit)
+            defined int wb = 64
+            if (Word.Bits == 32 || this.wordBits == 32) { wb = 32 }
+            if (Word.Bits == 16 || this.wordBits == 16) { wb = 16 }
+            defined int per = 64 / wb
+            word one = 1
+            word top = one << (wb - 1)
+            word full = (one << wb) - 1        // alle Bits eines Worts (ein Schieben um die ganze Breite gibt 0)
+            word nonair[16384]
+            word occ[16384]
+            word emitFull[16384]
+            word emitCut[16384]
+            for (int z = 0; z < 64; z++) {
+                if (states[z] == 1) { continue }
+                bool q = quiet[z] != 0
+                if (states[z] == 2 && (q || !this.skipTerrain)) {
+                    for (int k = (z << 6) * per; k < ((z + 1) << 6) * per; k++) {
+                        nonair[k] = full
+                        occ[k] = full
+                        if (!q) { emitFull[k] = full }
+                    }
+                    continue
+                }
+                for (int y = 0; y < 64; y++) {
+                    defined int r = y + (z << 6)
+                    defined int at = r << 6
+                    for (int k = 0; k < per; k++) {
+                        word na = 0
+                        word oc = 0
+                        word ef = 0
+                        word ec = 0
+                        for (int b = 0; b < wb; b++) {
+                            defined int i = at + k * wb + b
+                            defined int m = mats[i]
+                            if (m == 0) { continue }
+                            word bit = one << b
+                            na = na | bit
+                            bool skip = q || (this.skipTerrain && m <= 8 && this.Skips(i))
+                            if (cut[i] == 0) {
+                                if (m != 11 && m != 6) { oc = oc | bit }
+                                if (!skip) { ef = ef | bit }
+                            } else if (!skip) {
+                                ec = ec | bit
+                            }
+                        }
+                        defined int w = r * per + k
+                        nonair[w] = na
+                        occ[w] = oc
+                        emitFull[w] = ef
+                        emitCut[w] = ec
+                    }
+                }
+            }
+            word vis[16384]           // je Zeile: sicher sichtbare Flächen
+            word slow[16384]          // je Zeile: Flächen, bei denen der Nachbar genau geprüft wird (durchsichtig, geschnitten, im Nachbar-Chunk)
+            word anyBits[4]               // je Wort: in irgendeiner Zeile eine Fläche (Richtung x: welche Schichten etwas haben)
             // Richtungen: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z
             for (int dir = 0; dir < 6; dir++) {
-                int axis = dir / 2
-                int sign = (dir % 2) * 2 - 1
-                for (int s = 0; s < 64; s++) {
-                    bool found = false
-                    // nach z: eine Schicht aus Luft hat keine Flächen, eine feste nur dort, wo die Nachbarschicht nicht fest ist
-                    if (axis == 2) {
-                        if (states[s] == 1 || quiet[s] != 0) { continue }
-                        if (states[s] == 2 && s + sign >= 0 && s + sign < 64 && states[s + sign] == 2) { continue }
+                defined int axis = dir / 2
+                defined int sign = (dir % 2) * 2 - 1
+                bool anything = false
+                for (int k = 0; k < per; k++) { anyBits[k] = 0 }
+                for (int r = 0; r < 4096; r++) {
+                    // der Nachbar quer zur Zeile (y oder z), oder am Rand des Chunks: alles genau prüfen
+                    defined int nr = -1
+                    bool rim = false
+                    if (axis > 0) {
+                        defined int c = r & 63
+                        defined int step = 1
+                        if (axis == 2) {
+                            c = r >> 6
+                            step = 64
+                        }
+                        if ((sign > 0 && c == 63) || (sign < 0 && c == 0)) { rim = true } else { nr = r + sign * step }
                     }
-                    for (int v = 0; v < 64; v++) {
-                        // nach x/y ist v die Schicht z: aus Luft, oder fest mit dem Nachbarn im selben Chunk - keine Fläche in dieser Zeile
-                        if (axis < 2 && (states[v] == 1 || quiet[v] != 0 || (states[v] == 2 && s + sign >= 0 && s + sign < 64))) {
-                            for (int u = 0; u < 64; u++) { mask[v * 64 + u] = 0 }
+                    for (int k = 0; k < per; k++) {
+                        defined int w = r * per + k
+                        word e = emitFull[w]
+                        if (dir == 4) { e = e | emitCut[w] }
+                        if (e == 0) {
+                            vis[w] = 0
+                            slow[w] = 0
                             continue
                         }
-                        for (int u = 0; u < 64; u++) {
-                            int x = 0
-                            int y = 0
-                            int z = 0
-                            if (axis == 0) {
-                                x = s
-                                y = u
-                                z = v
-                            } else if (axis == 1) {
-                                x = u
-                                y = s
-                                z = v
-                            } else {
-                                x = u
-                                y = v
-                                z = s
-                            }
-                            int value = 0
-                            int i = x + (y << 6) + (z << 12)
-                            int m = mats[i]
-                            // geschnittene Voxel: nur die Unterseite läuft hier mit
-                            if (m != 0 && (cut[i] == 0 || dir == 4) && !(this.skipTerrain && m <= 8 && this.Skips(i))) {
-                                int nx = x
-                                int ny = y
-                                int nz = z
-                                if (axis == 0) { nx = x + sign } else if (axis == 1) { ny = y + sign } else { nz = z + sign }
-                                bool hidden = false
-                                if (nx >= 0 && ny >= 0 && nz >= 0 && nx < 64 && ny < 64 && nz < 64) {
-                                    int ni = nx + (ny << 6) + (nz << 12)
-                                    int nm = mats[ni]
-                                    hidden = nm != 0 && (dir == 5 || cut[ni] == 0) && (!Raser.Mesher.IsTransparent(nm) || nm == m)
+                        word nAir = 0
+                        word nOcc = 0
+                        word edge = 0
+                        if (axis == 0) {
+                            // der Nachbar in x: dieselbe Zeile, um ein Bit verschoben (über die Wortgrenze hinweg)
+                            if (sign > 0) {
+                                nAir = nonair[w] >> 1
+                                nOcc = occ[w] >> 1
+                                if (k + 1 < per) {
+                                    nAir = nAir | (nonair[w + 1] << (wb - 1))
+                                    nOcc = nOcc | (occ[w + 1] << (wb - 1))
                                 } else {
-                                    hidden = this.Hides(nx, ny, nz, m, dir == 5)
+                                    edge = top
                                 }
-                                if (!hidden) { value = 1 + cols[i] + (m << 8) }
+                            } else {
+                                nAir = nonair[w] << 1
+                                nOcc = occ[w] << 1
+                                if (k > 0) {
+                                    nAir = nAir | (nonair[w - 1] >> (wb - 1))
+                                    nOcc = nOcc | (occ[w - 1] >> (wb - 1))
+                                } else {
+                                    edge = 1
+                                }
                             }
-                            mask[v * 64 + u] = value
-                            if (value != 0) { found = true }
+                        } else if (rim) {
+                            edge = full
+                        } else {
+                            nAir = nonair[nr * per + k]
+                            nOcc = occ[nr * per + k]
+                        }
+                        vis[w] = e & ~nAir & ~edge
+                        slow[w] = (e & nAir & ~nOcc & ~edge) | (e & edge)
+                        anyBits[k] = anyBits[k] | vis[w] | slow[w]
+                        anything = true
+                    }
+                }
+                if (!anything) { continue }
+                for (int s = 0; s < 64; s++) {
+                    bool found = false
+                    if (axis == 0) {
+                        defined int k = s / wb
+                        word bit = one << (s % wb)
+                        if ((anyBits[k] & bit) == 0) { continue }
+                        for (int r = 0; r < 4096; r++) {
+                            defined int w = r * per + k
+                            if (((vis[w] | slow[w]) & bit) == 0) { continue }
+                            if ((vis[w] & bit) != 0 || !this.HiddenAt(s, r & 63, r >> 6, dir, mats, cut)) {
+                                defined int i = s + (r << 6)
+                                mask[r] = 1 + cols[i] + (mats[i] << 8)
+                                found = true
+                            }
+                        }
+                    } else {
+                        for (int v = 0; v < 64; v++) {
+                            defined int r = s + (v << 6)
+                            if (axis == 2) { r = v + (s << 6) }
+                            defined int y = r & 63
+                            defined int z = r >> 6
+                            for (int k = 0; k < per; k++) {
+                                defined int w = r * per + k
+                                word b = vis[w]
+                                while (b != 0) {
+                                    defined int x = k * wb + Bits.TrailingZeros(b!int)
+                                    b = b & (b - 1)
+                                    defined int i = x + (r << 6)
+                                    mask[(v << 6) + x] = 1 + cols[i] + (mats[i] << 8)
+                                    found = true
+                                }
+                                b = slow[w]
+                                while (b != 0) {
+                                    defined int x = k * wb + Bits.TrailingZeros(b!int)
+                                    b = b & (b - 1)
+                                    if (this.HiddenAt(x, y, z, dir, mats, cut)) { continue }
+                                    defined int i = x + (r << 6)
+                                    mask[(v << 6) + x] = 1 + cols[i] + (mats[i] << 8)
+                                    found = true
+                                }
+                            }
                         }
                     }
                     if (found) { this.Greedy(mesh, mask, axis, sign, s) }
@@ -298,18 +448,18 @@ namespace Raser {
         }
 
         // Fasst gleiche Einträge der Maske zu Rechtecken zusammen und gibt sie aus.
-        undefined Greedy(ChunkMesh mesh, int mask[], defined int axis, defined int sign, defined int s) {
+        undefined Greedy(ChunkMesh mesh, word mask[], defined int axis, defined int sign, defined int s) {
             for (int v = 0; v < 64; v++) {
-                int u = 0
+                defined int u = 0
                 while (u < 64) {
-                    int value = mask[v * 64 + u]
+                    word value = mask[v * 64 + u]
                     if (value == 0) {
                         u++
                         continue
                     }
-                    int w = 1
+                    defined int w = 1
                     while (u + w < 64 && mask[v * 64 + u + w] == value) { w++ }
-                    int h = 1
+                    defined int h = 1
                     bool grow = true
                     while (v + h < 64 && grow) {
                         for (int k = 0; k < w; k++) {
@@ -323,15 +473,15 @@ namespace Raser {
                     for (int dv = 0; dv < h; dv++) {
                         for (int k = 0; k < w; k++) { mask[(v + dv) * 64 + u + k] = 0 }
                     }
-                    this.Rect(mesh, axis, sign, s, u, v, w, h, value)
+                    this.Rect(mesh, axis, sign, s, u, v, w, h, value!int)
                     u = u + w
                 }
             }
         }
 
         undefined Rect(ChunkMesh mesh, defined int axis, defined int sign, defined int s, defined int u, defined int v, defined int w, defined int h, defined int value) {
-            int color = (value - 1) & 255
-            int material = (value - 1) >> 8
+            defined int color = (value - 1) & 255
+            defined int material = (value - 1) >> 8
             float p = s * 0.2
             if (sign > 0) { p = (s + 1) * 0.2 }
             float u0 = u * 0.2
@@ -351,6 +501,21 @@ namespace Raser {
         }
 
         // Die geschnittenen Voxel Schicht für Schicht: die Seiten je Voxel, die Oberseiten zusammengefasst (GreedyTops).
+        // Verdeckt der Nachbar in Richtung dir die Fläche des Voxels (x, y, z)? (dieselbe Regel wie Hides, im Chunk direkt auf den Puffern)
+        defined bool HiddenAt(defined int x, defined int y, defined int z, defined int dir, byte mats[], byte cut[]) {
+            defined int m = mats[x + (y << 6) + (z << 12)]
+            defined int nx = x
+            defined int ny = y
+            defined int nz = z
+            if (dir == 0) { nx = x - 1 } else if (dir == 1) { nx = x + 1 } else if (dir == 2) { ny = y - 1 } else if (dir == 3) { ny = y + 1 } else if (dir == 4) { nz = z - 1 } else { nz = z + 1 }
+            if (nx >= 0 && ny >= 0 && nz >= 0 && nx < 64 && ny < 64 && nz < 64) {
+                defined int ni = nx + (ny << 6) + (nz << 12)
+                defined int nm = mats[ni]
+                return nm != 0 && (dir == 5 || cut[ni] == 0) && (!Raser.Mesher.IsTransparent(nm) || nm == m)
+            }
+            return this.Hides(nx, ny, nz, m, dir == 5)
+        }
+
         undefined SlopedFaces(ChunkMesh mesh, byte mats[], byte cols[], byte cut[], int cutsPerLayer[]) {
             int top[4096]
             for (int z = 0; z < 64; z++) {
