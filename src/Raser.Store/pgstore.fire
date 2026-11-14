@@ -20,7 +20,7 @@ namespace Raser {
         undefined EnsureSchema() { this.db.Execute(new Resource("../../db/schema.sql").Text()) }
 
         // Löscht alle Merkmale und Kacheln (für Tests und einen neuen Import).
-        undefined Clear() { this.db.Execute("truncate tile, building, road, area, poi") }
+        undefined Clear() { this.db.Execute("truncate tile, building, road, area, poi, prop") }
 
         undefined Close() { this.db.Close() }
 
@@ -59,6 +59,10 @@ namespace Raser {
                 foreach (p in d.pois) {
                     this.db.Execute("insert into poi (id, source, kind, name, position) values (?, ?, ?, ?, ST_GeomFromWKB(?, 25832)) on conflict (source) do update set kind = excluded.kind, name = excluded.name, position = excluded.position",
                         [p.id, p.source, p.kind, p.name, Raser.Wkb.Point(p.x + e0, p.y + n0)])
+                }
+                foreach (p in d.props) {
+                    this.db.Execute("insert into prop (id, source, kind, position, height, angle, detail) values (?, ?, ?, ST_GeomFromWKB(?, 25832), ?, ?, ?) on conflict (source) do update set kind = excluded.kind, position = excluded.position, height = excluded.height, angle = excluded.angle, detail = excluded.detail",
+                        [p.id, p.source, p.kind, Raser.Wkb.Point(p.x + e0, p.y + n0), p.height, p.angle, p.detail])
                 }
                 this.db.Execute("commit")
             } catch (Exception e) {
@@ -159,6 +163,20 @@ namespace Raser {
                 poi.x = pt[0] - e0
                 poi.y = pt[1] - n0
                 tile.data.pois.Add(take poi)
+            }
+            foreach (r in this.db.Query("select id, source, kind, ST_AsBinary(position, 'NDR') as pos, height, angle, detail from prop where position && ST_MakeEnvelope(?, ?, ?, ?, 25832) order by source", [e0, n0, e0 + 256.0, n0 + 256.0])) {
+                var pt = Raser.Wkb.ReadPoint(r.Bytes("pos"))
+                if (pt[0] < e0 || pt[1] < n0 || pt[0] >= e0 + 256.0 || pt[1] >= n0 + 256.0) { continue }
+                var prop = new Raser.Prop()
+                prop.id = r.Int("id")
+                prop.source = r.Text("source")
+                prop.kind = r.Text("kind")
+                prop.x = pt[0] - e0
+                prop.y = pt[1] - n0
+                prop.height = r.Float("height")
+                prop.angle = r.Float("angle")
+                prop.detail = r.Text("detail")
+                tile.data.props.Add(take prop)
             }
             return tile
         }

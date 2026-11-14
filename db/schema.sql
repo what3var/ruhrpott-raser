@@ -72,5 +72,17 @@ CREATE TABLE IF NOT EXISTS poi (
 );
 CREATE INDEX IF NOT EXISTS poi_position ON poi USING gist (position);
 
+-- Stadtmöbel und Vegetation (Raser.Prop): Bäume, Laternen, Bänke ... - ein Punkt, das Modell entsteht im Voxelizer.
+CREATE TABLE IF NOT EXISTS prop (
+    id          bigint  PRIMARY KEY,
+    source      text    NOT NULL UNIQUE,                -- 'osm:node/<id>' oder 'fill:<fläche>/<n>'
+    kind        text    NOT NULL,                       -- 'tree', 'lamp', 'bench', 'bin', 'sign', 'signal'
+    position    geometry(Point, 25832) NOT NULL,
+    height      real    NOT NULL DEFAULT 0,
+    angle       real    NOT NULL DEFAULT 0,
+    detail      text
+);
+CREATE INDEX IF NOT EXISTS prop_position ON prop USING gist (position);
+
 -- Die Chunks (RRC1 mit Deflate) und ihre Manifeste bleiben vorerst Dateien (world/chunks); sie gehören in den Key-Value-Store (Konzept: RocksDB),
 -- Schlüssel (kachel, chunk), die Deltas der Spieler ebenso.

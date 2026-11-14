@@ -56,6 +56,15 @@ class StoreSample {
         poi.x = 20.0
         poi.y = 30.0
         tile.data.pois.Add(take poi)
+        var tree = new Raser.Prop()
+        tree.source = "osm:node/77"
+        tree.id = Raser.Ids.Stable(Raser.IdKind.Prop, tree.source)
+        tree.kind = "tree"
+        tree.x = 30.5
+        tree.y = 12.25
+        tree.height = 11.0
+        tree.detail = "needleleaved"
+        tile.data.props.Add(take tree)
         return tile
     }
 }
@@ -126,6 +135,11 @@ class PostgresTests {
         Testing.Assert.AreEqual(5.5, back.data.roads[0].width)
         Testing.Assert.AreEqual(1, back.data.areas.Count)
         Testing.Assert.AreEqual(1, back.data.pois.Count)
+        Testing.Assert.AreEqual(1, back.data.props.Count)
+        Testing.Assert.AreEqual("tree", back.data.props[0].kind)
+        Testing.Assert.AreEqual(11.0, back.data.props[0].height)
+        Testing.Assert.AreEqual("needleleaved", back.data.props[0].detail)
+        Testing.Assert.IsTrue(Math.Abs(back.data.props[0].x - 30.5) < 0.001)
         Testing.Assert.AreEqual(back.heights.At(100.0, 100.0), tile.heights.At(100.0, 100.0))
         // Die Nachbarkachel im Osten sieht die Straße (sie reicht bis x = 300 m), aber nicht das Gebäude.
         var east = new Raser.Tile(new Raser.TileKey(1470, 22284))
