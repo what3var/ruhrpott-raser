@@ -134,6 +134,35 @@ namespace Raser {
             return states
         }
 
+        // Mit skipTerrain: je Schicht z 1, wenn sie keine Fläche bringt - nur Luft und Gelände-Voxel außerhalb der harten Säulen.
+        byte[] QuietLayers(byte mats[]) {
+            byte quiet[] = new byte[64]
+            if (!this.skipTerrain) { return quiet }
+            var hard = new List<int>()
+            if (this.hardColumns != undefined) {
+                for (int k = 0; k < 4096; k++) {
+                    if (this.hardColumns[k] != 0) { hard.Add(k) }
+                }
+            }
+            for (int z = 0; z < 64; z++) {
+                byte layer[] = mats.Slice(z << 12, 4096)
+                bool q = true
+                for (int m = 9; m < 16 && q; m++) {
+                    if (layer.IndexOf(m) >= 0) { q = false }
+                }
+                if (q) {
+                    foreach (k in hard) {
+                        if (layer[k] != 0) {
+                            q = false
+                            break
+                        }
+                    }
+                }
+                if (q) { quiet[z] = 1 }
+            }
+            return quiet
+        }
+
         // Ein durchsichtiges Material: Glas und Wasser.
         static defined bool IsTransparent(defined int m) { return m == 11 || m == 6 }
 
@@ -202,6 +231,7 @@ namespace Raser {
                 cutsPerLayer[pair.Key >> 12] = cutsPerLayer[pair.Key >> 12] + 1
             }
             var states = Raser.Mesher.LayerStates(mats, cut, cutsPerLayer)
+            var quiet = this.QuietLayers(mats)
             // Richtungen: 0 -x, 1 +x, 2 -y, 3 +y, 4 -z, 5 +z
             for (int dir = 0; dir < 6; dir++) {
                 int axis = dir / 2
@@ -210,12 +240,12 @@ namespace Raser {
                     bool found = false
                     // nach z: eine Schicht aus Luft hat keine Flächen, eine feste nur dort, wo die Nachbarschicht nicht fest ist
                     if (axis == 2) {
-                        if (states[s] == 1) { continue }
+                        if (states[s] == 1 || quiet[s] != 0) { continue }
                         if (states[s] == 2 && s + sign >= 0 && s + sign < 64 && states[s + sign] == 2) { continue }
                     }
                     for (int v = 0; v < 64; v++) {
                         // nach x/y ist v die Schicht z: aus Luft, oder fest mit dem Nachbarn im selben Chunk - keine Fläche in dieser Zeile
-                        if (axis < 2 && (states[v] == 1 || (states[v] == 2 && s + sign >= 0 && s + sign < 64))) {
+                        if (axis < 2 && (states[v] == 1 || quiet[v] != 0 || (states[v] == 2 && s + sign >= 0 && s + sign < 64))) {
                             for (int u = 0; u < 64; u++) { mask[v * 64 + u] = 0 }
                             continue
                         }

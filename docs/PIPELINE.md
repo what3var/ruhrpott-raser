@@ -160,8 +160,9 @@ das Hauptprogramm in `cam.Render()` steckt (docs/FIRE.md) - beim Flug mit 15 m/s
 Der Betrachter arbeitet in Blöcken von 4 x 4 Chunk-Säulen (51,2 m; fünf Blöcke sind eine Kachel), jeder Block ein scene3d-Objekt mit der Palette als
 Textur (die Farbe steckt in den Texturkoordinaten):
 
-- **Stufe 0** (`--near`, Blöcke um den Ladepunkt): die Voxel-Chunks, vernetzt mit `Raser.Mesh`, Säule für Säule über mehrere Bilder aufgebaut; bis ein
-  Block fertig ist, bleibt seine ferne Version stehen. Ein Block kostet rund 2,4 s - für Tempo ist diese Stufe zu teuer (ohne Worker-Threads, docs/FIRE.md).
+- **Stufe 0** (`--near`, Blöcke um den Ladepunkt): die Voxel-Chunks, vernetzt mit `Raser.Mesh`, in Worker-Threads (`--workers`, Standard 3; jeder mit
+  eigenem Store und eigenen Caches, bis zu den fertigen Arrays für scene3d); das Hauptprogramm macht daraus nur noch Modelle (rund 6 ms je Block). Bis ein
+  Block fertig ist, bleibt seine ferne Version stehen.
   Das Gelände kommt auch hier glatt aus dem Höhenraster (Raster 0,8 m, mit Diagonalen). Die Gelände-Voxel bekommen nur dort Flächen, wo etwas in den
   Boden greift oder gegraben ist (`Raser.GroundCut`: ein Voxel, das nicht Gelände ist, bis 20 cm über der Rasterhöhe, oder eine Geländeoberkante mehr als
   45 cm neben der Rasterhöhe). Dort ist die Kante hart, und das glatte Netz spart die Zelle (80 cm) aus. Am Rathaus kostet ein naher Block damit rund 104 000
@@ -172,6 +173,11 @@ Textur (die Farbe steckt in den Texturkoordinaten):
 - Je Bild wird bis `--budget-ms` gearbeitet: erst fehlende ferne Blöcke vom Ladepunkt nach außen, dann die nahen Säule für Säule. Der Ladepunkt liegt in
   Blickrichtung voraus (`--lead`, im Flug Tempo x 2,5 s): vorne wird zuerst geladen, hinten fällt zuerst weg.
 
+Gemessen (Rathaus, 9 nahe Blöcke, 4 Kerne): ein naher Block kostet im Hauptprogramm rund 2,3 s, in einem Worker 2,9 s, mit drei Workern je 3,3 s; die
+9 Blöcke sind mit drei Workern in 11,6 s statt 20,7 s da, das Bild ist dasselbe. Davon gehen 1,2 bis 2,3 s in das Vernetzen selbst, je 0,1 bis 0,2 s in
+Laden, harte Säulen und Arrays. Im Flug mit 83 m/s und Rendern auf denselben Kernen braucht ein Block 4 bis 7 s - ein Block ist bei dem Tempo in 0,6 s
+durchflogen. Für Tempo bleibt es bei der fernen Stufe; die nahe ist (noch) für Fuß und Stadtverkehr.
+
 Gemessen: Flug mit 83 m/s (300 km/h) über 1,3 km quer durch die Testregion (`--near -1 --far 6`, 480 x 300): 533 ferne Blöcke, Nachladen im Mittel 3,9 ms
 je Bild, Rendern rund 18 ms, rund 46 Bilder je Sekunde; nur in 51 von 718 Bildern fehlte noch ein Block.
 
@@ -179,8 +185,8 @@ je Bild, Rendern rund 18 ms, rund 46 Bilder je Sekunde; nur in 51 von 718 Bilder
 
 *Nah die Voxel (mit Fenstern), weiter weg die Gebäude aus Grundriss und LoD2-Dächern (noch ohne Fassade).*
 
-Offen: eine mittlere Stufe (Voxel 40/80 cm), die Fassaden-Textur mit den Fenstern ab der fernen Stufe, Stufe 0 in Worker-Threads (sobald fire-Threads
-nicht mehr stehen, während das Hauptprogramm rendert).
+Offen: das Vernetzen schneller (Bitmasken je Zeile statt Voxel für Voxel), eine mittlere Stufe (Voxel 40/80 cm), der nahe Radius nach dem Tempo, die
+Fassaden-Textur mit den Fenstern ab der fernen Stufe.
 
 ## Offen (für M1 und danach)
 
