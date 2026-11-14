@@ -73,7 +73,7 @@ namespace Raser {
         }
 
         // Ein Block: x0, y0 kachel-lokal, Kantenlänge size, Geländeraster spacing.
-        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing) {
+        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing, defined bool buildings = true) {
             var part = new Raser.MeshPart()
             int n = Math.Round(size / spacing)!int
             // nur die Flächen und Straßen, die den Block berühren
@@ -104,6 +104,7 @@ namespace Raser {
                 }
             }
             // Gebäude
+            if (!buildings) { return part }
             foreach (m in this.models) {
                 float cx = (m.box.minX + m.box.maxX) / 2.0
                 float cy = (m.box.minY + m.box.maxY) / 2.0

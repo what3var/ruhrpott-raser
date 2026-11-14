@@ -122,7 +122,9 @@ class ColumnBuilder {
             var chunk = this.ChunkAt(cx, cy, z)
             if (chunk == undefined) { continue }
             // von den Nachbarn nur die Randschicht, die diesen Chunk berührt
-            var mesh = new Raser.Mesher(chunk, this.FaceOf(cx - 1, cy, z, 1), this.FaceOf(cx + 1, cy, z, 0), this.FaceOf(cx, cy - 1, z, 3), this.FaceOf(cx, cy + 1, z, 2), this.FaceOf(cx, cy, z - 1, 5), this.FaceOf(cx, cy, z + 1, 4)).Build()
+            var mesher = new Raser.Mesher(chunk, this.FaceOf(cx - 1, cy, z, 1), this.FaceOf(cx + 1, cy, z, 0), this.FaceOf(cx, cy - 1, z, 3), this.FaceOf(cx, cy + 1, z, 2), this.FaceOf(cx, cy, z - 1, 5), this.FaceOf(cx, cy, z + 1, 4))
+            mesher.skipTerrain = true          // das Gelände kommt glatt aus dem Höhenraster
+            var mesh = mesher.Build()
             var p = new ChunkParts()
             p.key = new Raser.ChunkKey(cx, cy, z)
             p.opaque = mesh.opaque
@@ -230,6 +232,7 @@ class WorldView {
     defined int near                // Radius der Stufe 0 in Blöcken (0: nur der Block des Blickpunkts, -1: keiner)
     defined int far                 // Radius der fernen Stufe in Blöcken
     defined float spacing           // Geländeraster der fernen Stufe (ab dem dritten Ring doppelt so grob)
+    defined float nearSpacing       // Geländeraster der nahen Stufe
     defined float lead              // so weit voraus (m) in Blickrichtung liegt der Punkt, um den geladen wird
     defined bool opaqueOnly
     defined int objects
@@ -252,6 +255,7 @@ class WorldView {
         this.near = near
         this.far = far
         this.spacing = spacing
+        this.nearSpacing = 0.8
         this.opaqueOnly = opaqueOnly
         byte rgba[1024]
         for (int i = 0; i < 256; i++) {
@@ -326,6 +330,17 @@ class WorldView {
             b.nearOpaque = new BlockMesh()
             b.nearGlass = new BlockMesh()
             b.nextColumn = 0
+            // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein; die Voxel bringen nur, was darauf steht
+            float east = b.bx * 51.2
+            float north = b.by * 51.2
+            var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
+            var fm = this.FarFor(tileKey)
+            if (fm != undefined) {
+                var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false)
+                b.nearOpaque.Add(ground, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
+            }
+            this.nearTicks = this.nearTicks + (DateTime.Now.Ticks - t0)
+            return
         }
         int cx = b.bx * 4 + (b.nextColumn % 4)
         int cy = b.by * 4 + (b.nextColumn / 4)

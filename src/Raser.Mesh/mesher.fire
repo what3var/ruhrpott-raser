@@ -79,6 +79,7 @@ namespace Raser {
 
     class Mesher {
         Chunk center
+        defined bool skipTerrain    // Gelände-Voxel (Material 1..8: Erde bis Pflaster, Wasser) bekommen keine Flächen - das Gelände kommt als glattes Netz
         ChunkFace west          // die Randschichten der Nachbarn, die diesen Chunk berühren (undefined: Luft)
         ChunkFace east
         ChunkFace south
@@ -235,7 +236,7 @@ namespace Raser {
                             int i = x + (y << 6) + (z << 12)
                             int m = mats[i]
                             // geschnittene Voxel: nur die Unterseite läuft hier mit
-                            if (m != 0 && (cut[i] == 0 || dir == 4)) {
+                            if (m != 0 && (cut[i] == 0 || dir == 4) && !(this.skipTerrain && m <= 8)) {
                                 int nx = x
                                 int ny = y
                                 int nz = z
@@ -325,7 +326,7 @@ namespace Raser {
                     int i = k + (z << 12)
                     if (cut[i] == 0) { continue }
                     int m = mats[i]
-                    if (m == 0) { continue }
+                    if (m == 0 || (this.skipTerrain && m <= 8)) { continue }
                     int x = k & 63
                     int y = k >> 6
                     int shape = this.center.ShapeAt(x, y, z)

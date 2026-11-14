@@ -89,6 +89,19 @@ class MeshTests {
         Testing.Assert.AreEqual(10, tops)              // 10 schräge Streifen, je einer pro Spalte
     }
 
+    [Test "Ohne Gelände: nur was darauf steht, im Boden verdeckt"]
+    undefined SkipTerrain() {
+        var c = MeshTests.Empty()
+        c.Fill(0, 0, 0, 9, 9, 4, Raser.Material.Soil!int, Raser.Palette.Soil)
+        c.Set(0, 0, 5, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 2, 1))
+        c.Fill(3, 3, 2, 4, 4, 8, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var m = new Raser.Mesher(c)
+        m.skipTerrain = true
+        var mesh = m.Build()
+        // die Säule aus Ziegel (2 x 2 x 7): oben 1, Seiten über dem Boden (z 5..8) je 1 = 5; im Boden verdeckt die Erde
+        Testing.Assert.AreEqual(5, mesh.opaque.Count)
+    }
+
     [Test "Glas: eigener Teil, keine Flächen zwischen Glas"]
     undefined Glass() {
         var c = MeshTests.Empty()
