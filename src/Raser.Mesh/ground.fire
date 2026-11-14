@@ -14,17 +14,13 @@
 
 namespace Raser {
     class GroundCut {
-        int terrainTop[4096]        // je Säule das oberste Voxel aus Gelände (absolut), -1000000: keines
-        int structureLow[4096]      // je Säule das unterste Voxel, das nicht Gelände ist, 1000000: keines
+        // Puffer aus Wörtern (nativ direkt im Speicher; int-Arrays laufen über die allgemeinen Wege): die Voxelhöhe + Offset, 0 = keines
+        word terrainTop[4096]       // je Säule das oberste Voxel aus Gelände
+        word structureLow[4096]     // je Säule das unterste Voxel, das nicht Gelände ist
         defined float tolerance
+        static defined int Offset = 1048576
 
-        construct() {
-            for (int i = 0; i < 4096; i++) {
-                this.terrainTop[i] = -1000000
-                this.structureLow[i] = 1000000
-            }
-            this.tolerance = 0.45
-        }
+        construct() { this.tolerance = 0.45 }
 
         static defined bool IsTerrain(defined int m) { return m >= 1 && m <= 8 }
 
@@ -34,17 +30,17 @@ namespace Raser {
             defined int vz0 = c.key.VoxelZ
             byte mats[] = c.materials
             // über lokale Namen der Felder: so schreibt der native Code direkt in die gepackten Arrays
-            int top[] = this.terrainTop
-            int low[] = this.structureLow
+            word top[] = this.terrainTop
+            word low[] = this.structureLow
             for (int z = 0; z < 64; z++) {
-                defined int vz = vz0 + z
+                word vz = vz0 + z + Raser.GroundCut.Offset
                 defined int at = z << 12
                 for (int k = 0; k < 4096; k++) {
                     defined int m = mats[at + k]
                     if (m == 0) { continue }
                     if (m <= 8) {
                         if (vz > top[k]) { top[k] = vz }
-                    } else if (vz < low[k]) {
+                    } else if (low[k] == 0 || vz < low[k]) {
                         low[k] = vz
                     }
                 }
@@ -55,20 +51,20 @@ namespace Raser {
         // die Rasterhöhen aus fm.
         byte[] Hard(FarMesher fm, defined float x0, defined float y0) {
             byte cells[256]
-            int tops[] = this.terrainTop
-            int lows[] = this.structureLow
+            word tops[] = this.terrainTop
+            word lows[] = this.structureLow
             for (int y = 0; y < 64; y++) {
                 for (int x = 0; x < 64; x++) {
                     int k = x + (y << 6)
                     int cell = (x >> 2) + ((y >> 2) << 4)
                     if (cells[cell] != 0) { continue }
                     float g = fm.GroundAt(x0 + x * 0.2 + 0.1, y0 + y * 0.2 + 0.1)
-                    bool hard = lows[k] * 0.2 <= g + 0.2
+                    bool hard = lows[k] != 0 && (lows[k]!int - Raser.GroundCut.Offset) * 0.2 <= g + 0.2
                     if (!hard) {
-                        if (tops[k] < -999999) {
+                        if (tops[k] == 0) {
                             hard = true
                         } else {
-                            float top = (tops[k] + 1) * 0.2
+                            float top = (tops[k]!int - Raser.GroundCut.Offset + 1) * 0.2
                             hard = top > g + this.tolerance || top < g - this.tolerance
                         }
                     }

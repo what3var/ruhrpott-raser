@@ -118,6 +118,7 @@ namespace Raser {
         Chunk center
         defined bool skipTerrain    // Gelände-Voxel (Material 1..8: Erde bis Pflaster, Wasser) bekommen keine Flächen - das Gelände kommt als glattes Netz
         defined int wordBits        // Breite der Bit-Wörter (0: Word.Bits; kleiner nur für Tests, die ein 32- oder 16-Bit-Ziel nachstellen)
+        byte shapeMap[]             // beim Vernetzen: je Voxel die Form (255: voll) - statt je Voxel im Dictionary des Chunks nachzuschlagen
         byte hardColumns[]          // mit skipTerrain: Säulen (x + 64 y, 1), in denen das Gelände doch Flächen bekommt (Raser.GroundCut); undefined: keine
         ChunkFace west          // die Randschichten der Nachbarn, die diesen Chunk berühren (undefined: Luft)
         ChunkFace east
@@ -242,7 +243,10 @@ namespace Raser {
         }
 
         defined int ShapeAt(defined int x, defined int y, defined int z) {
-            if (Raser.Mesher.Inside(x, y, z)) { return this.center.ShapeAt(x, y, z) }
+            if (Raser.Mesher.Inside(x, y, z)) {
+                if (this.shapeMap != undefined) { return this.shapeMap[x + (y << 6) + (z << 12)] }
+                return this.center.ShapeAt(x, y, z)
+            }
             var f = this.FaceFor(x, y, z)
             if (f == undefined) { return 255 }
             return f.shapes[Raser.Mesher.FaceCell(x, y, z)]
@@ -274,12 +278,17 @@ namespace Raser {
             byte mats[] = this.center.materials
             byte cols[] = this.center.colors
             byte cut[262144]
+            byte shapes[262144]
+            if (this.center.shapes.Count > 0) { shapes.Fill(255) }
             int cutsPerLayer[64]
             for (int z = 0; z < 64; z++) { cutsPerLayer[z] = 0 }
             foreach (pair in this.center.shapes) {
                 cut[pair.Key] = 1
+                shapes[pair.Key] = pair.Value
                 cutsPerLayer[pair.Key >> 12] = cutsPerLayer[pair.Key >> 12] + 1
             }
+            this.shapeMap = undefined
+            if (this.center.shapes.Count > 0) { this.shapeMap = take shapes }
             var states = Raser.Mesher.LayerStates(mats, cut, cutsPerLayer)
             var quiet = this.QuietLayers(mats)
             // Je Zeile (y, z) die 64 Voxel in x als Bits: nicht Luft, verdeckt alles (voll, undurchsichtig, ungeschnitten), bringt Flächen (ungeschnitten /
@@ -552,7 +561,7 @@ namespace Raser {
                     if (m == 0 || (this.skipTerrain && m <= 8 && this.Skips(i))) { continue }
                     int x = k & 63
                     int y = k >> 6
-                    int shape = this.center.ShapeAt(x, y, z)
+                    int shape = this.shapeMap[i]
                     top[k] = 1 + shape + (cols[i] << 8) + (m << 16)
                     this.SlopedSides(mesh, x, y, z, m, cols[i], shape)
                 }

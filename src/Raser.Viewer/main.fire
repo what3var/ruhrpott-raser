@@ -83,7 +83,8 @@ class ColumnBuilder {
     // Eine Randschicht eines Chunks: aus seiner .rrb (zwischengespeichert), sonst aus dem Chunk selbst; undefined, wo kein Chunk ist.
     Raser.ChunkFace FaceOf(defined int cx, defined int cy, defined int cz, defined int side) {
         string name = cx + "_" + cy + "_" + cz
-        if (this.chunks.ContainsKey(name)) { return Raser.ChunkFace.Of(this.chunks[name], side) }
+        // lieber aus der .rrb (Kopieren) als aus dem Chunk (je Zelle die Form nachschlagen)
+        if (this.chunks.ContainsKey(name) && !this.faces.ContainsKey(name) && !this.LayersOf(cx, cy).Contains(cz)) { return Raser.ChunkFace.Of(this.chunks[name], side) }
         if (!this.faces.ContainsKey(name)) {
             if (this.LayersOf(cx, cy).Contains(cz)) {
                 var bytes = this.store.LoadFaces(new Raser.ChunkKey(cx, cy, cz))
