@@ -97,6 +97,14 @@ Je Chunk-Säule wird einmal ein Plan der 64 × 64 Voxel-Säulen gerechnet (gilt 
   Bank, Papierkorb, Schild als 3 x 3-Pixelbild, Ampel), je Art, Höhe, Variante (aus der ID) und Vierteldrehung einmal gebaut; gestempelt auf das oberste
   Gelände-Voxel ihrer Säule, nur in Luft. Props der Nachbarkacheln bis 12 m an der Grenze stempelt die Kachel mit, so ragen Bäume über die Grenze.
   Die ferne Stufe zeigt Bäume als Stamm und Krone (Quader).
+
+![Bäume als Voxel-Modelle](images/viewer-bäume.png)
+
+*Laubbäume entlang einer Straße am Bochumer Rathaus (OSM `natural=tree`), dazu Materialien mit Mustern und Dreckstufen.*
+
+![Materialien](images/viewer-materialien.png)
+
+*Nahe Voxel mit dem Textur-Atlas: Ziegel mit Steinen und Ton je Gebäude, Dachziegel in Reihen, Platten mit Fugen.*
 - Alle Lagen werden aus dem kachel-lokalen Voxel-Index gerechnet, damit Nachbar-Chunks dieselbe Säule gleich sehen. Zwei Läufe mit denselben Daten ergeben dieselben Bytes.
 
 ## Export zur Kontrolle
