@@ -328,6 +328,12 @@ namespace Raser {
                 shapes[pair.Key] = pair.Value
                 cutsPerLayer[pair.Key >> 12] = cutsPerLayer[pair.Key >> 12] + 1
             }
+            // Voxel mit Grundriss-Form (Raser.Plan): in der Karte als 2 - sie laufen nicht durch die Bit-Zeilen und die schrägen Oberseiten, sondern
+            // durch PlanFaces
+            foreach (pair in this.center.plans) {
+                cut[pair.Key] = 2
+                cutsPerLayer[pair.Key >> 12] = cutsPerLayer[pair.Key >> 12] + 1
+            }
             this.shapeMap = undefined
             if (this.center.shapes.Count > 0) { this.shapeMap = take shapes }
             var states = Raser.Mesher.LayerStates(mats, cut, cutsPerLayer)
@@ -377,6 +383,7 @@ namespace Raser {
                         word na = 0         // nicht Luft
                         word tb = 0         // Gelände (Material 1..8)
                         word cb = 0         // geschnitten
+                        word pb = 0         // mit Grundriss-Form
                         word tr = 0         // durchsichtig
                         defined int i0 = at + k * wb
                         for (int b = 0; b < wb; b++) {
@@ -387,6 +394,7 @@ namespace Raser {
                             if (m <= 8) { tb = tb | bit }
                             if (m == 11 || m == 6) { tr = tr | bit }
                             if (cut[i0 + b] != 0) { cb = cb | bit }
+                            if (cut[i0 + b] == 2) { pb = pb | bit }
                         }
                         // was Flächen bringt: alles außer der stillen Schicht; mit skipTerrain Gelände nur in den harten Säulen
                         word emits = full
@@ -395,7 +403,7 @@ namespace Raser {
                         nonair[w] = na
                         occ[w] = na & ~tr & ~cb
                         emitFull[w] = na & ~cb & emits
-                        emitCut[w] = na & cb & emits
+                        emitCut[w] = na & cb & ~pb & emits
                     }
                 }
             }
@@ -515,6 +523,7 @@ namespace Raser {
             }
             // die schrägen Oberseiten (je Schicht zusammengefasst) und die Trapez-Seiten der geschnittenen Voxel
             this.SlopedFaces(mesh, mats, cols, cut, cutsPerLayer)
+            if (this.center.plans.Count > 0) { this.PlanFaces(mesh, mats, cols, cut) }
             return mesh
         }
 
@@ -582,9 +591,114 @@ namespace Raser {
             if (nx >= 0 && ny >= 0 && nz >= 0 && nx < 64 && ny < 64 && nz < 64) {
                 defined int ni = nx + (ny << 6) + (nz << 12)
                 defined int nm = mats[ni]
+                if (cut[ni] == 2) { return false }          // mit Grundriss-Form: verdeckt nicht ganz
                 return nm != 0 && (dir == 5 || cut[ni] == 0) && (!Raser.Mesher.IsTransparent(nm) || nm == m)
             }
             return this.Hides(nx, ny, nz, m, dir == 5)
+        }
+
+        // Die Voxel mit Grundriss-Form (Raser.Plan): das Polygon oben (mit den Eckhöhen, bilinear) und unten, die schräge Kante und die Seiten auf dem
+        // Rand des Voxels, wo der Nachbar sie nicht verdeckt.
+        undefined PlanFaces(ChunkMesh mesh, byte mats[], byte cols[], byte cut[]) {
+            defined float xs[6]
+            defined float ys[6]
+            defined float hz[6]
+            foreach (pair in this.center.plans) {
+                defined int i = pair.Key
+                defined int p = pair.Value
+                defined int m = mats[i]
+                if (m == 0) { continue }
+                if (this.skipTerrain && m <= 8 && this.Skips(i)) { continue }
+                defined int x = i & 63
+                defined int y = (i >> 6) & 63
+                defined int z = i >> 12
+                defined int color = cols[i]
+                defined int shape = 255
+                if (this.shapeMap != undefined) { shape = this.shapeMap[i] }
+                bool full = Raser.Shape.IsFull(shape)
+                var part = mesh.opaque
+                if (Raser.Mesher.IsTransparent(m)) { part = mesh.transparent }
+                defined int n = Raser.Plan.Polygon(p, xs, ys)
+                float z0 = z * 0.2
+                for (int k = 0; k < n; k++) {
+                    if (full) {
+                        hz[k] = z0 + 0.2
+                    } else {
+                        float c0 = Raser.Shape.CornerMeters(shape, 0)
+                        float c1 = Raser.Shape.CornerMeters(shape, 1)
+                        float c2 = Raser.Shape.CornerMeters(shape, 2)
+                        float c3 = Raser.Shape.CornerMeters(shape, 3)
+                        float u = xs[k]
+                        float v = ys[k]
+                        hz[k] = z0 + c0 * (1.0 - u) * (1.0 - v) + c1 * u * (1.0 - v) + c2 * u * v + c3 * (1.0 - u) * v
+                    }
+                }
+                float bx = x * 0.2
+                float by = y * 0.2
+                // oben: verdeckt, wenn darüber dieselbe Form (oder ein volles, undurchsichtiges Voxel) steht und das Voxel bis oben reicht
+                bool topHidden = false
+                if (full) {
+                    if (z + 1 < 64) {
+                        defined int ia = i + 4096
+                        defined int ma = mats[ia]
+                        if (ma != 0 && (!Raser.Mesher.IsTransparent(ma) || ma == m)) {
+                            if (cut[ia] == 0) { topHidden = true } else if (cut[ia] == 2 && this.center.plans.Get(ia, 0) == p) { topHidden = true }
+                        }
+                    } else {
+                        topHidden = this.Hides(x, y, z + 1, m, true)
+                    }
+                }
+                if (!topHidden) {
+                    for (int k = 1; k + 1 < n; k = k + 2) {
+                        int c = k + 1
+                        int d = Math.Min(k + 2, n - 1)
+                        part.Quad(bx + xs[0] * 0.2, by + ys[0] * 0.2, hz[0], bx + xs[k] * 0.2, by + ys[k] * 0.2, hz[k], bx + xs[c] * 0.2, by + ys[c] * 0.2, hz[c], bx + xs[d] * 0.2, by + ys[d] * 0.2, hz[d], 0.0, 0.0, 1.0, color, m)
+                    }
+                }
+                // unten: verdeckt von derselben Form oder einem vollen Voxel darunter
+                bool bottomHidden = false
+                if (z > 0) {
+                    defined int ib = i - 4096
+                    defined int mb = mats[ib]
+                    if (mb != 0 && (!Raser.Mesher.IsTransparent(mb) || mb == m)) {
+                        if (cut[ib] == 0) { bottomHidden = true } else if (cut[ib] == 2 && this.center.plans.Get(ib, 0) == p) { bottomHidden = true }
+                    }
+                } else {
+                    bottomHidden = this.Hides(x, y, -1, m, false)
+                }
+                if (!bottomHidden) {
+                    for (int k = 1; k + 1 < n; k = k + 2) {
+                        int c = k + 1
+                        int d = Math.Min(k + 2, n - 1)
+                        part.Quad(bx + xs[0] * 0.2, by + ys[0] * 0.2, z0, bx + xs[k] * 0.2, by + ys[k] * 0.2, z0, bx + xs[c] * 0.2, by + ys[c] * 0.2, z0, bx + xs[d] * 0.2, by + ys[d] * 0.2, z0, 0.0, 0.0, -1.0, color, m)
+                    }
+                }
+                // die Seiten: die schräge Kante immer, die Kanten auf dem Rand, wo der Nachbar nicht verdeckt
+                for (int k = 0; k < n; k++) {
+                    int l = (k + 1) % n
+                    float ex = xs[l] - xs[k]
+                    float ey = ys[l] - ys[k]
+                    float el = Math.Sqrt(ex * ex + ey * ey)
+                    if (el < 0.0001) { continue }
+                    defined int nx = x
+                    defined int ny = y
+                    bool rim = true
+                    if (xs[k] < 0.0001 && xs[l] < 0.0001) { nx = x - 1 } else if (xs[k] > 0.9999 && xs[l] > 0.9999) { nx = x + 1 } else if (ys[k] < 0.0001 && ys[l] < 0.0001) { ny = y - 1 } else if (ys[k] > 0.9999 && ys[l] > 0.9999) { ny = y + 1 } else { rim = false }
+                    if (rim) {
+                        bool hidden = false
+                        if (nx >= 0 && ny >= 0 && nx < 64 && ny < 64) {
+                            defined int ni = nx + (ny << 6) + (z << 12)
+                            defined int nm = mats[ni]
+                            hidden = nm != 0 && cut[ni] == 0 && (!Raser.Mesher.IsTransparent(nm) || nm == m)
+                        } else {
+                            hidden = this.Hides(nx, ny, z, m, false)
+                        }
+                        if (hidden) { continue }
+                    }
+                    // gegen den Uhrzeigersinn: außen ist rechts der Kante
+                    part.Quad(bx + xs[k] * 0.2, by + ys[k] * 0.2, z0, bx + xs[l] * 0.2, by + ys[l] * 0.2, z0, bx + xs[l] * 0.2, by + ys[l] * 0.2, hz[l], bx + xs[k] * 0.2, by + ys[k] * 0.2, hz[k], ey / el, -ex / el, 0.0, color, m)
+                }
+            }
         }
 
         undefined SlopedFaces(ChunkMesh mesh, byte mats[], byte cols[], byte cut[], int cutsPerLayer[]) {
@@ -594,7 +708,7 @@ namespace Raser {
                 for (int k = 0; k < 4096; k++) { top[k] = 0 }
                 for (int k = 0; k < 4096; k++) {
                     int i = k + (z << 12)
-                    if (cut[i] == 0) { continue }
+                    if (cut[i] != 1) { continue }
                     int m = mats[i]
                     if (m == 0 || (this.skipTerrain && m <= 8 && this.Skips(i))) { continue }
                     int x = k & 63

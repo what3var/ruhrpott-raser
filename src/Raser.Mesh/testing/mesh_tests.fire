@@ -127,6 +127,28 @@ class MeshTests {
         Testing.Assert.IsTrue(a.transparent.Count > 4)
     }
 
+    [Test "Grundriss-Form: ein diagonales Voxel hat oben, unten, zwei Seiten und die Schräge"]
+    undefined PlanVoxel() {
+        var c = MeshTests.Empty()
+        c.Set(10, 10, 10, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(10, 10, 10, Raser.Plan.Diagonal(1, 0, 0))       // das Dreieck unter der Diagonale (0,0) - (1,1)
+        var mesh = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(5, mesh.opaque.Count)
+        // die Schräge zeigt nach links oben (-x, +y)
+        bool slanted = false
+        for (int q = 0; q < mesh.opaque.Count; q++) {
+            float nx = mesh.opaque.normals[q * 3]
+            float ny = mesh.opaque.normals[q * 3 + 1]
+            if (nx < -0.7 && ny > 0.7) { slanted = true }
+        }
+        Testing.Assert.IsTrue(slanted)
+        // ein volles Nachbar-Voxel rechts verdeckt die Seite bei x = 1; die Seite des Nachbarn zum Dreieck bleibt (es verdeckt sie nicht ganz)
+        c.Set(11, 10, 10, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh2 = new Raser.Mesher(c).Build()
+        // Dreieck: oben, unten, Seite y = 0, Schräge = 4; der Würfel: 5 Seiten (die zum Dreieck mit) + 1 = 6 - oben/unten des Würfels zählen mit
+        Testing.Assert.AreEqual(4 + 6, mesh2.opaque.Count)
+    }
+
     [Test "Glas: eigener Teil, keine Flächen zwischen Glas"]
     undefined Glass() {
         var c = MeshTests.Empty()
