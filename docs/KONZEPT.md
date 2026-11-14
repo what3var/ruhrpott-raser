@@ -15,7 +15,13 @@
   - *Straßenkanten* treppen nicht im 20-cm-Raster. Fahrbahn, Gehweg und Bordstein gehören zum glatten Untergrund: Ihre Ränder sind Kurven aus der
     Mittellinie und der Breite (geglättet, mit Radien an Einmündungen und Kreuzungen). Das Geländenetz wird an diesen Linien geschnitten, der Bordstein
     ist ein Profil (12–15 cm hoch, abgesenkt an Einfahrten) entlang der Kurve. Voxel werden sie erst, wo hineingegriffen wird (hart, wie beim Gelände).
-  - *Gerade Fronten in jedem Winkel*: Die Voxel bekommen neben den Eckhöhen oben auch einen **senkrechten Schnitt im Grundriss** – eine Linie durch
+  - **Entschieden: Bauelemente** (statt freier Schnittlinien oder gedrehter Gitter). Neben den Eckhöhen oben hat ein Voxel eine
+    **Grundriss-Form aus einem Katalog**: Diagonalen über 1×1 bis 6×1 Voxel (die Kante steigt auf n Voxel um einen; jedes Voxel trägt seinen
+    Teil k von n, 8 Ausrichtungen - 168 Formen, ein Byte), später Rundungen (Viertelkreise mit Radius 1–6, für Eckkneipen), Torbögen (eine Form in
+    der Ansicht) und Türen (Objekte, die zwischen zwei Wand-Voxeln definiert und automatisch passend eingehängt werden). Der Voxelizer nähert die
+    Kanten der Gebäude damit an (Steigung 1:1 bis 1:6 oder achsparallel - wenige Grad Abweichung), der Baumodus bietet dieselben Elemente als
+    Fertigteile aus dem Baumarkt an. Dazu 3D-Dachziegel: ein Relief in Pixel-Art auf den Dach-Voxeln.
+  - *Gerade Fronten in jedem Winkel* (ursprünglicher Vorschlag, aufgegangen in den Bauelementen): Die Voxel bekommen neben den Eckhöhen oben auch einen **senkrechten Schnitt im Grundriss** – eine Linie durch
     den Voxel, angegeben über zwei Randpunkte in Vierteln (wie die Eckhöhen; benachbarte Voxel teilen die Punkte). Eine Fassade, die schräg zum
     Weltgitter steht, wird so eine glatte Ebene statt einer Treppe; Fenster und Geschosse werden entlang der Wand gemessen. Die Grundstücksgrenze ist
     dann eine Linie wie jede andere – dort wird schräg abgeschnitten.
