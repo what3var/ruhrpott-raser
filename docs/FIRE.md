@@ -19,6 +19,7 @@ Das Projekt ist der Extremtest für fire. Hier steht, was dabei an fire auffäll
 | **Nativ falsch:** Im Werkzeug (`Raser.Tool`, Release) liefert `float h0 = z0 + Raser.Shape.CornerMeters(shape, 0)` statt 0,2 den Wert 4596373779694328320 (die Bits von 0,2 als Ganzzahl). Im generierten C gibt `f322_c` (der C-Körper von `CornerMeters`, Rückgabe `defined float`) korrekt `Float(...)` zurück, die Aufrufstelle liest aber `(Real)(FireInt)s1.i` - sie hält das Ergebnis für eine Ganzzahl. `shape` ist dort ein lokales `int` aus einer Methode mit `defined int`. In kleinen Nachbauten (gleiche Datei, oder Bibliothek + Programm) tritt es nicht auf; die VM rechnet richtig. | war `Corner(...) * 0.05` | behoben (8a0292a), wieder `CornerMeters`. Folge: native Builds vorher setzten auch die unterste Chunk-Ebene falsch (`HeightRaster.Min`) - Generator 2 erzeugt neu |
 | **Kein Fehler, mein Irrtum:** `(x) => self.Get("a")` fängt `self` ohne Wort ein, und das heißt: die Lambda bekommt eine **tiefe Kopie** (hier des ganzen Stores samt Dictionary und Items). Was sie zurückgibt, gehört zur Kopie und stirbt mit ihr - `store.items` selbst blieb heil. Im Viewer war die Kopie die des `WorldView` mit den Chunks; die Kopie eines Objekts, das eine Ressource über ihre Nummer hält, gibt beim Sterben die echte Ressource frei - daher „No resource with ID 1“ bzw. „The framebuffer has no usable size“. Richtig: das Objekt als Parameter der Lambda übergeben, eine globale Variable nehmen oder mit `on` binden. | Nachbarn als einzelne Parameter (`Raser.Mesher`) - bleibt so, ist ohnehin klarer | geklärt; fire warnt jetzt mit TC023 ausdrücklich vor der tiefen Kopie, die Doku zu Lambdas ist ergänzt |
 | **Besitz falsch (nur nativ):** `store.Get("a")` als Anweisung (Ergebnis verworfen) zerstört das Objekt, das `Get` aus dem Dictionary zurückgibt (VM: nicht). | Ergebnis nicht verwerfen | an fire gemeldet |
+| **Langsamer in Threads (nativ):** Derselbe Code (Chunks lesen und entpacken, Vernetzen) läuft in einem fire-Thread rund 1,75-mal langsamer als im Hauptprogramm, während das Hauptprogramm nur wartet: Hauptprogramm 23 ms lesen / 45 ms vernetzen je Chunk, `fire` 42 / 78 ms, `fire dedicated` 39 / 72 ms (Release, gcc, 4 Kerne). Nachbau `threads.fire` unten. | keiner (der Viewer lädt trotzdem in Workern: beim Start 6,9 → 4,2 s mit 3 Workern) | an fire gemeldet |
 
 Nachbau (`forge run own.fire` und nativ) - der erste Teil ist das dokumentierte Einfangen als tiefe Kopie (siehe oben), der zweite (das verworfene `store.Get("a")`, nur nativ) ist gemeldet:
 
@@ -60,3 +61,39 @@ print("end")
 
 Mit einer globalen Variable statt `self` (oder `store` als Parameter der Lambda): `a`, `after holder`, `a`, `end`, `destroy a`.
 | `new Object(Model.FromArrays(...))` setzt die Mitte des Netzes auf die Position (Anker 0,5): die Koordinaten des Netzes gelten nur relativ. Für Welt-Koordinaten muss man das Minimum selbst rechnen und `SetAnchor(0, 0, 0)` + `SetPosition(min)` setzen. | war Minimum + `SetAnchor` | behoben (68e9a69): `obj.KeepMeshCoordinates = true` im Viewer, Bild pixelgleich |
+
+
+Nachbau zur Geschwindigkeit in Threads (ein Projekt, das `Raser.Core`, `Raser.World` und `Raser.Mesh` referenziert; `forge build ... --engine native -m RELEASE`):
+
+```fire
+#import "time"
+#import "raser.core"
+#import "raser.world"
+#import "raser.mesh"
+class B {
+    static string Run(string label) {
+        var store = new Raser.FileTileStore("world")
+        int load = 0
+        int mesh = 0
+        for (int r = 0; r < 3; r++) {
+            for (int z = 6; z <= 8; z++) {
+                int t0 = DateTime.Now.Ticks
+                var c = store.LoadChunk(new Raser.ChunkKey(29386, 445690, z))
+                var w = store.LoadChunk(new Raser.ChunkKey(29385, 445690, z))
+                int t1 = DateTime.Now.Ticks
+                var m = new Raser.Mesher(c, w).Build()
+                int t2 = DateTime.Now.Ticks
+                load = load + (t1 - t0)
+                mesh = mesh + (t2 - t1)
+            }
+        }
+        return label + ": load " + load / 90000.0 + " ms, mesh " + mesh / 90000.0 + " ms per chunk"
+    }
+}
+print(B.Run("main"))
+var results = new Channel<string>()
+fire with results { results.Send(B.Run("fire thread")) }
+print(results.Receive())
+fire dedicated with results { results.Send(B.Run("fire dedicated")) }
+print(results.Receive())
+```

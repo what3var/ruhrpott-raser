@@ -114,15 +114,22 @@ src/Raser.Viewer/bin/linux-rel/Raser.Viewer --world world --at 376130,5704900 --
 Je Chunk und Farbe wird ein scene3d-Modell aus `Model.FromArrays` gebaut (Anker auf der unteren Ecke, damit die Lage stimmt). Um das Rathaus (Radius 2, 5 × 5 Chunk-Säulen)
 sind das 273 Objekte mit rund 1 Mio. Dreiecken; ein Bild von 960 × 600 braucht rund 250 ms im Software-Renderer, Laden und Vernetzen rund 10 s.
 
-**Nachladen.** Geladen wird um den Punkt, auf den die Kamera am Boden blickt (höchstens 150 m voraus), in Ringen um seine Chunk-Säule; je Bild kommen
-höchstens `--budget` Säulen dazu, Säulen weiter als Radius + 1 werden entladen (Objekte, Netze, Chunks). Ohne Fenster misst `--fly` einen Flug:
+**Nachladen.** Geladen wird um den Punkt, auf den die Kamera am Boden blickt (höchstens 150 m voraus), in Ringen um seine Chunk-Säule. Lesen,
+Vernetzen und das Bauen der Arrays für scene3d laufen in Worker-Threads (`--workers`, Standard 3; 0: im Hauptprogramm): das Hauptprogramm schickt die
+nächsten fehlenden Säulen über einen `Channel` (höchstens zwei je Worker unterwegs), übernimmt je Bild höchstens `--budget` fertige Säulen (Ergebnisse,
+die zu spät kommen, fallen weg) und macht daraus nur noch `Model.FromArrays` und `Object` (rund 4 ms je Säule). Säulen weiter als Radius + 1 werden
+entladen. Mit Workern kann ein Bild in einem Pixel abweichen: die Säulen kommen in anderer Reihenfolge, gleich tiefe Flächen liegen dann anders.
+
+Ohne Fenster misst `--fly` einen Flug in Echtzeit:
 
 ```bash
-Raser.Viewer --world world --at 376130,5704900 --radius 3 --distance 60 --pitch -25 --yaw 200 --size 480x300 --fly 300 --speed 15 --fps 10 --shot ende.png
+Raser.Viewer --world world --at 376130,5704900 --radius 3 --distance 60 --pitch -25 --yaw 200 --size 480x300 --fly 300 --speed 15 --workers 3 --shot ende.png
 ```
 
-Gemessen (300 m, 200 Bilder): 238 Säulen geladen, 182 entladen; je Säule Chunks lesen rund 50 ms, vernetzen rund 170 ms, scene3d-Modelle rund 45 ms;
-ein Bild von 480 × 300 rund 230 ms. Mit einer Säule je Bild kommt das Laden bei 15 m/s nicht nach - es gehört in einen eigenen Thread.
+Gemessen: das Startbild (Radius 2, 125 Chunks) 6,9 s im Hauptprogramm, 4,2 s mit 3 Workern. Beim Flug mit 15 m/s kommen die Worker nicht nach:
+eine Säule kostet in einem Worker rund 500 ms Lesen (jeder Worker hat seinen eigenen Cache, die Nachbar-Chunks kommen meist von der Platte) und
+300-370 ms Vernetzen - fire-Threads laufen nativ rund 1,75-mal langsamer als das Hauptprogramm (docs/FIRE.md). Nächste Schritte: die Netze beim
+Voxelisieren mit erzeugen und speichern (dann lesen die Worker nur noch fertige Netze), und LOD für die Ferne.
 
 ![Betrachter](images/viewer-rathaus.png)
 

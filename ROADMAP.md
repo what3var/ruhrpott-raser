@@ -13,7 +13,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 
 ## M2: Renderer
 - [x] Chunk-Meshing inkl. Höhen-Schnitten (`Raser.Mesh`: Greedy Meshing, schräge Oberseiten, Trapez-Seiten, Glas/Wasser getrennt)
-- [ ] Fahrbare Kamera durch die Testregion (`Raser.Viewer` mit scene3d: fliegende Kamera, Nachladen und Entladen von Chunk-Säulen um den Blickpunkt, `--shot`, `--fly` mit Zeiten; offen: im Hintergrund laden - eine Säule kostet rund 265 ms)
+- [ ] Fahrbare Kamera durch die Testregion (`Raser.Viewer` mit scene3d: fliegende Kamera, Nachladen und Entladen von Chunk-Säulen um den Blickpunkt, `--shot`, `--fly` mit Zeiten; Laden in Worker-Threads; offen: bei 15 m/s kommt das Laden nicht nach - Netze vorab speichern, LOD)
 - [ ] Fassaden-Grammatik + parametrische Materialien
 - [ ] Sharp-bilinear-Shader
 - [ ] Tag/Nacht, viele Lichtquellen, warme Straßenbeleuchtung als Basis
