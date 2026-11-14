@@ -62,6 +62,10 @@ Fassadentexturen sind sehr klein (< 100 px breit). Sie werden in drei Ebenen bes
 - **Fallback:** Gebäude ohne Foto bekommen plausible Parameter aus Baujahr, Viertel und LoD2-Typ.
 - **Datenschutz/Marken:** Gesichter, Kennzeichen und Firmenlogos werden nicht übernommen.
 
+**Fenster:** Ab der ersten Detailstufe sind Fenster Teil der Fassade (Textur bzw. Shader nach demselben Raster wie die Voxel-Fenster), keine Geometrie. Echte Fenster-Voxel gibt es nah am Spieler, in materialisierten Gebäuden und bei Zerstörung (Glas splittert). Nachts leuchten einzelne Fenster.
+
+**Ausstattung:** Jedes Gebäude bekommt eine zufällige, aber stabile Ausstattung (aus Gebäude-ID und Seed, passend zu Nutzung und Viertel). Für das Vorbeifahren mit hohem Tempo reichen ein paar vorgerenderte Innenansichten hinter den Fenstern (Wohnzimmer, Büro, Laden, Treppenhaus - als Textur mit Tiefe, ohne Geometrie); läuft man nah vorbei oder betritt das Gebäude, entsteht die detaillierte Ausstattung (Möbel und Objekte, Abschnitt 7) - dieselbe Wahl, nur genauer.
+
 **Rendering:** Pixel werden nearest-neighbor gerendert, aber antialiased. Das geschieht als „sharp bilinear“ direkt im Shader (Pixel-Art-AA über `fwidth`) statt mit vorab hochskalierten Texturen. Der Effekt ist derselbe, es braucht keinen zusätzlichen Speicher und funktioniert in jeder Entfernung.
 
 ## 4. Nacht-Atmosphäre
