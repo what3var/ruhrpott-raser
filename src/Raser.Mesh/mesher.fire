@@ -79,23 +79,34 @@ namespace Raser {
 
     class Mesher {
         Chunk center
-        Chunk west
-        Chunk east
-        Chunk south
-        Chunk north
-        Chunk below
-        Chunk above
+        ChunkFace west          // die Randschichten der Nachbarn, die diesen Chunk berühren (undefined: Luft)
+        ChunkFace east
+        ChunkFace south
+        ChunkFace north
+        ChunkFace below
+        ChunkFace above
 
-        // Die Nachbarn (je undefined: Luft) kommen als einzelne Parameter: Verweise auf Chunks, die anderen gehören.
-        // (Eine Lambda, die ihren Halter ohne Wort einfängt, arbeitet auf einer tiefen Kopie - was sie liefert, stirbt mit der Kopie; docs/FIRE.md.)
-        construct(Chunk center, Chunk west = undefined, Chunk east = undefined, Chunk south = undefined, Chunk north = undefined, Chunk below = undefined, Chunk above = undefined) {
+        // Die Nachbarn kommen als Randschichten (ChunkFace): mehr braucht das Vernetzen von ihnen nicht, und eine Randschicht ist ein Bruchteil
+        // eines Chunks (gespeichert als .rrb neben dem Chunk).
+        construct(Chunk center, ChunkFace west = undefined, ChunkFace east = undefined, ChunkFace south = undefined, ChunkFace north = undefined, ChunkFace below = undefined, ChunkFace above = undefined) {
             this.center = center
             this.west = west
+            try west??.TakeTo(this)
             this.east = east
+            try east??.TakeTo(this)
             this.south = south
+            try south??.TakeTo(this)
             this.north = north
+            try north??.TakeTo(this)
             this.below = below
+            try below??.TakeTo(this)
             this.above = above
+            try above??.TakeTo(this)
+        }
+
+        // Mit den ganzen Nachbar-Chunks (je undefined: Luft): nimmt von jedem die Randschicht, die diesen Chunk berührt.
+        static Mesher Around(Chunk center, Chunk west, Chunk east, Chunk south, Chunk north, Chunk below, Chunk above) {
+            return new Raser.Mesher(center, Raser.ChunkFace.Of(west, 1), Raser.ChunkFace.Of(east, 0), Raser.ChunkFace.Of(south, 3), Raser.ChunkFace.Of(north, 2), Raser.ChunkFace.Of(below, 5), Raser.ChunkFace.Of(above, 4))
         }
 
         // Voll und undurchsichtig in allen 64³ Voxeln (ohne Schnitte)?
@@ -124,28 +135,39 @@ namespace Raser {
         // Ein durchsichtiges Material: Glas und Wasser.
         static defined bool IsTransparent(defined int m) { return m == 11 || m == 6 }
 
-        // Der Chunk, der die Zelle (x, y, z) hält (höchstens eine Koordinate liegt außerhalb 0..63), und die Koordinaten darin.
-        Chunk ChunkFor(defined int x, defined int y, defined int z) {
+        // Die Randschicht, in der die Zelle (x, y, z) liegt, wenn sie außerhalb des Chunks ist (höchstens eine Koordinate liegt außerhalb 0..63).
+        ChunkFace FaceFor(defined int x, defined int y, defined int z) {
             if (x < 0) { return this.west }
             if (x > 63) { return this.east }
             if (y < 0) { return this.south }
             if (y > 63) { return this.north }
             if (z < 0) { return this.below }
-            if (z > 63) { return this.above }
-            return this.center
+            return this.above
         }
 
+        static defined int FaceCell(defined int x, defined int y, defined int z) {
+            if (x < 0 || x > 63) { return (y & 63) + ((z & 63) << 6) }
+            if (y < 0 || y > 63) { return (x & 63) + ((z & 63) << 6) }
+            return (x & 63) + ((y & 63) << 6)
+        }
+
+        static defined bool Inside(defined int x, defined int y, defined int z) { return x >= 0 && y >= 0 && z >= 0 && x < 64 && y < 64 && z < 64 }
+
         defined int MaterialAt(defined int x, defined int y, defined int z) {
-            var c = this.ChunkFor(x, y, z)
-            if (c == undefined) { return 0 }
-            return c.MaterialAt(x & 63, y & 63, z & 63)
+            if (Raser.Mesher.Inside(x, y, z)) { return this.center.MaterialAt(x, y, z) }
+            var f = this.FaceFor(x, y, z)
+            if (f == undefined) { return 0 }
+            return f.materials[Raser.Mesher.FaceCell(x, y, z)]
         }
 
         defined int ShapeAt(defined int x, defined int y, defined int z) {
-            var c = this.ChunkFor(x, y, z)
-            if (c == undefined) { return 255 }
-            return c.ShapeAt(x & 63, y & 63, z & 63)
+            if (Raser.Mesher.Inside(x, y, z)) { return this.center.ShapeAt(x, y, z) }
+            var f = this.FaceFor(x, y, z)
+            if (f == undefined) { return 255 }
+            return f.shapes[Raser.Mesher.FaceCell(x, y, z)]
         }
+
+        static defined bool SolidFace(ChunkFace f) { return f != undefined && f.solid }
 
         // Verdeckt die Zelle (x, y, z) die Fläche eines Voxels aus material? Volle undurchsichtige Voxel immer; ein durchsichtiges Voxel nur
         // eine Fläche desselben Materials.
@@ -162,7 +184,7 @@ namespace Raser {
             var mesh = new Raser.ChunkMesh(new Raser.ChunkKey(this.center.key.x, this.center.key.y, this.center.key.z))
             if (this.center.IsEmpty) { return mesh }
             // ganz verschüttet: ein voller Chunk zwischen vollen Nachbarn hat keine sichtbare Fläche
-            if (Raser.Mesher.Solid(this.center) && Raser.Mesher.Solid(this.west) && Raser.Mesher.Solid(this.east) && Raser.Mesher.Solid(this.south) && Raser.Mesher.Solid(this.north) && Raser.Mesher.Solid(this.below) && Raser.Mesher.Solid(this.above)) { return mesh }
+            if (Raser.Mesher.Solid(this.center) && Raser.Mesher.SolidFace(this.west) && Raser.Mesher.SolidFace(this.east) && Raser.Mesher.SolidFace(this.south) && Raser.Mesher.SolidFace(this.north) && Raser.Mesher.SolidFace(this.below) && Raser.Mesher.SolidFace(this.above)) { return mesh }
             int mask[4096]
             // Direkt auf die Puffer des Chunks; die geschnittenen Voxel einmal als Byte-Karte (statt je Voxel im Dictionary nachzuschlagen).
             byte mats[] = this.center.materials

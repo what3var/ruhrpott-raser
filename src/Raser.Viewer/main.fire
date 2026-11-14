@@ -79,6 +79,7 @@ class ColumnMesh {
 class ColumnBuilder {
     Raser.FileTileStore store
     Dictionary<string, Raser.Chunk> chunks
+    Dictionary<string, byte[]> faces                  // die Randschichten der Nachbarn (.rrb, entpackt)
     Dictionary<string, List<int>> layers
     HashSet<string> manifests
     defined float originE
@@ -89,6 +90,7 @@ class ColumnBuilder {
     construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
         this.store = new Raser.FileTileStore(root)
         this.chunks = new Dictionary<string, Raser.Chunk>()
+        this.faces = new Dictionary<string, byte[]>()
         this.layers = new Dictionary<string, List<int>>()
         this.manifests = new HashSet<string>()
         this.originE = e
@@ -104,6 +106,26 @@ class ColumnBuilder {
         this.chunks[name] = c
         if (c != undefined) { c.TakeTo(this.chunks) }
         return c
+    }
+
+    // Eine Randschicht eines Chunks: aus seiner .rrb (zwischengespeichert), sonst aus dem Chunk selbst; undefined, wo kein Chunk ist.
+    Raser.ChunkFace FaceOf(defined int cx, defined int cy, defined int cz, defined int side) {
+        string name = cx + "_" + cy + "_" + cz
+        if (this.chunks.ContainsKey(name)) { return Raser.ChunkFace.Of(this.chunks[name], side) }
+        if (!this.faces.ContainsKey(name)) {
+            var key = new Raser.ChunkKey(cx, cy, cz)
+            if (this.LayersOf(cx, cy).Contains(cz)) {
+                var bytes = this.store.LoadFaces(key)
+                if (bytes == undefined) { return Raser.ChunkFace.Of(this.ChunkAt(cx, cy, cz), side) }
+                this.faces[name] = bytes
+                bytes.TakeTo(this.faces)
+            } else {
+                this.faces[name] = undefined
+            }
+        }
+        var data = this.faces[name]
+        if (data == undefined) { return undefined }
+        return Raser.ChunkFace.Decode(data, side)
     }
 
     // Die Chunk-Ebenen einer Säule (leer: dort gibt es nichts).
@@ -129,17 +151,19 @@ class ColumnBuilder {
     ColumnMesh Build(defined int cx, defined int cy) {
         var result = new ColumnMesh(cx, cy)
         // ein einfacher Cache: zu groß geworden, fängt er neu an (die Nachbarn der nächsten Säulen kommen von der Platte)
-        if (this.chunks.Count > 600) { this.chunks.Clear() }
+        if (this.chunks.Count > 200) { this.chunks.Clear() }
+        if (this.faces.Count > 2000) { this.faces.Clear() }
         foreach (z in this.LayersOf(cx, cy)) {
             int t0 = DateTime.Now.Ticks
             var chunk = this.ChunkAt(cx, cy, z)
             if (chunk == undefined) { continue }
-            var w = this.ChunkAt(cx - 1, cy, z)
-            var e = this.ChunkAt(cx + 1, cy, z)
-            var so = this.ChunkAt(cx, cy - 1, z)
-            var no = this.ChunkAt(cx, cy + 1, z)
-            var be = this.ChunkAt(cx, cy, z - 1)
-            var ab = this.ChunkAt(cx, cy, z + 1)
+            // von den Nachbarn nur die Randschicht, die diesen Chunk berührt
+            var w = this.FaceOf(cx - 1, cy, z, 1)
+            var e = this.FaceOf(cx + 1, cy, z, 0)
+            var so = this.FaceOf(cx, cy - 1, z, 3)
+            var no = this.FaceOf(cx, cy + 1, z, 2)
+            var be = this.FaceOf(cx, cy, z - 1, 5)
+            var ab = this.FaceOf(cx, cy, z + 1, 4)
             int t1 = DateTime.Now.Ticks
             var mesh = new Raser.Mesher(chunk, w, e, so, no, be, ab).Build()
             var key = new Raser.ChunkKey(cx, cy, z)

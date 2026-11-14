@@ -88,6 +88,20 @@ namespace Raser {
             string folder = this.ChunkFolder(chunk.key.Tile())
             IO.Directory.CreateDirectory(folder)
             IO.File.WriteAllBytes(IO.Path.Combine(folder, chunk.key.ToString() + ".rrc"), Compression.Deflate.Compress(chunk.Encode()))
+            this.SaveFaces(chunk)
+        }
+
+        // Die sechs Randschichten des Chunks daneben (.rrb): was ein Nachbar zum Vernetzen braucht, ohne den ganzen Chunk zu lesen.
+        undefined SaveFaces(Chunk chunk) {
+            string folder = this.ChunkFolder(chunk.key.Tile())
+            IO.File.WriteAllBytes(IO.Path.Combine(folder, chunk.key.ToString() + ".rrb"), Compression.Deflate.Compress(Raser.ChunkFace.EncodeAll(chunk)))
+        }
+
+        // Die Bytes der Randschichten (Raser.ChunkFace.Decode), undefined ohne Datei.
+        byte[] LoadFaces(ChunkKey key) {
+            string path = IO.Path.Combine(this.ChunkFolder(key.Tile()), key.ToString() + ".rrb")
+            if (!IO.File.Exists(path)) { return undefined }
+            return Compression.Deflate.Decompress(IO.File.ReadAllBytes(path))
         }
 
         Chunk LoadChunk(ChunkKey key) {

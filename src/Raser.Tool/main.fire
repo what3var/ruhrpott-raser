@@ -4,6 +4,7 @@
 //   raser voxelize  [--world world] [--overrides overrides] [--seed n] [--tile x_y | --all] [--force]
 //   raser export png [--world world] [--tile x_y | --all] [--step n] [--out datei.png]
 //   raser export obj [--world world] --at ost,nord [--size meter] [--out datei.obj]
+//   raser faces     [--world world] [--tile x_y]    die Randschichten (.rrb) für schon voxelisierte Chunks
 //   raser info      [--world world]
 //   (alle Befehle: --db postgres://host/raser [--db-user u] - der Zwischenlayer in PostGIS, Passwort in RASER_DB_PASSWORD)
 //
@@ -146,6 +147,20 @@ class Tool {
         }
     }
 
+    // Schreibt die Randschichten (.rrb) zu allen gespeicherten Chunks (für Welten, die vor den Randschichten voxelisiert wurden).
+    static undefined Faces(Args args) {
+        var store = Tool.Store(args)
+        foreach (k in Tool.Chosen(args, store)) {
+            var m = store.LoadManifest(k)
+            if (m == undefined) { continue }
+            foreach (s in m.keys) {
+                var chunk = store.LoadChunk(Raser.ChunkKey.Parse(s))
+                if (chunk != undefined) { store.SaveFaces(chunk) }
+            }
+            Tool.Log("Kachel " + k + ": " + m.keys.Count + " Randschichten")
+        }
+    }
+
     static undefined ExportPng(Args args) {
         var store = Tool.Store(args)
         var keys = Tool.Chosen(args, store)
@@ -231,7 +246,7 @@ class Tool {
         Tool.started = DateTime.Now.Ticks
         var args = new Args(items)
         if (args.positional.Count == 0) {
-            print("raser import | voxelize | export png | export obj | info  (siehe src/Raser.Tool/main.fire)")
+            print("raser import | voxelize | faces | export png | export obj | info  (siehe src/Raser.Tool/main.fire)")
             return 1
         }
         try {
@@ -240,6 +255,7 @@ class Tool {
                 case "import": Tool.Import(args)
                 case "voxelize": Tool.Voxelize(args)
                 case "info": Tool.Info(args)
+                case "faces": Tool.Faces(args)
                 case "export":
                     string what = "png"
                     if (args.positional.Count > 1) { what = args.positional[1] }

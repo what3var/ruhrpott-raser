@@ -207,4 +207,88 @@ namespace Raser {
             return h
         }
     }
+
+    // Eine Randschicht eines Chunks (64 x 64 Zellen: Material und Form) - was ein Nachbar zum Vernetzen braucht, ohne den ganzen Chunk.
+    // Seiten: 0 = x 0, 1 = x 63, 2 = y 0, 3 = y 63, 4 = z 0, 5 = z 63. Zelle: bei x-Seiten y + 64 z, bei y-Seiten x + 64 z, bei z-Seiten x + 64 y.
+    class ChunkFace {
+        byte materials[4096]
+        byte shapes[4096]
+        defined bool solid      // jede Zelle fest, undurchsichtig und voll
+
+        construct() { }
+
+        static defined int CellOf(defined int side, defined int x, defined int y, defined int z) {
+            if (side < 2) { return y + (z << 6) }
+            if (side < 4) { return x + (z << 6) }
+            return x + (y << 6)
+        }
+
+        // Die Seite `side` eines Chunks (undefined ohne Chunk).
+        static ChunkFace Of(Chunk c, defined int side) {
+            if (c == undefined) { return undefined }
+            var f = new Raser.ChunkFace()
+            for (int b = 0; b < 64; b++) {
+                for (int a = 0; a < 64; a++) {
+                    int x = 0
+                    int y = 0
+                    int z = 0
+                    if (side < 2) {
+                        x = (side % 2) * 63
+                        y = a
+                        z = b
+                    } else if (side < 4) {
+                        x = a
+                        y = (side % 2) * 63
+                        z = b
+                    } else {
+                        x = a
+                        y = b
+                        z = (side % 2) * 63
+                    }
+                    int cell = a + (b << 6)
+                    f.materials[cell] = c.MaterialAt(x, y, z)
+                    f.shapes[cell] = c.ShapeAt(x, y, z)
+                }
+            }
+            f.Check()
+            return f
+        }
+
+        undefined Check() {
+            this.solid = this.materials.IndexOf(0) < 0 && this.materials.IndexOf(6) < 0 && this.materials.IndexOf(11) < 0 && Raser.ChunkFace.AllFull(this.shapes)
+        }
+
+        static defined bool AllFull(byte shapes[]) {
+            for (int i = 0; i < 4096; i++) {
+                if (shapes[i] != 255) { return false }
+            }
+            return true
+        }
+
+        // Alle sechs Seiten eines Chunks als Bytes ("RRB1", dann je Seite 4096 Materialien und 4096 Formen).
+        static byte[] EncodeAll(Chunk c) {
+            var w = new Raser.ByteWriter(6 * 8192 + 8)
+            w.Byte(82)
+            w.Byte(82)
+            w.Byte(66)
+            w.Byte(49)
+            for (int side = 0; side < 6; side++) {
+                var f = Raser.ChunkFace.Of(c, side)
+                w.Bytes(f.materials)
+                w.Bytes(f.shapes)
+            }
+            return w.ToBytes()
+        }
+
+        // Eine Seite aus den Bytes von EncodeAll.
+        static ChunkFace Decode(byte data[], defined int side) {
+            if (data.length < 4 + 6 * 8192 || data[0] != 82 || data[1] != 82 || data[2] != 66 || data[3] != 49) { throw new Raser.DataException("Not chunk faces (RRB1).") }
+            var f = new Raser.ChunkFace()
+            int at = 4 + side * 8192
+            data.CopyTo(f.materials, 0, at, 4096)
+            data.CopyTo(f.shapes, 0, at + 4096, 4096)
+            f.Check()
+            return f
+        }
+    }
 }
