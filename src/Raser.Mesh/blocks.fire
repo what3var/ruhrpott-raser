@@ -1,0 +1,334 @@
+// Raser.Mesh: die nahe Detailstufe eines Blocks (4 x 4 Chunk-Säulen, 51,2 m) - Chunks laden, vernetzen, glattes Gelände dazu, Arrays für einen
+// Renderer (Positionen, Texturkoordinaten mit der Farbe, Indizes). Ohne Szene: läuft im Viewer (auch in Worker-Threads) und im Tool.
+#import "raser.core"
+#import "raser.world"
+#import "time"
+
+namespace Raser {
+    // Die Netze eines Chunks (Stufe 0).
+    class ChunkParts {
+        Raser.ChunkKey key
+        Raser.MeshPart opaque
+        Raser.MeshPart transparent
+        construct() { }
+    }
+
+    // Liest Chunks und die Randschichten der Nachbarn (zwischengespeichert) und vernetzt eine Chunk-Säule.
+    class ColumnBuilder {
+        Raser.FileTileStore store
+        Dictionary<string, Raser.Chunk> chunks
+        Dictionary<string, byte[]> faces                  // die Randschichten der Nachbarn (.rrb, entpackt)
+        Dictionary<string, List<int>> layers
+        HashSet<string> manifests
+        byte hard[]                                       // die harten Säulen der zuletzt gebauten Säule (Raser.GroundCut)
+
+        construct(Raser.FileTileStore store) {
+            this.store = store
+            this.chunks = new Dictionary<string, Raser.Chunk>()
+            this.faces = new Dictionary<string, byte[]>()
+            this.layers = new Dictionary<string, List<int>>()
+            this.manifests = new HashSet<string>()
+        }
+
+        Raser.Chunk ChunkAt(defined int cx, defined int cy, defined int cz) {
+            string name = cx + "_" + cy + "_" + cz
+            if (this.chunks.ContainsKey(name)) { return this.chunks[name] }
+            var c = this.store.LoadChunk(new Raser.ChunkKey(cx, cy, cz))
+            this.chunks[name] = c
+            if (c != undefined) { c.TakeTo(this.chunks) }
+            return c
+        }
+
+        // Eine Randschicht eines Chunks: aus seiner .rrb (zwischengespeichert), sonst aus dem Chunk selbst; undefined, wo kein Chunk ist.
+        Raser.ChunkFace FaceOf(defined int cx, defined int cy, defined int cz, defined int side) {
+            string name = cx + "_" + cy + "_" + cz
+            // lieber aus der .rrb (Kopieren) als aus dem Chunk (je Zelle die Form nachschlagen)
+            if (this.chunks.ContainsKey(name) && !this.faces.ContainsKey(name) && !this.LayersOf(cx, cy).Contains(cz)) { return Raser.ChunkFace.Of(this.chunks[name], side) }
+            if (!this.faces.ContainsKey(name)) {
+                if (this.LayersOf(cx, cy).Contains(cz)) {
+                    var bytes = this.store.LoadFaces(new Raser.ChunkKey(cx, cy, cz))
+                    if (bytes == undefined) { return Raser.ChunkFace.Of(this.ChunkAt(cx, cy, cz), side) }
+                    this.faces[name] = bytes
+                    bytes.TakeTo(this.faces)
+                } else {
+                    this.faces[name] = undefined
+                }
+            }
+            var data = this.faces[name]
+            if (data == undefined) { return undefined }
+            return Raser.ChunkFace.Decode(data, side)
+        }
+
+        // Die Chunk-Ebenen einer Säule (leer: dort gibt es nichts).
+        List<int> LayersOf(defined int cx, defined int cy) {
+            string key = cx + "_" + cy
+            string tile = new Raser.ChunkKey(cx, cy, 0).Tile().ToString()
+            if (!this.manifests.Contains(tile)) {
+                this.manifests.Add(tile)
+                var m = this.store.LoadManifest(Raser.TileKey.Parse(tile))
+                if (m != undefined) {
+                    foreach (s in m.keys) {
+                        var k = Raser.ChunkKey.Parse(s)
+                        string col = k.x + "_" + k.y
+                        if (!this.layers.ContainsKey(col)) { this.layers[col] = new List<int>() }
+                        this.layers[col].Add(k.z)
+                    }
+                }
+            }
+            if (!this.layers.ContainsKey(key)) { this.layers[key] = new List<int>() }
+            return this.layers[key]
+        }
+
+        // Die Netze einer Chunk-Säule. Mit fm (die Kachel, kachel-lokal ab tileE, tileN) kommt das Gelände glatt von dort: Gelände-Voxel bekommen nur
+        // in den harten Säulen Flächen (danach in this.hard).
+        List<ChunkParts> Parts(defined int cx, defined int cy, Raser.FarMesher fm = undefined, defined float tileE = 0.0, defined float tileN = 0.0) {
+            var result = new List<ChunkParts>()
+            if (this.chunks.Count > 200) { this.chunks.Clear() }
+            if (this.faces.Count > 2000) { this.faces.Clear() }
+            this.hard = undefined
+            if (fm != undefined) {
+                var cut = new Raser.GroundCut()
+                foreach (z in this.LayersOf(cx, cy)) { cut.Add(this.ChunkAt(cx, cy, z)) }
+                this.hard = cut.Hard(fm, cx * 12.8 - tileE, cy * 12.8 - tileN)
+            }
+            foreach (z in this.LayersOf(cx, cy)) {
+                var chunk = this.ChunkAt(cx, cy, z)
+                if (chunk == undefined) { continue }
+                // von den Nachbarn nur die Randschicht, die diesen Chunk berührt
+                var mesher = new Raser.Mesher(chunk, this.FaceOf(cx - 1, cy, z, 1), this.FaceOf(cx + 1, cy, z, 0), this.FaceOf(cx, cy - 1, z, 3), this.FaceOf(cx, cy + 1, z, 2), this.FaceOf(cx, cy, z - 1, 5), this.FaceOf(cx, cy, z + 1, 4))
+                if (this.hard != undefined) {
+                    mesher.skipTerrain = true          // das Gelände kommt glatt aus dem Höhenraster, nur die harten Säulen als Voxel
+                    mesher.hardColumns = this.hard
+                }
+                var mesh = mesher.Build()
+                var p = new ChunkParts()
+                p.key = new Raser.ChunkKey(cx, cy, z)
+                p.opaque = mesh.opaque
+                p.transparent = mesh.transparent
+                mesh.opaque.TakeTo(p)
+                mesh.transparent.TakeTo(p)
+                result.Add(take p)
+            }
+            return result
+        }
+    }
+
+    // Sammelt die Netze eines Blocks (samt Verschiebung) und macht daraus die Arrays für scene3d in Szenen-Koordinaten; die Farbe steckt in den
+    // Texturkoordinaten (die Palette ist eine Textur von 256 x 1), so wird ein Block ein Objekt statt einem je Farbe.
+    class BlockMesh {
+        List<Raser.MeshPart> parts
+        List<float> offsets             // je Netz ox, oy, oz
+        defined int quads
+
+        construct() {
+            this.parts = new List<Raser.MeshPart>()
+            this.offsets = new List<float>()
+        }
+
+        // Ein Netz (Raser: x Ost, y Nord, z oben), verschoben um (ox, oy, oz) - mit take übergeben, der Block behält es bis Batches.
+        undefined Add(Raser.MeshPart part, defined float ox, defined float oy, defined float oz) {
+            if (part == undefined || part.Count == 0) { return }
+            this.quads = this.quads + part.Count
+            this.parts.Add(part)
+            try part.TakeTo(this.parts)
+            this.offsets.Add(ox)
+            this.offsets.Add(oy)
+            this.offsets.Add(oz)
+        }
+
+        // Die Arrays für scene3d (höchstens 16.000 Vierecke je Netz: die Indizes sind 16 Bit), in einem Durchgang über lokale Arrays - geht auch in
+        // einem Worker. Szene: x = Ost, y = oben, z = -Nord.
+        undefined Batches(defined float opacity, List<MeshBatch> out) {
+            defined int pi = 0          // das Netz und das Viereck darin, bei dem es weitergeht
+            defined int pq = 0
+            float src[] = undefined
+            int col[] = undefined
+            defined float ox = 0.0
+            defined float oy = 0.0
+            defined float oz = 0.0
+            defined int partCount = 0
+            if (this.parts.Count > 0) {
+                src = this.parts[0].positions
+                col = this.parts[0].colors
+                partCount = this.parts[0].Count
+                ox = this.offsets[0]
+                oy = this.offsets[1]
+                oz = this.offsets[2]
+            }
+            for (int first = 0; first < this.quads; first = first + 16000) {
+                defined int n = Math.Min(16000, this.quads - first)
+                float pos[] = new float[n * 12]
+                float uv[] = new float[n * 8]
+                int idx[] = new int[n * 6]
+                for (int q = 0; q < n; q++) {
+                    while (pq >= partCount) {
+                        pi++
+                        pq = 0
+                        src = this.parts[pi].positions
+                        col = this.parts[pi].colors
+                        partCount = this.parts[pi].Count
+                        ox = this.offsets[pi * 3]
+                        oy = this.offsets[pi * 3 + 1]
+                        oz = this.offsets[pi * 3 + 2]
+                    }
+                    float u = (col[pq] + 0.5) / 256.0
+                    defined int s = pq * 12
+                    defined int d = q * 12
+                    for (int c = 0; c < 4; c++) {
+                        pos[d] = ox + src[s]
+                        pos[d + 1] = oz + src[s + 2]
+                        pos[d + 2] = -(oy + src[s + 1])
+                        s = s + 3
+                        d = d + 3
+                    }
+                    defined int t = q * 8
+                    uv[t] = u
+                    uv[t + 1] = 0.5
+                    uv[t + 2] = u
+                    uv[t + 3] = 0.5
+                    uv[t + 4] = u
+                    uv[t + 5] = 0.5
+                    uv[t + 6] = u
+                    uv[t + 7] = 0.5
+                    // die Vierecke sind von außen gegen den Uhrzeigersinn - so sieht scene3d die Vorderseite
+                    defined int k = q * 6
+                    defined int v = q * 4
+                    idx[k] = v
+                    idx[k + 1] = v + 1
+                    idx[k + 2] = v + 2
+                    idx[k + 3] = v
+                    idx[k + 4] = v + 2
+                    idx[k + 5] = v + 3
+                    pq++
+                }
+                var batch = new MeshBatch()
+                batch.opacity = opacity
+                batch.quads = n
+                batch.positions = take pos
+                batch.uvs = take uv
+                batch.indices = take idx
+                out.Add(take batch)
+            }
+        }
+    }
+
+    // Ein Netz für scene3d: die fertigen Arrays (im Worker gebaut, im Hauptprogramm nur noch Model und Object).
+    class MeshBatch {
+        float positions[]
+        float uvs[]
+        int indices[]
+        defined float opacity
+        defined int quads
+        construct() { }
+    }
+
+    // Ein Auftrag an die Worker: die Stufe 0 eines Blocks.
+    class NearJob {
+        defined int bx
+        defined int by
+        construct(defined int bx, defined int by) {
+            this.bx = bx
+            this.by = by
+        }
+    }
+
+    // Die Stufe 0 eines Blocks, fertig für scene3d.
+    class NearResult {
+        defined int bx
+        defined int by
+        List<MeshBatch> batches
+        defined int ticks
+        construct(defined int bx, defined int by) {
+            this.bx = bx
+            this.by = by
+            this.batches = new List<MeshBatch>()
+        }
+    }
+
+    // Baut die Stufe 0 eines Blocks: die Voxel-Chunks, vernetzt (Gelände-Voxel nur in den harten Säulen), dazu das glatte Gelände aus dem Höhenraster
+    // ohne die harten Zellen. Ohne die Szene - so läuft es in einem Worker-Thread (mit eigenem Store und eigenen Caches) oder im Hauptprogramm.
+    class NearBuilder {
+        Raser.FileTileStore store
+        ColumnBuilder columns
+        Dictionary<string, Raser.FarMesher> farMeshers
+        defined float originE
+        defined float originN
+        defined float originZ
+        defined float nearSpacing       // Geländeraster der nahen Stufe
+        defined bool opaqueOnly
+
+        construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
+            this.store = new Raser.FileTileStore(root)
+            this.columns = new ColumnBuilder(this.store)
+            this.farMeshers = new Dictionary<string, Raser.FarMesher>()
+            this.originE = e
+            this.originN = n
+            this.originZ = z
+            this.nearSpacing = 0.8
+            this.opaqueOnly = opaqueOnly
+        }
+
+        Raser.FarMesher FarFor(Raser.TileKey key) {
+            string name = key.ToString()
+            if (this.farMeshers.ContainsKey(name)) { return this.farMeshers[name] }
+            var tile = this.store.Load(key)
+            if (tile == undefined) {
+                this.farMeshers[name] = undefined
+                return undefined
+            }
+            var fm = new Raser.FarMesher(take tile, 1)
+            this.farMeshers[name] = fm
+            fm.TakeTo(this.farMeshers)
+            return fm
+        }
+
+        NearResult Build(defined int bx, defined int by) {
+            int t0 = DateTime.Now.Ticks
+            var result = new NearResult(bx, by)
+            var opaque = new BlockMesh()
+            var glass = new BlockMesh()
+            byte skip[] = new byte[4096]          // die harten Zellen (80 cm) des Blocks: dort spart das glatte Gelände aus
+            float east = bx * 51.2
+            float north = by * 51.2
+            var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
+            var fm = this.FarFor(tileKey)
+            for (int column = 0; column < 16; column++) {
+                int cx = bx * 4 + (column % 4)
+                int cy = by * 4 + (column / 4)
+                var parts = this.columns.Parts(cx, cy, fm, trust tileKey.East, trust tileKey.North)
+                if (this.columns.hard != undefined) {
+                    // die harten Zellen der Säule in die Karte des Blocks (64 x 64 Zellen à 80 cm, je Säule 16 x 16)
+                    int sx = (column % 4) * 16
+                    int sy = (column / 4) * 16
+                    for (int k = 0; k < 256; k++) {
+                        int x = k & 15
+                        int y = k >> 4
+                        if (this.columns.hard[x * 4 + y * 4 * 64] != 0) { skip[(sx + x) + (sy + y) * 64] = 1 }
+                    }
+                }
+                foreach (p in parts) {
+                    float ox = p.key.VoxelX * 0.2 - this.originE
+                    float oy = p.key.VoxelY * 0.2 - this.originN
+                    float oz = p.key.VoxelZ * 0.2 - this.originZ
+                    opaque.Add(take p.opaque, ox, oy, oz)
+                    if (!this.opaqueOnly) { glass.Add(take p.transparent, ox, oy, oz) }
+                }
+            }
+            // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein, ohne die harten Zellen; die Voxel bringen, was darauf steht
+            if (fm != undefined) {
+                var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip)
+                opaque.Add(take ground, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
+            }
+            opaque.Batches(1.0, result.batches)
+            glass.Batches(0.45, result.batches)
+            result.ticks = DateTime.Now.Ticks - t0
+            return result
+        }
+
+        // Der Worker-Thread: Aufträge, bis der Kanal zu ist.
+        static undefined Work(Channel<NearJob> jobs, Channel<NearResult> results, string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
+            var builder = new NearBuilder(root, e, n, z, opaqueOnly)
+            foreach (job in jobs) { results.Send(builder.Build(job.bx, job.by)) }
+        }
+    }
+}
