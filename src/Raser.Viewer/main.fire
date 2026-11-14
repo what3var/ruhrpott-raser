@@ -47,8 +47,7 @@ class Options {
     string Get(string name, string fallback) { return this.values.Get(name, fallback) }
 }
 
-// Wie viel Speicher frei ist. fire hat dafür (noch) keine Abfrage: unter Linux aus /proc/meminfo (MemAvailable / MemTotal) und /proc/self/status
-// (VmRSS), sonst unbekannt (-1). Gelesen höchstens einmal je Sekunde - mit Read, weil IO.File.ReadAllText bei /proc leer bleibt (docs/FIRE.md).
+// Wie viel Speicher frei ist (Environment.TotalMemory / FreeMemory / ProcessMemory; -1: das System sagt es nicht). Gelesen höchstens einmal je Sekunde.
 class MemoryWatch {
     defined float freePercent       // frei in Prozent des ganzen Speichers (-1: unbekannt)
     defined int totalMb
@@ -64,45 +63,18 @@ class MemoryWatch {
         this.checkedAt = -100000000
     }
 
-    // Der Wert (kB) einer Zeile "Name:   1234 kB".
-    static defined int Kb(string text, string name) {
-        int at = text.IndexOf(name + ":")
-        if (at < 0) { return -1 }
-        int end = text.IndexOf("\n", at)
-        if (end < 0) { end = text.Length }
-        string v = text.Substring(at + name.Length + 1, end - at - name.Length - 1).Replace("kB", "").Trim()
-        any n = v.TryToInt()
-        if (n == undefined) { return -1 }
-        return n
-    }
-
-    static string ReadProc(string path) {
-        var stream = IO.File.OpenRead(path)
-        byte buf[] = new byte[16384]
-        int n = stream.Read(buf, 0, 16384)
-        stream.Close()
-        if (n <= 0) { return "" }
-        return IO.Utf8.GetString(buf.Slice(0, n))
-    }
-
     undefined Check() {
         int now = DateTime.Now.Ticks
         if (now - this.checkedAt < 10000000) { return }
         this.checkedAt = now
-        if (Environment.Platform != "linux") { return }
-        try {
-            string info = MemoryWatch.ReadProc("/proc/meminfo")
-            int total = MemoryWatch.Kb(info, "MemTotal")
-            int available = MemoryWatch.Kb(info, "MemAvailable")
-            if (total > 0 && available >= 0) {
-                this.totalMb = total / 1024
-                this.freePercent = available * 100.0 / total
-            }
-            int rss = MemoryWatch.Kb(MemoryWatch.ReadProc("/proc/self/status"), "VmRSS")
-            if (rss >= 0) { this.processMb = rss / 1024 }
-        } catch (Exception ex) {
-            this.freePercent = -1.0
+        any total = Environment.TotalMemory
+        any free = Environment.FreeMemory
+        any own = Environment.ProcessMemory
+        if (total != undefined && free != undefined && total > 0) {
+            this.totalMb = total / 1048576
+            this.freePercent = free * 100.0 / total
         }
+        if (own != undefined) { this.processMb = own / 1048576 }
     }
 
     // Zu wenig frei: entladen.
@@ -232,6 +204,7 @@ class WorldView {
         this.opaqueOnly = opaqueOnly
         // die Textur aller Blöcke: Materialkacheln, Fassaden, Palette (Raser.Atlas)
         this.palette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba())
+        this.palette.Filter = TextureFilter.Sharp         // scharfe Voxel, an den Kanten über ein Pixel geglättet (Konzept: Pixel-Art)
     }
 
     // Schließt den Auftragskanal: die Worker enden, wenn sie fertig sind.

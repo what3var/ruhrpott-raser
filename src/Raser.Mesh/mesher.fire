@@ -14,11 +14,11 @@ namespace Raser {
     // Die Vierecke eines Netzes in Arrays, die wie eine Liste mitwachsen (gefüllt bis Count; typisierte Arrays sind nativ dicht gepackt und
     // schneller gefüllt als List<float>).
     class MeshPart {
-        float positions[]         // 12 je Viereck (4 Ecken x, y, z)
-        float normals[]           // 3 je Viereck
-        int colors[]              // 1 je Viereck (Palettenindex)
-        int materials[]           // 1 je Viereck
-        float uvs[]               // 8 je Viereck (u, v je Ecke) - nur, wenn ein Viereck eigene Texturkoordinaten hat (QuadUV), sonst undefined
+        defined float positions[]         // 12 je Viereck (4 Ecken x, y, z)
+        defined float normals[]           // 3 je Viereck
+        defined int colors[]              // 1 je Viereck (Palettenindex)
+        defined int materials[]           // 1 je Viereck
+        defined float uvs[]               // 8 je Viereck (u, v je Ecke) - nur, wenn ein Viereck eigene Texturkoordinaten hat (QuadUV), sonst undefined
         defined int count
 
         construct() {
@@ -33,14 +33,14 @@ namespace Raser {
         // Platz für doppelt so viele Vierecke.
         undefined Grow() {
             defined int n = this.count
-            float p[] = new float[n * 24]
-            float nn[] = new float[n * 6]
-            int c[] = new int[n * 2]
-            int m[] = new int[n * 2]
-            float op[] = this.positions
-            float onn[] = this.normals
-            int oc[] = this.colors
-            int om[] = this.materials
+            defined float p[] = new float[n * 24]
+            defined float nn[] = new float[n * 6]
+            defined int c[] = new int[n * 2]
+            defined int m[] = new int[n * 2]
+            defined float op[] = this.positions
+            defined float onn[] = this.normals
+            defined int oc[] = this.colors
+            defined int om[] = this.materials
             for (int i = 0; i < n * 12; i++) { p[i] = op[i] }
             for (int i = 0; i < n * 3; i++) { nn[i] = onn[i] }
             for (int i = 0; i < n; i++) {
@@ -52,8 +52,8 @@ namespace Raser {
             this.colors = take c
             this.materials = take m
             if (this.uvs != undefined) {
-                float uv[] = new float[n * 16]
-                float ou[] = this.uvs
+                defined float uv[] = new float[n * 16]
+                defined float ou[] = this.uvs
                 for (int i = 0; i < n * 8; i++) { uv[i] = ou[i] }
                 this.uvs = take uv
             }
@@ -63,20 +63,20 @@ namespace Raser {
         // (u, v = -1: aus der Farbe).
         undefined QuadUV(defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float cx, defined float cy, defined float cz, defined float dx, defined float dy, defined float dz, defined float nx, defined float ny, defined float nz, defined int color, defined int material, defined float ua, defined float va, defined float ub, defined float vb, defined float uc, defined float vc, defined float ud, defined float vd) {
             if (this.uvs == undefined) {
-                float fresh[] = new float[this.colors.length * 8]
+                defined float fresh[] = new float[this.colors.length * 8]
                 for (int i = 0; i < this.count * 8; i++) { fresh[i] = -1.0 }
                 this.uvs = take fresh
             }
             defined int q = this.count
             this.Quad(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, nx, ny, nz, color, material)
-            float uv[] = this.uvs
+            defined float uv[] = this.uvs
             defined int at = q * 8
             uv[at] = ua
             uv[at + 1] = va
             uv[at + 4] = uc
             uv[at + 5] = vc
             // Quad dreht b und d, wenn die Ecken andersherum laufen als die Normale
-            float p[] = this.positions
+            defined float p[] = this.positions
             if (p[q * 12 + 3] == bx && p[q * 12 + 4] == by && p[q * 12 + 5] == bz) {
                 uv[at + 2] = ub
                 uv[at + 3] = vb
@@ -102,7 +102,7 @@ namespace Raser {
             float px = uy * vz - uz * vy
             float py = uz * vx - ux * vz
             float pz = ux * vy - uy * vx
-            float p[] = this.positions
+            defined float p[] = this.positions
             defined int at = this.count * 12
             p[at] = ax
             p[at + 1] = ay
@@ -125,16 +125,16 @@ namespace Raser {
             p[at + 6] = cx
             p[at + 7] = cy
             p[at + 8] = cz
-            float nn[] = this.normals
+            defined float nn[] = this.normals
             nn[this.count * 3] = nx
             nn[this.count * 3 + 1] = ny
             nn[this.count * 3 + 2] = nz
-            int c[] = this.colors
+            defined int c[] = this.colors
             c[this.count] = color
-            int m[] = this.materials
+            defined int m[] = this.materials
             m[this.count] = material
             if (this.uvs != undefined) {
-                float uv[] = this.uvs
+                defined float uv[] = this.uvs
                 for (int k = this.count * 8; k < this.count * 8 + 8; k++) { uv[k] = -1.0 }
             }
             this.count++
@@ -322,8 +322,7 @@ namespace Raser {
             byte cut[262144]
             byte shapes[262144]
             if (this.center.shapes.Count > 0) { shapes.Fill(255) }
-            int cutsPerLayer[64]
-            for (int z = 0; z < 64; z++) { cutsPerLayer[z] = 0 }
+            defined int cutsPerLayer[64]
             foreach (pair in this.center.shapes) {
                 cut[pair.Key] = 1
                 shapes[pair.Key] = pair.Value
@@ -337,11 +336,8 @@ namespace Raser {
             // geschnitten - die nur nach unten). Danach findet jede Richtung ihre Flächen mit ein paar Bit-Operationen je Zeile statt Voxel für Voxel.
             // Die Bits liegen in Maschinenwörtern (Puffer ohne undefined, mit 0 vorbelegt): eine Zeile sind 64 / Word.Bits Wörter - auf dem Desktop eins,
             // auf einem 32-Bit-Ziel zwei. Wort k einer Zeile r liegt bei r * per + k und hält x = k * wb .. k * wb + wb - 1.
-            // (wb nur aus Literalen: Word.Bits ist für den nativen Übersetzer ein unbekannter Wert, und alles, was davon abhinge, liefe über die
-            // allgemeinen Laufzeit-Operationen - die Hälfte der Zeit)
-            defined int wb = 64
-            if (Word.Bits == 32 || this.wordBits == 32) { wb = 32 }
-            if (Word.Bits == 16 || this.wordBits == 16) { wb = 16 }
+            defined int wb = Word.Bits
+            if (this.wordBits > 0 && this.wordBits < wb) { wb = this.wordBits }
             defined int per = 64 / wb
             word one = 1
             word top = one << (wb - 1)

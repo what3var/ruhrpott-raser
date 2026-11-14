@@ -145,8 +145,8 @@ namespace Raser {
             defined int c = at + this.quads * 48
             for (int k = 0; k < this.parts.Count; k++) {
                 var part = this.parts[k]
-                float src[] = part.positions
-                int col[] = part.colors
+                defined float src[] = part.positions
+                defined int col[] = part.colors
                 float ox = this.offsets[k * 3]
                 float oy = this.offsets[k * 3 + 1]
                 float oz = this.offsets[k * 3 + 2]
@@ -170,11 +170,11 @@ namespace Raser {
             defined int colAt = at + quads * 48
             for (int first = 0; first < quads; first = first + 16000) {
                 defined int n = Math.Min(16000, quads - first)
-                float pos[] = new float[n * 12]
-                float uv[] = new float[n * 8]
-                int idx[] = new int[n * 6]
+                defined float pos[] = new float[n * 12]
+                defined float uv[] = new float[n * 8]
+                defined int idx[] = new int[n * 6]
                 defined int r = at + first * 48
-                float lp[12]
+                defined float lp[12]
                 for (int q = 0; q < n; q++) {
                     defined int color = data[colAt + first + q]
                     defined int d = q * 12
@@ -213,9 +213,9 @@ namespace Raser {
         undefined Batches(defined float opacity, List<MeshBatch> out) {
             defined int pi = 0          // das Netz und das Viereck darin, bei dem es weitergeht
             defined int pq = 0
-            float src[] = undefined
-            int col[] = undefined
-            float pu[] = undefined
+            defined float src[] = undefined
+            defined int col[] = undefined
+            defined float pu[] = undefined
             defined float ox = 0.0
             defined float oy = 0.0
             defined float oz = 0.0
@@ -231,9 +231,9 @@ namespace Raser {
             }
             for (int first = 0; first < this.quads; first = first + 16000) {
                 defined int n = Math.Min(16000, this.quads - first)
-                float pos[] = new float[n * 12]
-                float uv[] = new float[n * 8]
-                int idx[] = new int[n * 6]
+                defined float pos[] = new float[n * 12]
+                defined float uv[] = new float[n * 8]
+                defined int idx[] = new int[n * 6]
                 for (int q = 0; q < n; q++) {
                     while (pq >= partCount) {
                         pi++

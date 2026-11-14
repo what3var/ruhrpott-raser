@@ -175,7 +175,7 @@ Textur (die Farbe steckt in den Texturkoordinaten):
   wird über die Radien hinaus vorausgeladen: die ferne Stufe `--far-ahead` Ringe weiter (Standard: noch einmal `far`), die nahe `--near-ahead` Ringe
   (Standard 2, in den Workern). Entladen wird erst, wenn weniger als `--min-free` Prozent des Speichers frei sind (Standard 20) oder der Viewer mehr als
   `--memory-mb` belegt: dann je Sekunde ein Viertel des Vorrats, das Entfernteste zuerst, nahe Stufen vor ganzen Blöcken. Den Speicher liest der Viewer
-  unter Linux aus `/proc` (fire hat dafür noch keine Abfrage, docs/FIRE.md). Nach 1,3 km Flug mit nahen Blöcken: 709 Blöcke, 1,5 Millionen Dreiecke im
+  über `Environment.TotalMemory` / `FreeMemory` / `ProcessMemory`. Nach 1,3 km Flug mit nahen Blöcken: 709 Blöcke, 1,5 Millionen Dreiecke im
   Vorrat, 880 MB.
 - Ferne Blöcke bekommen ihr Geländeraster nach dem Ring (ab dem dritten doppelt so grob); kommt ein grob gebauter Block näher, wird er fein neu gebaut.
 - Je Bild wird bis `--budget-ms` gearbeitet: erst fehlende ferne Blöcke vom Ladepunkt nach außen, dann die nahen Säule für Säule. Der Ladepunkt liegt in
@@ -204,8 +204,8 @@ je Bild, Rendern rund 18 ms, rund 46 Bilder je Sekunde; nur in 51 von 718 Bilder
 
 *Nah die Voxel (mit Fenstern), weiter weg die Gebäude aus Grundriss und LoD2-Dächern (noch ohne Fassade).*
 
-**Texturen:** Alle Blöcke teilen eine Textur von 2048 x 2048 (`Raser.Atlas`): je Farbe der Palette (die benannten und ihre Dreckstufen, 32 .. 127) eine
-Materialkachel von 64 x 64 Voxeln mit 2 x 2 Texeln je Voxel, je Farbe eine Fassadenkachel im Fensterraster (9 x 14 Voxel) und die Palette selbst. Die
+**Texturen:** Alle Blöcke teilen eine Textur von 1024 x 1024 (`Raser.Atlas`, gezeichnet mit `TextureFilter.Sharp`: scharfe Voxel, an den Kanten über
+ein Pixel geglättet): je Farbe der Palette (die benannten und ihre Dreckstufen, 32 .. 127) eine Materialkachel von 64 x 64 Voxeln (ein Texel je Voxel), je Farbe eine Fassadenkachel im Fensterraster (9 x 14 Voxel) und die Palette selbst. Die
 Texturkoordinaten entstehen beim Bau der Arrays aus Lage und Farbe eines Vierecks (Ebene nach der größten Richtung der Normale, an Chunk-Grenzen
 ausgerichtet); Vierecke, die über einen Chunk hinausgehen (LoD2-Dächer der fernen Stufe), und freie Farben nehmen die Palette. Die ferne Stufe zeigt
 die Fenster in den Ringen bis 2 als Fassade (Wände geteilt an den Grenzen des Rasters und je Geschoss), genau dort, wo die Voxel sie haben.
