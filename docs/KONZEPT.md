@@ -21,7 +21,12 @@
     für Eckkneipen, runde Türme, Innenecken; jedes Voxel trägt seine Zelle im Viertel; gespeichert als Varint), später Torbögen (eine Form in
     der Ansicht) und Türen (Objekte, die zwischen zwei Wand-Voxeln definiert und automatisch passend eingehängt werden). Der Voxelizer nähert die
     Kanten der Gebäude damit an (Steigung 1:1 bis 1:6 oder achsparallel - wenige Grad Abweichung), der Baumodus bietet dieselben Elemente als
-    Fertigteile aus dem Baumarkt an. Dazu 3D-Dachziegel: ein Relief in Pixel-Art auf den Dach-Voxeln.
+    Fertigteile aus dem Baumarkt an.
+  - **Nachtrag: Schnitte mit Versatz** für die Grundrisse aus den Daten. Diagonalen setzen an ganzen Rasterpunkten an und erzeugten so
+    Stufen bis fast ein Voxel (auch nach innen); flacher als 1:6 blieb es eine Treppe. Jetzt bekommt jedes Randvoxel eine Kante zwischen zwei Punkten
+    auf seinem Rand (auf 1/32 gerastert), Ecken einen Punkt im Voxel; Nachbarn teilen sich die Punkte, die Kante läuft ohne Stufen durch. Ziel ist
+    nicht die exakte Außenkante, sondern dass es stimmig aussieht - vereinfachen ist erlaubt (fast achsparallele Wände gerade ziehen, Rundungen als
+    Sehnen). Diagonalen und Rundungen bleiben die Fertigteile des Baumodus. Dazu 3D-Dachziegel: ein Relief in Pixel-Art auf den Dach-Voxeln.
   - *Gerade Fronten in jedem Winkel* (ursprünglicher Vorschlag, aufgegangen in den Bauelementen): Die Voxel bekommen neben den Eckhöhen oben auch einen **senkrechten Schnitt im Grundriss** – eine Linie durch
     den Voxel, angegeben über zwei Randpunkte in Vierteln (wie die Eckhöhen; benachbarte Voxel teilen die Punkte). Eine Fassade, die schräg zum
     Weltgitter steht, wird so eine glatte Ebene statt einer Treppe; Fenster und Geschosse werden entlang der Wand gemessen. Die Grundstücksgrenze ist

@@ -110,6 +110,32 @@ class PlanTests {
         }
     }
 
+    [Test "Schnitte mit Versatz: Flächen, Gegenstücke, Ecken"]
+    undefined Cuts() {
+        // von unten Mitte nach oben Mitte: links davon die halbe Fläche
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Cut(16, 80)) - 0.5) < 0.0001)
+        // von (0, 0,25) nach (1, 0,75): darüber (links in Laufrichtung) die Hälfte
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Cut(120, 56)) - 0.5) < 0.0001)
+        for (int a = 0; a < 128; a = a + 3) {
+            for (int b = 0; b < 128; b = b + 5) {
+                if (a == b) { continue }
+                float x = Raser.Plan.Area(Raser.Plan.Cut(a, b))
+                float y = Raser.Plan.Area(Raser.Plan.Cut(b, a))
+                Testing.Assert.IsTrue(x >= -0.0001 && y >= -0.0001)
+                Testing.Assert.IsTrue(Math.Abs(x + y - 1.0) < 0.0001)
+            }
+        }
+        // die Ecke (0, 0,5) -> (0,5, 0,5) -> (0,5, 0): ein L aus drei Vierteln; umgekehrt das Viertel
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.CutCorner(112, 144, 16)) - 0.75) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.CutCorner(16, 144, 112)) - 0.25) < 0.0001)
+        Testing.Assert.IsTrue(Raser.Plan.IsCut(Raser.Plan.CutCorner(127, 288, 127)))
+        Testing.Assert.IsTrue(!Raser.Plan.IsArc(Raser.Plan.Cut(0, 1)))
+        // die Lage auf dem Rand: geteilte Punkte ergeben dieselbe Stelle
+        Testing.Assert.AreEqual(44, Raser.Plan.RimOf(1.0, 0.37))
+        Testing.Assert.AreEqual(116, Raser.Plan.RimOf(0.0, 0.37))
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.RimY(44) - Raser.Plan.RimY(116)) < 0.0001)
+    }
+
     [Test "Grundriss-Formen im Chunk: Kodieren, Dekodieren, Hash"]
     undefined InChunk() {
         var c = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))
@@ -117,9 +143,12 @@ class PlanTests {
         c.SetPlan(5, 6, 7, Raser.Plan.Diagonal(4, 2, 5))
         c.Set(5, 7, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
         c.SetPlan(5, 7, 7, Raser.Plan.Arc(20, 3, 19, 6))
+        c.Set(5, 8, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(5, 8, 7, Raser.Plan.CutCorner(3, 44, 27))
         var back = Raser.Chunk.Decode(c.Encode())
         Testing.Assert.AreEqual(Raser.Plan.Diagonal(4, 2, 5), back.PlanAt(5, 6, 7))
         Testing.Assert.AreEqual(Raser.Plan.Arc(20, 3, 19, 6), back.PlanAt(5, 7, 7))
+        Testing.Assert.AreEqual(Raser.Plan.CutCorner(3, 44, 27), back.PlanAt(5, 8, 7))
         Testing.Assert.AreEqual(0, back.PlanAt(5, 6, 8))
         Testing.Assert.AreEqual(c.ContentHash(), back.ContentHash())
         var plain = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))

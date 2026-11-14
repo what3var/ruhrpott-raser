@@ -276,7 +276,7 @@ class VoxelizerTests {
         }
     }
 
-    [Test "Schräge Wand: Diagonalen 2x1 lückenlos, die Fläche innen, am Fuß ein voller Sockel"]
+    [Test "Schräge Wand: Schnitte ohne Stufen, die Fläche stimmt, am Fuß ein voller Sockel"]
     undefined SlantedWall() {
         var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
         var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
@@ -293,20 +293,27 @@ class VoxelizerTests {
         tile.data.buildings.Add(take b)
         var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
         var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
-        // je Voxelreihe y zwei Teile (k = 0, 1) eines 2x1-Elements, gefüllt über der Kante (Ausrichtung 1)
-        for (int y = 11; y < 22; y++) {
-            int x = 10 + (y - 10) * 2
-            int p0 = c.PlanAt(x, y, 47)
-            int p1 = c.PlanAt(x + 1, y, 47)
-            Testing.Assert.AreEqual(Raser.Plan.Diagonal(2, 0, 1), p0)
-            Testing.Assert.AreEqual(Raser.Plan.Diagonal(2, 1, 1), p1)
-            // auf der Höhe des Geländes (Voxel 299, die Oberfläche liegt bei 60,0 m): voll
-            Testing.Assert.AreEqual(0, c.PlanAt(x, y, 43))
-            Testing.Assert.IsTrue(c.MaterialAt(x, y, 43) != 0)
+        // die Kante: jede Säule, durch die sie läuft, hat einen Schnitt; zusammen ergeben die Flächen den Grundriss (bis auf Bruchteile eines Voxels)
+        float sum = 0.0
+        int cuts = 0
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                if (c.MaterialAt(x, y, 44) == 0) { continue }
+                int p = c.PlanAt(x, y, 44)
+                if (Raser.Plan.IsCut(p)) { cuts++ }
+                sum = sum + Raser.Plan.Area(p)
+                // auf der Höhe des Geländes (Voxel 299, die Oberfläche liegt bei 60,0 m): voll
+                Testing.Assert.AreEqual(0, c.PlanAt(x, y, 43))
+            }
         }
+        // die Fläche des Parallelogramms: 8 m x 7 m im Mittel = 56 m² = 1400 Voxel
+        Testing.Assert.IsTrue(Math.Abs(sum - 1400.0) < 3.0)
+        Testing.Assert.IsTrue(cuts >= 40)
+        // die schräge Kante ohne Stufen: in der Säule (12, 11) läuft sie von (12, 11) nach (14, 12) - ein Schnitt, gefüllt darüber
+        Testing.Assert.IsTrue(Raser.Plan.IsCut(c.PlanAt(13, 11, 47)))
     }
 
-    [Test "Runder Turm: der Kreis wird als Rundung eingepasst"]
+    [Test "Runder Turm: der Kreis aus Schnitten, ohne Stufen"]
     undefined RoundTower() {
         var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
         var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
@@ -329,20 +336,23 @@ class VoxelizerTests {
         tile.data.buildings.Add(take b)
         var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
         var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
-        Testing.Assert.AreEqual(Raser.Plan.Arc(10, 9, 0, 0), c.PlanAt(39, 30, 47))
-        Testing.Assert.AreEqual(Raser.Plan.Arc(10, 9, 0, 2), c.PlanAt(20, 30, 47))
-        Testing.Assert.AreEqual(Raser.Plan.Arc(10, 0, 9, 4), c.PlanAt(30, 20, 47))
-        Testing.Assert.AreEqual(Raser.Plan.Arc(10, 6, 7, 0), c.PlanAt(36, 37, 47))
-        // außerhalb des Kreises nichts, auf ihm überall eine Rundung
+        // außerhalb des Kreises nichts, auf ihm überall ein Schnitt; die Fläche wie die des 32-Ecks (2 m Radius: 12,49 m² = 312 Voxel)
         Testing.Assert.AreEqual(0, c.MaterialAt(40, 30, 47))
         Testing.Assert.AreEqual(0, c.MaterialAt(38, 38, 47))
-        // hinter der Rundung ist die Wand dicker
-        Testing.Assert.IsTrue(c.MaterialAt(38, 30, 47) != 0)
-        int arcs = 0
-        foreach (pair in c.plans) {
-            if (Raser.Plan.IsArc(pair.Value)) { arcs++ }
+        float sum = 0.0
+        int cuts = 0
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                if (c.MaterialAt(x, y, 44) == 0) { continue }
+                int p = c.PlanAt(x, y, 44)
+                if (Raser.Plan.IsCut(p)) { cuts++ }
+                sum = sum + Raser.Plan.Area(p)
+            }
         }
-        Testing.Assert.IsTrue(arcs > 40)
+        Testing.Assert.IsTrue(Math.Abs(sum - 312.1) < 2.0)
+        Testing.Assert.IsTrue(cuts > 40)
+        // hinter dem Rand ist die Wand dicker
+        Testing.Assert.IsTrue(c.MaterialAt(38, 30, 47) != 0)
     }
 
     [Test "Straße und Fläche"]

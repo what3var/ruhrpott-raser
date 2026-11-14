@@ -181,13 +181,14 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 13: Schnitte mit Versatz (Raser.Plan.Cut) statt Diagonalen und Rundungen - Kanten ohne Stufen in jedem Winkel
         // 12: Rundungen (Raser.Plan.Arc) an Ketten kurzer, gleichmäßig drehender Kanten; der Sockel unter Bauelementen bündig mit dem Gelände
         // 11: die Grundriss-Formen erst über dem Gelände (Sockel), keine Löcher am Wandfuß
         // 10: Diagonalen nach Bresenham - je Voxelreihe ein Element, lückenlos und ohne Drift
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 12
+        static readonly defined int Version = 13
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -410,290 +411,194 @@ namespace Raser {
             return chunk
         }
 
+        // Schnitte mit Versatz (Raser.Plan.Cut): für jede Säule, durch die der Grundriss läuft, die Kante zwischen Eintritt und Austritt, beide auf
+        // 1/32 der Seite gerastert - Nachbarn teilen sich den Punkt auf der gemeinsamen Seite, die Kante läuft ohne Stufen durch, in jedem Winkel und
+        // an jeder Stelle. Liegt eine Ecke des Grundrisses in der Säule, wird es eine Ecke (a -> v -> b); mehrere Punkte (Rundungen aus kurzen
+        // Kanten): eine Gerade, wenn sie höchstens 0,15 Voxel abweichen, sonst die Ecke am weitesten weg. Läuft der Grundriss mehrmals durch dieselbe
+        // Säule (spitze Ecken, schmale Stellen), bleibt sie, wie das Raster sie sieht.
+        static undefined FitCuts(List<RoofModel> models, int owner[], defined int planOf[], defined int lx0, defined int ly0) {
+            defined int hits[4356]
+            defined int result[4356]
+            var touched = new List<int>()
+            var inner = new List<float>()
+            for (int m = 0; m < models.Count; m++) {
+                float ring[] = models[m].building.footprint
+                int n = ring.length / 2
+                if (n < 3) { continue }
+                // in Voxeln relativ zur Chunk-Säule, minimal verschoben (nie genau auf einer Rasterlinie: keine Mehrdeutigkeit an Ecken)
+                defined float px[n]
+                defined float py[n]
+                float area2 = 0.0
+                float minX = 1.0e30
+                float minY = 1.0e30
+                float maxX = -1.0e30
+                float maxY = -1.0e30
+                for (int k = 0; k < n; k++) {
+                    px[k] = ring[k * 2] / 0.2 - lx0 + 0.000137
+                    py[k] = ring[k * 2 + 1] / 0.2 - ly0 + 0.000291
+                    minX = Math.Min(minX, px[k])
+                    minY = Math.Min(minY, py[k])
+                    maxX = Math.Max(maxX, px[k])
+                    maxY = Math.Max(maxY, py[k])
+                }
+                if (maxX < -1.0 || maxY < -1.0 || minX > 65.0 || minY > 65.0) { continue }
+                for (int k = 0; k < n; k++) {
+                    int l = (k + 1) % n
+                    area2 = area2 + px[k] * py[l] - px[l] * py[k]
+                }
+                bool ccw = area2 > 0.0
+                touched.Clear()
+                // einmal um den Ring (zweimal über die Kanten: begonnen wird am ersten Übertritt einer Zellgrenze, aufgehört am selben Punkt)
+                bool started = false
+                bool done = false
+                int e0 = -1
+                float ex = 0.0
+                float ey = 0.0
+                int cellX = 0
+                int cellY = 0
+                inner.Clear()
+                for (int e = 0; e < 2 * n && !done; e++) {
+                    int k = e % n
+                    int l = (k + 1) % n
+                    float ax = px[k]
+                    float ay = py[k]
+                    float dx = px[l] - ax
+                    float dy = py[l] - ay
+                    int ix = Math.Floor(ax)!int
+                    int iy = Math.Floor(ay)!int
+                    int stepX = 1
+                    int stepY = 1
+                    if (dx < 0.0) { stepX = -1 }
+                    if (dy < 0.0) { stepY = -1 }
+                    float tMaxX = 1.0e30
+                    float tMaxY = 1.0e30
+                    float tDX = 1.0e30
+                    float tDY = 1.0e30
+                    if (Math.Abs(dx) > 1.0e-12) {
+                        float nx = ix * 1.0
+                        if (stepX > 0) { nx = ix + 1.0 }
+                        tMaxX = (nx - ax) / dx
+                        tDX = 1.0 / Math.Abs(dx)
+                    }
+                    if (Math.Abs(dy) > 1.0e-12) {
+                        float ny = iy * 1.0
+                        if (stepY > 0) { ny = iy + 1.0 }
+                        tMaxY = (ny - ay) / dy
+                        tDY = 1.0 / Math.Abs(dy)
+                    }
+                    bool firstCrossing = true
+                    while (true) {
+                        float t = Math.Min(tMaxX, tMaxY)
+                        if (t >= 1.0) {
+                            // die Kante endet in der Zelle: ihr Endpunkt liegt innen
+                            if (started) {
+                                inner.Add(px[l] - cellX)
+                                inner.Add(py[l] - cellY)
+                            }
+                            break
+                        }
+                        float qx = ax + dx * t
+                        float qy = ay + dy * t
+                        if (started) {
+                            // der Durchgang durch (cellX, cellY) endet hier
+                            Raser.Voxelizer.EmitCut(cellX, cellY, ex - cellX, ey - cellY, qx - cellX, qy - cellY, inner, ccw, hits, result, touched)
+                            if (e >= e0 + n && firstCrossing) {
+                                done = true
+                                break
+                            }
+                        } else {
+                            started = true
+                            e0 = e
+                        }
+                        firstCrossing = false
+                        if (tMaxX < tMaxY) {
+                            ix = ix + stepX
+                            tMaxX = tMaxX + tDX
+                        } else {
+                            iy = iy + stepY
+                            tMaxY = tMaxY + tDY
+                        }
+                        cellX = ix
+                        cellY = iy
+                        ex = qx
+                        ey = qy
+                        inner.Clear()
+                    }
+                }
+                // übernehmen: nur Säulen mit genau einem Durchgang
+                foreach (cell in touched) {
+                    int p = result[cell]
+                    int count = hits[cell]
+                    hits[cell] = 0
+                    result[cell] = 0
+                    if (count != 1) { continue }
+                    if (owner[cell] >= 0 && owner[cell] != m) { continue }
+                    if (p == 0) { continue }
+                    float a = Raser.Plan.Area(p)
+                    if (a > 0.97) {
+                        owner[cell] = m
+                        planOf[cell] = 0
+                    } else if (a < 0.03) {
+                        if (owner[cell] == m) {
+                            owner[cell] = -1
+                            planOf[cell] = 0
+                        }
+                    } else {
+                        owner[cell] = m
+                        planOf[cell] = p
+                    }
+                }
+            }
+        }
+
+        // Einen Durchgang des Rings durch die Zelle (x, y) festhalten: Eintritt (ex, ey), Austritt (qx, qy) und die Punkte dazwischen im Voxel.
+        static undefined EmitCut(defined int x, defined int y, defined float ex, defined float ey, defined float qx, defined float qy, List<float> inner, defined bool ccw, defined int hits[], defined int result[], List<int> touched) {
+            if (x < -1 || y < -1 || x > 64 || y > 64) { return }
+            int cell = (y + 1) * 66 + (x + 1)
+            if (hits[cell] == 0) { touched.Add(cell) }
+            hits[cell] = hits[cell] + 1
+            int sa = Raser.Plan.RimOf(ex, ey)
+            int sb = Raser.Plan.RimOf(qx, qy)
+            // der Punkt am weitesten von der Geraden
+            int v = -1
+            float far = 0.15
+            float cx = qx - ex
+            float cy = qy - ey
+            float cl = Math.Sqrt(cx * cx + cy * cy)
+            for (int k = 0; k + 1 < inner.Count; k = k + 2) {
+                float vx = inner[k]
+                float vy = inner[k + 1]
+                float d = 0.0
+                if (cl > 1.0e-9) {
+                    d = Math.Abs((vx - ex) * cy - (vy - ey) * cx) / cl
+                } else {
+                    d = Math.Sqrt((vx - ex) * (vx - ex) + (vy - ey) * (vy - ey))
+                }
+                if (d > far) {
+                    far = d
+                    int gx = Math.Clamp(Math.Round(vx * 16.0)!int, 0, 16)
+                    int gy = Math.Clamp(Math.Round(vy * 16.0)!int, 0, 16)
+                    v = gy * 17 + gx
+                }
+            }
+            // gefüllt links von a -> b: bei einem Ring gegen den Uhrzeigersinn in Laufrichtung, sonst umgekehrt
+            int a = sa
+            int b = sb
+            if (!ccw) {
+                a = sb
+                b = sa
+            }
+            if (v < 0 && a == b) {
+                result[cell] = 0
+                return
+            }
+            if (v >= 0) { result[cell] = Raser.Plan.CutCorner(a, v, b) } else { result[cell] = Raser.Plan.Cut(a, b) }
+        }
+
         // Was in jeder der 64 x 64 Säulen einer Chunk-Säule steht - unabhängig von der Höhe, also einmal für alle Chunks darüber und darunter.
         // Alle Lagen werden aus dem kachel-lokalen Voxel-Index gerechnet ((lx + 0,5) * 0,2), damit jeder Chunk dieselbe Säule gleich sieht.
         // Grundrisse und Flächen werden zeilenweise gerastert (Schnittpunkte der Zeile mit dem Ring, Gerade-Ungerade wie Geo.Inside),
         // Straßen segmentweise (nur die Säulen im Rechteck um das Segment).
-        // Gibt den Säulen an schrägen Kanten der Grundrisse Diagonalen aus dem Katalog (Raser.Plan) - wie eine Linie nach Bresenham: je Voxelreihe,
-        // die die Kante durchquert, ein Element; seine Länge (1..6) ergibt sich aus den Schnittpunkten der Kante mit den Reihengrenzen, so schließen die
-        // Elemente lückenlos aneinander und folgen der echten Linie ohne Drift (bei Steigung 0,47 meist 2er, ab und zu ein 3er). Flacher als 1:6,5
-        // bleibt achsparallel. Die gefüllte Seite kommt aus dem Inneren des Grundrisses; Säulen direkt außerhalb, durch die die Kante läuft, kommen zum
-        // Gebäude dazu (owner). Raster wie owner: 66 x 66 mit Rand, (i, j) ab -1.
-        static undefined FitDiagonals(List<RoofModel> models, int owner[], defined int planOf[], defined int lx0, defined int ly0) {
-            for (int m = 0; m < models.Count; m++) {
-                float ring[] = models[m].building.footprint
-                int pts = ring.length / 2
-                for (int e = 0; e < pts; e++) {
-                    // in Voxeln, kachel-lokal
-                    float ax = ring[e * 2] / 0.2
-                    float ay = ring[e * 2 + 1] / 0.2
-                    float bx = ring[((e + 1) % pts) * 2] / 0.2
-                    float by = ring[((e + 1) % pts) * 2 + 1] / 0.2
-                    bool axisY = Math.Abs(by - ay) > Math.Abs(bx - ax)
-                    // Laufrichtung u (die längere Achse), quer dazu v
-                    float au = ax
-                    float av = ay
-                    float bu = bx
-                    float bv = by
-                    if (axisY) {
-                        au = ay
-                        av = ax
-                        bu = by
-                        bv = bx
-                    }
-                    if (bu < au) {
-                        float t = au
-                        au = bu
-                        bu = t
-                        t = av
-                        av = bv
-                        bv = t
-                    }
-                    float du = bu - au
-                    float dv = bv - av
-                    if (du < 1.5) { continue }                            // kurz: bleibt, wie es ist
-                    float slope = dv / du
-                    if (Math.Abs(slope) < 1.0 / 6.5) { continue }         // achsparallel genug
-                    bool rising = slope > 0.0
-                    // die Reihen (v), die die Kante durchquert
-                    int r0 = Math.Floor(Math.Min(av, bv))!int
-                    int r1 = Math.Floor(Math.Max(av, bv))!int
-                    for (int r = r0; r <= r1; r++) {
-                        // wo die Kante die Reihengrenzen r und r + 1 schneidet (u), auf ganze Säulen gerundet
-                        float u0 = au + (r - av) / slope
-                        float u1 = au + (r + 1 - av) / slope
-                        int c0 = Math.Round(Math.Min(u0, u1))!int
-                        int c1 = Math.Round(Math.Max(u0, u1))!int
-                        int len = c1 - c0
-                        if (len < 1 || len > 6) { continue }
-                        for (int q = 0; q < len; q++) {
-                            int cu = c0 + q
-                            // nur im Bereich der Kante
-                            if (cu + 1 < Math.Floor(au)!int || cu > Math.Ceiling(bu)!int) { continue }
-                            int k = q
-                            if (!rising) { k = len - 1 - q }
-                            // die Säule im owner-Raster
-                            int i = cu - lx0
-                            int j = r - ly0
-                            if (axisY) {
-                                i = r - lx0
-                                j = cu - ly0
-                            }
-                            if (i < -1 || j < -1 || i > 64 || j > 64) { continue }
-                            // welche Seite innen liegt: ein Punkt knapp unter der Kante (v kleiner) in der Mitte der Säule
-                            float lineV = 0.0
-                            if (rising) { lineV = (k + 0.5) / len } else { lineV = (k + 0.5) / len }
-                            float pu = cu + 0.5
-                            float pv = r + lineV - 0.3 / len - 0.05
-                            float wx = pu * 0.2
-                            float wy = pv * 0.2
-                            if (axisY) {
-                                wx = pv * 0.2
-                                wy = pu * 0.2
-                            }
-                            int side = 1
-                            if (Raser.Geo.Inside(ring, wx, wy)) { side = 0 }
-                            int o = side
-                            if (!rising) { o = o | 2 }
-                            if (axisY) { o = o | 4 }
-                            int cell = (j + 1) * 66 + (i + 1)
-                            if (owner[cell] >= 0 && owner[cell] != m) { continue }
-                            owner[cell] = m
-                            planOf[cell] = Raser.Plan.Diagonal(len, k, o)
-                        }
-                    }
-                }
-            }
-        }
-
-        // Rundungen (Raser.Plan.Arc): Ketten kurzer Kanten (< 2,5 m), die sich gleichmäßig in eine Richtung drehen (je Ecke unter 46°, zusammen
-        // mindestens 34°), sind ein Bogen - eine runde Ecke (Eckkneipe), ein runder Turm, eine ausgerundete Innenecke. Ein Kreis wird hineingelegt
-        // (Ausgleich nach Kasa), sein Mittelpunkt auf eine Ecke des Rasters, der Radius auf ganze Voxel gerundet (1..32); im Winkelbereich des
-        // Bogens bekommt jede Säule, durch die der Kreis läuft, ihr Stück, die ganz innen liegen gehören zum Gebäude (voll), die ganz außen nicht.
-        // Nach den Diagonalen: der Bogen ersetzt, was sie aus den kurzen Kanten gemacht haben.
-        static undefined FitArcs(List<RoofModel> models, int owner[], defined int planOf[], defined int lx0, defined int ly0) {
-            for (int m = 0; m < models.Count; m++) {
-                float ring[] = models[m].building.footprint
-                int n = ring.length / 2
-                if (n < 5) { continue }
-                // je Ecke: gehört sie zu einem Bogen (beide Kanten kurz, mäßige Drehung) und in welche Richtung dreht sie
-                defined int turn[n]
-                int arcish = 0
-                for (int v = 0; v < n; v++) {
-                    int a = (v + n - 1) % n
-                    int b = (v + 1) % n
-                    float e1x = ring[v * 2] - ring[a * 2]
-                    float e1y = ring[v * 2 + 1] - ring[a * 2 + 1]
-                    float e2x = ring[b * 2] - ring[v * 2]
-                    float e2y = ring[b * 2 + 1] - ring[v * 2 + 1]
-                    float l1 = Math.Sqrt(e1x * e1x + e1y * e1y)
-                    float l2 = Math.Sqrt(e2x * e2x + e2y * e2y)
-                    turn[v] = 0
-                    if (l1 > 2.5 || l2 > 2.5 || l1 < 0.05 || l2 < 0.05) { continue }
-                    float t = Math.Atan2(e1x * e2y - e1y * e2x, e1x * e2x + e1y * e2y)
-                    if (Math.Abs(t) < 0.03 || Math.Abs(t) > 0.8) { continue }
-                    if (t > 0.0) { turn[v] = 1 } else { turn[v] = -1 }
-                    arcish++
-                }
-                if (arcish < 2) { continue }
-                // Ketten: ab einer Ecke, die nicht dazugehört (gibt es keine, ist der ganze Ring ein Kreis)
-                int start = -1
-                for (int v = 0; v < n; v++) {
-                    if (turn[v] == 0) {
-                        start = v
-                        break
-                    }
-                }
-                if (start < 0) {
-                    Raser.Voxelizer.FitArc(ring, 0, n - 1, true, m, owner, planOf, lx0, ly0)
-                    continue
-                }
-                int q = 1
-                while (q <= n) {
-                    int v = (start + q) % n
-                    if (turn[v] == 0) {
-                        q++
-                        continue
-                    }
-                    int first = q
-                    while (q + 1 <= n && turn[(start + q + 1) % n] == turn[v]) { q++ }
-                    // die Ecken first .. q (relativ zu start); dazu die Endpunkte der äußeren Kanten
-                    if (q - first + 1 >= 2) { Raser.Voxelizer.FitArc(ring, start + first - 1, start + q + 1, false, m, owner, planOf, lx0, ly0) }
-                    q++
-                }
-            }
-        }
-
-        // Einen Bogen durch die Punkte a .. b des Rings (Indizes modulo n) einpassen; whole: der ganze Ring.
-        static undefined FitArc(float ring[], defined int a, defined int b, defined bool whole, defined int m, int owner[], defined int planOf[], defined int lx0, defined int ly0) {
-            int n = ring.length / 2
-            int count = b - a + 1
-            if (count < 4) { return }
-            // Schwerpunkt (in Voxeln), dann Kasa: x² + y² + D x + E y + F = 0 nach kleinsten Quadraten
-            float mx = 0.0
-            float my = 0.0
-            for (int k = a; k <= b; k++) {
-                int v = k % n
-                mx = mx + ring[v * 2] / 0.2
-                my = my + ring[v * 2 + 1] / 0.2
-            }
-            mx = mx / count
-            my = my / count
-            float sxx = 0.0
-            float sxy = 0.0
-            float syy = 0.0
-            float sx = 0.0
-            float sy = 0.0
-            float sxz = 0.0
-            float syz = 0.0
-            float sz = 0.0
-            for (int k = a; k <= b; k++) {
-                int v = k % n
-                float x = ring[v * 2] / 0.2 - mx
-                float y = ring[v * 2 + 1] / 0.2 - my
-                float z = x * x + y * y
-                sxx = sxx + x * x
-                sxy = sxy + x * y
-                syy = syy + y * y
-                sx = sx + x
-                sy = sy + y
-                sxz = sxz + x * z
-                syz = syz + y * z
-                sz = sz + z
-            }
-            float cn = count * 1.0
-            float det = sxx * (syy * cn - sy * sy) - sxy * (sxy * cn - sy * sx) + sx * (sxy * sy - syy * sx)
-            if (Math.Abs(det) < 0.000001) { return }
-            float r1 = -sxz
-            float r2 = -syz
-            float r3 = -sz
-            float dd = (r1 * (syy * cn - sy * sy) - sxy * (r2 * cn - sy * r3) + sx * (r2 * sy - syy * r3)) / det
-            float ee = (sxx * (r2 * cn - sy * r3) - r1 * (sxy * cn - sy * sx) + sx * (sxy * r3 - r2 * sx)) / det
-            float ff = (sxx * (syy * r3 - r2 * sy) - sxy * (sxy * r3 - r2 * sx) + r1 * (sxy * sy - syy * sx)) / det
-            float fx = -dd / 2.0
-            float fy = -ee / 2.0
-            float fr2 = fx * fx + fy * fy - ff
-            if (fr2 <= 0.0) { return }
-            // auf das Raster: der Mittelpunkt auf eine Ecke, der Radius auf ganze Voxel
-            int ox = Math.Round(fx + mx)!int
-            int oy = Math.Round(fy + my)!int
-            int r = Math.Round(Math.Sqrt(fr2))!int
-            if (r < 1 || r > Raser.Plan.ArcRadius) { return }
-            // passt der Kreis? (jeder Punkt höchstens 1,2 Voxel daneben)
-            float sweep = 0.0
-            float last = 0.0
-            float theta0 = 0.0
-            for (int k = a; k <= b; k++) {
-                int v = k % n
-                float x = ring[v * 2] / 0.2 - ox
-                float y = ring[v * 2 + 1] / 0.2 - oy
-                if (Math.Abs(Math.Sqrt(x * x + y * y) - r) > 1.2) { return }
-                float th = Math.Atan2(y, x)
-                if (k == a) {
-                    theta0 = th
-                } else {
-                    float d = th - last
-                    while (d > Math.PI) { d = d - 2.0 * Math.PI }
-                    while (d < -Math.PI) { d = d + 2.0 * Math.PI }
-                    sweep = sweep + d
-                }
-                last = th
-            }
-            if (!whole && Math.Abs(sweep) < 0.6) { return }
-            // die gefüllte Seite: ein Punkt bei 0,7 r in der Mitte des Bogens
-            float mid = theta0 + sweep / 2.0
-            bool convex = Raser.Geo.Inside(ring, (ox + 0.7 * r * Math.Cos(mid)) * 0.2, (oy + 0.7 * r * Math.Sin(mid)) * 0.2)
-            float margin = 0.7 / r
-            for (int gy = oy - r - 1; gy <= oy + r; gy++) {
-                int j0 = gy - ly0
-                if (j0 < -1 || j0 > 64) { continue }
-                for (int gx = ox - r - 1; gx <= ox + r; gx++) {
-                    int i0 = gx - lx0
-                    if (i0 < -1 || i0 > 64) { continue }
-                    int dx = gx - ox
-                    int dy = gy - oy
-                    // im Winkelbereich des Bogens?
-                    if (!whole) {
-                        float th = Math.Atan2(dy + 0.5, dx + 0.5)
-                        float d = th - theta0
-                        if (sweep > 0.0) {
-                            while (d < -margin) { d = d + 2.0 * Math.PI }
-                            if (d > sweep + margin) { continue }
-                        } else {
-                            while (d > margin) { d = d - 2.0 * Math.PI }
-                            if (d < sweep - margin) { continue }
-                        }
-                    }
-                    int o = 0
-                    int ci = dx
-                    int cj = dy
-                    if (dx < 0) {
-                        ci = -dx - 1
-                        o = o | 2
-                    }
-                    if (dy < 0) {
-                        cj = -dy - 1
-                        o = o | 4
-                    }
-                    int cell = (j0 + 1) * 66 + (i0 + 1)
-                    if (owner[cell] >= 0 && owner[cell] != m) { continue }
-                    bool inside = (ci + 1) * (ci + 1) + (cj + 1) * (cj + 1) <= r * r
-                    bool outside = ci * ci + cj * cj >= r * r
-                    if (!inside && !outside) {
-                        owner[cell] = m
-                        if (convex) { planOf[cell] = Raser.Plan.Arc(r, ci, cj, o) } else { planOf[cell] = Raser.Plan.Arc(r, ci, cj, o | 1) }
-                    } else if (inside == convex) {
-                        // ganz auf der gefüllten Seite: voll (innen nur dazu, was der Grundriss knapp verfehlt - die Sehnen liegen im Kreis)
-                        if (convex) { owner[cell] = m }
-                        if (owner[cell] == m) { planOf[cell] = 0 }
-                    } else if (owner[cell] == m) {
-                        owner[cell] = -1
-                        planOf[cell] = 0
-                    }
-                }
-            }
-        }
-
         ColumnPlan Plan(defined int cx, defined int cy) {
             var plan = new Raser.ColumnPlan()
             int lx0 = cx * 64 - this.tile.key.VoxelX
@@ -736,10 +641,9 @@ namespace Raser {
                 }
             }
 
-            // Schräge Kanten: Diagonalen aus dem Katalog der Bauelemente (Raser.Plan), auch für die Säulen direkt außerhalb
+            // Die Kanten der Grundrisse: Schnitte mit Versatz (Raser.Plan.Cut), auch für die Säulen direkt außerhalb
             defined int planOf[4356]
-            Raser.Voxelizer.FitDiagonals(models, owner, planOf, lx0, ly0)
-            Raser.Voxelizer.FitArcs(models, owner, planOf, lx0, ly0)
+            Raser.Voxelizer.FitCuts(models, owner, planOf, lx0, ly0)
 
             // Flächen: die höchste Priorität gewinnt, bei gleicher die kleinere ID.
             int areaPriority[4096]
@@ -993,6 +897,17 @@ namespace Raser {
 
         construct() { this.highest = -1000000 }
 
+        // Eine Nachbarsäule ohne Gebäude (Gelände), -1: keine im Chunk.
+        defined int GroundNeighbor(defined int c) {
+            int x = c & 63
+            int y = c >> 6
+            if (x > 0 && this.kind[c - 1] == 0) { return c - 1 }
+            if (x < 63 && this.kind[c + 1] == 0) { return c + 1 }
+            if (y > 0 && this.kind[c - 64] == 0) { return c - 64 }
+            if (y < 63 && this.kind[c + 64] == 0) { return c + 64 }
+            return -1
+        }
+
         undefined Fill(Chunk chunk) {
             int vz0 = chunk.key.VoxelZ
             if (this.highest < vz0) { return }      // alles liegt unter diesem Chunk: nur Luft
@@ -1111,6 +1026,12 @@ namespace Raser {
                         int ip = c + ((pl - vz0) << 12)
                         int gs = this.plinthShape[c]
                         if (chunk.materials[ip] != 0 && gs != 255) { chunk.shapes[ip] = gs }
+                        // oben sieht man ihn nur als Boden neben der Wand: der Belag des Geländes daneben (sonst Zacken in Wandfarbe am Fuß)
+                        int nb = this.GroundNeighbor(c)
+                        if (nb >= 0 && chunk.materials[ip] != 0) {
+                            chunk.materials[ip] = this.material[nb]
+                            chunk.colors[ip] = this.color[nb]
+                        }
                     }
                     for (int z = 0; z <= zEnd; z++) {
                         int vz = vz0 + z
