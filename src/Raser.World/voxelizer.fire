@@ -178,8 +178,8 @@ namespace Raser {
     class Voxelizer {
         // 2: neu erzeugt, weil native Builds vor fire 8a0292a die unterste Ebene zu hoch setzten (HeightRaster.Min falsch gelesen)
         // 3: bei Gleichstand (Straßenbreite, Flächenpriorität, überlappende Gebäude) gewinnt die kleinere ID - unabhängig von der Reihenfolge der Merkmale
-        static defined int Version = 4
-        static defined float StoreyHeight = 2.8
+        static readonly defined int Version = 4
+        static readonly defined float StoreyHeight = 2.8
 
         Tile tile
         defined int seed

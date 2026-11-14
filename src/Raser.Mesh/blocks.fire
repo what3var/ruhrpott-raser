@@ -330,7 +330,7 @@ namespace Raser {
         defined float nearSpacing       // Geländeraster der nahen Stufe
         defined bool opaqueOnly
         defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
-        static defined int CacheVersion = 1     // das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        static readonly defined int CacheVersion = 1     // das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)

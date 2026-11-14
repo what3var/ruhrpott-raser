@@ -50,33 +50,33 @@ namespace Raser {
     // Die Palette: 256 Farben (0xRRGGBB). Die ersten 32 Einträge sind benannt; 32 .. 127 sind dieselben Farben in Dreckstufen 1 .. 3 (Index + 32 *
     // Stufe: dunkler, grauer - das Muster der Textur bringt Flecken und Laufspuren dazu, Raser.Atlas); der Rest ist frei für Pinsel und Spieler.
     class Palette {
-        static defined int None = 0
-        static defined int Soil = 1
-        static defined int Grass = 2
-        static defined int Sand = 3
-        static defined int Gravel = 4
-        static defined int Rock = 5
-        static defined int Water = 6
-        static defined int Asphalt = 7
-        static defined int Paving = 8
-        static defined int Concrete = 9
-        static defined int Wood = 10
-        static defined int Glass = 11
-        static defined int Metal = 12
-        static defined int Brick = 13          // Ruhrpott-Rot
-        static defined int Plaster = 14        // Weiß
-        static defined int RoofTiles = 15
-        static defined int RoadMarking = 16
-        static defined int BrickDark = 17
-        static defined int BrickLight = 18
-        static defined int PlasterCream = 19
-        static defined int PlasterGrey = 20
-        static defined int PlasterYellow = 21
-        static defined int RoofDark = 22
-        static defined int RoofFlat = 23
-        static defined int Forest = 24
-        static defined int Field = 25
-        static defined int Rail = 26
+        static readonly defined int None = 0
+        static readonly defined int Soil = 1
+        static readonly defined int Grass = 2
+        static readonly defined int Sand = 3
+        static readonly defined int Gravel = 4
+        static readonly defined int Rock = 5
+        static readonly defined int Water = 6
+        static readonly defined int Asphalt = 7
+        static readonly defined int Paving = 8
+        static readonly defined int Concrete = 9
+        static readonly defined int Wood = 10
+        static readonly defined int Glass = 11
+        static readonly defined int Metal = 12
+        static readonly defined int Brick = 13          // Ruhrpott-Rot
+        static readonly defined int Plaster = 14        // Weiß
+        static readonly defined int RoofTiles = 15
+        static readonly defined int RoadMarking = 16
+        static readonly defined int BrickDark = 17
+        static readonly defined int BrickLight = 18
+        static readonly defined int PlasterCream = 19
+        static readonly defined int PlasterGrey = 20
+        static readonly defined int PlasterYellow = 21
+        static readonly defined int RoofDark = 22
+        static readonly defined int RoofFlat = 23
+        static readonly defined int Forest = 24
+        static readonly defined int Field = 25
+        static readonly defined int Rail = 26
 
         static int colors[] = Raser.Palette.Build()
 
@@ -179,7 +179,7 @@ namespace Raser {
     // Die Form eines Voxels: vier Eckhöhen in Vierteln (1..4). Ecken: 0 = (x0, y0), 1 = (x1, y0), 2 = (x1, y1), 3 = (x0, y1).
     // Gespeichert ist Höhe - 1 in je zwei Bit; 0xFF ist der volle Würfel.
     class Shape {
-        static defined int Full = 255
+        static readonly defined int Full = 255
 
         static defined int Make(defined int h0, defined int h1, defined int h2, defined int h3) {
             return (Raser.Shape.Clamp(h0) - 1) | ((Raser.Shape.Clamp(h1) - 1) << 2) | ((Raser.Shape.Clamp(h2) - 1) << 4) | ((Raser.Shape.Clamp(h3) - 1) << 6)

@@ -149,8 +149,8 @@ namespace Raser {
 
     // FNV-1a mit 64 Bit: schnell, stabil über VM und native Builds, für IDs und Prüfsummen (nicht für Sicherheit).
     class Fnv {
-        static defined int Offset = -3750763034362895579    // 0xcbf29ce484222325
-        static defined int Prime = 1099511628211            // 0x100000001b3
+        static readonly defined int Offset = -3750763034362895579    // 0xcbf29ce484222325
+        static readonly defined int Prime = 1099511628211            // 0x100000001b3
 
         static defined int Start() { return Raser.Fnv.Offset }
 

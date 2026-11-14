@@ -19,7 +19,7 @@ namespace Raser {
     }
 
     class Ids {
-        static defined int Mask56 = 72057594037927935    // 2^56 - 1
+        static readonly defined int Mask56 = 72057594037927935    // 2^56 - 1
 
         static defined int Stable(IdKind kind, string source) {
             return (kind!int << 56) | (Raser.Fnv.OfText(source) & Raser.Ids.Mask56)

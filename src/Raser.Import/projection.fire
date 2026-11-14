@@ -7,11 +7,11 @@
 namespace Raser {
     class Utm {
         // GRS80
-        static defined float A = 6378137.0
-        static defined float F = 0.0033528106811823188    // 1 / 298.257222101
-        static defined float K0 = 0.9996
-        static defined float Lon0 = 9.0                    // Zone 32
-        static defined float FalseEast = 500000.0
+        static readonly defined float A = 6378137.0
+        static readonly defined float F = 0.0033528106811823188    // 1 / 298.257222101
+        static readonly defined float K0 = 0.9996
+        static readonly defined float Lon0 = 9.0                    // Zone 32
+        static readonly defined float FalseEast = 500000.0
 
         // Ost und Nord in Metern als [east, north].
         static float[] FromLatLon(defined float lat, defined float lon) {
