@@ -33,6 +33,62 @@ class GridTests {
     }
 }
 
+class PlanTests {
+    [Test "Grundriss-Formen: Katalog hin und zurück"]
+    undefined Catalog() {
+        int seen = 0
+        for (int n = 1; n <= 6; n++) {
+            for (int k = 0; k < n; k++) {
+                for (int o = 0; o < 8; o++) {
+                    int p = Raser.Plan.Diagonal(n, k, o)
+                    Testing.Assert.IsTrue(Raser.Plan.IsDiagonal(p))
+                    Testing.Assert.AreEqual(n, Raser.Plan.LengthOf(p))
+                    Testing.Assert.AreEqual(k, Raser.Plan.PartOf(p))
+                    Testing.Assert.AreEqual(o, Raser.Plan.OrientationOf(p))
+                    seen++
+                }
+            }
+        }
+        Testing.Assert.AreEqual(168, seen)
+        Testing.Assert.AreEqual(168, Raser.Plan.Diagonal(6, 5, 7))
+    }
+
+    [Test "Grundriss-Formen: Flächen, Gegenstücke ergeben ein Voxel"]
+    undefined Areas() {
+        // 3x1: die Teile unter der Kante haben 1/6, 1/2, 5/6
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Diagonal(3, 0, 0)) - 1.0 / 6.0) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Diagonal(3, 1, 0)) - 0.5) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Diagonal(3, 2, 0)) - 5.0 / 6.0) < 0.0001)
+        for (int n = 1; n <= 6; n++) {
+            for (int k = 0; k < n; k++) {
+                for (int o = 0; o < 8; o = o + 2) {
+                    float a = Raser.Plan.Area(Raser.Plan.Diagonal(n, k, o))
+                    float b = Raser.Plan.Area(Raser.Plan.Diagonal(n, k, o + 1))
+                    Testing.Assert.IsTrue(a > 0.0)
+                    Testing.Assert.IsTrue(Math.Abs(a + b - 1.0) < 0.0001)        // positiv: gegen den Uhrzeigersinn
+                }
+            }
+        }
+    }
+
+    [Test "Grundriss-Formen im Chunk: Kodieren, Dekodieren, Hash"]
+    undefined InChunk() {
+        var c = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))
+        c.Set(5, 6, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(5, 6, 7, Raser.Plan.Diagonal(4, 2, 5))
+        var back = Raser.Chunk.Decode(c.Encode())
+        Testing.Assert.AreEqual(Raser.Plan.Diagonal(4, 2, 5), back.PlanAt(5, 6, 7))
+        Testing.Assert.AreEqual(0, back.PlanAt(5, 6, 8))
+        Testing.Assert.AreEqual(c.ContentHash(), back.ContentHash())
+        var plain = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))
+        plain.Set(5, 6, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
+        Testing.Assert.IsTrue(plain.ContentHash() != c.ContentHash())
+        // Luft löscht die Form
+        c.Set(5, 6, 7, 0, 0)
+        Testing.Assert.AreEqual(0, c.PlanAt(5, 6, 7))
+    }
+}
+
 class ShapeTests {
     [Test "Eckhöhen in einem Byte"]
     undefined Corners() {
@@ -49,7 +105,7 @@ class ShapeTests {
 
     [Test "Materialtabelle"]
     undefined Materials() {
-        Testing.Assert.AreEqual(16, Raser.Materials.Count())
+        Testing.Assert.AreEqual(17, Raser.Materials.Count())
         Testing.Assert.AreEqual("Ziegel", Raser.Materials.Of(Raser.Material.Brick).name)
         Testing.Assert.IsTrue(Raser.Materials.IsSolid(Raser.Material.Concrete!int))
         Testing.Assert.IsFalse(Raser.Materials.IsSolid(Raser.Material.Water!int))

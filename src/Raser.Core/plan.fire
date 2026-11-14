@@ -1,0 +1,136 @@
+// Raser.Core: die Grundriss-Form eines Voxels - ein Katalog von Bauelementen (Konzept, Abschnitt 1).
+//
+// Neben den Eckhöhen oben (Raser.Shape) kann ein Voxel im Grundriss nur zum Teil gefüllt sein. Die Formen kommen aus einem Katalog, so wie die
+// Fertigteile im Baumarkt:
+//
+// - Diagonalen über 1×1 bis 6×1 Voxel: eine Kante, die auf n Voxeln um einen Voxel steigt. Jedes Voxel des Elements trägt seinen Teil k (0 .. n-1);
+//   im Voxel k läuft die Kante von k/n bis (k+1)/n. 8 Ausrichtungen o: Bit 0 die Seite (0: unter der Kante gefüllt, 1: darüber), Bit 1 gespiegelt
+//   (die Kante fällt statt zu steigen), Bit 2 die Achse (0: das Element läuft in x, 1: in y). 21 Paare (n, k) × 8 = 168 Formen.
+//
+// Gespeichert als ein Byte je Voxel (0: voll, 1 .. 168: Diagonale) in einer Tabelle des Chunks, wie die Eckhöhen. Weitere Elemente (Rundungen,
+// Bögen) bekommen die Werte ab 169.
+namespace Raser {
+    class Plan {
+        static readonly defined int None = 0
+        static readonly defined int Diagonals = 168
+
+        // Die Form der Diagonale: Länge n (1..6), Teil k (0..n-1), Ausrichtung o (0..7).
+        static defined int Diagonal(defined int n, defined int k, defined int o) {
+            int nn = Math.Clamp(n, 1, 6)
+            int kk = Math.Clamp(k, 0, nn - 1)
+            // (n, k) laufen durch: n = 1: 0; n = 2: 1, 2; n = 3: 3, 4, 5; ... - der Index ist n (n - 1) / 2 + k
+            int pair = nn * (nn - 1) / 2 + kk
+            return 1 + pair * 8 + (o & 7)
+        }
+
+        static defined bool IsDiagonal(defined int p) { return p >= 1 && p <= 168 }
+
+        static defined int LengthOf(defined int p) {
+            int pair = (p - 1) / 8
+            int n = 1
+            while ((n + 1) * n / 2 <= pair) { n++ }
+            return n
+        }
+
+        static defined int PartOf(defined int p) {
+            int n = Raser.Plan.LengthOf(p)
+            return (p - 1) / 8 - n * (n - 1) / 2
+        }
+
+        static defined int OrientationOf(defined int p) { return (p - 1) % 8 }
+
+        // Das Polygon der gefüllten Fläche im Voxel (Koordinaten 0..1, gegen den Uhrzeigersinn) nach xs/ys; gibt die Zahl der Punkte (3..5).
+        static defined int Polygon(defined int p, defined float xs[], defined float ys[]) {
+            if (!Raser.Plan.IsDiagonal(p)) {
+                xs[0] = 0.0
+                ys[0] = 0.0
+                xs[1] = 1.0
+                ys[1] = 0.0
+                xs[2] = 1.0
+                ys[2] = 1.0
+                xs[3] = 0.0
+                ys[3] = 1.0
+                return 4
+            }
+            int n = Raser.Plan.LengthOf(p)
+            int k = Raser.Plan.PartOf(p)
+            int o = Raser.Plan.OrientationOf(p)
+            float a = k * 1.0 / n               // die Kante bei x = 0
+            float b = (k + 1) * 1.0 / n         // bei x = 1
+            int m = 0
+            // im Grundmuster (Achse x, steigend): unter der Kante gefüllt
+            if ((o & 1) == 0) {
+                xs[0] = 0.0
+                ys[0] = 0.0
+                xs[1] = 1.0
+                ys[1] = 0.0
+                xs[2] = 1.0
+                ys[2] = b
+                xs[3] = 0.0
+                ys[3] = a
+                m = 4
+                if (a <= 0.0) {
+                    // ein Dreieck: (0,0), (1,0), (1,b)
+                    m = 3
+                }
+            } else {
+                xs[0] = 0.0
+                ys[0] = a
+                xs[1] = 1.0
+                ys[1] = b
+                xs[2] = 1.0
+                ys[2] = 1.0
+                xs[3] = 0.0
+                ys[3] = 1.0
+                m = 4
+                if (b >= 1.0) {
+                    // ein Dreieck: (0,a), (1,1), (0,1)
+                    xs[1] = 1.0
+                    ys[1] = 1.0
+                    xs[2] = 0.0
+                    ys[2] = 1.0
+                    m = 3
+                }
+            }
+            // gespiegelt: x -> 1 - x (die Reihenfolge umkehren, damit es gegen den Uhrzeigersinn bleibt)
+            if ((o & 2) != 0) {
+                for (int i = 0; i < m; i++) { xs[i] = 1.0 - xs[i] }
+                Raser.Plan.Reverse(xs, ys, m)
+            }
+            // Achse y: x und y tauschen (auch das kehrt den Umlauf um)
+            if ((o & 4) != 0) {
+                for (int i = 0; i < m; i++) {
+                    float t = xs[i]
+                    xs[i] = ys[i]
+                    ys[i] = t
+                }
+                Raser.Plan.Reverse(xs, ys, m)
+            }
+            return m
+        }
+
+        static undefined Reverse(defined float xs[], defined float ys[], defined int m) {
+            for (int i = 0; i < m / 2; i++) {
+                float tx = xs[i]
+                float ty = ys[i]
+                xs[i] = xs[m - 1 - i]
+                ys[i] = ys[m - 1 - i]
+                xs[m - 1 - i] = tx
+                ys[m - 1 - i] = ty
+            }
+        }
+
+        // Die gefüllte Fläche (Anteil am Voxel).
+        static defined float Area(defined int p) {
+            defined float xs[6]
+            defined float ys[6]
+            int m = Raser.Plan.Polygon(p, xs, ys)
+            float s = 0.0
+            for (int i = 0; i < m; i++) {
+                int j = (i + 1) % m
+                s = s + xs[i] * ys[j] - xs[j] * ys[i]
+            }
+            return s / 2.0
+        }
+    }
+}

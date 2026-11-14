@@ -11,6 +11,7 @@ namespace Raser {
         byte materials[]
         byte colors[]
         Dictionary<int, int> shapes
+        Dictionary<int, int> plans          // Grundriss-Formen (Raser.Plan: Bauelemente wie Diagonalen) - nur für die Voxel, die eine haben
         Dictionary<int, int> damage
         defined int generatorVersion
         defined int overridesHash
@@ -20,7 +21,18 @@ namespace Raser {
             this.key = key
             try key.TakeTo(this)
             this.shapes = new Dictionary<int, int>()
+            this.plans = new Dictionary<int, int>()
             this.damage = new Dictionary<int, int>()
+        }
+
+        defined int PlanAt(defined int x, defined int y, defined int z) {
+            if (this.plans.Count == 0) { return 0 }
+            return this.plans.Get(Raser.Chunk.Index(x, y, z), 0)
+        }
+
+        undefined SetPlan(defined int x, defined int y, defined int z, defined int plan) {
+            int i = Raser.Chunk.Index(x, y, z)
+            if (plan == 0) { this.plans.Remove(i) } else { this.plans[i] = plan }
         }
 
         // Der Index eines Voxels im Chunk (x, y, z jeweils 0..63).
@@ -60,6 +72,7 @@ namespace Raser {
                 this.materials[i] = 0
                 this.colors[i] = 0
                 this.shapes.Remove(i)
+                this.plans.Remove(i)
                 this.damage.Remove(i)
                 return
             }
@@ -109,10 +122,10 @@ namespace Raser {
         // Die Daten als Bytes: Kopf, dann Material + Farbe als Lauflängen, dann Formen und Schaden als (Abstand zum vorigen Index, Wert).
         byte[] Encode() {
             var w = new ByteWriter(4096)
-            w.Byte(82)    // "RRC1"
+            w.Byte(82)    // "RRC2" (RRC1 ohne die Tabelle der Grundriss-Formen)
             w.Byte(82)
             w.Byte(67)
-            w.Byte(49)
+            w.Byte(50)
             w.SignedVarint(this.key.x)
             w.SignedVarint(this.key.y)
             w.SignedVarint(this.key.z)
@@ -137,6 +150,7 @@ namespace Raser {
             }
             Raser.Chunk.EncodeTable(w, this.shapes)
             Raser.Chunk.EncodeTable(w, this.damage)
+            Raser.Chunk.EncodeTable(w, this.plans)
             return w.ToBytes()
         }
 
@@ -154,7 +168,9 @@ namespace Raser {
 
         static Chunk Decode(byte data[]) {
             var r = new ByteReader(data)
-            if (r.Byte() != 82 || r.Byte() != 82 || r.Byte() != 67 || r.Byte() != 49) { throw new DataException("Not a chunk (RRC1).") }
+            if (r.Byte() != 82 || r.Byte() != 82 || r.Byte() != 67) { throw new DataException("Not a chunk (RRC).") }
+            int format = r.Byte()
+            if (format != 49 && format != 50) { throw new DataException("Not a chunk (RRC1 or RRC2).") }
             int kx = r.SignedVarint()
             int ky = r.SignedVarint()
             int kz = r.SignedVarint()
@@ -177,6 +193,7 @@ namespace Raser {
             }
             Raser.Chunk.DecodeTable(r, chunk.shapes)
             Raser.Chunk.DecodeTable(r, chunk.damage)
+            if (format == 50) { Raser.Chunk.DecodeTable(r, chunk.plans) }
             return chunk
         }
 
@@ -201,6 +218,12 @@ namespace Raser {
             foreach (k in keys) {
                 h = Raser.Fnv.AddInt(h, k)
                 h = Raser.Fnv.AddByte(h, this.shapes[k])
+            }
+            var pk = this.plans.Keys
+            pk.Sort()
+            foreach (k in pk) {
+                h = Raser.Fnv.AddInt(h, k + 262144)
+                h = Raser.Fnv.AddByte(h, this.plans[k])
             }
             return h
         }
@@ -247,6 +270,8 @@ namespace Raser {
                     int cell = a + (b << 6)
                     if (c.materials != undefined) { f.materials[cell] = c.materials[x + (y << 6) + (z << 12)] }
                     if (hasShapes) { f.shapes[cell] = c.ShapeAt(x, y, z) } else { f.shapes[cell] = 255 }
+                    // ein Voxel mit Grundriss-Form verdeckt den Nachbarn nicht ganz: als nicht voll vermerkt (Form 0: alle Ecken 1/4)
+                    if (c.plans.Count > 0 && c.PlanAt(x, y, z) != 0) { f.shapes[cell] = 0 }
                 }
             }
             f.Check()
