@@ -51,14 +51,23 @@ namespace Raser {
             return IO.File.Exists(this.TilePath(key, ".json"))
         }
 
+        // Lädt eine Kachel; danach sind die Grundrisse bereinigt (Raser.Footprints.Clean: Punkte eingerastet, Mini-Knicke weg) und die Bäume stehen in
+        // ihren Baumscheiben neben der Fahrbahn (Raser.Props.Settle) - für Voxel und Netze gleich.
         Tile Load(TileKey key) {
-            if (this.source != undefined) { return this.source.Load(key) }
+            if (this.source != undefined) {
+                var stored = this.source.Load(key)
+                if (stored != undefined) { Raser.Footprints.Clean(stored) }
+                Raser.Props.Settle(stored)
+                return stored
+            }
             string path = this.TilePath(key, ".json")
             if (!IO.File.Exists(path)) { return undefined }
             var tile = new Raser.Tile(new Raser.TileKey(key.x, key.y))
             tile.data = Json.Deserialize<TileData>(IO.File.ReadAllText(path))
             string hp = this.TilePath(key, ".rrh")
             if (IO.File.Exists(hp)) { tile.heights = Raser.HeightRaster.Decode(IO.File.ReadAllBytes(hp)) }
+            Raser.Footprints.Clean(tile)
+            Raser.Props.Settle(tile)
             return tile
         }
 

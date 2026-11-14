@@ -181,6 +181,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 14: Grundrisse bereinigt (Raser.Footprints: Punkte rasten ein), Bäume rücken mit ihrer Baumscheibe von der Fahrbahn weg (Raser.Props.Settle beim Laden)
         // 13: Schnitte mit Versatz (Raser.Plan.Cut) statt Diagonalen und Rundungen - Kanten ohne Stufen in jedem Winkel
         // 12: Rundungen (Raser.Plan.Arc) an Ketten kurzer, gleichmäßig drehender Kanten; der Sockel unter Bauelementen bündig mit dem Gelände
         // 11: die Grundriss-Formen erst über dem Gelände (Sockel), keine Löcher am Wandfuß
@@ -188,7 +189,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 13
+        static readonly defined int Version = 14
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile

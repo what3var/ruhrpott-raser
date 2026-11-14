@@ -355,6 +355,75 @@ class VoxelizerTests {
         Testing.Assert.IsTrue(c.MaterialAt(38, 30, 47) != 0)
     }
 
+    [Test "Baumscheiben: Bäume rücken von der Fahrbahn weg, nicht in Gebäude"]
+    undefined TreePits() {
+        var tile = Sample.Make()
+        var road = new Raser.Road()
+        road.source = "test:fahrbahn"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 30.0, 60.0, 30.0]
+        road.width = 6.0
+        tile.data.roads.Add(take road)
+        // ein Baum am Fahrbahnrand (1 m neben der Mitte), einer weit weg, einer auf dem Fußweg der Probe (keine Fahrbahn)
+        float xs[] = [20.0, 20.0, 20.0]
+        float ys[] = [31.0, 50.0, 1.0]
+        for (int k = 0; k < 3; k++) {
+            var p = new Raser.Prop()
+            p.source = "test:baum" + k
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = "tree"
+            p.x = xs[k]
+            p.y = ys[k]
+            tile.data.props.Add(take p)
+        }
+        int first = tile.data.props.Count - 3
+        Raser.Props.Settle(tile)
+        // 3 m halbe Breite + 0,7 m Scheibe + 0,1 m: 3,8 m neben der Mitte, auf der Seite, auf der er stand
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first].y - 33.8) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first].x - 20.0) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first + 1].y - 50.0) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first + 2].y - 1.0) < 0.001)
+        // noch einmal: nichts ändert sich
+        Raser.Props.Settle(tile)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first].y - 33.8) < 0.001)
+    }
+
+    [Test "Grundrisse: Punkte rasten ein, Schlitze und Mini-Knicke verschwinden"]
+    undefined CleanFootprints() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        // zwei Reihenhäuser mit 6 cm Schlitz dazwischen; das rechte hat in der Front einen Knick von 3 cm
+        var a = new Raser.Building()
+        a.source = "test:links"
+        a.id = Raser.Ids.Stable(Raser.IdKind.Building, a.source)
+        a.footprint = [0.0, 0.0, 6.0, 0.0, 6.0, 10.0, 0.0, 10.0]
+        tile.data.buildings.Add(take a)
+        var b = new Raser.Building()
+        b.source = "test:rechts"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [6.06, 0.0, 9.0, 0.03, 12.0, 0.0, 12.0, 10.0, 6.06, 10.0]
+        tile.data.buildings.Add(take b)
+        // ein drittes, dessen Ecke 8 cm vor der Rückwand des linken liegt (T-Stoß)
+        var c = new Raser.Building()
+        c.source = "test:hinten"
+        c.id = Raser.Ids.Stable(Raser.IdKind.Building, c.source)
+        c.footprint = [2.0, 10.08, 4.0, 10.08, 4.0, 14.0, 2.0, 14.0]
+        tile.data.buildings.Add(take c)
+        Raser.Footprints.Clean(tile)
+        float r[] = tile.data.buildings[1].footprint
+        // die Ecken an der Trennwand liegen jetzt auf denen des linken Hauses, der Knick ist weg
+        Testing.Assert.AreEqual(8, r.length)
+        Testing.Assert.IsTrue(Math.Abs(r[0] - 6.0) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(r[6] - 6.0) < 0.0001)
+        // das hintere Haus steht auf der Rückwand
+        float h[] = tile.data.buildings[2].footprint
+        Testing.Assert.IsTrue(Math.Abs(h[1] - 10.0) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(h[3] - 10.0) < 0.0001)
+        // das linke Haus bleibt, wie es war
+        Testing.Assert.AreEqual(8, tile.data.buildings[0].footprint.length)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.buildings[0].footprint[2] - 6.0) < 0.0001)
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)

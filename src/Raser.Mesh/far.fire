@@ -132,6 +132,22 @@ namespace Raser {
                     this.StreetCell(part, field, ax, ay, spacing, h0, h1, h2, h3, nx / len, ny / len, 1.0 / len, dg[i + j * nv], dg[i + 1 + j * nv], dg[i + 1 + (j + 1) * nv], dg[i + (j + 1) * nv], Math.Max(Math.Max(wg[i + j * nv], wg[i + 1 + j * nv]), Math.Max(wg[i + 1 + (j + 1) * nv], wg[i + (j + 1) * nv])), pg[i + j * nv], pg[i + 1 + j * nv], pg[i + 1 + (j + 1) * nv], pg[i + (j + 1) * nv])
                 }
             }
+            // Baumscheiben: grün um jeden Stamm (Raser.Props.TreePit); im Gehweg auf seiner Höhe, mit Einfassung
+            foreach (p in this.tile.data.props) {
+                if (p.kind != "tree") { continue }
+                if (p.x < x0 || p.y < y0 || p.x >= x0 + size || p.y >= y0 + size) { continue }
+                if (side > 0) {
+                    int si = Math.Clamp(Math.Floor((p.x - x0) / size * side)!int, 0, side - 1)
+                    int sj = Math.Clamp(Math.Floor((p.y - y0) / size * side)!int, 0, side - 1)
+                    if (skip[si + sj * side] != 0) { continue }        // dort ist das Gelände hart (Voxel)
+                }
+                float raise = 0.0
+                if (!field.Empty) {
+                    field.At(p.x, p.y)
+                    if (field.d >= 0.0 && field.d < field.walk) { raise = Raser.StreetField.Curb }
+                }
+                this.TreePit(part, p.x, p.y, raise)
+            }
             // Gebäude
             if (!buildings) { return part }
             foreach (m in this.models) {
@@ -161,6 +177,34 @@ namespace Raser {
                 Raser.FarMesher.Box(part, p.x - r, p.y - r, g + trunk, p.x + r, p.y + r, g + h, leaf, Raser.Material.Leaves!int)
             }
             return part
+        }
+
+        // Eine Baumscheibe: ein Zwölfeck aus Gras knapp über dem Boden (raise: auf dem Gehweg), im Gehweg mit einer Einfassung aus Beton.
+        undefined TreePit(MeshPart part, defined float cx, defined float cy, defined float raise) {
+            float r = Raser.Props.TreePit
+            float zc = this.GroundAt(cx, cy) + raise + 0.012
+            for (int k = 0; k < 12; k++) {
+                float a0 = k * Math.PI / 6.0
+                float a1 = (k + 1) * Math.PI / 6.0
+                float ax = cx + r * Math.Cos(a0)
+                float ay = cy + r * Math.Sin(a0)
+                float bx = cx + r * Math.Cos(a1)
+                float by = cy + r * Math.Sin(a1)
+                float za = this.GroundAt(ax, ay) + raise + 0.012
+                float zb = this.GroundAt(bx, by) + raise + 0.012
+                part.Quad(cx, cy, zc, ax, ay, za, bx, by, zb, bx, by, zb, 0.0, 0.0, 1.0, Raser.Palette.Grass, Raser.Material.Grass!int)
+                if (raise > 0.0) {
+                    // die Einfassung: ein schmaler Ring, etwas höher
+                    float w = 0.08
+                    float ox = cx + (r + w) * Math.Cos(a0)
+                    float oy = cy + (r + w) * Math.Sin(a0)
+                    float px = cx + (r + w) * Math.Cos(a1)
+                    float py = cy + (r + w) * Math.Sin(a1)
+                    float zo = this.GroundAt(ox, oy) + raise + 0.03
+                    float zp = this.GroundAt(px, py) + raise + 0.03
+                    part.Quad(ax, ay, za + 0.018, ox, oy, zo, px, py, zp, bx, by, zb + 0.018, 0.0, 0.0, 1.0, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                }
+            }
         }
 
         // vx0, vy0: die Kachel in Voxeln der Welt (für das Fensterraster).

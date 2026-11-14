@@ -72,6 +72,83 @@ namespace Raser {
     }
 
     class Props {
+        static readonly defined float TreePit = 0.7       // Radius der Baumscheibe (m): grün um den Stamm, mindestens 30 cm neben dem dicksten Stamm
+
+        // Fährt eine Straße für Autos hier? (keine Fuß- und Radwege, Bahnen, Brücken)
+        static defined bool IsCarRoad(Road r) {
+            if (r.layer != 0 || !r.kind.StartsWith("highway=")) { return false }
+            string k = r.kind.Substring(8)
+            return !(k == "footway" || k == "path" || k == "cycleway" || k == "steps" || k == "pedestrian" || k == "track" || k == "bridleway" || k == "corridor" || k == "platform")
+        }
+
+        // Nach dem Laden einer Kachel: jeder Baum steht in seiner Baumscheibe, und die reicht nicht in die Fahrbahn - zu nahe Bäume rücken von der
+        // Straße weg (nicht in ein Gebäude; dann bleiben sie). Wiederholt anwendbar (ein gerückter Baum steht schon richtig).
+        static undefined Settle(Tile tile) {
+            if (tile == undefined || tile.data == undefined || tile.data.props == undefined || tile.data.roads == undefined) { return }
+            foreach (p in tile.data.props) {
+                if (p.kind != "tree") { continue }
+                float x = p.x
+                float y = p.y
+                for (int round = 0; round < 3; round++) {
+                    bool moved = false
+                    foreach (r in tile.data.roads) {
+                        if (!Raser.Props.IsCarRoad(r)) { continue }
+                        float need = r.width / 2.0 + Raser.Props.TreePit + 0.1
+                        // der nächste Punkt der Mittellinie
+                        float best = 1.0e30
+                        float qx = 0.0
+                        float qy = 0.0
+                        float nx = 0.0
+                        float ny = 0.0
+                        for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                            float ax = r.points[k]
+                            float ay = r.points[k + 1]
+                            float ex = r.points[k + 2] - ax
+                            float ey = r.points[k + 3] - ay
+                            float len2 = ex * ex + ey * ey
+                            if (len2 <= 0.0) { continue }
+                            float t = Math.Clamp(((x - ax) * ex + (y - ay) * ey) / len2, 0.0, 1.0)
+                            float cx = ax + ex * t
+                            float cy = ay + ey * t
+                            float d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+                            if (d2 < best) {
+                                best = d2
+                                qx = cx
+                                qy = cy
+                                float len = Math.Sqrt(len2)
+                                nx = ey / len
+                                ny = -ex / len
+                            }
+                        }
+                        if (best > need * need) { continue }
+                        float d = Math.Sqrt(best)
+                        // weg von der Mittellinie (genau darauf: nach rechts)
+                        float dx = nx
+                        float dy = ny
+                        if (d > 0.01) {
+                            dx = (x - qx) / d
+                            dy = (y - qy) / d
+                        }
+                        x = qx + dx * need
+                        y = qy + dy * need
+                        moved = true
+                    }
+                    if (!moved) { break }
+                }
+                if (x == p.x && y == p.y) { continue }
+                bool blocked = false
+                foreach (b in tile.data.buildings) {
+                    if (b.footprint != undefined && Raser.Geo.Inside(b.footprint, x, y)) {
+                        blocked = true
+                        break
+                    }
+                }
+                if (blocked) { continue }
+                p.x = x
+                p.y = y
+            }
+        }
+
         // Ein Wert in [0, 1) aus Variante und Zahlen.
         static defined float Rand(defined int seed, defined int a, defined int b) {
             int h = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), seed), a), b)
