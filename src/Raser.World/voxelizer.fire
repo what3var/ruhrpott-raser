@@ -197,6 +197,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 25: Kirchen (Spitzbogenfenster, Portal, Schallöffnungen, ohne Zwischendecken)
         // 24: Punkte auf Läufen, die über den Ringanfang laufen (Stufen vor Türen lagen falsch); Pavillons ohne Zwischendecken
         // 23: Fenster und Türen als eingehängte Elemente (Raser.Facade.Panes), die Wand lässt nur die Öffnung frei
         // 22: innere Wandlage auch hinter Schnitten (Glas in runden und schrägen Wänden fehlte)
@@ -215,7 +216,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 24
+        static readonly defined int Version = 25
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -1090,6 +1091,29 @@ namespace Raser {
                         if ((flags & 1) != 0 && model.facade != undefined && !passWall) {
                             plan.groundKind[c] = model.facade.ground
                             plan.upperKind[c] = model.facade.upper
+                            // Kirchen-Öffnungen (Fenster, Portal, Schallöffnung): Lage im Platz, Achse der Wand und die Höhen
+                            int ck = model.facade.ground & 127
+                            plan.archKind[c] = 0
+                            if (ck == Raser.Facade.Lancet || ck == Raser.Facade.Portal || ck == Raser.Facade.Louvre) {
+                                model.facade.ChurchExtent(ck, model.groundVoxel * 0.2, bd.eaves, model.facade.slotHalf)
+                                if (model.facade.cspring > model.facade.cz0) {
+                                    plan.archKind[c] = ck
+                                    plan.archLow[c] = model.facade.cz0
+                                    plan.archSpring[c] = model.facade.cspring
+                                    plan.archRise[c] = model.facade.crise
+                                    plan.archOffset[c] = model.facade.slotOffset
+                                    plan.archHalf[c] = model.facade.slotHalf
+                                    plan.archAxis[c] = -1
+                                    plan.archSign[c] = 1.0
+                                    if (Math.Abs(model.facade.wallX) > 0.97) {
+                                        plan.archAxis[c] = 0
+                                        if (model.facade.wallX < 0.0) { plan.archSign[c] = -1.0 }
+                                    } else if (Math.Abs(model.facade.wallY) > 0.97) {
+                                        plan.archAxis[c] = 1
+                                        if (model.facade.wallY < 0.0) { plan.archSign[c] = -1.0 }
+                                    }
+                                }
+                            }
                             // Haustüren mit Rundbogen: die Lage im Türplatz und die Achse der Wand (Raser.Plan.Elevation; -1: schräg, der Bogen treppt)
                             int gk = model.facade.ground & 127
                             plan.doorAxis[c] = -2
@@ -1115,7 +1139,7 @@ namespace Raser {
                         }
                         plan.flags[c] = flags
                         plan.thick[c] = model.facade != undefined && model.facade.style != Raser.Facade.None
-                        plan.hall[c] = model.facade != undefined && model.facade.style == Raser.Facade.Pavilion
+                        plan.hall[c] = model.facade != undefined && (model.facade.style == Raser.Facade.Pavilion || model.facade.style == Raser.Facade.Church)
                         plan.planShape[c] = planOf[o]
                         plan.eaveFull[c] = model.eaveRing != undefined
                         if (planOf[o] != 0) {
@@ -1246,6 +1270,14 @@ namespace Raser {
         defined int upperKind[4096]     // und darüber
         defined bool thick[4096]        // Wand zwei Voxel dick (flags & 4: die innere Lage)
         defined bool hall[4096]         // Pavillon: ein Raum ohne Zwischendecken (hinter den hohen Scheiben)
+        defined int archKind[4096]      // Kirchen-Öffnung in der Wandsäule (Raser.Facade.Lancet, Portal, Louvre; 0: keine)
+        defined float archLow[4096]     // Unterkante, Kämpfer, Stich (m), Lage im Platz, halbe Breite, Achse (-1: schräge Wand) und Richtung
+        defined float archSpring[4096]
+        defined float archRise[4096]
+        defined float archOffset[4096]
+        defined float archHalf[4096]
+        defined int archAxis[4096]
+        defined float archSign[4096]
         defined int doorAxis[4096]      // Haustür mit Bogen: Achse (-2: keine, -1: schräge Wand), Lage im Türplatz, halbe Breite, Richtung
         defined float doorOffset[4096]
         defined float doorHalf[4096]
@@ -1443,6 +1475,36 @@ namespace Raser {
                     if (wall) {
                         int kind = this.upperKind[c]
                         if (vz - ground < this.storey) { kind = this.groundKind[c] }
+                        // Kirche: eine Öffnung über die ganze Höhe - gerade bis zum Kämpfer, darüber der Bogen (außen mit Schnitt in der Ansicht)
+                        int ak = this.archKind[c]
+                        if (ak != 0) {
+                            kind = 0
+                            float zb = vz * 0.2
+                            float spring = this.archSpring[c]
+                            if (zb + 0.1 >= this.archLow[c] && vz < top - 1) {
+                                if (zb + 0.2 <= spring + 0.001) { continue }
+                                float off = this.archOffset[c]
+                                float half = this.archHalf[c]
+                                float rise = this.archRise[c]
+                                float ac = spring + Raser.Facade.ArchRise(ak, rise, off, half)
+                                bool outer = (this.flags[c] & 4) == 0
+                                if (outer && this.archAxis[c] >= 0) {
+                                    float a0 = spring + Raser.Facade.ArchRise(ak, rise, off - 0.1 * this.archSign[c], half)
+                                    float a1 = spring + Raser.Facade.ArchRise(ak, rise, off + 0.1 * this.archSign[c], half)
+                                    float f0 = Math.Clamp((a0 - zb) / 0.2, 0.0, 1.0)
+                                    float f1 = Math.Clamp((a1 - zb) / 0.2, 0.0, 1.0)
+                                    if (f0 >= 0.999 && f1 >= 0.999) { continue }
+                                    if (f0 > 0.001 || f1 > 0.001) {
+                                        chunk.materials[i] = this.below[c]
+                                        chunk.colors[i] = this.belowColor[c]
+                                        chunk.plans[i] = Raser.Plan.Elevation(this.archAxis[c], Raser.Plan.RimOf(0.0, f0), Raser.Plan.RimOf(1.0, f1))
+                                        continue
+                                    }
+                                } else if (zb + 0.1 < ac) {
+                                    continue
+                                }
+                            }
+                        }
                         int open = 0
                         if (kind != 0 && vz < top - 1) { open = Raser.Voxelizer.Opening(kind, inStorey, vz - ground - 1, vz, top) }
                         // über der Haustür ein Rundbogen (Stich 35 cm): außen offen bis zum Bogen (am Rand mit Schnitt in der Ansicht), innen ein

@@ -726,6 +726,91 @@ class VoxelizerTests {
         }
     }
 
+    [Test "Kirche: Spitzbogenfenster und Portal am Schiff, Schallöffnungen und Uhr am Turm, innen ein Raum"]
+    undefined Churches() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var road = new Raser.Road()
+        road.source = "test:kirchweg"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 1.0, 60.0, 1.0]
+        road.width = 2.0
+        tile.data.roads.Add(take road)
+        // das Schiff: 8 x 6 m (x 2..10, y 4..10), Traufe 10 m über dem Boden
+        var nave = new Raser.Building()
+        nave.source = "test:schiff"
+        nave.id = Raser.Ids.Stable(Raser.IdKind.Building, nave.source)
+        nave.function = "alkis=31001_3041"
+        nave.footprint = [2.0, 4.0, 10.0, 4.0, 10.0, 10.0, 2.0, 10.0]
+        nave.ground = 60.0
+        nave.eaves = 70.0
+        nave.ridge = 70.0
+        nave.roofType = Raser.RoofType.Flat
+        tile.data.buildings.Add(take nave)
+        var f = Raser.Facade.Plan(tile.data.buildings[0], tile.data.roads)
+        Testing.Assert.AreEqual(Raser.Facade.Church, f.style)
+        var panes = new List<float>()
+        f.Panes(tile.data.buildings[0], 300, panes)
+        int lancets = 0
+        int portals = 0
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            int kind = Math.Round(panes[k + 6])!int
+            if (kind == Raser.Facade.Lancet) {
+                lancets++
+                // von 2,4 m bis unter die Traufe, höher als 4 m
+                Testing.Assert.IsTrue(Math.Abs(panes[k + 4] - 62.4) < 0.001)
+                Testing.Assert.IsTrue(panes[k + 5] - panes[k + 4] > 4.0 && panes[k + 5] < 69.5)
+            }
+            if (kind == Raser.Facade.Portal) {
+                portals++
+                // zur Straße (Südwand, 20 cm innen)
+                Testing.Assert.IsTrue(Math.Abs(panes[k + 1] - 4.2) < 0.001)
+            }
+        }
+        Testing.Assert.AreEqual(1, portals)
+        Testing.Assert.IsTrue(lancets >= 4)
+        // die Voxel: in der Ostwand (x = 10 m: Säule 49 außen) ist ein Fenster offen und hat oben Bogen-Voxel; innen keine Zwischendecke
+        var c = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        int open = 0
+        int arched = 0
+        for (int y = 21; y < 49; y++) {
+            if (c.MaterialAt(49, y, 60) == 0 && c.MaterialAt(48, y, 60) == 0) { open++ }
+        }
+        foreach (pair in c.plans) {
+            if (Raser.Plan.IsElevation(pair.Value)) { arched++ }
+        }
+        Testing.Assert.IsTrue(open >= 4)
+        Testing.Assert.IsTrue(arched >= 4)
+        Testing.Assert.AreEqual(0, c.MaterialAt(30, 35, 58))          // 2,8 m über dem Boden (z 44 + 14): keine Decke
+        // der Turm: 5 x 5 m, 30 m hoch
+        var tower = new Raser.Building()
+        tower.source = "test:turm"
+        tower.id = Raser.Ids.Stable(Raser.IdKind.Building, tower.source)
+        tower.function = "alkis=31001_3041"
+        tower.footprint = [20.0, 4.0, 25.0, 4.0, 25.0, 9.0, 20.0, 9.0]
+        tower.ground = 60.0
+        tower.eaves = 90.0
+        tower.ridge = 100.0
+        var tf = Raser.Facade.Plan(tower, tile.data.roads)
+        var tp = new List<float>()
+        tf.Panes(tower, 300, tp)
+        int louvres = 0
+        int clocks = 0
+        for (int k = 0; k + 8 < tp.Count; k = k + 9) {
+            int kind = Math.Round(tp[k + 6])!int
+            if (kind == Raser.Facade.Louvre) { louvres++ }
+            if (kind == Raser.Facade.Clock) {
+                clocks++
+                Testing.Assert.IsTrue(tp[k + 4] > 87.0 && tp[k + 5] < 90.0)
+            }
+            Testing.Assert.IsTrue(kind == Raser.Facade.Louvre || kind == Raser.Facade.Clock)
+        }
+        Testing.Assert.AreEqual(4, louvres)
+        Testing.Assert.AreEqual(4, clocks)
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)

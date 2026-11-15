@@ -215,11 +215,97 @@ namespace Raser {
                     trunk = h * 0.15
                 }
                 Raser.FarMesher.Box(part, p.x - 0.2, p.y - 0.2, g, p.x + 0.2, p.y + 0.2, g + trunk, Raser.Palette.Bark, Raser.Material.Wood!int)
-                int leaf = Raser.Palette.Leaves
-                if (p.detail == "needleleaved") { leaf = Raser.Palette.LeavesDark }
-                Raser.FarMesher.Box(part, p.x - r, p.y - r, g + trunk, p.x + r, p.y + r, g + h, leaf, Raser.Material.Leaves!int)
+                Raser.FarMesher.Crown(part, p.x, p.y, g + trunk, g + h, r, p.detail == "needleleaved", p.id)
             }
             return part
+        }
+
+        // Die Krone eines Baums für die ferne Stufe: achteckige Ringe (Laubbaum: unten schmal, in der Mitte breit, oben rund; Nadelbaum: ein Kegel
+        // in drei Stufen), jede Fläche mit eigenem Grünton und leicht verrücktem Radius (aus der ID) - von weitem eine Krone statt eines Würfels.
+        static undefined Crown(MeshPart part, defined float cx, defined float cy, defined float z0, defined float z1, defined float r, defined bool conifer, defined int id) {
+            defined float rel[5]
+            defined float rad[5]
+            if (conifer) {
+                rel[0] = 0.0
+                rad[0] = 1.0
+                rel[1] = 0.3
+                rad[1] = 0.75
+                rel[2] = 0.6
+                rad[2] = 0.45
+                rel[3] = 0.85
+                rad[3] = 0.2
+                rel[4] = 1.0
+                rad[4] = 0.02
+            } else {
+                rel[0] = 0.0
+                rad[0] = 0.45
+                rel[1] = 0.2
+                rad[1] = 0.95
+                rel[2] = 0.55
+                rad[2] = 1.0
+                rel[3] = 0.85
+                rad[3] = 0.65
+                rel[4] = 1.0
+                rad[4] = 0.02
+            }
+            int tones[] = [Raser.Palette.Leaves, Raser.Palette.LeavesDark, Raser.Palette.LeavesLight, Raser.Palette.Leaves]
+            if (conifer) { tones = [Raser.Palette.LeavesDark, Raser.Palette.LeavesDark, Raser.Palette.Leaves, Raser.Palette.LeavesDark] }
+            float turn = Raser.Props.Rand(id, 120, 0) * 0.8
+            for (int ring = 0; ring < 4; ring++) {
+                for (int k = 0; k < 8; k++) {
+                    float a0 = k * Math.PI / 4.0 + turn
+                    float a1 = (k + 1) * Math.PI / 4.0 + turn
+                    float j0 = 0.85 + 0.3 * Raser.Props.Rand(id, 121 + ring, k)
+                    float j1 = 0.85 + 0.3 * Raser.Props.Rand(id, 121 + ring, (k + 1) % 8)
+                    float u0 = 0.85 + 0.3 * Raser.Props.Rand(id, 122 + ring, k)
+                    float u1 = 0.85 + 0.3 * Raser.Props.Rand(id, 122 + ring, (k + 1) % 8)
+                    float rl0 = r * rad[ring] * j0
+                    float rl1 = r * rad[ring] * j1
+                    float ru0 = r * rad[ring + 1] * u0
+                    float ru1 = r * rad[ring + 1] * u1
+                    float zl = z0 + (z1 - z0) * rel[ring]
+                    float zu = z0 + (z1 - z0) * rel[ring + 1]
+                    float am = (a0 + a1) / 2.0
+                    float slope = (r * rad[ring] - r * rad[ring + 1]) / Math.Max(zu - zl, 0.1)
+                    float nl = Math.Sqrt(1.0 + slope * slope)
+                    int tone = tones[(Math.Floor(Raser.Props.Rand(id, 130 + ring, k) * 4.0)!int) % 4]
+                    part.Quad(cx + Math.Cos(a0) * rl0, cy + Math.Sin(a0) * rl0, zl, cx + Math.Cos(a1) * rl1, cy + Math.Sin(a1) * rl1, zl, cx + Math.Cos(a1) * ru1, cy + Math.Sin(a1) * ru1, zu, cx + Math.Cos(a0) * ru0, cy + Math.Sin(a0) * ru0, zu, Math.Cos(am) / nl, Math.Sin(am) / nl, slope / nl, tone, Raser.Material.Leaves!int)
+                }
+            }
+        }
+
+        // Eine Turmuhr: ein helles Zwölfeck auf der Wand (Mitte c, Radius r, u entlang der Wand, n nach außen) mit dunklem Rand und zwei Zeigern
+        // (die Zeit je Uhr fest aus seed - Turmuhren gehen selten richtig).
+        undefined ClockFace(MeshPart part, defined float cx, defined float cy, defined float cz, defined float ux, defined float uy, defined float nx, defined float ny, defined float r, defined int seed) {
+            for (int k = 0; k < 12; k++) {
+                float a0 = k * Math.PI / 6.0
+                float a1 = (k + 1) * Math.PI / 6.0
+                float x0 = Math.Cos(a0)
+                float z0 = Math.Sin(a0)
+                float x1 = Math.Cos(a1)
+                float z1 = Math.Sin(a1)
+                part.Quad(cx, cy, cz, cx + ux * x0 * r, cy + uy * x0 * r, cz + z0 * r, cx + ux * x1 * r, cy + uy * x1 * r, cz + z1 * r, cx + ux * x1 * r, cy + uy * x1 * r, cz + z1 * r, nx, ny, 0.0, Raser.Palette.ClockFace, Raser.Material.Concrete!int)
+                // der Rand
+                float ro = r * 1.1
+                part.Quad(cx + ux * x0 * r - nx * 0.01, cy + uy * x0 * r - ny * 0.01, cz + z0 * r, cx + ux * x0 * ro - nx * 0.01, cy + uy * x0 * ro - ny * 0.01, cz + z0 * ro, cx + ux * x1 * ro - nx * 0.01, cy + uy * x1 * ro - ny * 0.01, cz + z1 * ro, cx + ux * x1 * r - nx * 0.01, cy + uy * x1 * r - ny * 0.01, cz + z1 * r, nx, ny, 0.0, Raser.Palette.Metal + 64, Raser.Material.Metal!int)
+            }
+            // die Zeiger: Stunde kurz, Minute lang
+            float hour = Raser.Props.Rand(seed, 110, 0) * 2.0 * Math.PI
+            float minute = Raser.Props.Rand(seed, 111, 0) * 2.0 * Math.PI
+            for (int h = 0; h < 2; h++) {
+                float a = hour
+                float len = r * 0.5
+                if (h == 1) {
+                    a = minute
+                    len = r * 0.8
+                }
+                float dx = Math.Sin(a)
+                float dz = Math.Cos(a)
+                float w = r * 0.05
+                float px = cx + nx * 0.02
+                float py = cy + ny * 0.02
+                part.Quad(px - ux * dz * w, py - uy * dz * w, cz + dx * w, px + ux * dz * w, py + uy * dz * w, cz - dx * w, px + ux * (dx * len + dz * w), py + uy * (dx * len + dz * w), cz + dz * len - dx * w, px + ux * (dx * len - dz * w), py + uy * (dx * len - dz * w), cz + dz * len + dx * w, nx, ny, 0.0, Raser.Palette.Metal + 96, Raser.Material.Metal!int)
+            }
         }
 
         // Die Öffnungen eines Gebäudes für die ferne Stufe: je Element eine undurchsichtige Fläche 3 cm vor der Wand (Fenster dunkel, mit Licht
@@ -253,9 +339,18 @@ namespace Raser {
                 float oy = ny * 0.23
                 int color = Raser.Palette.Window
                 int material = Raser.Material.Glass!int
-                if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
+                if (kind == Raser.Facade.Clock) {
+                    this.ClockFace(part, (ax + bx) / 2.0 + nx * 0.26, (ay + by) / 2.0 + ny * 0.26, (z0 + z1) / 2.0, dx / len, dy / len, nx, ny, (z1 - z0) / 2.0, m.building.id + slot)
+                    continue
+                }
+                if (kind == Raser.Facade.Lancet) {
+                    int tones[] = [Raser.Palette.StainedBlue, Raser.Palette.StainedRed, Raser.Palette.StainedAmber, Raser.Palette.StainedBlue]
+                    color = tones[slot % 4]
+                } else if (kind == Raser.Facade.Portal || kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
                     color = Raser.Palette.Wood + 64
                     material = Raser.Material.Wood!int
+                } else if (kind == Raser.Facade.Louvre) {
+                    color = Raser.Palette.Wood + 96
                 } else if (kind == Raser.Facade.Garage) {
                     color = Raser.Palette.Metal + 32
                     material = Raser.Material.Metal!int
@@ -306,6 +401,42 @@ namespace Raser {
                     if (!m.facade.ccw) {
                         nx = -uy
                         ny = ux
+                    }
+                    if (kind == Raser.Facade.Lancet) {
+                        // farbiges Glas (je Fenster ein Ton), bis zum Scheitel - der Bogen der Wand deckt die Ecken ab
+                        int tones[] = [Raser.Palette.StainedBlue, Raser.Palette.StainedRed, Raser.Palette.StainedAmber, Raser.Palette.StainedBlue]
+                        glass.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, tones[slot % 4], Raser.Material.Glass!int)
+                        // Maßwerk: ein Mittelpfosten und Querstäbe alle 1,2 m (Stein)
+                        float mxp = (ax + bx) / 2.0 + nx * 0.02
+                        float myp = (ay + by) / 2.0 + ny * 0.02
+                        opaque.Quad(mxp - ux * 0.05, myp - uy * 0.05, z0, mxp + ux * 0.05, myp + uy * 0.05, z0, mxp + ux * 0.05, myp + uy * 0.05, z1, mxp - ux * 0.05, myp - uy * 0.05, z1, nx, ny, 0.0, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                        for (float zq = z0 + 1.2; zq < z1 - 0.6; zq = zq + 1.2) {
+                            opaque.Quad(ax + nx * 0.02, ay + ny * 0.02, zq, bx + nx * 0.02, by + ny * 0.02, zq, bx + nx * 0.02, by + ny * 0.02, zq + 0.06, ax + nx * 0.02, ay + ny * 0.02, zq + 0.06, nx, ny, 0.0, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                        }
+                        continue
+                    }
+                    if (kind == Raser.Facade.Portal) {
+                        // zwei Türflügel aus dunklem Holz mit Mittelfuge und Beschlägen
+                        opaque.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, Raser.Palette.Wood + 64, Raser.Material.Wood!int)
+                        float cxp = (ax + bx) / 2.0 + nx * 0.03
+                        float cyp = (ay + by) / 2.0 + ny * 0.03
+                        opaque.Quad(cxp - ux * 0.03, cyp - uy * 0.03, z0, cxp + ux * 0.03, cyp + uy * 0.03, z0, cxp + ux * 0.03, cyp + uy * 0.03, z1, cxp - ux * 0.03, cyp - uy * 0.03, z1, nx, ny, 0.0, Raser.Palette.Metal + 64, Raser.Material.Metal!int)
+                        for (float zq = z0 + 0.5; zq < z0 + 2.4; zq = zq + 0.9) {
+                            opaque.Quad(ax + nx * 0.03, ay + ny * 0.03, zq, bx + nx * 0.03, by + ny * 0.03, zq, bx + nx * 0.03, by + ny * 0.03, zq + 0.08, ax + nx * 0.03, ay + ny * 0.03, zq + 0.08, nx, ny, 0.0, Raser.Palette.Metal + 64, Raser.Material.Metal!int)
+                        }
+                        continue
+                    }
+                    if (kind == Raser.Facade.Louvre) {
+                        // Schallöffnung: dunkles Holz mit Lamellen
+                        opaque.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, Raser.Palette.Wood + 96, Raser.Material.Wood!int)
+                        for (float zq = z0 + 0.15; zq < z1 - 0.1; zq = zq + 0.3) {
+                            opaque.Quad(ax + nx * 0.06, ay + ny * 0.06, zq, bx + nx * 0.06, by + ny * 0.06, zq, bx + nx * 0.02, by + ny * 0.02, zq + 0.14, ax + nx * 0.02, ay + ny * 0.02, zq + 0.14, nx, ny, 0.5, Raser.Palette.Wood + 32, Raser.Material.Wood!int)
+                        }
+                        continue
+                    }
+                    if (kind == Raser.Facade.Clock) {
+                        this.ClockFace(opaque, (ax + bx) / 2.0 + nx * 0.24, (ay + by) / 2.0 + ny * 0.24, (z0 + z1) / 2.0, ux, uy, nx, ny, (z1 - z0) / 2.0, m.building.id + slot)
+                        continue
                     }
                     if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
                         // das Türblatt (Holz, mit Rahmen in Wandfarbe dunkler), darüber das Oberlicht im Bogen

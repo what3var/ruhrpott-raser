@@ -44,6 +44,10 @@ namespace Raser {
         static readonly defined int Ribbon = 7           // Fensterband: 1,2 .. 2,4 m
         static readonly defined int Tall = 8             // hohe Fenster (Pavillon): 0,4 m bis kurz unter das Dach
         static readonly defined int Large = 9            // öffentliche Bauten: 0,8 .. 2,6 m
+        static readonly defined int Lancet = 10          // Kirche: hohes Spitzbogenfenster mit farbigem Glas
+        static readonly defined int Portal = 11          // Kirche: Portal mit Rundbogen (Holz)
+        static readonly defined int Louvre = 12          // Kirchturm: Schallöffnung mit Spitzbogen (Holzlamellen)
+        static readonly defined int Clock = 13           // Kirchturm: Uhr auf der Wand (keine Öffnung)
         static readonly defined int Frame = 128          // dazu: die Säule ist der Rahmen am Rand des Fensters
 
         // die Stile
@@ -55,6 +59,7 @@ namespace Raser {
         static readonly defined int Public = 5
         static readonly defined int GarageStyle = 6
         static readonly defined int None = 7
+        static readonly defined int Church = 8
 
         defined int style
         defined bool ccw
@@ -91,6 +96,7 @@ namespace Raser {
             if (f == undefined) { f = "" }
             float height = b.eaves - b.ground
             if (f.StartsWith("alkis=51009") || f.StartsWith("alkis=53001")) { return Raser.Facade.None }
+            if (f == "alkis=31001_3041" || f == "amenity=place_of_worship" || f == "building=church" || f == "building=chapel") { return Raser.Facade.Church }
             if (f.StartsWith("alkis=31001_246")) { return Raser.Facade.GarageStyle }
             if (f == "shop=supermarket" || f == "shop=department_store" || f == "shop=mall" || f == "shop=doityourself" || f == "shop=furniture") { return Raser.Facade.Market }
             bool residential = f == "" || f.StartsWith("alkis=31001_1")
@@ -203,6 +209,23 @@ namespace Raser {
                 float L = fr.length
                 int st = f.style
                 if (st == Raser.Facade.None) { continue }
+                if (st == Raser.Facade.Church) {
+                    // der Turm (schmal und hoch): Schallöffnungen oben, darüber die Uhr; das Schiff: Spitzbogenfenster alle 4 m, auf der
+                    // Hauptseite das Portal
+                    bool tower = Math.Abs(area2) / 2.0 < 250.0 && height > 18.0
+                    if (tower) {
+                        if (L >= 2.5) { Raser.Facade.One(fr.ground, L / 2.0, 0.5, Raser.Facade.Louvre) }
+                        if (L >= 3.2) { Raser.Facade.One(fr.upper, L / 2.0, 0.8, Raser.Facade.Clock) }
+                    } else if (height >= 5.5) {
+                        Raser.Facade.Slots(fr.ground, L, 4.0, 1.2, Raser.Facade.Lancet)
+                        if (r == main && fr.ground.Count > 0) {
+                            var mid = fr.ground[fr.ground.Count / 2]
+                            mid.kind = Raser.Facade.Portal
+                            mid.half = Math.Min(1.2, Math.Max(mid.half, 0.9))
+                        }
+                    }
+                    continue
+                }
                 if (st == Raser.Facade.GarageStyle) {
                     if (fr.street) { Raser.Facade.Slots(fr.ground, L, 3.0, 2.4, Raser.Facade.Garage) }
                     continue
@@ -280,6 +303,52 @@ namespace Raser {
                 s.kind = kind
                 out.Add(take s)
             }
+        }
+
+        static undefined One(List<FacadeSlot> out, defined float center, defined float half, defined int kind) {
+            var s = new Raser.FacadeSlot()
+            s.center = center
+            s.half = half
+            s.kind = kind
+            out.Add(take s)
+        }
+
+        // Kirchen-Elemente: von wo bis wo (m, absolut) - cz0 die Unterkante, cspring der Kämpfer (bis dort gerade), crise der Stich des Bogens
+        // (Spitzbogen: Fenster und Schallöffnung, Rundbogen: Portal); cz0 >= cspring: passt nicht. g: der Boden (m), eaves: die Traufe.
+        defined float cz0
+        defined float cspring
+        defined float crise
+
+        undefined ChurchExtent(defined int kind, defined float g, defined float eaves, defined float half) {
+            float top = Math.Floor(eaves / 0.2) * 0.2
+            this.cz0 = 0.0
+            this.cspring = 0.0
+            this.crise = 0.0
+            if (kind == Raser.Facade.Lancet) {
+                this.crise = Math.Min(half * 1.6, 2.0)
+                this.cz0 = g + 2.4
+                this.cspring = Math.Min(top - 1.0 - this.crise, g + 9.0)
+                if (this.cspring - this.cz0 < 1.4) { this.cspring = this.cz0 }
+            } else if (kind == Raser.Facade.Portal) {
+                this.crise = half
+                this.cz0 = g + 0.2
+                this.cspring = g + 2.8
+                if (this.cspring + this.crise > top - 0.6) { this.cspring = this.cz0 }
+            } else if (kind == Raser.Facade.Louvre) {
+                this.crise = 0.8
+                this.cspring = top - 3.2
+                this.cz0 = this.cspring - 2.2
+            } else if (kind == Raser.Facade.Clock) {
+                this.cz0 = top - 2.2
+                this.cspring = top - 0.6
+            }
+        }
+
+        // Die Höhe des Bogens über dem Kämpfer an der Stelle off im Platz: Rundbogen beim Portal, sonst Spitzbogen.
+        static defined float ArchRise(defined int kind, defined float rise, defined float off, defined float half) {
+            float t = Math.Clamp(Math.Abs(off) / Math.Max(half, 0.1), 0.0, 1.0)
+            if (kind == Raser.Facade.Portal) { return rise * Math.Sqrt(Math.Max(1.0 - t * t, 0.0)) }
+            return rise * (1.0 - t * Math.Sqrt(t))
         }
 
         static defined float RoadDistance(List<Road> roads, defined float x, defined float y) {
@@ -411,6 +480,21 @@ namespace Raser {
                         this.PointOn(r, Math.Min(s.center + s.half, fr.length))
                         float bx = this.px - this.pnx * 0.2
                         float by = this.py - this.pny * 0.2
+                        if (kind >= Raser.Facade.Lancet && kind <= Raser.Facade.Clock) {
+                            // Kirche: ein Element über die ganze Höhe (Unterkante bis Scheitel)
+                            this.ChurchExtent(kind, g, b.eaves, s.half)
+                            if (this.cspring <= this.cz0) { continue }
+                            out.Add(ax)
+                            out.Add(ay)
+                            out.Add(bx)
+                            out.Add(by)
+                            out.Add(this.cz0)
+                            out.Add(this.cspring + this.crise)
+                            out.Add(kind * 1.0)
+                            out.Add((r * 4096 + i) * 1.0)
+                            out.Add(0.0)
+                            continue
+                        }
                         int first = 1
                         int last = 60
                         if (level == 0) {

@@ -356,7 +356,8 @@ namespace Raser {
             foreach (p in tile.data.pois) {
                 foreach (b in tile.data.buildings) {
                     if (Raser.Geo.Inside(b.footprint, p.x, p.y)) {
-                        b.function = p.kind
+                        // eine Kirche bleibt eine Kirche (auch wenn sie heute Konzertsaal oder Café ist): nur der Name kommt dazu
+                        if (b.function != "alkis=31001_3041") { b.function = p.kind }
                         if (p.name != undefined) { b.name = p.name }
                         break
                     }
