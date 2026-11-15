@@ -32,6 +32,17 @@ namespace Raser {
             this.manifests = new HashSet<string>()
         }
 
+        // Gibt alle zwischengespeicherten Chunks und Randschichten frei (ein Lauf über viele Kacheln: sonst wächst der Speicher ohne Ende).
+        undefined Forget() {
+            this.chunks.Clear()
+            this.faces.Clear()
+            this.layers.Clear()
+            this.manifests.Clear()
+        }
+
+        // Die Zahl der zwischengespeicherten Chunks und Randschichten.
+        defined int Cached { get { return this.chunks.Count + this.faces.Count } }
+
         Raser.Chunk ChunkAt(defined int cx, defined int cy, defined int cz) {
             string name = cx + "_" + cy + "_" + cz
             if (this.chunks.ContainsKey(name)) { return this.chunks[name] }
@@ -353,6 +364,12 @@ namespace Raser {
         // Der Kopf: "RRN1", Version (Cache, Generator), Geländeraster in cm, Vierecke undurchsichtig, durchsichtig.
         defined int Stamp() { return Raser.NearBuilder.CacheVersion * 1000 + Raser.Voxelizer.Version }
 
+        // Alle Zwischenspeicher frei (Chunks, Randschichten, Kacheln).
+        undefined Forget() {
+            this.columns.Forget()
+            this.farMeshers.Clear()
+        }
+
         Raser.FarMesher FarFor(Raser.TileKey key) {
             string name = key.ToString()
             if (this.farMeshers.ContainsKey(name)) { return this.farMeshers[name] }
@@ -447,7 +464,11 @@ namespace Raser {
         static undefined Work(Channel<NearJob> jobs, Channel<NearResult> results, string root, defined float e, defined float n, defined float z, defined bool opaqueOnly, defined bool useCache) {
             var builder = new NearBuilder(root, e, n, z, opaqueOnly)
             builder.useCache = useCache
-            foreach (job in jobs) { results.Send(builder.Build(job.bx, job.by)) }
+            foreach (job in jobs) {
+                results.Send(builder.Build(job.bx, job.by))
+                // bei langen Fahrten nicht ohne Ende zwischenspeichern (ein Chunk sind bis 0,5 MB)
+                if (builder.columns.Cached > 600) { builder.Forget() }
+            }
         }
     }
 }

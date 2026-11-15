@@ -211,6 +211,7 @@ class Tool {
                 }
             }
             Tool.Log("Kachel " + k + ": " + built + " Blöcke gebaut, " + quads + " Vierecke " + Tool.Progress(done, keys.Count, start))
+            builder.Forget()
         }
     }
 
