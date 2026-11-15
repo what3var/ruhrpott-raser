@@ -14,6 +14,7 @@ namespace Raser {
     class RoofModel {
         Building building
         Box2 box
+        Facade facade           // Fenster und Türen (Raser.Facade, im Voxelizer geplant)
         defined float dx        // Firstrichtung
         defined float dy
         defined float midAlong
@@ -181,6 +182,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 16: Fenster und Türen aus der Fassade (Raser.Facade): Läufe, Plätze, Stil nach Nutzung, Stufen vor erhöhten Haustüren
         // 15: Grünstreifen mit Sträuchern (Raser.Strips)
         // 14: Grundrisse bereinigt (Raser.Footprints: Punkte rasten ein), Bäume rücken mit ihrer Baumscheibe von der Fahrbahn weg (Raser.Props.Settle beim Laden)
         // 13: Schnitte mit Versatz (Raser.Plan.Cut) statt Diagonalen und Rundungen - Kanten ohne Stufen in jedem Winkel
@@ -190,7 +192,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 15
+        static readonly defined int Version = 16
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -220,7 +222,9 @@ namespace Raser {
             foreach (b in tile.data.buildings) {
                 if (b.footprint == undefined || b.footprint.length < 6) { continue }
                 if (b.ridge <= b.ground) { continue }
-                this.models.Add(new Raser.RoofModel(b, seed))
+                var model = new Raser.RoofModel(b, seed)
+                model.facade = Raser.Facade.Plan(b, tile.data.roads)
+                this.models.Add(take model)
             }
             this.roadBoxes = new List<Box2>()
             foreach (r in tile.data.roads) {
@@ -638,6 +642,30 @@ namespace Raser {
             if (v >= 0) { result[cell] = Raser.Plan.CutCorner(a, v, b) } else { result[cell] = Raser.Plan.Cut(a, b) }
         }
 
+        // Was in einer Wand-Voxel einer Öffnung ist (Raser.Facade): 0 Wand, 1 Glas, 2 Tür (Holz), 3 Tor (Metall), 4 Fensterrahmen (Holz, weiß),
+        // 5 Rahmen von Schaufenstern (Metall, dunkel). inStorey: die Lage im Geschoss,
+        // rel: über dem Boden des Gebäudes (ein Voxel über dem Erdgeschoss-Voxel, für das ganze Gebäude gleich - sonst treppen Brüstungen und
+        // Türschwellen mit dem Gelände), top: das Dach-Voxel.
+        static defined int Opening(defined int kindFramed, defined int inStorey, defined int rel, defined int vz, defined int top) {
+            int kind = kindFramed & 127
+            bool mullion = (kindFramed & Raser.Facade.Frame) != 0
+            // die Rahmen ringsum: die äußeren Säulen und die oberste und unterste Lage (4: Holz weiß, 5: Metall dunkel)
+            if (kind == Raser.Facade.Window && inStorey >= 5 && inStorey <= 11 && (mullion || inStorey == 5 || inStorey == 11)) { return 4 }
+            if (kind == Raser.Facade.Large && inStorey >= 4 && inStorey <= 12 && (mullion || inStorey == 4 || inStorey == 12)) { return 4 }
+            if (kind == Raser.Facade.Shop && rel >= 2 && rel <= 12 && (mullion || rel == 2 || rel == 12)) { return 5 }
+            if (kind == Raser.Facade.Tall && rel >= 2 && vz <= top - 3 && (mullion || rel == 2 || vz == top - 3)) { return 5 }
+            if (kind == Raser.Facade.Window) { if (inStorey >= 5 && inStorey <= 11) { return 1 } }
+            if (kind == Raser.Facade.Shop) { if (rel >= 2 && rel <= 12) { return 1 } }
+            if (kind == Raser.Facade.Door) { if (rel >= 0 && rel <= 10) { return 2 } }
+            if (kind == Raser.Facade.RaisedDoor) { if (rel >= 3 && rel <= 13) { return 2 } }
+            if (kind == Raser.Facade.GlassDoor) { if (rel >= 0 && rel <= 11) { return 1 } }
+            if (kind == Raser.Facade.Garage) { if (rel >= 0 && rel <= 10) { return 3 } }
+            if (kind == Raser.Facade.Ribbon) { if (inStorey >= 6 && inStorey <= 11) { return 1 } }
+            if (kind == Raser.Facade.Tall) { if (rel >= 2 && vz <= top - 3) { return 1 } }
+            if (kind == Raser.Facade.Large) { if (inStorey >= 4 && inStorey <= 12) { return 1 } }
+            return 0
+        }
+
         // Was in jeder der 64 x 64 Säulen einer Chunk-Säule steht - unabhängig von der Höhe, also einmal für alle Chunks darüber und darunter.
         // Alle Lagen werden aus dem kachel-lokalen Voxel-Index gerechnet ((lx + 0,5) * 0,2), damit jeder Chunk dieselbe Säule gleich sieht.
         // Grundrisse und Flächen werden zeilenweise gerastert (Schnittpunkte der Zeile mit dem Ring, Gerade-Ungerade wie Geo.Inside),
@@ -846,9 +874,15 @@ namespace Raser {
                         if (owner[o - 1] != b || owner[o + 1] != b || owner[o - 66] != b || owner[o + 66] != b) { flags = 1 }
                         // hinter einem Bauelement (Diagonale, Rundung) ist die Wand eine Säule dicker - sonst bliebe dort nur ein schmaler Keil
                         if (planOf[o - 1] != 0 || planOf[o + 1] != 0 || planOf[o - 66] != 0 || planOf[o + 66] != 0) { flags = flags | 1 }
-                        // Fensterraster entlang der Wand: aus der Lage in der Welt, also über Chunk-Grenzen gleich.
-                        int along = Raser.Grid.FloorMod(cx * 64 + x + cy * 64 + y, 9)
-                        if (along >= 3 && along <= 6) { flags = flags | 2 }
+                        // Fenster und Türen: aus der Fassade des Gebäudes, nach der Lage der Säule auf ihrem Lauf (über Chunk-Grenzen gleich)
+                        if ((flags & 1) != 0 && model.facade != undefined) {
+                            model.facade.At((lx0 + x + 0.5) * 0.2, (ly0 + y + 0.5) * 0.2)
+                            plan.groundKind[c] = model.facade.ground
+                            plan.upperKind[c] = model.facade.upper
+                        } else {
+                            plan.groundKind[c] = 0
+                            plan.upperKind[c] = 0
+                        }
                         plan.flags[c] = flags
                         plan.planShape[c] = planOf[o]
                         if (planOf[o] != 0) {
@@ -890,6 +924,16 @@ namespace Raser {
                     }
                     plan.top[c] = surface
                     plan.shape[c] = tshape
+                    // Stufen vor einer erhöhten Haustür (Raser.Facade): je Stufe ein Voxel über dem Gelände
+                    foreach (m in models) {
+                        if (m.facade == undefined || m.facade.stairs.Count == 0) { continue }
+                        int steps = m.facade.StepsAt((lx0 + x + 0.5) * 0.2, (ly0 + y + 0.5) * 0.2)
+                        if (steps > 0) {
+                            plan.stair[c] = surface + steps
+                            if (plan.stair[c] > plan.highest) { plan.highest = plan.stair[c] }
+                            break
+                        }
+                    }
                     plan.material[c] = material
                     plan.color[c] = color
                     plan.below[c] = below
@@ -935,6 +979,9 @@ namespace Raser {
         defined int roofLow[4096]       // Gebäude: ab hier bis unter das Dach-Voxel voll mit Dachmaterial (steile Dächer)
         int floor[4096]
         int flags[4096]
+        defined int groundKind[4096]    // Wände: was im Erdgeschoss in der Säule ist (Raser.Facade: Fenster, Schaufenster, Tür ...)
+        defined int upperKind[4096]     // und darüber
+        defined int stair[4096]         // Gelände: Stufen vor einer Tür bis zu diesem Voxel (0: keine)
         defined int storey
         defined int highest
 
@@ -967,7 +1014,7 @@ namespace Raser {
                 int top = this.top[c]
                 int floor = this.floor[c]
                 if (this.kind[c] == 0) {
-                    if (top < vz0) { continue }
+                    if (top < vz0 && this.stair[c] < vz0) { continue }
                     int zEnd = top - vz0
                     if (zEnd > 63) { zEnd = 63 }
                     for (int z = 0; z <= zEnd; z++) {
@@ -989,13 +1036,29 @@ namespace Raser {
                             chunk.colors[i] = rockColor
                         }
                     }
+                    // Stufen vor einer Tür (Beton, die Oberseite voll)
+                    int st = this.stair[c]
+                    if (st > top) {
+                        for (int vz = Math.Max(top + 1, vz0); vz <= st && vz < vz0 + 64; vz++) {
+                            int i = c + ((vz - vz0) << 12)
+                            chunk.materials[i] = concrete
+                            chunk.colors[i] = concreteColor
+                        }
+                        if (top >= vz0 && top < vz0 + 64) {
+                            // das Gelände darunter voll, damit die Stufe nicht auf einer Schräge schwebt
+                            chunk.shapes.Remove(c + ((top - vz0) << 12))
+                            if (chunk.materials[c + ((top - vz0) << 12)] == 0) {
+                                chunk.materials[c + ((top - vz0) << 12)] = this.material[c]
+                                chunk.colors[c + ((top - vz0) << 12)] = this.color[c]
+                            }
+                        }
+                    }
                     continue
                 }
                 // Gebäude
                 int ground = this.ground[c]
                 int cellar = this.cellar[c]
                 bool wall = (this.flags[c] & 1) != 0
-                bool windows = (this.flags[c] & 2) != 0
                 int bottom = floor
                 if (cellar - 1 < bottom) { bottom = cellar - 1 }
                 int zEnd = top - vz0
@@ -1045,9 +1108,25 @@ namespace Raser {
                     }
                     int inStorey = (vz - ground) % this.storey
                     if (wall) {
-                        if (windows && inStorey >= 5 && inStorey <= 11 && vz < top - 1) {
+                        int kind = this.upperKind[c]
+                        if (vz - ground < this.storey) { kind = this.groundKind[c] }
+                        int open = 0
+                        if (kind != 0 && vz < top - 1) { open = Raser.Voxelizer.Opening(kind, inStorey, vz - ground - 1, vz, top) }
+                        if (open == 1) {
                             chunk.materials[i] = glass
                             chunk.colors[i] = glassColor
+                        } else if (open == 2) {
+                            chunk.materials[i] = Raser.Material.Wood!int
+                            chunk.colors[i] = Raser.Palette.Wood + 64
+                        } else if (open == 3) {
+                            chunk.materials[i] = Raser.Material.Metal!int
+                            chunk.colors[i] = Raser.Palette.Metal + 32
+                        } else if (open == 4) {
+                            chunk.materials[i] = Raser.Material.Wood!int
+                            chunk.colors[i] = Raser.Palette.Plaster
+                        } else if (open == 5) {
+                            chunk.materials[i] = Raser.Material.Metal!int
+                            chunk.colors[i] = Raser.Palette.Metal + 64
                         } else {
                             chunk.materials[i] = this.below[c]
                             chunk.colors[i] = this.belowColor[c]

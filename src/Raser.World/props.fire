@@ -73,7 +73,7 @@ namespace Raser {
 
         // Fährt eine Straße für Autos hier? (keine Fuß- und Radwege, Bahnen, Brücken)
         static defined bool IsCarRoad(Road r) {
-            if (r.layer != 0 || !r.kind.StartsWith("highway=")) { return false }
+            if (r.kind == undefined || r.layer != 0 || !r.kind.StartsWith("highway=")) { return false }
             string k = r.kind.Substring(8)
             return !(k == "footway" || k == "path" || k == "cycleway" || k == "steps" || k == "pedestrian" || k == "track" || k == "bridleway" || k == "corridor" || k == "platform")
         }

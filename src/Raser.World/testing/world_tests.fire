@@ -283,6 +283,7 @@ class VoxelizerTests {
         tile.heights = take raster
         var b = new Raser.Building()
         b.source = "test:schraeg"
+        b.function = "alkis=31001_2000"      // Gewerbe: Fensterbänder, keine Stufen vor der Tür (die Flächen-Summe zählt nur das Gebäude)
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
         // ein Parallelogramm: die untere Kante steigt 1:2 von (2, 2) nach (10, 6)
         b.footprint = [2.0, 2.0, 10.0, 6.0, 10.0, 11.0, 2.0, 11.0]
@@ -320,6 +321,7 @@ class VoxelizerTests {
         tile.heights = take raster
         var b = new Raser.Building()
         b.source = "test:turm"
+        b.function = "alkis=31001_2000"      // Gewerbe: Fensterbänder, keine Stufen vor der Tür (die Flächen-Summe zählt nur das Gebäude)
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
         // ein Kreis mit 2 m Radius um (6, 6) aus 32 Punkten: im Raster der Mittelpunkt (30, 30), Radius 10 Voxel
         float fp[] = new float[64]
@@ -463,6 +465,67 @@ class VoxelizerTests {
         Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 52.0, probe) > 0.0)
         Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 46.0, probe) > 0.0)
         Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 45.0, 54.0, probe) > 0.0)
+    }
+
+    [Test "Fassade: Fenster gleichmäßig je Lauf, nicht um die Ecke; Läden mit Schaufenstern und Glastür zur Straße"]
+    undefined Facades() {
+        var roads = new List<Road>()
+        var road = new Raser.Road()
+        road.source = "test:strasse"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 5.0, 60.0, 5.0]
+        road.width = 6.0
+        roads.Add(take road)
+        // ein Haus 12 x 8 m, die lange Seite (y = 10) zur Straße
+        var b = new Raser.Building()
+        b.source = "test:fassade"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [10.0, 10.0, 22.0, 10.0, 22.0, 18.0, 10.0, 18.0]
+        b.ground = 60.0
+        b.eaves = 72.0
+        b.ridge = 76.0
+        b.function = "shop=bakery"
+        var f = Raser.Facade.Plan(b, roads)
+        Testing.Assert.AreEqual(Raser.Facade.ShopStyle, f.style)
+        Testing.Assert.AreEqual(4, f.runs.Count)
+        // oben: vier Fenster auf 12 m (Mitten 1,5 / 4,5 / 7,5 / 10,5 m), an der Ecke Wand
+        f.At(11.5, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Window, f.upper)
+        f.At(12.1, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Window + Raser.Facade.Frame, f.upper)
+        f.At(10.1, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Wall, f.upper)
+        f.At(13.0, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Wall, f.upper)
+        // unten zur Straße: Schaufenster, in der Mitte eine Glastür; hinten Fenster
+        f.At(11.5, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Shop, f.ground)
+        int doors = 0
+        for (float x = 10.1; x < 22.0; x = x + 0.2) {
+            f.At(x, 10.1)
+            if (f.ground == Raser.Facade.GlassDoor) { doors++ }
+        }
+        Testing.Assert.IsTrue(doors >= 5 && doors <= 7)
+        f.At(11.5, 17.9)
+        Testing.Assert.AreEqual(Raser.Facade.Window, f.ground)
+        // ein Wohnhaus ohne Funktion: Haustür zur Straße, keine Schaufenster
+        b.function = undefined
+        var w = Raser.Facade.Plan(b, roads)
+        Testing.Assert.AreEqual(Raser.Facade.Residential, w.style)
+        int house = 0
+        for (float x = 10.1; x < 22.0; x = x + 0.2) {
+            w.At(x, 10.1)
+            if (w.ground == Raser.Facade.Door || w.ground == Raser.Facade.RaisedDoor) { house++ }
+            Testing.Assert.IsTrue(w.ground != Raser.Facade.Shop)
+        }
+        Testing.Assert.IsTrue(house >= 4)
+        // eine Überdachung: nichts
+        b.function = "alkis=51009_1610"
+        var none = Raser.Facade.Plan(b, roads)
+        none.At(11.7, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Wall, none.ground)
+        Testing.Assert.AreEqual(Raser.Facade.Wall, none.upper)
     }
 
     [Test "Straße und Fläche"]

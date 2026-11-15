@@ -1,0 +1,374 @@
+// Raser.World: Fenster und Türen eines Gebäudes (Konzept, Abschnitt 4: Fassaden).
+//
+// Je Gebäude einmal geplant, deterministisch aus Grundriss, Nutzung, Straßen und ID - die Voxelisierung fragt nur noch je Wandsäule ab.
+// - Läufe: der Grundriss, geteilt an Ecken über 30°. Gerundete Ecken und runde Bauten (viele kurze Kanten) bleiben ein Lauf; so verteilen sich die
+//   Fenster gleichmäßig um die Rundung, und an echten Ecken geht kein Fenster um die Ecke (Abstand zu den Enden des Laufs).
+// - Plätze (Slots) je Lauf: gleichmäßig über die Länge verteilt, getrennt für das Erdgeschoss und die Geschosse darüber; je Platz eine Art
+//   (Fenster, Schaufenster, Tür ...). Eine Säule fragt: welcher Lauf ist am nächsten, wo auf ihm liegt sie, in welchem Platz.
+// - Straßenseite: ein Lauf, der zu einer Straße oder einem Weg (bis 15 m) hin zeigt. Der nächste davon ist die Hauptseite mit den Eingängen.
+// - Stil nach Nutzung: Wohnhaus (Lochfenster, Haustür, oft ein paar Stufen hoch), Laden (Schaufenster im Erdgeschoss zur Straße, Glastür),
+//   Markt (Schaufenster, breite Automatiktür), Pavillon (hohe Fenster), Gewerbe (Fensterbänder), öffentlich (hohe, breite Fenster),
+//   Garage (Tore), Überdachung (nichts).
+// Ziel ist ein stimmiges Bild, nicht der echte Bestand.
+namespace Raser {
+    // Ein Platz auf einem Lauf: Mitte und halbe Breite (m), die Art.
+    class FacadeSlot {
+        defined float center
+        defined float half
+        defined int kind
+    }
+
+    class FacadeRun {
+        defined float length
+        defined bool closed
+        defined bool street
+        defined float distance          // zur nächsten Straße (m)
+        List<FacadeSlot> ground
+        List<FacadeSlot> upper
+
+        construct() {
+            this.ground = new List<FacadeSlot>()
+            this.upper = new List<FacadeSlot>()
+        }
+    }
+
+    class Facade {
+        // die Arten (je Säule und Geschoss)
+        static readonly defined int Wall = 0
+        static readonly defined int Window = 1           // Lochfenster (1,4 m breit, mit Rahmen): 1,0 .. 2,4 m im Geschoss
+        static readonly defined int Shop = 2             // Schaufenster: 0,4 .. 2,6 m
+        static readonly defined int Door = 3             // Haustür (Holz): 0 .. 2,2 m
+        static readonly defined int RaisedDoor = 4       // Haustür drei Stufen hoch (0,6 .. 2,8 m), davor die Stufen
+        static readonly defined int GlassDoor = 5        // Ladentür, Automatiktür: Glas 0 .. 2,4 m
+        static readonly defined int Garage = 6           // Garagentor (Metall): 0 .. 2,2 m
+        static readonly defined int Ribbon = 7           // Fensterband: 1,2 .. 2,4 m
+        static readonly defined int Tall = 8             // hohe Fenster (Pavillon): 0,4 m bis kurz unter das Dach
+        static readonly defined int Large = 9            // öffentliche Bauten: 0,8 .. 2,6 m
+        static readonly defined int Frame = 128          // dazu: die Säule ist der Rahmen am Rand des Fensters
+
+        // die Stile
+        static readonly defined int Residential = 0
+        static readonly defined int ShopStyle = 1
+        static readonly defined int Market = 2
+        static readonly defined int Pavilion = 3
+        static readonly defined int Commercial = 4
+        static readonly defined int Public = 5
+        static readonly defined int GarageStyle = 6
+        static readonly defined int None = 7
+
+        defined int style
+        defined bool ccw
+        // je Kante: Anfang, Richtung, Länge, Lauf, Lage des Anfangs im Lauf
+        defined float ax[]
+        defined float ay[]
+        defined float ux[]
+        defined float uy[]
+        defined float len[]
+        defined int runOf[]
+        defined float offset[]
+        List<FacadeRun> runs
+        // die erhöhten Türen (für die Stufen davor): Punkt auf der Wand, Normale nach außen, halbe Breite
+        List<float> stairs
+
+        // nach At: die Arten in der Säule
+        defined int ground
+        defined int upper
+
+        construct() {
+            this.runs = new List<FacadeRun>()
+            this.stairs = new List<float>()
+        }
+
+        static defined int StyleOf(Building b, defined float area) {
+            string f = b.function
+            if (f == undefined) { f = "" }
+            float height = b.eaves - b.ground
+            if (f.StartsWith("alkis=51009") || f.StartsWith("alkis=53001")) { return Raser.Facade.None }
+            if (f.StartsWith("alkis=31001_246")) { return Raser.Facade.GarageStyle }
+            if (f == "shop=supermarket" || f == "shop=department_store" || f == "shop=mall" || f == "shop=doityourself" || f == "shop=furniture") { return Raser.Facade.Market }
+            bool residential = f == "" || f.StartsWith("alkis=31001_1")
+            if (f == "shop=kiosk" || (!residential && height <= 5.5 && area <= 250.0)) { return Raser.Facade.Pavilion }
+            if (f.StartsWith("shop=") || f.StartsWith("office=") || f.StartsWith("craft=")) { return Raser.Facade.ShopStyle }
+            if (f == "amenity=restaurant" || f == "amenity=cafe" || f == "amenity=pub" || f == "amenity=fast_food" || f == "amenity=bar" || f == "amenity=pharmacy" || f == "amenity=bank" || f == "amenity=ice_cream" || f == "amenity=doctors") { return Raser.Facade.ShopStyle }
+            // gemischt genutzt mit Wohnen: oft Läden unten (aus der ID: 6 von 10)
+            if (f == "alkis=31001_1100") {
+                if (Raser.Props.Rand(b.id, 100, 0) < 0.6) { return Raser.Facade.ShopStyle }
+                return Raser.Facade.Residential
+            }
+            if (f.StartsWith("alkis=31001_2")) { return Raser.Facade.Commercial }
+            if (f.StartsWith("alkis=31001_3") || f.StartsWith("amenity=")) { return Raser.Facade.Public }
+            return Raser.Facade.Residential
+        }
+
+        // Plant die Fassade eines Gebäudes (Grundriss kachel-lokal in m) an den Straßen der Kachel.
+        static Facade Plan(Building b, List<Road> roads) {
+            var f = new Raser.Facade()
+            float ring[] = b.footprint
+            int n = ring.length / 2
+            float area2 = 0.0
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                area2 = area2 + ring[k * 2] * ring[l * 2 + 1] - ring[l * 2] * ring[k * 2 + 1]
+            }
+            f.ccw = area2 > 0.0
+            f.style = Raser.Facade.StyleOf(b, Math.Abs(area2) / 2.0)
+            f.ax = new float[n]
+            f.ay = new float[n]
+            f.ux = new float[n]
+            f.uy = new float[n]
+            f.len = new float[n]
+            f.runOf = new int[n]
+            f.offset = new float[n]
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                float ex = ring[l * 2] - ring[k * 2]
+                float ey = ring[l * 2 + 1] - ring[k * 2 + 1]
+                float el = Math.Sqrt(ex * ex + ey * ey)
+                f.ax[k] = ring[k * 2]
+                f.ay[k] = ring[k * 2 + 1]
+                f.len[k] = el
+                if (el > 0.000001) {
+                    f.ux[k] = ex / el
+                    f.uy[k] = ey / el
+                } else {
+                    f.ux[k] = 1.0
+                    f.uy[k] = 0.0
+                }
+            }
+            // Läufe: Brüche an Ecken über 30°
+            defined bool cut[n]
+            int cuts = 0
+            for (int k = 0; k < n; k++) {
+                int p = (k + n - 1) % n
+                float t = Math.Atan2(f.ux[p] * f.uy[k] - f.uy[p] * f.ux[k], f.ux[p] * f.ux[k] + f.uy[p] * f.uy[k])
+                cut[k] = Math.Abs(t) > 0.52
+                if (cut[k]) { cuts++ }
+            }
+            int start = 0
+            if (cuts > 0) {
+                while (!cut[start]) { start++ }
+            }
+            var run = new Raser.FacadeRun()
+            run.closed = cuts == 0
+            for (int q = 0; q < n; q++) {
+                int k = (start + q) % n
+                if (q > 0 && cut[k]) {
+                    f.runs.Add(take run)
+                    run = new Raser.FacadeRun()
+                }
+                f.runOf[k] = f.runs.Count
+                f.offset[k] = run.length
+                run.length = run.length + f.len[k]
+            }
+            f.runs.Add(take run)
+            // Straßenseiten: die Mitte jedes Laufs, ein Stück davor - liegt die Straße davor und nah genug?
+            int main = -1
+            float mainDist = 1.0e30
+            int longest = 0
+            for (int r = 0; r < f.runs.Count; r++) {
+                var fr = f.runs[r]
+                if (fr.length > f.runs[longest].length) { longest = r }
+                float mx = 0.0
+                float my = 0.0
+                float nx = 0.0
+                float ny = 0.0
+                f.PointOn(r, fr.length / 2.0)
+                mx = f.px
+                my = f.py
+                nx = f.pnx
+                ny = f.pny
+                float here = Raser.Facade.RoadDistance(roads, mx, my)
+                float ahead = Raser.Facade.RoadDistance(roads, mx + nx * 3.0, my + ny * 3.0)
+                fr.distance = here
+                fr.street = here < 15.0 && ahead < here
+                if (fr.closed) { fr.street = here < 15.0 }
+                if (fr.street && here < mainDist) {
+                    mainDist = here
+                    main = r
+                }
+            }
+            if (main < 0) { main = longest }
+            // die Plätze nach Stil
+            bool raised = f.style == Raser.Facade.Residential && Raser.Props.Rand(b.id, 101, 0) < 0.5
+            float height = b.eaves - b.ground
+            for (int r = 0; r < f.runs.Count; r++) {
+                var fr = f.runs[r]
+                float L = fr.length
+                int st = f.style
+                if (st == Raser.Facade.None) { continue }
+                if (st == Raser.Facade.GarageStyle) {
+                    if (fr.street) { Raser.Facade.Slots(fr.ground, L, 3.0, 2.4, Raser.Facade.Garage) }
+                    continue
+                }
+                if (st == Raser.Facade.Pavilion) {
+                    Raser.Facade.Slots(fr.ground, L, 2.0, 1.6, Raser.Facade.Tall)
+                    Raser.Facade.Slots(fr.upper, L, 2.0, 1.6, Raser.Facade.Tall)
+                } else if (st == Raser.Facade.Commercial) {
+                    Raser.Facade.Slots(fr.ground, L, 3.0, 2.6, Raser.Facade.Ribbon)
+                    Raser.Facade.Slots(fr.upper, L, 3.0, 2.6, Raser.Facade.Ribbon)
+                } else if (st == Raser.Facade.Public) {
+                    Raser.Facade.Slots(fr.ground, L, 2.8, 1.6, Raser.Facade.Large)
+                    Raser.Facade.Slots(fr.upper, L, 2.8, 1.6, Raser.Facade.Large)
+                } else {
+                    Raser.Facade.Slots(fr.upper, L, 3.0, 1.4, Raser.Facade.Window)
+                    if ((st == Raser.Facade.ShopStyle || st == Raser.Facade.Market) && fr.street) {
+                        Raser.Facade.Slots(fr.ground, L, 3.0, 2.6, Raser.Facade.Shop)
+                    } else {
+                        Raser.Facade.Slots(fr.ground, L, 3.0, 1.4, Raser.Facade.Window)
+                    }
+                }
+                if (r != main || fr.ground.Count == 0) { continue }
+                // die Eingänge auf der Hauptseite
+                int doors = 1
+                float doorHalf = 0.55
+                int kind = Raser.Facade.Door
+                if (raised) { kind = Raser.Facade.RaisedDoor }
+                if (st == Raser.Facade.ShopStyle) {
+                    doors = Math.Max(1, Math.Floor(L / 10.0)!int)
+                    doorHalf = 0.6
+                    kind = Raser.Facade.GlassDoor
+                } else if (st == Raser.Facade.Market) {
+                    doorHalf = 1.2
+                    kind = Raser.Facade.GlassDoor
+                } else if (st == Raser.Facade.Residential) {
+                    doors = Math.Max(1, Math.Round(L / 15.0)!int)
+                } else {
+                    doorHalf = 0.75
+                    kind = Raser.Facade.GlassDoor
+                }
+                for (int d = 0; d < doors; d++) {
+                    float want = (d + 0.5) * L / doors
+                    int best = 0
+                    for (int s = 1; s < fr.ground.Count; s++) {
+                        if (Math.Abs(fr.ground[s].center - want) < Math.Abs(fr.ground[best].center - want)) { best = s }
+                    }
+                    var slot = fr.ground[best]
+                    slot.kind = kind
+                    slot.half = Math.Min(doorHalf, Math.Max(slot.half, doorHalf))
+                    if (kind == Raser.Facade.RaisedDoor) {
+                        f.PointOn(r, slot.center)
+                        f.stairs.Add(f.px)
+                        f.stairs.Add(f.py)
+                        f.stairs.Add(f.pnx)
+                        f.stairs.Add(f.pny)
+                        f.stairs.Add(slot.half)
+                    }
+                }
+            }
+            return f
+        }
+
+        // n Plätze gleichmäßig über die Länge L (etwa alle pitch m), je width breit; zu den Enden mindestens 0,5 m.
+        static undefined Slots(List<FacadeSlot> out, defined float L, defined float pitch, defined float width, defined int kind) {
+            int n = Math.Floor(L / pitch)!int
+            if (n == 0 && L >= width + 1.0) { n = 1 }
+            if (n == 0) { return }
+            float step = L / n
+            float half = Math.Min(width / 2.0, step / 2.0 - 0.2)
+            if (half < 0.3) { return }
+            for (int i = 0; i < n; i++) {
+                var s = new Raser.FacadeSlot()
+                s.center = (i + 0.5) * step
+                s.half = half
+                s.kind = kind
+                out.Add(take s)
+            }
+        }
+
+        static defined float RoadDistance(List<Road> roads, defined float x, defined float y) {
+            float best = 1.0e30
+            foreach (r in roads) {
+                if (r.kind == undefined || !r.kind.StartsWith("highway=") || r.layer != 0 || r.points == undefined || r.points.length < 4) { continue }
+                float d = Raser.Geo.DistanceToLine(r.points, x, y) - r.width / 2.0
+                if (d < best) { best = d }
+            }
+            return best
+        }
+
+        // ein Punkt auf Lauf r bei s (m): px, py, Normale nach außen pnx, pny
+        defined float px
+        defined float py
+        defined float pnx
+        defined float pny
+
+        undefined PointOn(defined int r, defined float s) {
+            int n = this.len.length
+            for (int k = 0; k < n; k++) {
+                if (this.runOf[k] != r) { continue }
+                if (s <= this.offset[k] + this.len[k] || k == n - 1) {
+                    float t = s - this.offset[k]
+                    this.px = this.ax[k] + this.ux[k] * t
+                    this.py = this.ay[k] + this.uy[k] * t
+                    this.Normal(k)
+                    return
+                }
+            }
+            this.px = this.ax[0]
+            this.py = this.ay[0]
+            this.Normal(0)
+        }
+
+        undefined Normal(defined int k) {
+            if (this.ccw) {
+                this.pnx = this.uy[k]
+                this.pny = -this.ux[k]
+            } else {
+                this.pnx = -this.uy[k]
+                this.pny = this.ux[k]
+            }
+        }
+
+        // Die Arten für die Säule an (x, y) (kachel-lokal, m): nach ground (Erdgeschoss) und upper (darüber).
+        undefined At(defined float x, defined float y) {
+            this.ground = Raser.Facade.Wall
+            this.upper = Raser.Facade.Wall
+            int n = this.len.length
+            int best = -1
+            float bestD = 1.0e30
+            float along = 0.0
+            for (int k = 0; k < n; k++) {
+                if (this.len[k] <= 0.000001) { continue }
+                float t = Math.Clamp((x - this.ax[k]) * this.ux[k] + (y - this.ay[k]) * this.uy[k], 0.0, this.len[k])
+                float qx = this.ax[k] + this.ux[k] * t - x
+                float qy = this.ay[k] + this.uy[k] * t - y
+                float d = qx * qx + qy * qy
+                if (d < bestD) {
+                    bestD = d
+                    best = k
+                    along = this.offset[k] + t
+                }
+            }
+            if (best < 0) { return }
+            var fr = this.runs[this.runOf[best]]
+            this.ground = Raser.Facade.KindAt(fr.ground, along)
+            this.upper = Raser.Facade.KindAt(fr.upper, along)
+        }
+
+        // Die Art an der Stelle along; + Frame in der äußeren Säule eines Fensters (der Rahmen ringsum - Fensterkreuze sind hier selten).
+        static defined int KindAt(List<FacadeSlot> slots, defined float along) {
+            foreach (s in slots) {
+                float d = Math.Abs(along - s.center)
+                if (d < s.half) {
+                    bool framed = s.kind == Raser.Facade.Window || s.kind == Raser.Facade.Shop || s.kind == Raser.Facade.Tall || s.kind == Raser.Facade.Large
+                    if (framed && d > s.half - 0.2 && s.half >= 0.5) { return s.kind + Raser.Facade.Frame }
+                    return s.kind
+                }
+            }
+            return Raser.Facade.Wall
+        }
+
+        // Die Stufen vor einer erhöhten Tür an (x, y): 0 .. 3 (die höchste direkt an der Wand, je Stufe 30 cm tief).
+        defined int StepsAt(defined float x, defined float y) {
+            for (int k = 0; k + 4 < this.stairs.Count; k = k + 5) {
+                float rx = x - this.stairs[k]
+                float ry = y - this.stairs[k + 1]
+                float nx = this.stairs[k + 2]
+                float ny = this.stairs[k + 3]
+                float v = rx * nx + ry * ny
+                float u = -rx * ny + ry * nx
+                if (Math.Abs(u) < this.stairs[k + 4] + 0.1 && v >= -0.05 && v < 0.9) { return 3 - Math.Clamp(Math.Floor(Math.Max(v, 0.0) / 0.3)!int, 0, 2) }
+            }
+            return 0
+        }
+    }
+}
