@@ -197,6 +197,8 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 23: Fenster und Türen als eingehängte Elemente (Raser.Facade.Panes), die Wand lässt nur die Öffnung frei
+        // 22: innere Wandlage auch hinter Schnitten (Glas in runden und schrägen Wänden fehlte)
         // 21: Haustüren mit Rundbogen und Oberlicht; Durchfahrten immer mit glattem Bogen (Achse nach der Rasterrichtung)
         // 20: Durchfahrten mit Torbögen (Raser.Plan.Elevation für den Bogen)
         // 19: Außenwände zwei Voxel dick, Öffnungen mit Laibung (außen frei, Glas und Tür innen)
@@ -212,7 +214,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 21
+        static readonly defined int Version = 23
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -1043,7 +1045,8 @@ namespace Raser {
                             model.facade.At((lx0 + x + 0.5) * 0.2, (ly0 + y + 0.5) * 0.2)
                             float wd = model.facade.distance
                             if (wd < 0.4 && (flags & 1) == 0) { flags = 1 | 4 }
-                            else if ((flags & 1) != 0 && wd >= 0.2 && planOf[o] == 0 && owner[o - 1] == b && owner[o + 1] == b && owner[o - 66] == b && owner[o + 66] == b) { flags = flags | 4 }
+                            // (innere Lage: eine Wandsäule, die nicht selbst am Rand liegt - auch hinter den Schnitten schräger und runder Wände)
+                            else if ((flags & 1) != 0 && planOf[o] == 0 && owner[o - 1] == b && owner[o + 1] == b && owner[o - 66] == b && owner[o + 66] == b) { flags = flags | 4 }
                         }
                         // Durchfahrten: im Durchgang die Höhe des Bogens (an der Mitte und an den beiden Rändern der Säule quer zum Weg), daneben
                         // massive Seitenwände ohne Fenster
@@ -1472,8 +1475,9 @@ namespace Raser {
                                 }
                             }
                         }
-                        // die äußere Lage einer Öffnung bleibt frei (die Laibung), nur die innere trägt Glas, Tür und Rahmen
-                        if (open != 0 && (this.flags[c] & 4) == 0 && this.thick[c]) { continue }
+                        // eine Öffnung bleibt in beiden Lagen frei: Scheibe, Tür und Rahmen werden als Elemente zwischen die Laibungen gehängt
+                        // (Raser.Facade.Panes, vernetzt in Raser.FarMesher.Windows) - glatt auch in schrägen und runden Wänden
+                        if (open != 0 && this.thick[c]) { continue }
                         if (open == 1) {
                             chunk.materials[i] = glass
                             chunk.colors[i] = glassColor

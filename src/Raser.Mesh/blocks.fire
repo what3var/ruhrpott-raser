@@ -342,7 +342,7 @@ namespace Raser {
         defined float nearSpacing       // Geländeraster der nahen Stufe
         defined bool opaqueOnly
         defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
-        static readonly defined int CacheVersion = 5     // das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        static readonly defined int CacheVersion = 7     // das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)
@@ -407,6 +407,7 @@ namespace Raser {
             var opaque = new BlockMesh()
             var glass = new BlockMesh()
             byte skip[] = new byte[4096]          // die harten Zellen (80 cm) des Blocks: dort spart das glatte Gelände aus
+            byte fine[] = new byte[65536]         // dasselbe je Säule (20 cm, 256 x 256): 0 glatt, 1 etwas steht darauf, 2 das Gelände weicht ab
             float east = bx * 51.2
             float north = by * 51.2
             var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
@@ -419,10 +420,13 @@ namespace Raser {
                     // die harten Zellen der Säule in die Karte des Blocks (64 x 64 Zellen à 80 cm, je Säule 16 x 16)
                     int sx = (column % 4) * 16
                     int sy = (column / 4) * 16
-                    for (int k = 0; k < 256; k++) {
-                        int x = k & 15
-                        int y = k >> 4
-                        if (this.columns.hard[x * 4 + y * 4 * 64] != 0) { skip[(sx + x) + (sy + y) * 64] = 1 }
+                    for (int k = 0; k < 4096; k++) {
+                        int x = k & 63
+                        int y = k >> 6
+                        int h = this.columns.hard[k]
+                        if (h == 0) { continue }
+                        skip[(sx + x / 4) + (sy + y / 4) * 64] = 1
+                        fine[(sx * 4 + x) + (sy * 4 + y) * 256] = h
                     }
                 }
                 foreach (p in parts) {
@@ -436,8 +440,14 @@ namespace Raser {
             }
             // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein, ohne die harten Zellen; die Voxel bringen, was darauf steht
             if (fm != undefined) {
-                var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip)
+                var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip, false, fine)
                 opaque.Add(take ground, tileKey.East - east, tileKey.North - north, 0.0)
+                // Fenster, Türen und Tore: eingehängt zwischen die Laibungen
+                var frames = new Raser.MeshPart()
+                var panes = new Raser.MeshPart()
+                fm.Windows(frames, panes, east - tileKey.East, north - tileKey.North, 51.2)
+                opaque.Add(take frames, tileKey.East - east, tileKey.North - north, 0.0)
+                glass.Add(take panes, tileKey.East - east, tileKey.North - north, 0.0)
             }
             // als Bytes (so wie im Cache), daraus die Arrays: gebaut und geladen ist dasselbe
             byte data[] = new byte[24 + (opaque.quads + glass.quads) * 49]

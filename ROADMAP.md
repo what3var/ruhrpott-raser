@@ -35,13 +35,14 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
   - [x] Schnitte mit Versatz für Grundrisse aus den Daten (Generator 13): je Randvoxel eine Kante zwischen zwei Punkten auf seinem Rand (1/32 Voxel, 6 mm), Ecken mit einem Punkt im Voxel; Nachbarn teilen sich die Punkte - keine Stufen in jedem Winkel, Rundungen als Sehnen. Gemessen an gedrehten Rechtecken (2°..87°) und einem Kreis: mittlerer Fehler je Randvoxel 0,005..0,01 Voxel, keine Stufe über einem halben Voxel (vorher mit Diagonalen 0,06..0,34 und bis zu 52 Stufen). Diagonalen und Rundungen bleiben als Fertigteile für den Baumodus
   - [x] Grundrisse bereinigen (Raser.Footprints, beim Laden jeder Kachel - Werkzeug und Viewer gleich): Ecken rasten unter 15 cm ein, auch zwischen Gebäuden; Ecken knapp neben der Wand eines Nachbarn rücken auf sie (keine Schlitze zwischen Reihenhäusern); Knicke unter 5 cm fallen weg
   - [ ] Dieselben Regeln im Baumodus, in Client und Server: beim Umbauen rasten neue Ecken an Nachbarn und bestehende Kanten ein (eine gemeinsame Funktion in Raser.World), damit auch Umgebautes stimmig bleibt
-  - [ ] Bodennetz an Gebäuden genau am Grundriss ausschneiden statt in harten Zellen von 80 cm - heute bleibt an schrägen Wänden eine Treppe aus Voxel-Gelände (ohne Gehweg-Erhöhung) am Wandfuß
+  - [x] Bodennetz bis an die Wand: hart bleibt nur die Säule (20 cm), in der etwas steht; in den ausgesparten 80-cm-Zellen läuft das glatte Netz mit Gehweg und Bordstein Säule für Säule bis an den Grundriss (FarMesher.Fringe) - keine Treppe mehr am Wandfuß
   - [x] Dachüberstand bei Steildächern (40 cm an Traufe und Ortgang): eine Platte unter der fortgesetzten Dachfläche, Außenkante mit Schnitten, darunter die Untersicht - `docs/images/viewer-dachueberstand.png`
   - [ ] Dachüberstand auch in der fernen Stufe; Dachrinne und Fallrohr; Überstand je Baujahr/Stil (Altbau knapp, Siedlungshaus breit)
   - [x] Schnitte in der Ansicht (Raser.Plan.Elevation): dieselben Schnitte wie im Grundriss, aber senkrecht und entlang einer Achse durchgezogen - für Bögen
   - [x] Durchfahrten: Wege und Straßen, die ein Gebäude ganz durchqueren (mindestens 2,5 m darin), bekommen einen Durchgang mit Torbogen (Fußweg 3 m, sonst 4 m hoch, Stich bis 1,5 m), Pflaster am Boden, Decke darüber, fensterlose Seitenwände - `docs/images/viewer-durchfahrt.png`
   - [x] Haustüren mit Rundbogen (Stich 35 cm) und Oberlicht aus Glas; Wände zwei Voxel dick mit Laibung
-  - [ ] Türen als Bauelement im Baumodus (zwischen zwei Wänden eingehängt), Türblätter mit Füllungen und Klinke, Torbögen als Fertigteil; 3D-Dachziegel, Traufzähne
+  - [x] Dachziegel in Pixel-Art mit Relief (Bumpmap des Atlas: Ziegelreihen, Mauer- und Pflasterfugen) - `docs/images/viewer-dachziegel.png`
+  - [ ] Türen und Torbögen als Fertigteile im Baumodus, Klinken; Traufzähne
 - [x] Baumscheiben: einzelne Bäume (Plätze, Fußgängerzonen) in einem Quadrat aus Gras (1,4 m), an der nächsten Straße ausgerichtet, mit schmalen Kantensteinen (6 cm); zu nahe Bäume rücken beim Laden von der Fahrbahn weg (Raser.Props.Settle)
 - [x] Grünstreifen (Raser.Strips): Baumreihen an Straßen werden Beete zwischen Fahrbahn und Gehweg - zur Straße direkt am Bordstein, sonst schmale Kantensteine, Erde mit niedrigen Sträuchern (Voxel, zum Teil mit Blüten); der Gehweg liegt dahinter - `docs/images/viewer-gruenstreifen.png`
 - [x] Bordstein oben als Band von 12 cm; Pflasterrinne (30 cm) vor dem Bordstein bei etwa 4 von 10 Wohn- und Nebenstraßen; eckige Gullis etwa alle 30 m je Seite (in der Rinne, sonst im Asphalt am Bordstein)
@@ -50,6 +51,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
   - [x] Fensterraster entlang der Wand: Läufe (Grundriss geteilt an Ecken über 30°, Rundungen bleiben ein Lauf), Plätze gleichmäßig je Lauf mit Abstand zu den Ecken - nichts geht mehr um die Ecke
   - [x] Fenster je Nutzung (ALKIS-Funktion, POI): Wohnhaus Lochfenster (1,4 m, weißer Rahmen ringsum, keine Kreuze), Laden/Gastro/Büro Schaufenster im Erdgeschoss zur Straße (dunkle Rahmen), Pavillon/Kiosk hohe Fenster, Gewerbe Fensterbänder, öffentlich hohe breite Fenster, Garagen Tore, Überdachungen nichts - `docs/images/viewer-pavillon-fenster.png`, `docs/images/viewer-schaufenster.png`
   - [x] Eingänge auf der Hauptseite (zur nächsten Straße): Haustür aus Holz, jede zweite drei Stufen hoch mit Betonstufen davor; Glastüren bei Läden (eine je 10 m), breite Automatiktür bei Märkten
+  - [x] Fenster, Türen und Tore als eingehängte Elemente (Raser.Facade.Panes, Generator 23): je Öffnung ein Parallelogramm zwischen linker und rechter Laibung, Glas mit Rahmenleisten, Türblatt mit Oberlicht - glatt auch in schrägen und runden Wänden; die Wand lässt nur die Öffnung frei. Dasselbe Prinzip für den Baumodus: linken und rechten Rand setzen, die Scheibe spannt sich dazwischen
+  - [ ] Pavillons ohne Zwischendecke hinter hohen Scheiben; Elemente auch für Balkontüren, Schaufenster über Eck
   - [ ] Die ferne Stufe (Fassaden-Textur) nach derselben Planung; Fenster mit Fensterbank, Laibung nach innen versetzt; Türen als Bauelement zwischen zwei Wänden; Vordächer und Markisen an Läden
   - [ ] Die innere Kante dicker Wände (hinter Schnitten) treppt in den Fensteröffnungen; Glas spiegelt kaum (Licht und Wetter)
 - [ ] (aufgegangen in den Bauelementen) Gerade Fronten in jedem Winkel: senkrechter Schnitt im Grundriss je Voxel (zwei Randpunkte in Vierteln, mit den Nachbarn geteilt), Fassaden schräg zum Gitter glatt, Fenster entlang der Wand; Grundstücke zur Straße ausrichten (gemeinsame Fluchtlinie), an der Grundstücksgrenze schräg abschneiden
@@ -65,7 +68,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Wetterlagen in Stärken: klar, wolkig, bedeckt, Niesel, Regen, Starkregen, Dunst, Nebel, dichter Nebel (Viewer: --weather, --rain/--fog/--clouds, Tasten T/G Uhr, R Wetter, +/- Stärke) - `docs/images/viewer-regen.png`, `docs/images/viewer-nebel.png`
 - [x] Nasse Straßen (Stufe 1): bei Nässe eine nasse Textur (Beläge 40 % dunkler, Rasen und Wände etwas) und Glanz (Specular nach Nässe) - Laternen und Sonne als Lichter auf dem Asphalt - `docs/images/viewer-nass-nacht.png`, `docs/images/viewer-nass.png`
 - [x] Spiegelungen auf nassen Flächen (scene3d Object.Reflectivity, Bildschirm-Spiegelung), Regen als Striche (Emitter.Stretch), alle Laternen als Licht (Light.Cutoff mit Kacheln), Fenster der fernen Stufe leuchten nachts (Object.EmissiveTexture) - braucht fire `native-c`
-- [ ] Pfützen; Gewitter, Schnee, Wind; Wetter, das sich mit der Zeit ändert; Spiegelungen auch auf der GPU
+- [x] Pfützen ab Regen: dunkle, glatte Flecken auf den Belägen (dritte Textur mit flachem Relief) - `docs/images/viewer-pfuetzen.png`
+- [ ] Pfützen in Senken statt nach Rauschen, mit stärkerer Spiegelung; Gewitter, Schnee, Wind; Wetter, das sich mit der Zeit ändert; Spiegelungen auch auf der GPU
 - [ ] Ingame-Uhr in Echtzeit (deutsche Ortszeit, echter Sonnenstand), Zeitfaktor als Server-Einstellung
 - [ ] Mondphase/-stand astronomisch korrekt, Wolken mit orangem Stadtlicht-Himmel
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos

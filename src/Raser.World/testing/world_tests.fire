@@ -177,22 +177,28 @@ class VoxelizerTests {
         // Das Haus steht bei x 2..10, y 4..11 m: Säulen 10..49, 20..54. Boden 60,2 m = Voxel 301 (z 45 im Chunk 4).
         Testing.Assert.AreEqual(Raser.Material.Concrete!int, low.MaterialAt(30, 37, 45))
         Testing.Assert.AreEqual(0, low.MaterialAt(30, 37, 50))
-        // die Wand zwei Voxel dick (Säulen 10 und 11); in einem Fenster ist die äußere Lage frei (Laibung), das Glas sitzt in der inneren
+        // die Wand zwei Voxel dick (Säulen 10 und 11); ein Fenster ist in beiden Lagen frei - die Scheibe wird eingehängt (Raser.Facade.Panes)
         bool wallFound = false
-        bool glassFound = false
-        bool reveal = false
+        bool openFound = false
         for (int y = 21; y < 54; y++) {
             for (int z = 46; z < 64; z++) {
                 if (low.MaterialAt(10, y, z) == Raser.Material.Brick!int && low.MaterialAt(11, y, z) == Raser.Material.Brick!int) { wallFound = true }
-                if (low.MaterialAt(11, y, z) == Raser.Material.Glass!int) {
-                    glassFound = true
-                    if (low.MaterialAt(10, y, z) == 0) { reveal = true }
-                }
+                if (low.MaterialAt(10, y, z) == 0 && low.MaterialAt(11, y, z) == 0) { openFound = true }
+                Testing.Assert.IsTrue(low.MaterialAt(10, y, z) != Raser.Material.Glass!int)
             }
         }
         Testing.Assert.IsTrue(wallFound)
-        Testing.Assert.IsTrue(glassFound)
-        Testing.Assert.IsTrue(reveal)
+        Testing.Assert.IsTrue(openFound)
+        var sample = Sample.Make()
+        var facade = Raser.Facade.Plan(sample.data.buildings[0], sample.data.roads)
+        var panes = new List<float>()
+        facade.Panes(sample.data.buildings[0], 301, panes)
+        Testing.Assert.IsTrue(panes.Count >= 9 * 4)
+        // jedes Element liegt 20 cm hinter der Wandflucht und ist höher als 40 cm
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            Testing.Assert.IsTrue(panes[k + 5] - panes[k + 4] >= 0.4)
+            Testing.Assert.IsTrue(Raser.Geo.Inside(sample.data.buildings[0].footprint, (panes[k] + panes[k + 2]) / 2.0, (panes[k + 1] + panes[k + 3]) / 2.0))
+        }
         // Der First (69 m = Voxel 344, z 24 im Chunk 5) läuft in x-Richtung (die längere Seite) bei y = 7,5 m (Säule 37).
         Testing.Assert.AreEqual(24, VoxelizerTests.Top(high, 30, 37))
         Testing.Assert.AreEqual(Raser.Material.RoofTiles!int, high.MaterialAt(30, 37, 24))
@@ -647,10 +653,8 @@ class VoxelizerTests {
         tile.data.buildings.Add(take b)
         var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
         var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
-        // die Südwand (y = 8 m: Voxel 40 außen, 41 innen) läuft entlang x: Bögen mit Achse 0; das Oberlicht ist Glas in der inneren Lage
+        // die Südwand (y = 8 m: Voxel 40 außen, 41 innen) läuft entlang x: Bögen mit Achse 0; Türblatt und Oberlicht sind eingehängte Elemente
         int arches = 0
-        int transom = 0
-        int wood = 0
         for (int x = 10; x < 60; x++) {
             for (int z = 44; z < 64; z++) {
                 int p = c.PlanAt(x, 40, z)
@@ -658,13 +662,22 @@ class VoxelizerTests {
                     arches++
                     Testing.Assert.AreEqual(0, Raser.Plan.ElevationAxis(p))
                 }
-                if (c.MaterialAt(x, 41, z) == Raser.Material.Wood!int && c.ColorAt(x, 41, z) != Raser.Palette.Plaster) { wood++ }
-                if (c.MaterialAt(x, 41, z) == Raser.Material.Glass!int && c.MaterialAt(x, 41, z - 1) == Raser.Material.Wood!int) { transom++ }
             }
         }
-        Testing.Assert.IsTrue(wood > 0)
         Testing.Assert.IsTrue(arches >= 2)
-        Testing.Assert.IsTrue(transom >= 2)
+        var facade = Raser.Facade.Plan(tile.data.buildings[0], tile.data.roads)
+        var panes = new List<float>()
+        facade.Panes(tile.data.buildings[0], 300, panes)
+        int doors = 0
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            int kind = Math.Round(panes[k + 6])!int
+            if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
+                doors++
+                // in der Südwand, 20 cm innen (y = 8,2 m)
+                Testing.Assert.IsTrue(Math.Abs(panes[k + 1] - 8.2) < 0.001)
+            }
+        }
+        Testing.Assert.AreEqual(1, doors)
     }
 
     [Test "Straße und Fläche"]

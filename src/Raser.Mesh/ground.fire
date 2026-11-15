@@ -8,7 +8,7 @@
 // - ein Voxel, das nicht Gelände ist (Material ab 9: Beton, Holz, Glas, Metall, Ziegel, Putz, Dach), bis auf 20 cm über die Rasterhöhe herunterreicht
 //   (eine Brücke darüber nicht), oder
 // - die Oberkante des Geländes in der Säule mehr als `tolerance` von der Rasterhöhe abweicht (abgegraben oder aufgeschüttet), oder sie gar kein Gelände hat.
-// Hart wird dann die ganze Zelle von 4 x 4 Säulen (80 cm) - so passt die Aussparung auf das Raster des glatten Netzes (Abstand 0,8 m).
+// Weicht das Gelände ab, wird die ganze Zelle von 4 x 4 Säulen (80 cm) hart; steht nur etwas darauf, bleibt es bei der Säule (siehe Hard).
 #import "raser.core"
 #import "raser.world"
 
@@ -73,30 +73,35 @@ namespace Raser {
 
         // Die harten Säulen (4096 Bytes, x + 64 y; 1 = hart), schon auf Zellen von 4 x 4 erweitert. x0, y0: die Ecke der Säule kachel-lokal (m),
         // die Rasterhöhen aus fm.
+        // Je Säule: 0 glatt, 1 etwas steht in dieser Säule auf dem Boden (Gebäude, Stufe), 2 das Gelände der Zelle (4 x 4 Säulen) weicht ab oder
+        // fehlt - dann ist die ganze Zelle hart. Bei 1 bleibt nur diese Säule hart: das glatte Netz läuft daneben bis an die Wand (FarMesher.Block
+        // füllt die Zelle Säule für Säule), so gibt es am Wandfuß keine Treppe aus 80-cm-Zellen.
         byte[] Hard(FarMesher fm, defined float x0, defined float y0) {
             byte cells[256]
+            byte result[] = new byte[4096]
             defined int tops[] = this.terrainTop
             defined int lows[] = this.structureLow
             for (int y = 0; y < 64; y++) {
                 for (int x = 0; x < 64; x++) {
                     int k = x + (y << 6)
                     int cell = (x >> 2) + ((y >> 2) << 4)
-                    if (cells[cell] != 0) { continue }
                     float g = fm.GroundAt(x0 + x * 0.2 + 0.1, y0 + y * 0.2 + 0.1)
-                    bool hard = lows[k] * 0.2 <= g + 0.2
-                    if (!hard) {
-                        if (tops[k] < -999999) {
-                            hard = true
-                        } else {
-                            float top = (tops[k] + 1) * 0.2
-                            hard = top > g + this.tolerance || top < g - this.tolerance
-                        }
+                    if (lows[k] * 0.2 <= g + 0.2) {
+                        result[k] = 1
+                        continue
                     }
-                    if (hard) { cells[cell] = 1 }
+                    if (cells[cell] != 0) { continue }
+                    if (tops[k] < -999999) {
+                        cells[cell] = 1
+                    } else {
+                        float top = (tops[k] + 1) * 0.2
+                        if (top > g + this.tolerance || top < g - this.tolerance) { cells[cell] = 1 }
+                    }
                 }
             }
-            byte result[] = new byte[4096]
-            for (int k = 0; k < 4096; k++) { result[k] = cells[((k & 63) >> 2) + (((k >> 6) >> 2) << 4)] }
+            for (int k = 0; k < 4096; k++) {
+                if (cells[((k & 63) >> 2) + (((k >> 6) >> 2) << 4)] != 0) { result[k] = 2 }
+            }
             return result
         }
     }

@@ -18,6 +18,7 @@ namespace Raser {
         List<Area> areas           // die Flächen und Straßen, die den Block berühren (in Block gesetzt)
         List<Road> roads
         StreetField streets         // Fahrbahnen und Gehwege mit natürlichen Kanten
+        List<float[]> inner         // die Grundrisse der Gebäude, 15 cm nach innen versetzt (für InBuilding, bei Bedarf)
 
         construct(Tile tile, defined int seed) {
             this.tile = tile
@@ -78,7 +79,9 @@ namespace Raser {
         // Ein Block: x0, y0 kachel-lokal, Kantenlänge size, Geländeraster spacing. skip: ausgesparte Zellen (side x side, x + side y, 1 = keine
         // Fläche - dort ist das Gelände hart, Raser.GroundCut); undefined: keine.
         // windows: die Wände mit der Fassaden-Textur (Fenster im Raster der Voxel, Raser.Atlas) statt einfarbig.
-        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing, defined bool buildings = true, byte skip[] = undefined, defined bool windows = false) {
+        // fine: je Säule (20 cm, 256 x 256 im Block) 0 glatt, 1 etwas steht darauf, 2 Gelände weicht ab - in ausgesparten Zellen ohne 2 läuft das
+        // glatte Netz Säule für Säule bis an die Wände (nur wo die Mitte der Säule nicht in einem Gebäude liegt).
+        MeshPart Block(defined float x0, defined float y0, defined float size, defined float spacing, defined bool buildings = true, byte skip[] = undefined, defined bool windows = false, byte fine[] = undefined) {
             var part = new Raser.MeshPart()
             int n = Math.Round(size / spacing)!int
             // nur die Flächen und Straßen, die den Block berühren
@@ -114,7 +117,10 @@ namespace Raser {
             }
             for (int j = 0; j < n; j++) {
                 for (int i = 0; i < n; i++) {
-                    if (side > 0 && skip[(i * side / n) + (j * side / n) * side] != 0) { continue }
+                    if (side > 0 && skip[(i * side / n) + (j * side / n) * side] != 0) {
+                        if (fine != undefined && n == side && n == 64) { this.Fringe(part, field, x0, y0, i, j, fine) }
+                        continue
+                    }
                     float ax = x0 + i * spacing
                     float ay = y0 + j * spacing
                     float bx = ax + spacing
@@ -211,6 +217,143 @@ namespace Raser {
                 Raser.FarMesher.Box(part, p.x - r, p.y - r, g + trunk, p.x + r, p.y + r, g + h, leaf, Raser.Material.Leaves!int)
             }
             return part
+        }
+
+        // Die Fenster, Türen und Tore der Gebäude im Block (nahe Stufe): je Öffnung ein Parallelogramm zwischen den Laibungen (Raser.Facade.Panes) -
+        // Glas mit Rahmen (10 cm, weiß bei Lochfenstern, dunkel bei Schaufenstern) nach glass und opaque, Türblätter aus Holz, Tore aus Metall.
+        // Ein Element gehört dem Block, in dem seine Mitte liegt.
+        undefined Windows(MeshPart opaque, MeshPart glass, defined float x0, defined float y0, defined float size) {
+            var panes = new List<float>()
+            foreach (m in this.models) {
+                if (!m.box.Overlaps(x0 - 1.0, y0 - 1.0, x0 + size + 1.0, y0 + size + 1.0)) { continue }
+                if (m.facade == undefined) { m.facade = Raser.Facade.Plan(m.building, this.tile.data.roads) }
+                panes.Clear()
+                m.facade.Panes(m.building, m.groundVoxel, panes)
+                for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+                    float ax = panes[k]
+                    float ay = panes[k + 1]
+                    float bx = panes[k + 2]
+                    float by = panes[k + 3]
+                    float mx = (ax + bx) / 2.0
+                    float my = (ay + by) / 2.0
+                    if (mx < x0 || my < y0 || mx >= x0 + size || my >= y0 + size) { continue }
+                    float z0 = panes[k + 4]
+                    float z1 = panes[k + 5]
+                    int kind = Math.Round(panes[k + 6])!int
+                    int slot = Math.Round(panes[k + 7])!int
+                    int storey = Math.Round(panes[k + 8])!int
+                    float dx = bx - ax
+                    float dy = by - ay
+                    float len = Math.Sqrt(dx * dx + dy * dy)
+                    if (len < 0.2) { continue }
+                    float ux = dx / len
+                    float uy = dy / len
+                    // nach außen: rechts der Laufrichtung bei einem Ring gegen den Uhrzeigersinn
+                    float nx = uy
+                    float ny = -ux
+                    if (!m.facade.ccw) {
+                        nx = -uy
+                        ny = ux
+                    }
+                    if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
+                        // das Türblatt (Holz, mit Rahmen in Wandfarbe dunkler), darüber das Oberlicht im Bogen
+                        opaque.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, Raser.Palette.Wood + 64, Raser.Material.Wood!int)
+                        float inset = 0.12
+                        opaque.Quad(ax + ux * inset + nx * 0.03, ay + uy * inset + ny * 0.03, z0 + inset, bx - ux * inset + nx * 0.03, by - uy * inset + ny * 0.03, z0 + inset, bx - ux * inset + nx * 0.03, by - uy * inset + ny * 0.03, z1 - inset, ax + ux * inset + nx * 0.03, ay + uy * inset + ny * 0.03, z1 - inset, nx, ny, 0.0, Raser.Palette.Wood + 32, Raser.Material.Wood!int)
+                        glass.Quad(ax, ay, z1, bx, by, z1, bx, by, z1 + 0.4, ax, ay, z1 + 0.4, nx, ny, 0.0, Raser.Palette.Glass, Raser.Material.Glass!int)
+                        continue
+                    }
+                    if (kind == Raser.Facade.Garage) {
+                        opaque.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, Raser.Palette.Metal + 32, Raser.Material.Metal!int)
+                        continue
+                    }
+                    // Glas: nachts Licht hinter gut einem Drittel der Fenster, den meisten Läden (je Fenster und Geschoss gleich)
+                    float chance = 0.35
+                    if (kind == Raser.Facade.Shop || kind == Raser.Facade.GlassDoor) { chance = 0.8 }
+                    int tint = Raser.Palette.Glass
+                    if (Raser.Props.Rand(m.building.id, slot, storey) < chance) { tint = Raser.Palette.GlassLit }
+                    glass.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, tint, Raser.Material.Glass!int)
+                    // der Rahmen: vier Leisten, 2 cm vor der Scheibe
+                    int fc = Raser.Palette.Metal + 64
+                    int fm = Raser.Material.Metal!int
+                    if (kind == Raser.Facade.Window || kind == Raser.Facade.Large) {
+                        fc = Raser.Palette.Plaster
+                        fm = Raser.Material.Wood!int
+                    }
+                    float w = 0.1
+                    float ox = nx * 0.02
+                    float oy = ny * 0.02
+                    opaque.Quad(ax + ox, ay + oy, z0, bx + ox, by + oy, z0, bx + ox, by + oy, z0 + w, ax + ox, ay + oy, z0 + w, nx, ny, 0.0, fc, fm)
+                    opaque.Quad(ax + ox, ay + oy, z1 - w, bx + ox, by + oy, z1 - w, bx + ox, by + oy, z1, ax + ox, ay + oy, z1, nx, ny, 0.0, fc, fm)
+                    opaque.Quad(ax + ox, ay + oy, z0 + w, ax + ox + ux * w, ay + oy + uy * w, z0 + w, ax + ox + ux * w, ay + oy + uy * w, z1 - w, ax + ox, ay + oy, z1 - w, nx, ny, 0.0, fc, fm)
+                    opaque.Quad(bx + ox - ux * w, by + oy - uy * w, z0 + w, bx + ox, by + oy, z0 + w, bx + ox, by + oy, z1 - w, bx + ox - ux * w, by + oy - uy * w, z1 - w, nx, ny, 0.0, fc, fm)
+                    // hohe Scheiben: ein Kämpfer in halber Höhe
+                    if (z1 - z0 > 2.6) {
+                        float zm = (z0 + z1) / 2.0
+                        opaque.Quad(ax + ox, ay + oy, zm - w / 2.0, bx + ox, by + oy, zm - w / 2.0, bx + ox, by + oy, zm + w / 2.0, ax + ox, ay + oy, zm + w / 2.0, nx, ny, 0.0, fc, fm)
+                    }
+                }
+            }
+        }
+
+        // Eine ausgesparte Zelle (80 cm) Säule für Säule (20 cm): glatter Boden mit Fahrbahn, Gehweg und Bordstein überall, wo die Mitte der Säule
+        // nicht in einem Gebäude liegt (um 15 cm nach innen versetzt: die Wand ist 40 cm dick und verdeckt den Rand). Nicht, wo das Gelände abweicht.
+        undefined Fringe(MeshPart part, StreetField field, defined float x0, defined float y0, defined int i, defined int j, byte fine[]) {
+            for (int v = 0; v < 4; v++) {
+                for (int u = 0; u < 4; u++) {
+                    if (fine[(i * 4 + u) + (j * 4 + v) * 256] == 2) { return }
+                }
+            }
+            float sp = 0.2
+            for (int v = 0; v < 4; v++) {
+                for (int u = 0; u < 4; u++) {
+                    float ax = x0 + (i * 4 + u) * sp
+                    float ay = y0 + (j * 4 + v) * sp
+                    if (fine[(i * 4 + u) + (j * 4 + v) * 256] != 0 && this.InBuilding(ax + sp / 2.0, ay + sp / 2.0)) { continue }
+                    float h0 = this.GroundAt(ax, ay)
+                    float h1 = this.GroundAt(ax + sp, ay)
+                    float h2 = this.GroundAt(ax + sp, ay + sp)
+                    float h3 = this.GroundAt(ax, ay + sp)
+                    float nx = ((h0 + h3) - (h1 + h2)) / (2.0 * sp)
+                    float ny = ((h0 + h1) - (h2 + h3)) / (2.0 * sp)
+                    float len = Math.Sqrt(nx * nx + ny * ny + 1.0)
+                    if (field.Empty) {
+                        int s = this.SurfaceAt(ax + sp / 2.0, ay + sp / 2.0)
+                        part.Quad(ax, ay, h0, ax + sp, ay, h1, ax + sp, ay + sp, h2, ax, ay + sp, h3, nx / len, ny / len, 1.0 / len, s & 255, s >> 8)
+                        continue
+                    }
+                    defined float d[4]
+                    defined float w[4]
+                    defined float pp[4]
+                    defined float g[4]
+                    for (int c = 0; c < 4; c++) {
+                        float px = ax
+                        float py = ay
+                        if (c == 1 || c == 2) { px = ax + sp }
+                        if (c >= 2) { py = ay + sp }
+                        field.At(px, py)
+                        field.PathAt(px, py)
+                        d[c] = field.d
+                        w[c] = field.walk
+                        pp[c] = field.dp
+                        g[c] = field.g
+                    }
+                    this.StreetCell(part, field, ax, ay, sp, h0, h1, h2, h3, nx / len, ny / len, 1.0 / len, d[0], d[1], d[2], d[3], Math.Max(Math.Max(w[0], w[1]), Math.Max(w[2], w[3])), pp[0], pp[1], pp[2], pp[3], g[0], g[1], g[2], g[3])
+                }
+            }
+        }
+
+        // Liegt der Punkt in einem Gebäude (Grundriss 15 cm nach innen versetzt)?
+        defined bool InBuilding(defined float x, defined float y) {
+            if (this.inner == undefined) {
+                this.inner = new List<float[]>()
+                foreach (m in this.models) { this.inner.Add(Raser.Geo.Offset(m.building.footprint, -0.15)) }
+            }
+            for (int k = 0; k < this.models.Count; k++) {
+                if (!this.models[k].box.Contains(x, y)) { continue }
+                if (Raser.Geo.Inside(this.inner[k], x, y)) { return true }
+            }
+            return false
         }
 
         // Eine Baumscheibe: ein Quadrat (Kantenlänge 2 x TreePit), ausgerichtet an der nächsten Straße oder dem nächsten Weg, innen Gras knapp über
