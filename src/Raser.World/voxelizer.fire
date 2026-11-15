@@ -197,6 +197,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 26: Wandsäulen unter Steildächern ab der tiefsten Dachecke mit Dachmaterial (graue Streifen im Dach)
         // 25: Kirchen (Spitzbogenfenster, Portal, Schallöffnungen, ohne Zwischendecken)
         // 24: Punkte auf Läufen, die über den Ringanfang laufen (Stufen vor Türen lagen falsch); Pavillons ohne Zwischendecken
         // 23: Fenster und Türen als eingehängte Elemente (Raser.Facade.Panes), die Wand lässt nur die Öffnung frei
@@ -216,7 +217,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 25
+        static readonly defined int Version = 26
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -1462,7 +1463,8 @@ namespace Raser {
                         if (this.shape[c] != 255) { chunk.shapes[i] = this.shape[c] }
                         continue
                     }
-                    if (vz >= this.roofLow[c] && !wall) {
+                    // (auch in Wandsäulen: sonst ragt bei steilen Dächern Wandmaterial bis zur höchsten Ecke durch die Dachfläche)
+                    if (vz >= this.roofLow[c] && (!wall || this.eaveFull[c])) {
                         // unter dem Dach-Voxel: jede Lage mit ihrer eigenen Form aus den Eckhöhen (so schließt die Fläche lückenlos)
                         int ls = Raser.Shape.Make(Raser.Voxelizer.Quarter(this.rc0[c], vz), Raser.Voxelizer.Quarter(this.rc1[c], vz), Raser.Voxelizer.Quarter(this.rc2[c], vz), Raser.Voxelizer.Quarter(this.rc3[c], vz))
                         if (Raser.Shape.IsEmpty(ls)) { continue }

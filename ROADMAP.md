@@ -49,7 +49,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Bordstein oben als Band von 12 cm; Pflasterrinne (30 cm) vor dem Bordstein bei etwa 4 von 10 Wohn- und Nebenstraßen; eckige Gullis etwa alle 30 m je Seite (in der Rinne, sonst im Asphalt am Bordstein)
 - [ ] Grünstreifen ohne Bäume (Luftbild-Abgleich), Laternen und Schilder im Streifen, Sträucher aus Grünstreifen der Nachbarkachel; Gullis auf der geglätteten Kante (heute auf der Mittellinie der Rohdaten)
 - [x] Kirchen (ALKIS 31001_3041, Generator 25): Schiff mit hohen Spitzbogenfenstern (farbiges Glas, Maßwerk) und Portal mit Rundbogen, Turm (schmal und hoch) mit Schallöffnungen und Uhr auf jeder Seite, innen ein Raum ohne Zwischendecken; ein OSM-Punkt widmet eine Kirche nicht mehr um (Import) - `docs/images/viewer-kirche.png`
-- [ ] Kirchen: Glockenturm innen (Glockenstube, Glocken, Treppe), ein bis zwei Seitenräume (Sakristei), Strebepfeiler, Rosette über dem Portal, Turmhelm mit Kreuz; Zacken am Rand von LoD2-Dächern mit Überstand
+- [ ] Kirchen: Glockenturm innen (Glockenstube, Glocken, Treppe), ein bis zwei Seitenräume (Sakristei), Strebepfeiler, Rosette über dem Portal, Turmhelm mit Kreuz; kleine Zacken am Rand steiler Dachüberstände und gestufte Bogenkanten an schrägen Wänden
 - [x] Ferne Bäume als Kronen (achteckige Ringe mit eigenem Grünton je Fläche) statt Quader
 - [ ] Fenster und Türen (Raser.Facade, Generator 16)
   - [x] Fensterraster entlang der Wand: Läufe (Grundriss geteilt an Ecken über 30°, Rundungen bleiben ein Lauf), Plätze gleichmäßig je Lauf mit Abstand zu den Ecken - nichts geht mehr um die Ecke
