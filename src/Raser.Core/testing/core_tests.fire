@@ -427,3 +427,37 @@ class VehicleTests {
         return car.north
     }
 }
+
+class WalkerTests {
+    [Test "Spieler zu Fuß: geht, sprintet, dreht, weicht Hindernissen aus"]
+    undefined Walk() {
+        var w = new Raser.Walker()
+        for (int i = 0; i < 100; i++) { w.Step(0.05, 1.0, 0.0, false) }
+        // 5 s gehen: gut 10 m nach Norden
+        Testing.Assert.IsTrue(w.north > 10.0 && w.north < 11.1 && Math.Abs(w.east) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(w.speed - 2.2) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(w.stride - w.north) < 0.001)
+        for (int i = 0; i < 20; i++) { w.Step(0.05, 1.0, 0.0, true) }
+        Testing.Assert.IsTrue(Math.Abs(w.speed - 5.5) < 0.001)
+        // loslassen: er steht nach einer halben Sekunde
+        for (int i = 0; i < 10; i++) { w.Step(0.05, 0.0, 0.0, false) }
+        Testing.Assert.IsTrue(w.speed == 0.0)
+        // links drehen und gehen: nach Westen
+        var t = new Raser.Walker()
+        for (int i = 0; i < 12; i++) { t.Step(0.05, 0.0, 1.0, false) }
+        Testing.Assert.IsTrue(Math.Abs(t.heading - 90.0) < 0.001)
+        for (int i = 0; i < 20; i++) { t.Step(0.05, 1.0, 0.0, false) }
+        Testing.Assert.IsTrue(t.east < -1.5 && Math.Abs(t.north) < 0.001)
+        // rückwärts langsamer
+        var b = new Raser.Walker()
+        for (int i = 0; i < 40; i++) { b.Step(0.05, -1.0, 0.0, true) }
+        Testing.Assert.IsTrue(Math.Abs(b.speed + 1.32) < 0.001 && b.north < -2.0)
+        // ein Kreis im Weg (Radius 1 m bei 0, 1): der Spieler bleibt 1,35 m davor
+        var a = new Raser.Walker()
+        a.speed = 2.0
+        a.north = 0.2
+        Testing.Assert.IsTrue(a.Avoid(0.0, 1.0, 1.0))
+        Testing.Assert.IsTrue(Math.Abs(a.north + 0.35) < 0.001 && a.speed == 0.0)
+        Testing.Assert.IsFalse(a.Avoid(0.0, 1.0, 1.0))
+    }
+}

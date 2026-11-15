@@ -5,6 +5,7 @@
 //   raser ... --auto 20 [--steer 0.2] --shot bild.png     ohne Fenster: so viele Sekunden Vollgas (mit festem Lenkeinschlag), dann ein Bild
 //
 // W/S oder Pfeile: Gas und Bremse (im Stand: Rückwärtsgang), A/D: lenken, Leertaste: Handbremse, C: Kamera (hinter dem Wagen / Haube),
+// E: aussteigen (im Stand) und am Wagen wieder einsteigen; zu Fuß: W/S gehen, A/D drehen, Umschalt rennen, C: aus den Augen des Spielers.
 // T/G: die Uhr vor und zurück, R: das nächste Wetter. Der Wagen startet auf der nächsten Straße am Startpunkt, in ihrer Richtung.
 // Physik: Raser.Vehicle (Grip aus der Nässe des Wetters); Gebäude halten auf (Obstacles), das Gelände trägt (Ground).
 #import "windows"
@@ -74,6 +75,61 @@ class CarModel {
         this.beam.X = (x + fx * 7.0) * 1m
         this.beam.Y = (y + 1.2) * 1m
         this.beam.Z = (z + fz * 7.0) * 1m
+    }
+}
+
+// Der Spieler in der Szene: Beine, Rumpf, Kopf, Arme aus Quadern; Beine und Arme schwingen mit dem gelaufenen Weg.
+class PersonModel {
+    List<Object> parts
+    List<float> offsets         // je Teil: rechts, hoch, vorn (m)
+    List<float> swing           // je Teil: so weit schwingt es vor und zurück (m, Vorzeichen: die Seite)
+
+    construct(Scene scene) {
+        this.parts = new List<Object>()
+        this.offsets = new List<float>()
+        this.swing = new List<float>()
+        int jeans = S3D.Rgb(50, 70, 110)
+        int jacket = S3D.Rgb(60, 110, 70)
+        int skin = S3D.Rgb(225, 180, 150)
+        this.Add(scene, -0.11, 0.42, 0.0, 0.17, 0.84, 0.2, jeans, 0.2)
+        this.Add(scene, 0.11, 0.42, 0.0, 0.17, 0.84, 0.2, jeans, -0.2)
+        this.Add(scene, 0.0, 1.14, 0.0, 0.44, 0.6, 0.24, jacket, 0.0)
+        this.Add(scene, 0.0, 1.6, 0.0, 0.24, 0.26, 0.24, skin, 0.0)
+        this.Add(scene, 0.0, 1.76, -0.01, 0.26, 0.08, 0.26, S3D.Rgb(70, 50, 35), 0.0)
+        this.Add(scene, -0.29, 1.12, 0.0, 0.12, 0.6, 0.14, jacket, -0.14)
+        this.Add(scene, 0.29, 1.12, 0.0, 0.12, 0.6, 0.14, jacket, 0.14)
+    }
+
+    undefined Add(Scene scene, defined float right, defined float up, defined float front, defined float w, defined float h, defined float d, defined int color, defined float swing) {
+        var o = new Object(Template.Box, 0m, 0m, 0m, w * 1m, h * 1m, d * 1m)
+        o.Color = color
+        this.parts.Add(o)
+        this.offsets.Add(right)
+        this.offsets.Add(up)
+        this.offsets.Add(front)
+        this.swing.Add(swing)
+        scene.Add(take o)
+    }
+
+    undefined Show(defined bool visible) {
+        for (int i = 0; i < this.parts.Count; i++) { this.parts[i].Visible = visible }
+    }
+
+    // (x, y, z): die Lage in der Szene (y: der Boden), heading in Grad; stride: der gelaufene Weg (ein Doppelschritt je 1,5 m).
+    undefined Place(defined float x, defined float y, defined float z, defined float heading, defined float stride) {
+        float h = heading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float rx = Math.Cos(h)
+        float rz = -Math.Sin(h)
+        float phase = Math.Sin(stride * 2.0 * Math.PI / 1.5)
+        for (int i = 0; i < this.parts.Count; i++) {
+            float r = this.offsets[i * 3]
+            float u = this.offsets[i * 3 + 1]
+            float f = this.offsets[i * 3 + 2] + this.swing[i] * phase
+            this.parts[i].SetPosition((x + rx * r + fx * f) * 1m, (y + u) * 1m, (z + rz * r + fz * f) * 1m)
+            this.parts[i].RotationY = heading * 1deg
+        }
     }
 }
 
@@ -169,6 +225,10 @@ class Game {
         float camHeading = car.heading
         bool hood = false
         var chase = new Chase()
+        var walker = new Raser.Walker()
+        var person = new PersonModel(scene)
+        person.Show(false)
+        bool onFoot = false
         Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
         view.Fill(car.east, car.north)
 
@@ -190,6 +250,18 @@ class Game {
             }
             camHeading = car.heading + options.Get("look", "0").ToFloat()
             Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
+            // --foot s: anhalten, aussteigen und so viele Sekunden gehen (--turn: drehen dabei, --sprint 1)
+            float foot = options.Get("foot", "0").ToFloat()
+            if (foot > 0.0) {
+                car.speed = 0.0
+                bool out = Game.GetOut(car, walker, obstacles)
+                float turn = options.Get("turn", "0").ToFloat()
+                for (float t = 0.0; t < foot; t = t + dt) { Game.Walk(walker, car, obstacles, dt, 1.0, turn, options.Get("sprint", "") != "") }
+                camHeading = walker.heading + options.Get("look", "0").ToFloat()
+                Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
+                print("zu Fuß " + foot + " s (ausgestiegen: " + out + "): " + Game.Distance(car, walker) + " m vom Wagen, Richtung " + Math.Round(walker.heading) + "°, Kamera " + chase.distance + " m")
+                onFoot = true
+            }
             view.lead = Math.Abs(car.speed) * 2.5
             view.Fill(car.east, car.north)
             atmosphere.Update(car.east, car.north, 0.0)
@@ -198,7 +270,7 @@ class Game {
                 for (int k = 0; k < 30; k++) { scene.Advance(0.1s) }
             }
             cam.Render()
-            Game.Hud(hud, ink, shade, car, weather, height)
+            Game.Hud(hud, ink, shade, car, weather, height, onFoot, onFoot && Game.Distance(car, walker) < 3.5)
             print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Grip " + car.grip + ", Kamera " + chase.distance + " m")
             if (shot != "") {
                 IO.File.WriteAllBytes(shot, fb.ToPng())
@@ -216,6 +288,7 @@ class Game {
         bool right = false
         bool handbrake = false
         bool reverse = false
+        bool sprint = false
         string presets[] = ["klar", "wolkig", "bedeckt", "niesel", "regen", "starkregen", "dunst", "nebel", "dichter-nebel"]
         int presetIndex = 0
         int last = DateTime.Now.Ticks
@@ -230,6 +303,22 @@ class Game {
                     else if (key == 97 || key == 1073741904) { left = pressed }
                     else if (key == 100 || key == 1073741903) { right = pressed }
                     else if (key == 32) { handbrake = pressed }
+                    else if (key == 1073742049 || key == 1073742053) { sprint = pressed }
+                    else if (pressed && key == 101) {
+                        // E: aussteigen (im Stand) bzw. einsteigen (am Wagen)
+                        if (onFoot) {
+                            if (Game.Distance(car, walker) < 3.5) {
+                                onFoot = false
+                                person.Show(false)
+                                camHeading = car.heading
+                                reverse = false
+                            }
+                        } else if (Math.Abs(car.speed) < 1.5 && Game.GetOut(car, walker, obstacles)) {
+                            car.speed = 0.0
+                            onFoot = true
+                            camHeading = walker.heading
+                        }
+                    }
                     else if (pressed && key == 99) { hood = !hood }
                     else if (pressed && (key == 116 || key == 103)) {
                         float step = 0.5
@@ -267,20 +356,37 @@ class Game {
             float steer = 0.0
             if (left) { steer = 1.0 }
             if (right) { steer = -1.0 }
-            Game.Advance(car, obstacles, dt, throttle, braking, steer, reverse, weather.wetness)
-            // die Kamera dreht dem Wagen weich nach
-            float diff = car.heading - camHeading
-            camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
-            Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
-            view.lead = Math.Abs(car.speed) * 2.5
-            if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
-            float h = car.heading * Math.PI / 180.0
-            view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
-            atmosphere.Update(car.east, car.north, dt)
-            model.beam.Enabled = weather.lampsOn
+            if (onFoot) {
+                // der Wagen steht (rollt aus), der Spieler geht: W/S vor und zurück, A/D drehen, Umschalt rennt
+                Game.Advance(car, obstacles, dt, 0.0, 1.0, 0.0, false, weather.wetness)
+                float forward = 0.0
+                if (gas) { forward = 1.0 }
+                if (brake) { forward = -1.0 }
+                Game.Walk(walker, car, obstacles, dt, forward, steer, sprint)
+                float diff = walker.heading - camHeading
+                camHeading = camHeading + diff * Math.Min(1.0, dt * 6.0)
+                Game.PlaceCar(car, model, terrain, view)
+                Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
+                view.lead = 0.0
+                view.near = near
+                view.Update(walker.east, walker.north, 12.0)
+                atmosphere.Update(walker.east, walker.north, dt)
+            } else {
+                Game.Advance(car, obstacles, dt, throttle, braking, steer, reverse, weather.wetness)
+                // die Kamera dreht dem Wagen weich nach
+                float diff = car.heading - camHeading
+                camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
+                Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
+                view.lead = Math.Abs(car.speed) * 2.5
+                if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
+                float h = car.heading * Math.PI / 180.0
+                view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
+                atmosphere.Update(car.east, car.north, dt)
+            }
+            model.beam.Enabled = weather.lampsOn && !onFoot
             scene.Advance(dt * 1s)
             cam.Render()
-            Game.Hud(hud, ink, shade, car, weather, height)
+            Game.Hud(hud, ink, shade, car, weather, height, onFoot, onFoot && Game.Distance(car, walker) < 3.5)
         }
         view.Close()
         return 0
@@ -306,51 +412,108 @@ class Game {
         return hit
     }
 
-    // Wagen und Kamera in die Szene: der Wagen auf dem Gelände; die Kamera 7 m dahinter und 2,6 m hoch (oder auf der Haube), Blick voraus.
-    static undefined Place(Raser.Vehicle car, CarModel model, Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float camHeading, defined bool hood, defined float dt) {
-        float x = car.east - view.originE
-        float z = -(car.north - view.originN)
+    // Der Wagen in die Szene, auf das Gelände.
+    static undefined PlaceCar(Raser.Vehicle car, CarModel model, Ground terrain, WorldView view) {
         float y = 0.0
         any g = terrain.At(car.east, car.north)
         if (g != undefined) { y = g - view.originZ }
-        model.Place(x, y, z, car.heading)
+        model.Place(car.east - view.originE, y, -(car.north - view.originN), car.heading)
+    }
+
+    // Die Kamera zu einem Punkt (Wagen oder Spieler, Richtung heading): reach m dahinter und up m hoch, Blick voraus; first: aus seinen Augen
+    // (eye m hoch). Vor einer Wand rückt sie heran und höher, weich wieder hinaus.
+    static undefined Look(Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float east, defined float north, defined float heading, defined float camHeading, defined bool first, defined float dt, defined float reach, defined float up, defined float eye) {
+        float x = east - view.originE
+        float z = -(north - view.originN)
+        float y = 0.0
+        any g = terrain.At(east, north)
+        if (g != undefined) { y = g - view.originZ }
+        if (first) {
+            float ch = heading * Math.PI / 180.0
+            cam.SetPosition((x - Math.Sin(ch) * 0.4) * 1m, (y + eye) * 1m, (z - Math.Cos(ch) * 0.4) * 1m)
+            cam.LookAt((x - Math.Sin(ch) * 30.0) * 1m, (y + eye - 0.25) * 1m, (z - Math.Cos(ch) * 30.0) * 1m)
+            return
+        }
         float h = camHeading * Math.PI / 180.0
         float fx = -Math.Sin(h)
         float fz = -Math.Cos(h)
-        if (hood) {
-            float ch = car.heading * Math.PI / 180.0
-            cam.SetPosition((x - Math.Sin(ch) * 0.4) * 1m, (y + 1.25) * 1m, (z - Math.Cos(ch) * 0.4) * 1m)
-            cam.LookAt((x - Math.Sin(ch) * 30.0) * 1m, (y + 1.0) * 1m, (z - Math.Cos(ch) * 30.0) * 1m)
-            return
-        }
-        // der freie Weg nach hinten: vor einer Wand rückt die Kamera an den Wagen (und höher), weich wieder hinaus
-        float free = 7.0
-        for (float d = 1.5; d <= 7.0; d = d + 0.5) {
-            if (obstacles.Blocked(car.east - fx * d, car.north + fz * d, 0.6)) {
+        float free = reach
+        float nearest = 1.0
+        if (reach > 5.0) { nearest = 1.5 }
+        for (float d = nearest; d <= reach; d = d + 0.5) {
+            if (obstacles.Blocked(east - fx * d, north + fz * d, 0.6)) {
                 free = d - 0.5
                 break
             }
         }
         if (dt <= 0.0 || free < chase.distance) { chase.distance = free } else { chase.distance = Math.Min(free, chase.distance + 4.0 * dt) }
-        float back = Math.Max(chase.distance, 1.0)
+        float back = Math.Max(chase.distance, nearest - 0.5)
         float cx = x - fx * back
         float cz = z - fz * back
-        // dicht am Wagen höher: der Blick geht über das Dach
-        float cy = y + 2.6 + Math.Max(0.0, 3.5 - back) * 0.6
+        // dicht dran höher: der Blick geht über das Dach bzw. den Kopf
+        float cy = y + up + Math.Max(0.0, reach * 0.5 - back) * 0.6
         any gc = terrain.At(view.originE + cx, view.originN - cz)
         if (gc != undefined) { cy = Math.Max(cy, gc - view.originZ + 1.0) }
         cam.SetPosition(cx * 1m, cy * 1m, cz * 1m)
-        cam.LookAt((x + fx * 6.0) * 1m, (y + 1.2) * 1m, (z + fz * 6.0) * 1m)
+        cam.LookAt((x + fx * reach) * 1m, (y + up * 0.5) * 1m, (z + fz * reach) * 1m)
+    }
+
+    // Wagen und Kamera (hinter dem Wagen oder auf der Haube).
+    static undefined Place(Raser.Vehicle car, CarModel model, Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float camHeading, defined bool hood, defined float dt) {
+        Game.PlaceCar(car, model, terrain, view)
+        Game.Look(cam, terrain, view, obstacles, chase, car.east, car.north, car.heading, camHeading, hood, dt, 7.0, 2.6, 1.25)
+    }
+
+    // Aussteigen: der Spieler neben die Fahrertür (links), sonst rechts; false: kein Platz.
+    static defined bool GetOut(Raser.Vehicle car, Raser.Walker walker, Obstacles obstacles) {
+        float h = car.heading * Math.PI / 180.0
+        foreach (side in [1.0, -1.0]) {
+            float e = car.east - Math.Cos(h) * 1.7 * side
+            float n = car.north - Math.Sin(h) * 1.7 * side
+            if (obstacles.Blocked(e, n, 0.4)) { continue }
+            walker.east = e
+            walker.north = n
+            walker.heading = car.heading
+            walker.speed = 0.0
+            return true
+        }
+        return false
+    }
+
+    // Ein Schritt des Spielers: Wände und der Wagen halten ihn auf.
+    static undefined Walk(Raser.Walker walker, Raser.Vehicle car, Obstacles obstacles, defined float dt, defined float forward, defined float turn, defined bool sprint) {
+        walker.Step(dt, forward, turn, sprint)
+        if (obstacles.Push(walker.east, walker.north, 0.35)) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
+        float h = car.heading * Math.PI / 180.0
+        foreach (offset in [1.2, 0.0, -1.2]) {
+            walker.Avoid(car.east - Math.Sin(h) * offset, car.north + Math.Cos(h) * offset, 0.95)
+        }
+    }
+
+    // Spieler (Figur) und Kamera zu Fuß.
+    static undefined PlaceWalker(Raser.Walker walker, PersonModel person, Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float camHeading, defined bool first, defined float dt) {
+        float y = 0.0
+        any g = terrain.At(walker.east, walker.north)
+        if (g != undefined) { y = g - view.originZ }
+        person.Place(walker.east - view.originE, y, -(walker.north - view.originN), walker.heading, walker.stride)
+        person.Show(!first)
+        Game.Look(cam, terrain, view, obstacles, chase, walker.east, walker.north, walker.heading, camHeading, first, dt, 3.5, 2.1, 1.65)
+    }
+
+    static defined float Distance(Raser.Vehicle car, Raser.Walker walker) {
+        return Math.Sqrt((car.east - walker.east) * (car.east - walker.east) + (car.north - walker.north) * (car.north - walker.north))
     }
 
     // Die Anzeige: Tempo, Uhrzeit, Wetter; "rutscht", wenn die Reifen nicht halten.
-    static undefined Hud(Renderer hud, Brush ink, Brush shade, Raser.Vehicle car, Raser.Weather weather, defined int height) {
-        hud.FillRect(12, height - 44, 250, 32, shade)
+    static undefined Hud(Renderer hud, Brush ink, Brush shade, Raser.Vehicle car, Raser.Weather weather, defined int height, defined bool onFoot, defined bool atCar) {
+        hud.FillRect(12, height - 44, 330, 32, shade)
         int minutes = Math.Floor(weather.hour * 60.0)!int
         string clock = (minutes / 60) + ":" + ((minutes % 60) / 10) + ((minutes % 60) % 10)
         string text = Math.Round(Math.Abs(car.speed) * 3.6) + " km/h   " + clock
+        if (onFoot) { text = "zu Fuss   " + clock      // (die Schrift der Anzeige kennt kein ß) }
+        if (atCar) { text = text + "   E: einsteigen" }
         if (weather.rain > 0.0) { text = text + "   Regen" } else if (weather.fog > 0.0) { text = text + "   Nebel" }
-        if (car.sliding) { text = text + "   rutscht" }
+        if (car.sliding && !onFoot) { text = text + "   rutscht" }
         hud.DrawText(22, height - 36, text, ink)
     }
 }
