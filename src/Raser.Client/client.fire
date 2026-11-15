@@ -135,12 +135,14 @@ class Obstacles {
     Dictionary<string, Raser.Tile> tiles
     Dictionary<string, List<Raser.Box2>> boxes
     Dictionary<int, List<float>> passages         // je Gebäude (ID) seine Durchfahrten, bei Bedarf
+    Dictionary<int, List<float>> posts            // je Zelle (8 m) die Pfosten darin: Ost, Nord, Radius (Baumstämme, Laternen, Ampeln)
 
     construct(string world) {
         this.store = new Raser.FileTileStore(world)
         this.tiles = new Dictionary<string, Raser.Tile>()
         this.boxes = new Dictionary<string, List<Raser.Box2>>()
         this.passages = new Dictionary<int, List<float>>()
+        this.posts = new Dictionary<int, List<float>>()
     }
 
     // Die Kachel zu einem Schlüssel mit den Rechtecken ihrer Gebäude (um 2 m gewachsen), bei Bedarf geladen.
@@ -153,6 +155,27 @@ class Obstacles {
                 var box = Raser.Box2.Of(b.footprint)
                 box.Grow(2.0)
                 list.Add(take box)
+            }
+            // die Pfosten: Baumstämme, Laternen, Ampeln (Beete, Büsche, Bänke, Schilder halten nicht auf)
+            if (loaded.data.props != undefined) {
+                foreach (p in loaded.data.props) {
+                    float r = 0.0
+                    if (p.kind == "tree") { r = 0.3 }
+                    if (p.kind == "lamp" || p.kind == "signal") { r = 0.12 }
+                    if (r <= 0.0) { continue }
+                    float pe = key.East + p.x
+                    float pn = key.North + p.y
+                    int cell = Obstacles.Cell(Math.Floor(pe / 8.0)!int, Math.Floor(pn / 8.0)!int)
+                    if (!this.posts.ContainsKey(cell)) {
+                        var fresh = new List<float>()
+                        this.posts[cell] = fresh
+                        fresh.TakeTo(this.posts)
+                    }
+                    var into = this.posts[cell]
+                    into.Add(pe)
+                    into.Add(pn)
+                    into.Add(r)
+                }
             }
         }
         this.tiles[name] = loaded
@@ -173,6 +196,27 @@ class Obstacles {
         this.depth = 0.0
         var tile = this.tiles[name]
         if (tile == undefined) { return false }
+        // die Pfosten in den Zellen ringsum
+        int ce = Math.Floor(e / 8.0)!int
+        int cn = Math.Floor(n / 8.0)!int
+        for (int dn = -1; dn <= 1; dn++) {
+            for (int de = -1; de <= 1; de++) {
+                int cell = Obstacles.Cell(ce + de, cn + dn)
+                if (!this.posts.ContainsKey(cell)) { continue }
+                var ps = this.posts[cell]
+                for (int q = 0; q + 2 < ps.Count; q = q + 3) {
+                    float dx = e - ps[q]
+                    float dy = n - ps[q + 1]
+                    float d = Math.Sqrt(dx * dx + dy * dy)
+                    float deep = radius + ps[q + 2] - d
+                    if (deep > this.depth && d > 0.0001) {
+                        this.depth = deep
+                        this.pushX = dx / d
+                        this.pushY = dy / d
+                    }
+                }
+            }
+        }
         var bx = this.boxes[name]
         float x = e - key.East
         float y = n - key.North
@@ -233,6 +277,29 @@ class Obstacles {
             }
         }
         return this.depth > 0.0
+    }
+
+    static defined int Cell(defined int ce, defined int cn) { return ce * 73856093 + cn * 19349663 }
+
+    // Der nächste Baum zu (e, n) in dessen Kachel: Ost, Nord; undefined: keiner. (Zum Prüfen.)
+    float[] NearestTree(defined float e, defined float n) {
+        var key = Raser.TileKey.Of(e, n)
+        string name = key + ""
+        this.Need(key, name)
+        var tile = this.tiles[name]
+        if (tile == undefined || tile.data.props == undefined) { return undefined }
+        float best = 1.0e30
+        float result[] = undefined
+        foreach (p in tile.data.props) {
+            if (p.kind != "tree") { continue }
+            float dx = key.East + p.x - e
+            float dy = key.North + p.y - n
+            if (dx * dx + dy * dy < best) {
+                best = dx * dx + dy * dy
+                result = [key.East + p.x, key.North + p.y]
+            }
+        }
+        return result
     }
 
     // Steht an (e, n) ein Gebäude (mit margin m Abstand zur Wand, bis 1,9 m)?

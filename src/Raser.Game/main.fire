@@ -256,10 +256,20 @@ class Game {
                 car.speed = 0.0
                 bool out = Game.GetOut(car, walker, obstacles)
                 float turn = options.Get("turn", "0").ToFloat()
+                // --to-tree 1: geradewegs auf den nächsten Baum zu
+                float tree[] = undefined
+                if (options.Get("to-tree", "") != "") { tree = obstacles.NearestTree(walker.east, walker.north) }
+                if (tree != undefined) {
+                    // 3 m östlich und etwas nördlich davon los, nach Westen (knapp an der Mitte vorbei: er muss um den Stamm herum)
+                    walker.east = tree[0] + 3.0
+                    walker.north = tree[1] + 0.1
+                    walker.heading = 90.0
+                }
                 for (float t = 0.0; t < foot; t = t + dt) { Game.Walk(walker, car, obstacles, dt, 1.0, turn, options.Get("sprint", "") != "") }
                 camHeading = walker.heading + options.Get("look", "0").ToFloat()
                 Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
                 print("zu Fuß " + foot + " s (ausgestiegen: " + out + "): " + Game.Distance(car, walker) + " m vom Wagen, Richtung " + Math.Round(walker.heading) + "°, Kamera " + chase.distance + " m")
+                if (tree != undefined) { print("zum Baum: noch " + Math.Sqrt((tree[0] - walker.east) * (tree[0] - walker.east) + (tree[1] - walker.north) * (tree[1] - walker.north)) + " m von seiner Mitte") }
                 onFoot = true
             }
             view.lead = Math.Abs(car.speed) * 2.5

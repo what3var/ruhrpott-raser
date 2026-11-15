@@ -457,7 +457,15 @@ class WalkerTests {
         a.speed = 2.0
         a.north = 0.2
         Testing.Assert.IsTrue(a.Avoid(0.0, 1.0, 1.0))
-        Testing.Assert.IsTrue(Math.Abs(a.north + 0.35) < 0.001 && a.speed == 0.0)
+        Testing.Assert.IsTrue(Math.Abs(a.north + 0.35) < 0.001 && a.speed == 2.0)
         Testing.Assert.IsFalse(a.Avoid(0.0, 1.0, 1.0))
+        // knapp neben der Mitte auf einen Pfosten zu: er gleitet daran vorbei
+        var r = new Raser.Walker()
+        r.east = 0.1
+        for (int i = 0; i < 100; i++) {
+            r.Step(0.05, 1.0, 0.0, false)
+            r.Avoid(0.0, 3.0, 0.3)
+        }
+        Testing.Assert.IsTrue(r.north > 6.0 && r.east > 0.5)
     }
 }

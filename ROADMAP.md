@@ -88,12 +88,13 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 ## M3: Fahren & Streaming
 - [ ] Kollisionsmesh aus den geschnittenen Voxeln, Override-Mesh wo nötig
 - [x] Spieler zu Fuß (`Raser.Walker`): gehen, sprinten, aus- und einsteigen (E), Figur mit Schritten, Kamera dahinter oder aus seinen Augen
-- [ ] zu Fuß: Bäume (Stamm) und Laternen als Hindernis - Beete und Büsche halten nicht auf; Treppen und Türen; Maus zum Umsehen
+- [x] Baumstämme, Laternen und Ampeln halten Wagen und Spieler auf (der Spieler gleitet um sie herum); Beete, Büsche, Bänke, Schilder nicht
+- [ ] zu Fuß: Treppen und Türen; Maus zum Umsehen
 - [x] Spielprogramm `Raser.Game` (gemeinsamer Code mit dem Viewer in `Raser.Client`): Auto, Verfolger-/Haubenkamera, Tacho, Uhr, Wetter, Scheinwerfer
 - [x] Fahrzeugphysik (Einspurmodell `Raser.Vehicle`) inkl. Nässe und Aquaplaning
 - [x] Aufprall: der Wagen (zwei Kreise) rutscht an Wänden entlang und dreht dabei weg, frontal prallt er zurück (`Vehicle.Collide`, `Obstacles.Push`)
 - [x] Verfolgerkamera weicht Gebäuden aus (rückt heran und höher, weich wieder hinaus)
-- [ ] Glätte; Bäume, Laternen, Bordsteine als Hindernis; Schaden aus der Wucht des Aufpralls
+- [ ] Glätte; Bordsteine; Schaden aus der Wucht des Aufpralls; Laternen und Schilder umfahren
 - [ ] Fahrzeugklassen: Fahrrad, Motorrad, Auto, Nutzfahrzeug; Tank/Akku, Zustand
 - [ ] Streaming mehrerer Kacheln, Vorausgenerierung in Fahrtrichtung
 - [ ] LOD für weite Sichtweiten

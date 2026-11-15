@@ -34,13 +34,11 @@ namespace Raser {
             this.stride = this.stride + Math.Abs(this.speed) * dt
         }
 
-        // Aus einem Hindernis hinaus: (nx, ny) zeigt heraus, depth m weit. Wer frontal davorsteht, bleibt stehen.
+        // Aus einem Hindernis hinaus: (nx, ny) zeigt heraus, depth m weit. Das Tempo bleibt: schräg davor gleitet er daran entlang (um einen
+        // Stamm herum), frontal tritt er auf der Stelle.
         undefined Push(defined float nx, defined float ny, defined float depth) {
             this.east = this.east + nx * depth
             this.north = this.north + ny * depth
-            float h = this.heading * Math.PI / 180.0
-            float into = -(-Math.Sin(h) * nx + Math.Cos(h) * ny) * this.speed
-            if (into > Math.Abs(this.speed) * 0.85) { this.speed = 0.0 }
         }
 
         // Gegen einen Kreis (Mitte, Radius; der Spieler hat 0,35 m): hinaus, wenn er darin steht. true: berührt.
