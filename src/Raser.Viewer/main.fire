@@ -16,7 +16,11 @@
 //   raser-viewer ... --date 12-21 --time 17:30 --weather klar|wolkig|bedeckt|niesel|regen|starkregen|dunst|nebel|dichter-nebel
 //                    [--rain 0..1] [--fog 0..1] [--clouds 0..1]     Licht und Wetter (Raser.Weather), die Stärken auch einzeln
 //
-// Im Fenster: W/S vor und zurück, A/D seitwärts, Q/E hoch und runter, Pfeile drehen, Umschalt schneller; T/G die Uhr eine halbe Stunde vor und
+//   raser-viewer ... --gpu 1               die Grafikkarte zeichnet (Vulkan), sonst der Software-Renderer
+//   raser-viewer ... --free 1              im Fenster mit freiem Flug beginnen (sonst Fahrmodus); --fly ... --drive 1: der Messflug am Boden
+//
+// Im Fenster, Fahrmodus: W/S Gas und Bremse, A/D lenken, Umschalt mehr Gas, Pfeile hoch/runter der Blick; F wechselt zum freien Flug.
+// Freier Flug: W/S vor und zurück, A/D seitwärts, Q/E hoch und runter, Pfeile drehen, Umschalt schneller; T/G die Uhr eine halbe Stunde vor und
 // zurück, R das nächste Wetter, +/- Regen bzw. Nebel stärker oder schwächer.
 // Detailstufen (Roadmap M2): nah die Voxel-Chunks, vernetzt mit Raser.Mesh (Stufe 0); weiter weg Netze direkt aus dem Zwischenlayer (Raser.FarMesher:
 // Höhenraster, Grundrisse, LoD2-Dächer). Je Block ein scene3d-Objekt, die Farben aus einer Palette-Textur. Je Bild wird bis zu einem Zeitbudget
@@ -143,6 +147,34 @@ class BlockState {
 // Zeitbudget gearbeitet: erst fehlende ferne Blöcke vom Blickpunkt nach außen (billig), dann die nahen (in den Workern). Bleibt Zeit, wird über die Radien
 // hinaus vorausgeladen (versteckt), solange reichlich Speicher frei ist. Was aus den Radien fällt, bleibt versteckt im Vorrat; entladen wird erst, wenn
 // der Speicher knapp wird - das Entfernteste zuerst.
+// Die Höhe des Geländes an einem Punkt der Welt (aus den Höhenrastern der Kacheln, zwischengespeichert) - für die Kamera im Fahrmodus.
+class Ground {
+    Raser.FileTileStore store
+    Dictionary<string, Raser.HeightRaster> rasters
+
+    construct(string world) {
+        this.store = new Raser.FileTileStore(world)
+        this.rasters = new Dictionary<string, Raser.HeightRaster>()
+    }
+
+    // undefined: dort gibt es keine Kachel
+    any At(defined float e, defined float n) {
+        var key = Raser.TileKey.Of(e, n)
+        string name = key + ""
+        if (!this.rasters.ContainsKey(name)) {
+            string path = this.store.TilePath(key, ".rrh")
+            if (IO.File.Exists(path)) {
+                this.rasters[name] = Raser.HeightRaster.Decode(IO.File.ReadAllBytes(path))
+            } else {
+                this.rasters[name] = undefined
+            }
+        }
+        var r = this.rasters[name]
+        if (r == undefined) { return undefined }
+        return r.At(e - key.East, n - key.North)
+    }
+}
+
 // Licht und Wetter (Raser.Weather): Sonne (gerichtet, mit Schatten, wenn sie scheint) oder Mond, Himmel als Hintergrund, Umgebungslicht, Dunst
 // bzw. Nebel, Regen als Striche um die Kamera. Nachts leuchten alle Laternen in der Nähe als Punktlichter mit Ende.
 class Atmosphere {
@@ -581,6 +613,8 @@ class WorldView {
                 this.Arrange(b, Math.Max(Math.Abs(res.bx - fbx), Math.Abs(res.by - fby)))
                 this.nearShowTicks = this.nearShowTicks + (DateTime.Now.Ticks - t0)
                 this.nearBuilt++
+                // in Fahrt höchstens einen je Bild übernehmen (die Modelle eines Blocks kosten bis 100 ms)
+                if (!this.filling) { break }
             }
         }
         // ... und die fehlenden vom Blickpunkt nach außen bestellen (ohne Worker: selbst bauen)
@@ -758,6 +792,11 @@ class Viewer {
         view.nearAhead = options.Get("near-ahead", "2").ToInt()
         view.memory.minFree = options.Get("min-free", "20").ToFloat()
         view.memory.budgetMb = options.Get("memory-mb", "0").ToInt()
+        // --gpu: die Grafikkarte zeichnet (scene3d RenderMode.Hardware, Vulkan); ohne Karte oder Treiber weiter in Software
+        if (options.Get("gpu", "") != "") {
+            scene.Renderer = RenderMode.Hardware
+            print("Grafikkarte: " + S3D.HardwareName() + " " + S3D.HardwareError())
+        }
         var atmosphere = new Atmosphere(weather, scene, cam, view, options.Get("world", "world"))
         atmosphere.Apply()
         print("Wetter: Sonne " + Math.Round(weather.elevation) + "°, Wolken " + weather.clouds + ", Regen " + weather.rain + ", Nebel " + weather.fog + ", Sicht " + Math.Round(weather.hazeEnd) + " m, Schatten " + weather.shadows + ", Laternen " + weather.lampsOn)
@@ -774,6 +813,11 @@ class Viewer {
             float speed = options.Get("speed", "15").ToFloat()
             float budget = options.Get("budget-ms", "30").ToFloat()
             view.lead = options.Get("lead", (speed * 2.5) + "").ToFloat()
+            bool onGround = options.Get("drive", "") != ""
+            var flyGround = new Ground(options.Get("world", "world"))
+            int baseNear = view.near
+            // ab 35 m/s (126 km/h) ohne die nahe Voxel-Stufe: sie wäre vorbei, bevor sie gebaut ist
+            if (speed > 35.0) { view.near = -1 }
             float h = cam.RotationY / 1deg * Math.PI / 180.0
             float fx = -Math.Sin(h)
             float fz = -Math.Cos(h)
@@ -791,6 +835,10 @@ class Viewer {
                 last = now
                 flown = flown + step
                 cam.SetPosition(cam.X + fx * step * 1m, cam.Y, cam.Z + fz * step * 1m)
+                if (onGround) {
+                    any gh = flyGround.At(view.originE + cam.X / 1m, view.originN - cam.Z / 1m)
+                    if (gh != undefined) { cam.Y = (gh - view.originZ + 1.4) * 1m }
+                }
                 int t0 = DateTime.Now.Ticks
                 var w = view.WorldOf(cam)
                 int missing = view.Update(w[0], w[1], budget)
@@ -839,6 +887,12 @@ class Viewer {
         bool lookUp = false
         bool lookDown = false
         bool fast = false
+        // Fahrmodus (Standard): die Kamera 1,4 m über dem Gelände, W/S Gas und Bremse (rückwärts), A/D lenken, Umschalt mehr Gas; F wechselt zum
+        // freien Flug und zurück. Geladen wird voraus (Tempo x 2,5 s), ab 126 km/h ohne die nahe Voxel-Stufe.
+        bool driving = options.Get("free", "") == ""
+        float velocity = 0.0
+        var terrain = new Ground(options.Get("world", "world"))
+        int nearRadius = view.near
         float heading = cam.RotationY / 1deg
         float tilt = cam.RotationX / 1deg
         string presets[] = ["klar", "wolkig", "bedeckt", "niesel", "regen", "starkregen", "dunst", "nebel", "dichter-nebel"]
@@ -861,6 +915,11 @@ class Viewer {
                     else if (key == 1073741906) { lookUp = pressed }
                     else if (key == 1073741905) { lookDown = pressed }
                     else if (key == 1073742049 || key == 1073742053) { fast = pressed }
+                    else if (pressed && key == 102) {
+                        driving = !driving
+                        velocity = 0.0
+                        if (driving) { tilt = -4.0 }
+                    }
                     else if (pressed && key == 116) {
                         // T: eine halbe Stunde weiter, G: zurück, R: das nächste Wetter
                         weather.hour = (weather.hour + 0.5) % 24.0
@@ -894,6 +953,52 @@ class Viewer {
             last = now
             float speed = 15.0
             if (fast) { speed = 60.0 }
+            if (driving) {
+                // Gas, Bremse, Rollwiderstand; Lenken nur in Fahrt, bei Tempo träger
+                float accel = 0.0
+                if (forward) {
+                    accel = 4.0
+                    if (fast) { accel = 9.0 }
+                    if (velocity < 0.0) { accel = 10.0 }
+                }
+                if (back) {
+                    accel = -4.0
+                    if (velocity > 0.0) { accel = -10.0 }
+                }
+                velocity = velocity + accel * dt
+                velocity = velocity - velocity * 0.05 * dt - Math.Sign(velocity) * 0.3 * dt
+                if (!forward && !back && Math.Abs(velocity) < 0.3) { velocity = 0.0 }
+                velocity = Math.Clamp(velocity, -8.0, 90.0)
+                float steer = 0.0
+                if (left || turnLeft) { steer = 1.0 }
+                if (right || turnRight) { steer = -1.0 }
+                float rate = 70.0 / (1.0 + Math.Abs(velocity) / 12.0)
+                heading = heading + steer * rate * dt * Math.Clamp(velocity / 3.0, -1.0, 1.0)
+                float hd = heading * Math.PI / 180.0
+                float nx = cam.X / 1m - Math.Sin(hd) * velocity * dt
+                float nz = cam.Z / 1m - Math.Cos(hd) * velocity * dt
+                float ny = cam.Y / 1m
+                any gh = terrain.At(view.originE + nx, view.originN - nz)
+                if (gh != undefined) {
+                    float want = gh - view.originZ + 1.4
+                    ny = ny + (want - ny) * Math.Min(1.0, dt * 8.0)
+                }
+                if (lookUp) { tilt = Math.Min(tilt + 45.0 * dt, 60.0) }
+                if (lookDown) { tilt = Math.Max(tilt - 45.0 * dt, -60.0) }
+                cam.SetPosition(nx * 1m, ny * 1m, nz * 1m)
+                cam.RotationY = heading * 1deg
+                cam.RotationX = tilt * 1deg
+                view.lead = Math.Abs(velocity) * 2.5
+                if (Math.Abs(velocity) > 35.0) { view.near = -1 } else { view.near = nearRadius }
+                var wd = view.WorldOf(cam)
+                view.Update(wd[0], wd[1], 15.0)
+                atmosphere.Update(wd[0], wd[1], dt)
+                scene.Advance(dt * 1s)
+                cam.Render()
+                continue
+            }
+            view.near = nearRadius
+            view.lead = 0.0
             if (turnLeft) { heading = heading + 60.0 * dt }
             if (turnRight) { heading = heading - 60.0 * dt }
             if (lookUp) { tilt = Math.Min(tilt + 45.0 * dt, 89.0) }
