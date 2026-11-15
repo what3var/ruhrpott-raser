@@ -187,3 +187,10 @@ print(r.StaticInExpr(5) + " " + r.FromWordBits())
 
 Stand fire `native-c` (13081580 .. 5844bd30, noch nicht im master): `Light.Cutoff` und `Scene.LightCulling` (300 Laternen: 790 → 14 ms je Bild), `Emitter.Stretch`, `Object.EmissiveTexture`/`EmissiveStrength`, `Object.Reflectivity` (nur Software, rund +45 ms bei viel nassem Boden). Der Viewer nutzt alle vier; offen bleiben Kacheln und Spiegelungen auf der GPU.
 
+## Speicher: Werte in Sammlungen
+
+| Was | Umweg | Stand |
+|---|---|---|
+| **`Dictionary.Clear`/`Remove` (und `List.Clear`) geben Werte nicht frei, die mit `TakeTo(dict)` übergeben wurden** - sie bleiben bis zum Ende des Containers belegt. Schlimmer: **ein neuer Container im selben Feld** (`this.d = new Dictionary<...>()`) gibt den alten samt Inhalt auch nicht frei. Nachbau (nativ, 200 Chunks + 200 × 200 KB je Runde, 6 Runden): nach `Clear` 142 → 846 MB, mit neuem Wörterbuch ebenso 846 MB, mit `delete pair.Value` vor `Clear` bleibt es bei 141 MB. Im Netzbau des Werkzeugs wuchs der Speicher so auf 14 GB (OOM nach 20 bzw. 39 von 49 Kacheln). | `delete` je Wert vor `Clear` (`ColumnBuilder.Forget`, `NearBuilder.Forget`) | an fire gemeldet: entweder `Clear`/`Remove` zerstören, was der Container besitzt, oder zumindest das Ersetzen des Felds |
+| **Netzbau: der Speicher wächst je Kachel um rund 350 MB, auch nach dem Freigeben der Zwischenspeicher** (1,16 → 1,53 → 1,86 GB über drei Kacheln). Derselbe Block 6 × gebaut wächst nur um ~1 MB je Bau - vielleicht Fragmentierung (Puffer sehr verschiedener Größe), vielleicht ein Leck in einem Pfad, der nur bei neuen Chunks läuft. Noch nicht eingegrenzt. | ein Prozess je Kachel (`tools/meshes-per-tile.sh`) | offen |
+

@@ -33,7 +33,14 @@ namespace Raser {
         }
 
         // Gibt alle zwischengespeicherten Chunks und Randschichten frei (ein Lauf über viele Kacheln: sonst wächst der Speicher ohne Ende).
+        // (Clear allein gibt die übernommenen Werte nicht frei - docs/FIRE.md: erst delete je Wert)
         undefined Forget() {
+            foreach (pair in this.chunks) {
+                if (pair.Value != undefined) { delete pair.Value }
+            }
+            foreach (pair in this.faces) {
+                if (pair.Value != undefined) { delete pair.Value }
+            }
             this.chunks.Clear()
             this.faces.Clear()
             this.layers.Clear()
@@ -367,6 +374,9 @@ namespace Raser {
         // Alle Zwischenspeicher frei (Chunks, Randschichten, Kacheln).
         undefined Forget() {
             this.columns.Forget()
+            foreach (pair in this.farMeshers) {
+                if (pair.Value != undefined) { delete pair.Value }
+            }
             this.farMeshers.Clear()
         }
 
