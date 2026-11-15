@@ -103,8 +103,8 @@ namespace Raser {
         // in den harten Säulen Flächen (danach in this.hard).
         List<ChunkParts> Parts(defined int cx, defined int cy, Raser.FarMesher fm = undefined, defined float tileE = 0.0, defined float tileN = 0.0) {
             var result = new List<ChunkParts>()
-            if (this.chunks.Count > 200) { this.chunks.Clear() }
-            if (this.faces.Count > 2000) { this.faces.Clear() }
+            // nicht ohne Ende zwischenspeichern - mit delete (Forget), nicht nur Clear: sonst bleiben die Chunks belegt und sind nicht mehr zu finden
+            if (this.chunks.Count > 200 || this.faces.Count > 2000) { this.Forget() }
             this.hard = undefined
             if (fm != undefined) {
                 var cut = new Raser.GroundCut()
