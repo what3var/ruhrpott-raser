@@ -175,6 +175,75 @@ class Ground {
     }
 }
 
+// Wo man im Fahrmodus nicht hin kann: die Grundrisse der Gebäude (je Kachel geladen, mit ihren Rechtecken). Frei bleiben Überdachungen
+// (nur ein Dach) und Durchfahrten (Raser.Voxelizer.Passages: ein Weg quer durch das Haus).
+class Obstacles {
+    Raser.FileTileStore store
+    Dictionary<string, Raser.Tile> tiles
+    Dictionary<string, List<Raser.Box2>> boxes
+    Dictionary<int, List<float>> passages         // je Gebäude (ID) seine Durchfahrten, bei Bedarf
+
+    construct(string world) {
+        this.store = new Raser.FileTileStore(world)
+        this.tiles = new Dictionary<string, Raser.Tile>()
+        this.boxes = new Dictionary<string, List<Raser.Box2>>()
+        this.passages = new Dictionary<int, List<float>>()
+    }
+
+    // Steht an (e, n) ein Gebäude (mit margin m Abstand zur Wand)?
+    defined bool Blocked(defined float e, defined float n, defined float margin) {
+        var key = Raser.TileKey.Of(e, n)
+        string name = key + ""
+        if (!this.tiles.ContainsKey(name)) {
+            var loaded = this.store.Load(key)
+            var list = new List<Raser.Box2>()
+            if (loaded != undefined) {
+                foreach (b in loaded.data.buildings) {
+                    var box = Raser.Box2.Of(b.footprint)
+                    box.Grow(margin + 0.1)
+                    list.Add(take box)
+                }
+            }
+            this.tiles[name] = loaded
+            if (loaded != undefined) { loaded.TakeTo(this.tiles) }
+            this.boxes[name] = list
+            list.TakeTo(this.boxes)
+        }
+        var tile = this.tiles[name]
+        if (tile == undefined) { return false }
+        var bx = this.boxes[name]
+        float x = e - key.East
+        float y = n - key.North
+        for (int k = 0; k < tile.data.buildings.Count; k++) {
+            if (!bx[k].Contains(x, y)) { continue }
+            var b = tile.data.buildings[k]
+            if (b.function != undefined && (b.function.StartsWith("alkis=51009") || b.function.StartsWith("alkis=53001"))) { continue }
+            // im Grundriss oder näher als margin an einer Kante
+            bool hit = Raser.Geo.Inside(b.footprint, x, y)
+            if (!hit) {
+                int np = b.footprint.length / 2
+                for (int i = 0; i < np && !hit; i++) {
+                    int j = (i + 1) % np
+                    hit = Raser.Geo.DistanceToSegment(x, y, b.footprint[i * 2], b.footprint[i * 2 + 1], b.footprint[j * 2], b.footprint[j * 2 + 1]) < margin
+                }
+            }
+            if (!hit) { continue }
+            if (!this.passages.ContainsKey(b.id)) {
+                var ps = Raser.Voxelizer.Passages(b, tile.data.roads)
+                this.passages[b.id] = ps
+                ps.TakeTo(this.passages)
+            }
+            var ways = this.passages[b.id]
+            bool through = false
+            for (int q = 0; q + 6 < ways.Count; q = q + 7) {
+                if (Raser.Voxelizer.PassageDistance(ways, q, x, y) < ways[q + 4] - margin * 0.5) { through = true }
+            }
+            if (!through) { return true }
+        }
+        return false
+    }
+}
+
 // Licht und Wetter (Raser.Weather): Sonne (gerichtet, mit Schatten, wenn sie scheint) oder Mond, Himmel als Hintergrund, Umgebungslicht, Dunst
 // bzw. Nebel, Regen als Striche um die Kamera. Nachts leuchten alle Laternen in der Nähe als Punktlichter mit Ende.
 class Atmosphere {
@@ -826,6 +895,7 @@ class Viewer {
             view.lead = options.Get("lead", (speed * 2.5) + "").ToFloat()
             bool onGround = options.Get("drive", "") != ""
             var flyGround = new Ground(options.Get("world", "world"))
+            var flyObstacles = new Obstacles(options.Get("world", "world"))
             int baseNear = view.near
             // ab 35 m/s (126 km/h) ohne die nahe Voxel-Stufe: sie wäre vorbei, bevor sie gebaut ist
             if (speed > 35.0) { view.near = -1 }
@@ -845,6 +915,11 @@ class Viewer {
                 float step = speed * (now - last) / 10000000.0
                 last = now
                 flown = flown + step
+                if (onGround && flyObstacles.Blocked(view.originE + cam.X / 1m + fx * step, view.originN - (cam.Z / 1m + fz * step), 0.6)) {
+                    // am Boden: vor einer Wand endet der Messflug
+                    print("Wand nach " + flown + " m")
+                    break
+                }
                 cam.SetPosition(cam.X + fx * step * 1m, cam.Y, cam.Z + fz * step * 1m)
                 if (onGround) {
                     any gh = flyGround.At(view.originE + cam.X / 1m, view.originN - cam.Z / 1m)
@@ -863,6 +938,7 @@ class Viewer {
                 worstRender = Math.Max(worstRender, t2 - t1)
                 frames++
             }
+            if (frames == 0) { frames = 1 }
             print(frames + " Bilder über " + fly + " m: Nachladen im Mittel " + (updateTicks / frames / 10000.0) + " ms (höchstens " + (worstUpdate / 10000.0) + " ms), Rendern " + (renderTicks / frames / 10000.0) + " ms (höchstens " + (worstRender / 10000.0) + " ms)")
             print("ferne Blöcke: " + view.farBuilt + " (je " + (view.farTicks / Math.Max(1, view.farBuilt) / 10000.0) + " ms), nahe Blöcke: " + view.nearBuilt + " (je " + (view.nearTicks / Math.Max(1, view.nearBuilt) / 10000.0) + " ms, davon Modelle im Hauptprogramm " + (view.nearShowTicks / Math.Max(1, view.nearBuilt) / 10000.0) + " ms; " + view.late + " zu spät), aus dem Vorrat: " + view.fromCache + ", entladen: " + view.dropped + "; jetzt " + view.objects + " Objekte mit " + view.triangles + " Dreiecken sichtbar, " + view.cachedTriangles + " im Vorrat (" + view.blocks.Count + " Blöcke, Viewer " + view.memory.processMb + " MB, frei " + Math.Round(view.memory.freePercent) + " %); in " + behind + " von " + frames + " Bildern war noch nicht alles in der gewünschten Stufe")
         }
@@ -903,6 +979,7 @@ class Viewer {
         bool driving = options.Get("free", "") == ""
         float velocity = 0.0
         var terrain = new Ground(options.Get("world", "world"))
+        var obstacles = new Obstacles(options.Get("world", "world"))
         int nearRadius = view.near
         float heading = cam.RotationY / 1deg
         float tilt = cam.RotationX / 1deg
@@ -988,6 +1065,22 @@ class Viewer {
                 float hd = heading * Math.PI / 180.0
                 float nx = cam.X / 1m - Math.Sin(hd) * velocity * dt
                 float nz = cam.Z / 1m - Math.Cos(hd) * velocity * dt
+                // Kollision: nicht in Gebäude (0,6 m Abstand) - erst an der Wand entlang gleiten (nur eine Achse), sonst stehen bleiben
+                if (obstacles.Blocked(view.originE + nx, view.originN - nz, 0.6)) {
+                    float ox = cam.X / 1m
+                    float oz = cam.Z / 1m
+                    if (!obstacles.Blocked(view.originE + nx, view.originN - oz, 0.6)) {
+                        nz = oz
+                        velocity = velocity * (1.0 - Math.Min(1.0, dt * 3.0))
+                    } else if (!obstacles.Blocked(view.originE + ox, view.originN - nz, 0.6)) {
+                        nx = ox
+                        velocity = velocity * (1.0 - Math.Min(1.0, dt * 3.0))
+                    } else {
+                        nx = ox
+                        nz = oz
+                        velocity = 0.0
+                    }
+                }
                 float ny = cam.Y / 1m
                 any gh = terrain.At(view.originE + nx, view.originN - nz)
                 if (gh != undefined) {
