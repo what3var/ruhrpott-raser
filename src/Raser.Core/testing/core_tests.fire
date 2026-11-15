@@ -390,6 +390,32 @@ class VehicleTests {
         Testing.Assert.IsTrue(Math.Abs(Raser.Vehicle.GripOf(0.0, 50.0) - 1.0) < 0.001)
     }
 
+    [Test "Fahrzeug: rutscht schräg an der Wand entlang, prallt frontal zurück"]
+    undefined Walls() {
+        // nach Norden mit 10 m/s, die Wand im Osten schiebt nach Westen (-1, 0): quer zur Fahrt, es kostet kein Tempo
+        var car = new Raser.Vehicle()
+        car.speed = 10.0
+        float into = car.Collide(1.2, -1.0, 0.0, 0.1)
+        Testing.Assert.IsTrue(into < 0.001 && Math.Abs(car.speed - 10.0) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(car.east + 0.1) < 0.001)
+        // vorn nach Westen gedrückt: die Nase dreht nach links
+        Testing.Assert.IsTrue(car.heading > 1.0)
+        // schräg (45° nach Nordosten) gegen die Wand im Osten: er bleibt in Fahrt, langsamer
+        var slant = new Raser.Vehicle()
+        slant.heading = -45.0
+        slant.speed = 10.0
+        into = slant.Collide(1.2, -1.0, 0.0, 0.05)
+        Testing.Assert.IsTrue(into > 6.0 && into < 8.0)
+        Testing.Assert.IsTrue(slant.speed > 3.0 && slant.speed < 7.5)
+        Testing.Assert.IsTrue(slant.heading > -45.0)
+        // frontal gegen eine Wand im Norden: zurück
+        var front = new Raser.Vehicle()
+        front.speed = 10.0
+        into = front.Collide(1.2, 0.0, -1.0, 0.2)
+        Testing.Assert.IsTrue(into > 9.9 && front.speed < 0.0 && front.speed > -3.0)
+        Testing.Assert.IsTrue(Math.Abs(front.heading) < 0.001)
+    }
+
     static defined float BrakeDistance(defined float wetness) {
         var car = new Raser.Vehicle()
         car.speed = 30.0

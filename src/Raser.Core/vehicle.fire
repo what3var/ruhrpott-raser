@@ -85,6 +85,35 @@ namespace Raser {
             this.north = this.north + Math.Cos(h) * this.speed * dt
         }
 
+        // Eine Berührung mit einer Wand: der Punkt offset m vor (hinter: negativ) der Mitte steckt depth m tief, (nx, ny) zeigt aus der Wand heraus.
+        // Der Wagen wird herausgeschoben und dreht sich dabei um seine Mitte (vorn gedrückt: die Nase weicht aus), das Tempo in die Wand
+        // hinein geht verloren: schräg rutscht er an der Wand entlang, frontal prallt er leicht zurück. Gibt das Tempo in die Wand (m/s).
+        defined float Collide(defined float offset, defined float nx, defined float ny, defined float depth) {
+            float h = this.heading * Math.PI / 180.0
+            float fx = -Math.Sin(h)
+            float fy = Math.Cos(h)
+            this.east = this.east + nx * depth
+            this.north = this.north + ny * depth
+            // nach links gedrückt (links ist (-cos, -sin)) und vorn: die Richtung dreht nach links
+            float side = -(nx * Math.Cos(h) + ny * Math.Sin(h)) * depth
+            if (Math.Abs(offset) > 0.1) {
+                this.heading = this.heading + Math.Clamp(side / offset, -0.35, 0.35) * 180.0 / Math.PI
+            }
+            float into = -(fx * nx + fy * ny) * this.speed          // > 0: der Wagen fährt in die Wand
+            if (into <= 0.0) { return 0.0 }
+            float along = Math.Sqrt(Math.Max(0.0, this.speed * this.speed - into * into))
+            float sign = 1.0
+            if (this.speed < 0.0) { sign = -1.0 }
+            if (into > Math.Abs(this.speed) * 0.85) {
+                this.speed = -this.speed * 0.2
+            } else {
+                // entlang der Wand weiter, die Reibung an der Wand kostet mit der Wucht
+                this.speed = sign * along * Math.Max(0.0, 1.0 - 0.04 * into)
+            }
+            this.steerAngle = 0.0
+            return into
+        }
+
         // Ein Aufprall: zurück an die alte Stelle, das Tempo zum Teil umgekehrt.
         undefined Bounce(defined float east, defined float north) {
             this.east = east

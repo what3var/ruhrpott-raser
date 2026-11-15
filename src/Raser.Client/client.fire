@@ -143,25 +143,103 @@ class Obstacles {
         this.passages = new Dictionary<int, List<float>>()
     }
 
-    // Steht an (e, n) ein Gebäude (mit margin m Abstand zur Wand)?
+    // Die Kachel zu einem Schlüssel mit den Rechtecken ihrer Gebäude (um 2 m gewachsen), bei Bedarf geladen.
+    undefined Need(Raser.TileKey key, string name) {
+        if (this.tiles.ContainsKey(name)) { return }
+        var loaded = this.store.Load(key)
+        var list = new List<Raser.Box2>()
+        if (loaded != undefined) {
+            foreach (b in loaded.data.buildings) {
+                var box = Raser.Box2.Of(b.footprint)
+                box.Grow(2.0)
+                list.Add(take box)
+            }
+        }
+        this.tiles[name] = loaded
+        if (loaded != undefined) { loaded.TakeTo(this.tiles) }
+        this.boxes[name] = list
+        list.TakeTo(this.boxes)
+    }
+
+    // Ein Kreis (Radius bis 1,9 m) um (e, n) gegen die Gebäude: true, wenn er in einer Wand steckt - dann zeigt (pushX, pushY) aus der Wand
+    // heraus und depth sagt, wie weit er hinaus muss (die tiefste Berührung). Durchfahrten sind frei.
+    defined float pushX
+    defined float pushY
+    defined float depth
+    defined bool Push(defined float e, defined float n, defined float radius) {
+        var key = Raser.TileKey.Of(e, n)
+        string name = key + ""
+        this.Need(key, name)
+        this.depth = 0.0
+        var tile = this.tiles[name]
+        if (tile == undefined) { return false }
+        var bx = this.boxes[name]
+        float x = e - key.East
+        float y = n - key.North
+        for (int k = 0; k < tile.data.buildings.Count; k++) {
+            if (!bx[k].Contains(x, y)) { continue }
+            var b = tile.data.buildings[k]
+            if (b.function != undefined && (b.function.StartsWith("alkis=51009") || b.function.StartsWith("alkis=53001"))) { continue }
+            // der nächste Punkt auf dem Rand
+            int np = b.footprint.length / 2
+            float best = 1000000.0
+            float qx = 0.0
+            float qy = 0.0
+            for (int i = 0; i < np; i++) {
+                int j = (i + 1) % np
+                float ax = b.footprint[i * 2]
+                float ay = b.footprint[i * 2 + 1]
+                float ex = b.footprint[j * 2] - ax
+                float ey = b.footprint[j * 2 + 1] - ay
+                float len2 = ex * ex + ey * ey
+                float t = 0.0
+                if (len2 > 0.0) { t = Math.Clamp(((x - ax) * ex + (y - ay) * ey) / len2, 0.0, 1.0) }
+                float px = ax + ex * t
+                float py = ay + ey * t
+                float d2 = (px - x) * (px - x) + (py - y) * (py - y)
+                if (d2 < best) {
+                    best = d2
+                    qx = px
+                    qy = py
+                }
+            }
+            float d = Math.Sqrt(best)
+            bool inside = Raser.Geo.Inside(b.footprint, x, y)
+            if (!inside && d >= radius) { continue }
+            if (d < 0.0001) { continue }
+            if (!this.passages.ContainsKey(b.id)) {
+                var ps = Raser.Voxelizer.Passages(b, tile.data.roads)
+                this.passages[b.id] = ps
+                ps.TakeTo(this.passages)
+            }
+            var ways = this.passages[b.id]
+            bool through = false
+            for (int q = 0; q + 6 < ways.Count; q = q + 7) {
+                if (Raser.Voxelizer.PassageDistance(ways, q, x, y) < ways[q + 4] - radius * 0.5) { through = true }
+            }
+            if (through) { continue }
+            float deep = radius - d
+            float nx = (x - qx) / d
+            float ny = (y - qy) / d
+            if (inside) {
+                deep = radius + d
+                nx = -nx
+                ny = -ny
+            }
+            if (deep > this.depth) {
+                this.depth = deep
+                this.pushX = nx
+                this.pushY = ny
+            }
+        }
+        return this.depth > 0.0
+    }
+
+    // Steht an (e, n) ein Gebäude (mit margin m Abstand zur Wand, bis 1,9 m)?
     defined bool Blocked(defined float e, defined float n, defined float margin) {
         var key = Raser.TileKey.Of(e, n)
         string name = key + ""
-        if (!this.tiles.ContainsKey(name)) {
-            var loaded = this.store.Load(key)
-            var list = new List<Raser.Box2>()
-            if (loaded != undefined) {
-                foreach (b in loaded.data.buildings) {
-                    var box = Raser.Box2.Of(b.footprint)
-                    box.Grow(margin + 0.1)
-                    list.Add(take box)
-                }
-            }
-            this.tiles[name] = loaded
-            if (loaded != undefined) { loaded.TakeTo(this.tiles) }
-            this.boxes[name] = list
-            list.TakeTo(this.boxes)
-        }
+        this.Need(key, name)
         var tile = this.tiles[name]
         if (tile == undefined) { return false }
         var bx = this.boxes[name]

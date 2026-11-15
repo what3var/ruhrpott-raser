@@ -90,8 +90,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Spieler zu Fuß (Laufen, Sprinten, Ein-/Aussteigen)
 - [x] Spielprogramm `Raser.Game` (gemeinsamer Code mit dem Viewer in `Raser.Client`): Auto, Verfolger-/Haubenkamera, Tacho, Uhr, Wetter, Scheinwerfer
 - [x] Fahrzeugphysik (Einspurmodell `Raser.Vehicle`) inkl. Nässe und Aquaplaning
-- [ ] Glätte; Aufprall feiner (entlang der Wand rutschen statt abprallen); Bäume, Laternen, Bordsteine als Hindernis
-- [ ] Verfolgerkamera weicht Gebäuden aus
+- [x] Aufprall: der Wagen (zwei Kreise) rutscht an Wänden entlang und dreht dabei weg, frontal prallt er zurück (`Vehicle.Collide`, `Obstacles.Push`)
+- [x] Verfolgerkamera weicht Gebäuden aus (rückt heran und höher, weich wieder hinaus)
+- [ ] Glätte; Bäume, Laternen, Bordsteine als Hindernis; Schaden aus der Wucht des Aufpralls
 - [ ] Fahrzeugklassen: Fahrrad, Motorrad, Auto, Nutzfahrzeug; Tank/Akku, Zustand
 - [ ] Streaming mehrerer Kacheln, Vorausgenerierung in Fahrtrichtung
 - [ ] LOD für weite Sichtweiten

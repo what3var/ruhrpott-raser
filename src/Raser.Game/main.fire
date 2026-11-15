@@ -77,6 +77,12 @@ class CarModel {
     }
 }
 
+// Die Verfolgerkamera: ihr Abstand hinter dem Wagen (m).
+class Chase {
+    defined float distance
+    construct() { this.distance = 7.0 }
+}
+
 class Game {
     // Der Startpunkt: auf der nächsten Straße für Autos (bis 80 m), in ihrer Richtung; sonst der Punkt selbst nach Norden. Gibt Ost, Nord, Richtung.
     static float[] Start(Raser.FileTileStore store, defined float e, defined float n) {
@@ -162,7 +168,8 @@ class Game {
         float carY = 0.0
         float camHeading = car.heading
         bool hood = false
-        Game.Place(car, model, cam, terrain, view, camHeading, hood, 0.0)
+        var chase = new Chase()
+        Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
         view.Fill(car.east, car.north)
 
         var hud = new Renderer(fb)
@@ -181,8 +188,8 @@ class Game {
                 if (Game.Advance(car, obstacles, dt, 1.0, 0.0, steer, false, weather.wetness)) { hits++ }
                 top = Math.Max(top, car.speed)
             }
-            camHeading = car.heading
-            Game.Place(car, model, cam, terrain, view, camHeading, hood, 0.0)
+            camHeading = car.heading + options.Get("look", "0").ToFloat()
+            Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
             view.lead = Math.Abs(car.speed) * 2.5
             view.Fill(car.east, car.north)
             atmosphere.Update(car.east, car.north, 0.0)
@@ -192,7 +199,7 @@ class Game {
             }
             cam.Render()
             Game.Hud(hud, ink, shade, car, weather, height)
-            print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Grip " + car.grip)
+            print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Grip " + car.grip + ", Kamera " + chase.distance + " m")
             if (shot != "") {
                 IO.File.WriteAllBytes(shot, fb.ToPng())
                 print(shot)
@@ -264,7 +271,7 @@ class Game {
             // die Kamera dreht dem Wagen weich nach
             float diff = car.heading - camHeading
             camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
-            Game.Place(car, model, cam, terrain, view, camHeading, hood, dt)
+            Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
             view.lead = Math.Abs(car.speed) * 2.5
             if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
             float h = car.heading * Math.PI / 180.0
@@ -279,7 +286,7 @@ class Game {
         return 0
     }
 
-    // Ein Schritt des Wagens mit Aufprall an Gebäuden (in Teilschritten von höchstens 0,5 m). true: aufgeprallt.
+    // Ein Schritt des Wagens mit Aufprall an Gebäuden (in Teilschritten von höchstens 0,5 m): der Wagen rutscht an Wänden entlang. true: aufgeprallt.
     static defined bool Advance(Raser.Vehicle car, Obstacles obstacles, defined float dt, defined float throttle, defined float brake, defined float steer, defined bool reverse, defined float wetness) {
         int parts = Math.Max(1, Math.Ceiling(Math.Abs(car.speed) * dt / 0.5)!int)
         bool hit = false
@@ -287,16 +294,20 @@ class Game {
             float e0 = car.east
             float n0 = car.north
             car.Step(dt / parts, throttle, brake, steer, reverse, wetness)
-            if (obstacles.Blocked(car.east, car.north, 1.1)) {
-                car.Bounce(e0, n0)
-                hit = true
+            // zwei Kreise (vorn, hinten) gegen die Wände
+            for (int c = 0; c < 2; c++) {
+                float offset = 1.2 - 2.4 * c
+                float h = car.heading * Math.PI / 180.0
+                if (obstacles.Push(car.east - Math.Sin(h) * offset, car.north + Math.Cos(h) * offset, 1.0)) {
+                    if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
+                }
             }
         }
         return hit
     }
 
     // Wagen und Kamera in die Szene: der Wagen auf dem Gelände; die Kamera 7 m dahinter und 2,6 m hoch (oder auf der Haube), Blick voraus.
-    static undefined Place(Raser.Vehicle car, CarModel model, Camera cam, Ground terrain, WorldView view, defined float camHeading, defined bool hood, defined float dt) {
+    static undefined Place(Raser.Vehicle car, CarModel model, Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float camHeading, defined bool hood, defined float dt) {
         float x = car.east - view.originE
         float z = -(car.north - view.originN)
         float y = 0.0
@@ -312,9 +323,20 @@ class Game {
             cam.LookAt((x - Math.Sin(ch) * 30.0) * 1m, (y + 1.0) * 1m, (z - Math.Cos(ch) * 30.0) * 1m)
             return
         }
-        float cx = x - fx * 7.0
-        float cz = z - fz * 7.0
-        float cy = y + 2.6
+        // der freie Weg nach hinten: vor einer Wand rückt die Kamera an den Wagen (und höher), weich wieder hinaus
+        float free = 7.0
+        for (float d = 1.5; d <= 7.0; d = d + 0.5) {
+            if (obstacles.Blocked(car.east - fx * d, car.north + fz * d, 0.6)) {
+                free = d - 0.5
+                break
+            }
+        }
+        if (dt <= 0.0 || free < chase.distance) { chase.distance = free } else { chase.distance = Math.Min(free, chase.distance + 4.0 * dt) }
+        float back = Math.Max(chase.distance, 1.0)
+        float cx = x - fx * back
+        float cz = z - fz * back
+        // dicht am Wagen höher: der Blick geht über das Dach
+        float cy = y + 2.6 + Math.Max(0.0, 3.5 - back) * 0.6
         any gc = terrain.At(view.originE + cx, view.originN - cz)
         if (gc != undefined) { cy = Math.Max(cy, gc - view.originZ + 1.0) }
         cam.SetPosition(cx * 1m, cy * 1m, cz * 1m)
