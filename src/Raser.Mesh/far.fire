@@ -588,6 +588,47 @@ namespace Raser {
                 }
             }
             Raser.FarMesher.Roof(part, m)
+            Raser.FarMesher.Eaves(part, m)
+        }
+
+        // Der Dachüberstand (wie in den Voxeln, RoofModel.eaveRing): je Kante ein Band von der Wand bis zur versetzten Kante auf der fortgesetzten
+        // Dachfläche, darunter die Untersicht (12 cm tiefer, nach unten) und außen die Stirn.
+        static undefined Eaves(MeshPart part, RoofModel m) {
+            if (m.eaveRing == undefined) { return }
+            Building b = m.building
+            float fp[] = b.footprint
+            float er[] = m.eaveRing
+            int n = fp.length / 2
+            int roof = b.roof!int
+            float thick = 0.12
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                float ax = fp[k * 2]
+                float ay = fp[k * 2 + 1]
+                float bx = fp[l * 2]
+                float by = fp[l * 2 + 1]
+                float cx = er[l * 2]
+                float cy = er[l * 2 + 1]
+                float dx = er[k * 2]
+                float dy = er[k * 2 + 1]
+                float ha = m.RoofAt(ax, ay)
+                float hb = m.RoofAt(bx, by)
+                float hc = m.RoofOut(cx, cy)
+                float hd = m.RoofOut(dx, dy)
+                // oben (die Normale grob nach oben; Quad richtet die Reihenfolge nach ihr)
+                part.Quad(ax, ay, ha, bx, by, hb, cx, cy, hc, dx, dy, hd, 0.0, 0.0, 1.0, m.roofColor, roof)
+                // unten
+                part.Quad(ax, ay, ha - thick, bx, by, hb - thick, cx, cy, hc - thick, dx, dy, hd - thick, 0.0, 0.0, -1.0, m.roofColor, roof)
+                // außen
+                float ex = cx - dx
+                float ey = cy - dy
+                float el = Math.Sqrt(ex * ex + ey * ey)
+                if (el < 0.001) { continue }
+                float ox = (dx + cx) / 2.0 - (ax + bx) / 2.0
+                float oy = (dy + cy) / 2.0 - (ay + by) / 2.0
+                float ol = Math.Max(Math.Sqrt(ox * ox + oy * oy), 0.0001)
+                part.Quad(dx, dy, hd - thick, cx, cy, hc - thick, cx, cy, hc, dx, dy, hd, ox / ol, oy / ol, 0.0, m.roofColor, roof)
+            }
         }
 
         // Eine Wand von a nach b mit der Fassaden-Textur: geteilt an den Grenzen des Fensterrasters (alle 9 Voxel von x + y in der Welt), in

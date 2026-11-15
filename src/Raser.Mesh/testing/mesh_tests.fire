@@ -233,8 +233,9 @@ class FarTests {
     undefined Block() {
         var far = new Raser.FarMesher(FarTests.Sample(), 1)
         var part = far.Block(0.0, 0.0, 51.2, 3.2)
-        // 16 x 16 Geländezellen; Wände: 2 x 10 m (je 5 Stücke) + 2 x 8 m (je 4 Stücke) = 18; Dach: der Grundriss (2 Dreiecke)
-        Testing.Assert.AreEqual(256 + 18 + 2, part.Count)
+        // 16 x 16 Geländezellen; Wände: 2 x 10 m (je 5 Stücke) + 2 x 8 m (je 4 Stücke) = 18; Dach: der Grundriss (2 Dreiecke); Überstand: je Kante
+        // oben, unten, außen (4 x 3)
+        Testing.Assert.AreEqual(256 + 18 + 2 + 12, part.Count)
         // Giebel: die Wand an der Schmalseite (x = 10) reicht in der Mitte (y = 14) bis fast zum First
         float top = 0.0
         for (int q = 256; q < 256 + 18; q++) {
