@@ -510,7 +510,8 @@ class Game {
         int minutes = Math.Floor(weather.hour * 60.0)!int
         string clock = (minutes / 60) + ":" + ((minutes % 60) / 10) + ((minutes % 60) % 10)
         string text = Math.Round(Math.Abs(car.speed) * 3.6) + " km/h   " + clock
-        if (onFoot) { text = "zu Fuss   " + clock      // (die Schrift der Anzeige kennt kein ß) }
+        // (die Schrift der Anzeige kennt kein ß)
+        if (onFoot) { text = "zu Fuss   " + clock } }
         if (atCar) { text = text + "   E: einsteigen" }
         if (weather.rain > 0.0) { text = text + "   Regen" } else if (weather.fog > 0.0) { text = text + "   Nebel" }
         if (car.sliding && !onFoot) { text = text + "   rutscht" }
