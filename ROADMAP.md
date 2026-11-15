@@ -34,6 +34,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
   - [x] Grundrisse bereinigen (Raser.Footprints, beim Laden jeder Kachel - Werkzeug und Viewer gleich): Ecken rasten unter 15 cm ein, auch zwischen Gebäuden; Ecken knapp neben der Wand eines Nachbarn rücken auf sie (keine Schlitze zwischen Reihenhäusern); Knicke unter 5 cm fallen weg
   - [ ] Dieselben Regeln im Baumodus, in Client und Server: beim Umbauen rasten neue Ecken an Nachbarn und bestehende Kanten ein (eine gemeinsame Funktion in Raser.World), damit auch Umgebautes stimmig bleibt
   - [ ] Bodennetz an Gebäuden genau am Grundriss ausschneiden statt in harten Zellen von 80 cm - heute bleibt an schrägen Wänden eine Treppe aus Voxel-Gelände (ohne Gehweg-Erhöhung) am Wandfuß
+  - [x] Dachüberstand bei Steildächern (40 cm an Traufe und Ortgang): eine Platte unter der fortgesetzten Dachfläche, Außenkante mit Schnitten, darunter die Untersicht - `docs/images/viewer-dachueberstand.png`
+  - [ ] Dachüberstand auch in der fernen Stufe; Dachrinne und Fallrohr; Überstand je Baujahr/Stil (Altbau knapp, Siedlungshaus breit)
   - [ ] Stufe 2: Torbögen, Türen zwischen zwei Wänden, 3D-Dachziegel, Traufzähne
 - [x] Baumscheiben: einzelne Bäume (Plätze, Fußgängerzonen) in einem Quadrat aus Gras (1,4 m), an der nächsten Straße ausgerichtet, mit schmalen Kantensteinen (6 cm); zu nahe Bäume rücken beim Laden von der Fahrbahn weg (Raser.Props.Settle)
 - [x] Grünstreifen (Raser.Strips): Baumreihen an Straßen werden Beete zwischen Fahrbahn und Gehweg - zur Straße direkt am Bordstein, sonst schmale Kantensteine, Erde mit niedrigen Sträuchern (Voxel, zum Teil mit Blüten); der Gehweg liegt dahinter - `docs/images/viewer-gruenstreifen.png`

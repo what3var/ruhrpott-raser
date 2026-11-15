@@ -528,6 +528,50 @@ class VoxelizerTests {
         Testing.Assert.AreEqual(Raser.Facade.Wall, none.upper)
     }
 
+    [Test "Dachüberstand: das Steildach reicht 40 cm über die Wand, darunter Luft"]
+    undefined Overhang() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:satteldach"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.function = "alkis=31001_2000"
+        // 10 x 8 m, First entlang x (die längere Seite), Traufe 64 m, First 69 m: Neigung 5 m auf 4 m
+        b.footprint = [10.0, 10.0, 20.0, 10.0, 20.0, 18.0, 10.0, 18.0]
+        b.ground = 60.0
+        b.eaves = 64.0
+        b.ridge = 69.0
+        b.roofType = Raser.RoofType.Gable
+        b.roof = Raser.Material.RoofTiles
+        tile.data.buildings.Add(take b)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        // x = 15 m ist Voxel 75: im Chunk daneben (64 .. 127) die Spalte 11
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20, 4))
+        // vor der Südwand (y = 10 m, Voxel 50) in Voxel 49 (9,8 .. 10 m): das Dach etwa 0,1 .. 0,25 m unter der Traufe - Voxel 318 / 319 (z 62, 63)
+        int roofFound = 0
+        for (int z = 58; z < 64; z++) {
+            if (c.MaterialAt(11, 49, z) == Raser.Material.RoofTiles!int) { roofFound++ }
+        }
+        Testing.Assert.IsTrue(roofFound >= 1)
+        // darunter Luft (kein Wandvoxel, nur Gelände unten)
+        Testing.Assert.AreEqual(0, c.MaterialAt(11, 49, 50))
+        // in der Wand selbst (Voxel 50) Wand, darüber Dach
+        Testing.Assert.IsTrue(c.MaterialAt(11, 50, 50) != 0)
+        // weiter als 40 cm (Voxel 47: 9,4 .. 9,6 m) kein Dach
+        for (int z = 40; z < 64; z++) {
+            int m = c.MaterialAt(11, 47, z)
+            Testing.Assert.IsTrue(m != Raser.Material.RoofTiles!int)
+        }
+        // am Ortgang (x = 20 m, Voxel 100: Spalte 36) läuft das Dach weiter - Voxel 100, y = 14 m (Voxel 70: Chunk-Zeile 1, Zeile 6), First 69 m
+        var high = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 5))
+        int verge = 0
+        for (int z = 0; z < 30; z++) {
+            if (high.MaterialAt(36, 6, z) == Raser.Material.RoofTiles!int) { verge++ }
+        }
+        Testing.Assert.IsTrue(verge >= 1)
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)

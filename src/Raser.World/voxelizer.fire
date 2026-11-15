@@ -25,6 +25,7 @@ namespace Raser {
         defined bool pitched
         defined int wallColor
         defined int roofColor
+        float eaveRing[]        // Steildach: der Grundriss um den Dachüberstand nach außen versetzt (undefined: kein Überstand)
         float planes[]          // je Dachfläche: a, b, c (z = a x + b y + c), gültig (1) oder senkrecht (0)
         float faceBoxes[]       // je Dachfläche: minX, minY, maxX, maxY
 
@@ -55,6 +56,7 @@ namespace Raser {
             if (this.halfAlong < 0.1) { this.halfAlong = 0.1 }
             this.groundVoxel = Raser.Grid.VoxelOf(b.ground)
             this.pitched = b.roofs.Count > 0 || (b.ridge - b.eaves > 0.3 && b.roofType != Raser.RoofType.Flat)
+            if (this.pitched && b.ridge - b.eaves > 0.5) { this.eaveRing = Raser.Geo.Offset(b.footprint, Raser.RoofModel.Overhang) }
             int h = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), b.id), seed)
             this.wallColor = Raser.RoofModel.Variant(b.wallColor, h)
             this.roofColor = b.roofColor
@@ -105,8 +107,19 @@ namespace Raser {
             return Raser.Geo.Inside(this.building.footprint, x, y)
         }
 
+        static readonly defined float Overhang = 0.4    // Dachüberstand von Steildächern an Traufe und Ortgang (m)
+
         // Die Höhe der Dachfläche an (x, y).
         defined float RoofAt(defined float x, defined float y) {
+            return this.RoofSurface(x, y, false)
+        }
+
+        // Die Dachfläche über den Grundriss hinaus fortgesetzt (für den Überstand: an der Traufe fällt sie weiter, am Ortgang läuft sie weiter).
+        defined float RoofOut(defined float x, defined float y) {
+            return this.RoofSurface(x, y, true)
+        }
+
+        defined float RoofSurface(defined float x, defined float y, defined bool outside) {
             Building b = this.building
             if (b.roofs.Count > 0) { return this.FacesAt(x, y) }
             if (!this.pitched) { return b.eaves }
@@ -131,6 +144,7 @@ namespace Raser {
                 case default:
                     h = b.ridge - rise * across
             }
+            if (outside) { return Math.Clamp(h, b.eaves - 2.0, b.ridge) }
             return Math.Clamp(h, b.eaves, b.ridge)
         }
 
@@ -182,6 +196,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 18: Dachüberstand bei Steildächern (40 cm, RoofModel.eaveRing), das Dach über der Wand voll
         // 17: Fenster mit Licht dahinter (Raser.Palette.GlassLit: am Tag wie Glas, nachts warm)
         // 16: Fenster und Türen aus der Fassade (Raser.Facade): Läufe, Plätze, Stil nach Nutzung, Stufen vor erhöhten Haustüren
         // 15: Grünstreifen mit Sträuchern (Raser.Strips)
@@ -193,7 +208,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 17
+        static readonly defined int Version = 18
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -464,137 +479,145 @@ namespace Raser {
         // an jeder Stelle. Liegt eine Ecke des Grundrisses in der Säule, wird es eine Ecke (a -> v -> b); mehrere Punkte (Rundungen aus kurzen
         // Kanten): eine Gerade, wenn sie höchstens 0,15 Voxel abweichen, sonst die Ecke am weitesten weg. Läuft der Grundriss mehrmals durch dieselbe
         // Säule (spitze Ecken, schmale Stellen), bleibt sie, wie das Raster sie sieht.
-        static undefined FitCuts(List<RoofModel> models, int owner[], defined int planOf[], defined int lx0, defined int ly0) {
+        // eaves: statt der Grundrisse die Ringe der Dachüberstände (RoofModel.eaveRing).
+        static undefined FitCuts(List<RoofModel> models, int owner[], defined int planOf[], defined int lx0, defined int ly0, defined bool eaves = false) {
             defined int hits[4356]
             defined int result[4356]
             var touched = new List<int>()
             var inner = new List<float>()
             for (int m = 0; m < models.Count; m++) {
-                float ring[] = models[m].building.footprint
-                int n = ring.length / 2
-                if (n < 3) { continue }
-                // in Voxeln relativ zur Chunk-Säule, minimal verschoben (nie genau auf einer Rasterlinie: keine Mehrdeutigkeit an Ecken)
-                defined float px[n]
-                defined float py[n]
-                float area2 = 0.0
-                float minX = 1.0e30
-                float minY = 1.0e30
-                float maxX = -1.0e30
-                float maxY = -1.0e30
-                for (int k = 0; k < n; k++) {
-                    px[k] = ring[k * 2] / 0.2 - lx0 + 0.000137
-                    py[k] = ring[k * 2 + 1] / 0.2 - ly0 + 0.000291
-                    minX = Math.Min(minX, px[k])
-                    minY = Math.Min(minY, py[k])
-                    maxX = Math.Max(maxX, px[k])
-                    maxY = Math.Max(maxY, py[k])
+                if (eaves) {
+                    if (models[m].eaveRing != undefined) { Raser.Voxelizer.FitRing(models[m].eaveRing, m, owner, planOf, lx0, ly0, hits, result, touched, inner) }
+                } else {
+                    Raser.Voxelizer.FitRing(models[m].building.footprint, m, owner, planOf, lx0, ly0, hits, result, touched, inner)
                 }
-                if (maxX < -1.0 || maxY < -1.0 || minX > 65.0 || minY > 65.0) { continue }
-                for (int k = 0; k < n; k++) {
-                    int l = (k + 1) % n
-                    area2 = area2 + px[k] * py[l] - px[l] * py[k]
+            }
+        }
+
+        static undefined FitRing(float ring[], defined int m, int owner[], defined int planOf[], defined int lx0, defined int ly0, defined int hits[], defined int result[], List<int> touched, List<float> inner) {
+            int n = ring.length / 2
+            if (n < 3) { return }
+            // in Voxeln relativ zur Chunk-Säule, minimal verschoben (nie genau auf einer Rasterlinie: keine Mehrdeutigkeit an Ecken)
+            defined float px[n]
+            defined float py[n]
+            float area2 = 0.0
+            float minX = 1.0e30
+            float minY = 1.0e30
+            float maxX = -1.0e30
+            float maxY = -1.0e30
+            for (int k = 0; k < n; k++) {
+                px[k] = ring[k * 2] / 0.2 - lx0 + 0.000137
+                py[k] = ring[k * 2 + 1] / 0.2 - ly0 + 0.000291
+                minX = Math.Min(minX, px[k])
+                minY = Math.Min(minY, py[k])
+                maxX = Math.Max(maxX, px[k])
+                maxY = Math.Max(maxY, py[k])
+            }
+            if (maxX < -1.0 || maxY < -1.0 || minX > 65.0 || minY > 65.0) { return }
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                area2 = area2 + px[k] * py[l] - px[l] * py[k]
+            }
+            bool ccw = area2 > 0.0
+            touched.Clear()
+            // einmal um den Ring (zweimal über die Kanten: begonnen wird am ersten Übertritt einer Zellgrenze, aufgehört am selben Punkt)
+            bool started = false
+            bool done = false
+            int e0 = -1
+            float ex = 0.0
+            float ey = 0.0
+            int cellX = 0
+            int cellY = 0
+            inner.Clear()
+            for (int e = 0; e < 2 * n && !done; e++) {
+                int k = e % n
+                int l = (k + 1) % n
+                float ax = px[k]
+                float ay = py[k]
+                float dx = px[l] - ax
+                float dy = py[l] - ay
+                int ix = Math.Floor(ax)!int
+                int iy = Math.Floor(ay)!int
+                int stepX = 1
+                int stepY = 1
+                if (dx < 0.0) { stepX = -1 }
+                if (dy < 0.0) { stepY = -1 }
+                float tMaxX = 1.0e30
+                float tMaxY = 1.0e30
+                float tDX = 1.0e30
+                float tDY = 1.0e30
+                if (Math.Abs(dx) > 1.0e-12) {
+                    float nx = ix * 1.0
+                    if (stepX > 0) { nx = ix + 1.0 }
+                    tMaxX = (nx - ax) / dx
+                    tDX = 1.0 / Math.Abs(dx)
                 }
-                bool ccw = area2 > 0.0
-                touched.Clear()
-                // einmal um den Ring (zweimal über die Kanten: begonnen wird am ersten Übertritt einer Zellgrenze, aufgehört am selben Punkt)
-                bool started = false
-                bool done = false
-                int e0 = -1
-                float ex = 0.0
-                float ey = 0.0
-                int cellX = 0
-                int cellY = 0
-                inner.Clear()
-                for (int e = 0; e < 2 * n && !done; e++) {
-                    int k = e % n
-                    int l = (k + 1) % n
-                    float ax = px[k]
-                    float ay = py[k]
-                    float dx = px[l] - ax
-                    float dy = py[l] - ay
-                    int ix = Math.Floor(ax)!int
-                    int iy = Math.Floor(ay)!int
-                    int stepX = 1
-                    int stepY = 1
-                    if (dx < 0.0) { stepX = -1 }
-                    if (dy < 0.0) { stepY = -1 }
-                    float tMaxX = 1.0e30
-                    float tMaxY = 1.0e30
-                    float tDX = 1.0e30
-                    float tDY = 1.0e30
-                    if (Math.Abs(dx) > 1.0e-12) {
-                        float nx = ix * 1.0
-                        if (stepX > 0) { nx = ix + 1.0 }
-                        tMaxX = (nx - ax) / dx
-                        tDX = 1.0 / Math.Abs(dx)
+                if (Math.Abs(dy) > 1.0e-12) {
+                    float ny = iy * 1.0
+                    if (stepY > 0) { ny = iy + 1.0 }
+                    tMaxY = (ny - ay) / dy
+                    tDY = 1.0 / Math.Abs(dy)
+                }
+                bool firstCrossing = true
+                while (true) {
+                    float t = Math.Min(tMaxX, tMaxY)
+                    if (t >= 1.0) {
+                        // die Kante endet in der Zelle: ihr Endpunkt liegt innen
+                        if (started) {
+                            inner.Add(px[l] - cellX)
+                            inner.Add(py[l] - cellY)
+                        }
+                        break
                     }
-                    if (Math.Abs(dy) > 1.0e-12) {
-                        float ny = iy * 1.0
-                        if (stepY > 0) { ny = iy + 1.0 }
-                        tMaxY = (ny - ay) / dy
-                        tDY = 1.0 / Math.Abs(dy)
-                    }
-                    bool firstCrossing = true
-                    while (true) {
-                        float t = Math.Min(tMaxX, tMaxY)
-                        if (t >= 1.0) {
-                            // die Kante endet in der Zelle: ihr Endpunkt liegt innen
-                            if (started) {
-                                inner.Add(px[l] - cellX)
-                                inner.Add(py[l] - cellY)
-                            }
+                    float qx = ax + dx * t
+                    float qy = ay + dy * t
+                    if (started) {
+                        // der Durchgang durch (cellX, cellY) endet hier
+                        Raser.Voxelizer.EmitCut(cellX, cellY, ex - cellX, ey - cellY, qx - cellX, qy - cellY, inner, ccw, hits, result, touched)
+                        if (e >= e0 + n && firstCrossing) {
+                            done = true
                             break
                         }
-                        float qx = ax + dx * t
-                        float qy = ay + dy * t
-                        if (started) {
-                            // der Durchgang durch (cellX, cellY) endet hier
-                            Raser.Voxelizer.EmitCut(cellX, cellY, ex - cellX, ey - cellY, qx - cellX, qy - cellY, inner, ccw, hits, result, touched)
-                            if (e >= e0 + n && firstCrossing) {
-                                done = true
-                                break
-                            }
-                        } else {
-                            started = true
-                            e0 = e
-                        }
-                        firstCrossing = false
-                        if (tMaxX < tMaxY) {
-                            ix = ix + stepX
-                            tMaxX = tMaxX + tDX
-                        } else {
-                            iy = iy + stepY
-                            tMaxY = tMaxY + tDY
-                        }
-                        cellX = ix
-                        cellY = iy
-                        ex = qx
-                        ey = qy
-                        inner.Clear()
-                    }
-                }
-                // übernehmen: nur Säulen mit genau einem Durchgang
-                foreach (cell in touched) {
-                    int p = result[cell]
-                    int count = hits[cell]
-                    hits[cell] = 0
-                    result[cell] = 0
-                    if (count != 1) { continue }
-                    if (owner[cell] >= 0 && owner[cell] != m) { continue }
-                    if (p == 0) { continue }
-                    float a = Raser.Plan.Area(p)
-                    if (a > 0.97) {
-                        owner[cell] = m
-                        planOf[cell] = 0
-                    } else if (a < 0.03) {
-                        if (owner[cell] == m) {
-                            owner[cell] = -1
-                            planOf[cell] = 0
-                        }
                     } else {
-                        owner[cell] = m
-                        planOf[cell] = p
+                        started = true
+                        e0 = e
                     }
+                    firstCrossing = false
+                    if (tMaxX < tMaxY) {
+                        ix = ix + stepX
+                        tMaxX = tMaxX + tDX
+                    } else {
+                        iy = iy + stepY
+                        tMaxY = tMaxY + tDY
+                    }
+                    cellX = ix
+                    cellY = iy
+                    ex = qx
+                    ey = qy
+                    inner.Clear()
+                }
+            }
+            // übernehmen: nur Säulen mit genau einem Durchgang
+            foreach (cell in touched) {
+                int p = result[cell]
+                int count = hits[cell]
+                hits[cell] = 0
+                result[cell] = 0
+                if (count != 1) { continue }
+                if (owner[cell] >= 0 && owner[cell] != m) { continue }
+                if (p == 0) { continue }
+                float a = Raser.Plan.Area(p)
+                if (a > 0.97) {
+                    owner[cell] = m
+                    planOf[cell] = 0
+                } else if (a < 0.03) {
+                    if (owner[cell] == m) {
+                        owner[cell] = -1
+                        planOf[cell] = 0
+                    }
+                } else {
+                    owner[cell] = m
+                    planOf[cell] = p
                 }
             }
         }
@@ -683,7 +706,7 @@ namespace Raser {
             // Was die Säule berührt.
             var models = new List<RoofModel>()
             foreach (m in this.models) {
-                if (m.box.Overlaps(mx0 - 0.4, my0 - 0.4, mx1 + 0.4, my1 + 0.4)) { models.Add(m) }
+                if (m.box.Overlaps(mx0 - 1.0, my0 - 1.0, mx1 + 1.0, my1 + 1.0)) { models.Add(m) }
             }
 
             // Geländehöhen an den 65 x 65 Ecken.
@@ -716,6 +739,29 @@ namespace Raser {
             // Die Kanten der Grundrisse: Schnitte mit Versatz (Raser.Plan.Cut), auch für die Säulen direkt außerhalb
             defined int planOf[4356]
             Raser.Voxelizer.FitCuts(models, owner, planOf, lx0, ly0)
+
+            // Dachüberstände der Steildächer: der versetzte Ring, ohne die Säulen der Gebäude selbst; seine Außenkante mit Schnitten wie die Wände
+            int eaveOwner[4356]
+            for (int k = 0; k < 4356; k++) { eaveOwner[k] = -1 }
+            for (int m = 0; m < models.Count; m++) {
+                if (models[m].eaveRing == undefined) { continue }
+                float ering[] = models[m].eaveRing
+                for (int j = -1; j <= 64; j++) {
+                    float py = (ly0 + j + 0.5) * 0.2
+                    Raser.Geo.Crossings(ering, 2, py, crossings)
+                    for (int q = 0; q + 1 < crossings.Count; q = q + 2) {
+                        int i0 = Raser.Voxelizer.FirstColumn(crossings[q], lx0, -1)
+                        int i1 = Raser.Voxelizer.FirstColumn(crossings[q + 1], lx0, -1) - 1
+                        if (i1 > 64) { i1 = 64 }
+                        for (int i = i0; i <= i1; i++) {
+                            int o = (j + 1) * 66 + (i + 1)
+                            if (eaveOwner[o] < 0 || models[m].building.id < models[eaveOwner[o]].building.id) { eaveOwner[o] = m }
+                        }
+                    }
+                }
+            }
+            defined int eavePlan[4356]
+            Raser.Voxelizer.FitCuts(models, eaveOwner, eavePlan, lx0, ly0, true)
 
             // Flächen: die höchste Priorität gewinnt, bei gleicher die kleinere ID.
             int areaPriority[4096]
@@ -889,6 +935,7 @@ namespace Raser {
                         }
                         plan.flags[c] = flags
                         plan.planShape[c] = planOf[o]
+                        plan.eaveFull[c] = model.eaveRing != undefined
                         if (planOf[o] != 0) {
                             // der Sockel unter dem Bauelement: oben mit den Eckhöhen des Geländes, bündig mit dem Boden daneben
                             int surface = terrainTop
@@ -928,6 +975,36 @@ namespace Raser {
                     }
                     plan.top[c] = surface
                     plan.shape[c] = tshape
+                    // ein Dachüberstand darüber: eine Platte unter der fortgesetzten Dachfläche (unten offen: die Untersicht)
+                    int eo = (y + 1) * 66 + (x + 1)
+                    if (eaveOwner[eo] >= 0) {
+                        var em = models[eaveOwner[eo]]
+                        float e0 = em.RoofOut((lx0 + x) * 0.2, (ly0 + y) * 0.2)
+                        float e1 = em.RoofOut((lx0 + x + 1) * 0.2, (ly0 + y) * 0.2)
+                        float e2 = em.RoofOut((lx0 + x + 1) * 0.2, (ly0 + y + 1) * 0.2)
+                        float e3 = em.RoofOut((lx0 + x) * 0.2, (ly0 + y + 1) * 0.2)
+                        int et = Raser.Voxelizer.TopVoxel(e0, e1, e2, e3)
+                        int es = Raser.Shape.Make(Raser.Voxelizer.Quarter(e0, et), Raser.Voxelizer.Quarter(e1, et), Raser.Voxelizer.Quarter(e2, et), Raser.Voxelizer.Quarter(e3, et))
+                        if (Raser.Shape.IsEmpty(es)) {
+                            et--
+                            es = Raser.Shape.Make(Raser.Voxelizer.Quarter(e0, et), Raser.Voxelizer.Quarter(e1, et), Raser.Voxelizer.Quarter(e2, et), Raser.Voxelizer.Quarter(e3, et))
+                        }
+                        int el = Math.Floor(Math.Min(Math.Min(e0, e1), Math.Min(e2, e3)) * 5.0)!int - 1
+                        if (el <= surface) { el = surface + 1 }
+                        if (et > surface + 1) {
+                            plan.eaveTop[c] = et
+                            plan.eaveLow[c] = el
+                            plan.eaveShape[c] = es
+                            plan.eaveMaterial[c] = em.building.roof!int
+                            plan.eaveColor[c] = em.roofColor
+                            plan.eavePlan[c] = eavePlan[eo]
+                            plan.rc0[c] = e0
+                            plan.rc1[c] = e1
+                            plan.rc2[c] = e2
+                            plan.rc3[c] = e3
+                            if (et > plan.highest) { plan.highest = et }
+                        }
+                    }
                     // Stufen vor einer erhöhten Haustür (Raser.Facade): je Stufe ein Voxel über dem Gelände
                     foreach (m in models) {
                         if (m.facade == undefined || m.facade.stairs.Count == 0) { continue }
@@ -989,6 +1066,13 @@ namespace Raser {
         defined int upperSlot[4096]
         defined int building[4096]      // die ID des Gebäudes der Säule
         defined int stair[4096]         // Gelände: Stufen vor einer Tür bis zu diesem Voxel (0: keine)
+        defined int eaveTop[4096]       // Gelände: ein Dachüberstand darüber - das oberste Voxel (0: keiner), das unterste, Form, Material, Farbe
+        defined int eaveLow[4096]
+        defined int eaveShape[4096]
+        defined int eaveMaterial[4096]
+        defined int eaveColor[4096]
+        defined int eavePlan[4096]      // Grundriss-Form am Rand des Überstands
+        defined bool eaveFull[4096]     // Gebäude mit Überstand: das Dach über der Wand voll (die Schnitte der Wand gelten nur darunter)
         defined int storey
         defined int highest
 
@@ -1021,7 +1105,7 @@ namespace Raser {
                 int top = this.top[c]
                 int floor = this.floor[c]
                 if (this.kind[c] == 0) {
-                    if (top < vz0 && this.stair[c] < vz0) { continue }
+                    if (top < vz0 && this.stair[c] < vz0 && this.eaveTop[c] < vz0) { continue }
                     int zEnd = top - vz0
                     if (zEnd > 63) { zEnd = 63 }
                     for (int z = 0; z <= zEnd; z++) {
@@ -1041,6 +1125,20 @@ namespace Raser {
                         } else {
                             chunk.materials[i] = rock
                             chunk.colors[i] = rockColor
+                        }
+                    }
+                    // der Dachüberstand: je Lage mit der Form aus den Eckhöhen der fortgesetzten Dachfläche (wie das Dach selbst)
+                    int et = this.eaveTop[c]
+                    if (et > 0) {
+                        for (int vz = Math.Max(this.eaveLow[c], vz0); vz <= et && vz < vz0 + 64; vz++) {
+                            int i = c + ((vz - vz0) << 12)
+                            int ls = this.eaveShape[c]
+                            if (vz < et) { ls = Raser.Shape.Make(Raser.Voxelizer.Quarter(this.rc0[c], vz), Raser.Voxelizer.Quarter(this.rc1[c], vz), Raser.Voxelizer.Quarter(this.rc2[c], vz), Raser.Voxelizer.Quarter(this.rc3[c], vz)) }
+                            if (Raser.Shape.IsEmpty(ls)) { continue }
+                            chunk.materials[i] = this.eaveMaterial[c]
+                            chunk.colors[i] = this.eaveColor[c]
+                            if (ls != 255) { chunk.shapes[i] = ls }
+                            if (this.eavePlan[c] != 0) { chunk.plans[i] = this.eavePlan[c] }
                         }
                     }
                     // Stufen vor einer Tür (Beton, die Oberseite voll)
@@ -1174,6 +1272,7 @@ namespace Raser {
                     for (int z = 0; z <= zEnd; z++) {
                         int vz = vz0 + z
                         if (vz < planFrom) { continue }
+                        if (this.eaveFull[c] && vz >= this.roofLow[c]) { continue }
                         int i = c + (z << 12)
                         if (chunk.materials[i] != 0) { chunk.plans[i] = ps }
                     }

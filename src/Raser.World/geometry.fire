@@ -219,6 +219,41 @@ namespace Raser {
         }
 
         // Die vorzeichenbehaftete Fläche eines Rings (positiv: gegen den Uhrzeigersinn).
+        // Der Ring um d nach außen versetzt (Gehrung an den Ecken, bei spitzen Ecken auf 2,5 d begrenzt).
+        static float[] Offset(float ring[], defined float d) {
+            int n = ring.length / 2
+            float area2 = 0.0
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                area2 = area2 + ring[k * 2] * ring[l * 2 + 1] - ring[l * 2] * ring[k * 2 + 1]
+            }
+            float sign = 1.0
+            if (area2 < 0.0) { sign = -1.0 }
+            float out[] = new float[n * 2]
+            for (int k = 0; k < n; k++) {
+                int p = (k + n - 1) % n
+                int l = (k + 1) % n
+                float ax = ring[k * 2] - ring[p * 2]
+                float ay = ring[k * 2 + 1] - ring[p * 2 + 1]
+                float bx = ring[l * 2] - ring[k * 2]
+                float by = ring[l * 2 + 1] - ring[k * 2 + 1]
+                float la = Math.Max(Math.Sqrt(ax * ax + ay * ay), 0.000001)
+                float lb = Math.Max(Math.Sqrt(bx * bx + by * by), 0.000001)
+                // die Normalen nach außen (gegen den Uhrzeigersinn: rechts der Kante)
+                float n1x = sign * ay / la
+                float n1y = -sign * ax / la
+                float n2x = sign * by / lb
+                float n2y = -sign * bx / lb
+                float mx = n1x + n2x
+                float my = n1y + n2y
+                float dot = 1.0 + n1x * n2x + n1y * n2y
+                float scale = d / Math.Max(dot, 0.32)
+                out[k * 2] = ring[k * 2] + mx * scale
+                out[k * 2 + 1] = ring[k * 2 + 1] + my * scale
+            }
+            return out
+        }
+
         static defined float Area(float ring[], defined int stride = 2) {
             int n = ring.length / stride
             float a = 0.0
