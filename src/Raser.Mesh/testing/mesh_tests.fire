@@ -323,6 +323,29 @@ class FarTests {
         Testing.Assert.IsTrue(kerb > 20)        // Bordstein, Kantensteine
     }
 
+    [Test "Bogenstück: Zwickel vorn und hinten, Laibung darunter, nirgends unter dem Kämpfer oder über der Oberkante"]
+    undefined SpandrelPiece() {
+        var part = new Raser.MeshPart()
+        // eine Öffnung von (2, 5) nach (4, 5), 40 cm nach Norden in die Wand; Kämpfer 3 m, Stich 1 m, Oberkante 4 m
+        Raser.FarMesher.Spandrel(part, 2.0, 5.0, 4.0, 5.0, 0.0, 0.4, 3.0, 1.0, 4.0, false, Raser.Palette.Brick, Raser.Material.Brick!int)
+        Testing.Assert.AreEqual(36, part.Count)
+        int down = 0
+        for (int q = 0; q < part.Count; q++) {
+            for (int c = 0; c < 4; c++) {
+                float x = part.positions[q * 12 + c * 3]
+                float y = part.positions[q * 12 + c * 3 + 1]
+                float z = part.positions[q * 12 + c * 3 + 2]
+                Testing.Assert.IsTrue(x >= 1.999 && x <= 4.001 && y >= 4.999 && y <= 5.401 && z >= 2.999 && z <= 4.001)
+            }
+            if (part.normals[q * 3 + 2] < -0.1) { down++ }
+        }
+        Testing.Assert.AreEqual(12, down)
+        // der Spitzbogen endet in der Mitte am Scheitel
+        var sharp = new Raser.MeshPart()
+        Raser.FarMesher.Spandrel(sharp, 2.0, 5.0, 4.0, 5.0, 0.0, 0.4, 3.0, 1.0, 4.0, true, Raser.Palette.Brick, Raser.Material.Brick!int)
+        Testing.Assert.AreEqual(36, sharp.Count)
+    }
+
     [Test "Hartes Gelände: wo etwas in den Boden greift oder gegraben ist"]
     undefined GroundCut() {
         var far = new Raser.FarMesher(FarTests.Sample(), 1)

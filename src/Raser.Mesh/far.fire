@@ -366,6 +366,93 @@ namespace Raser {
             }
         }
 
+        // Die eingehängten Bogenstücke der Gebäude im Block (nahe Stufe): über Türen, Kirchenfenstern und Portalen (Raser.Facade.Arches, 40 cm tief
+        // in die Wand) und die Gewölbe der Durchfahrten (ein Stück durch das ganze Haus), in Farbe und Material der Wand.
+        undefined Arches(MeshPart part, defined float x0, defined float y0, defined float size) {
+            var arches = new List<float>()
+            foreach (m in this.models) {
+                if (!m.box.Overlaps(x0 - 1.0, y0 - 1.0, x0 + size + 1.0, y0 + size + 1.0)) { continue }
+                if (m.facade == undefined) { Raser.Voxelizer.PlanFacade(m, this.tile.data.roads) }
+                int wall = m.building.wall!int
+                arches.Clear()
+                m.facade.Arches(m.building, m.groundVoxel, arches)
+                for (int k = 0; k + 9 < arches.Count; k = k + 10) {
+                    float mx = (arches[k] + arches[k + 2]) / 2.0
+                    float my = (arches[k + 1] + arches[k + 3]) / 2.0
+                    if (mx < x0 || my < y0 || mx >= x0 + size || my >= y0 + size) { continue }
+                    // 40 cm nach innen (gegen die Normale)
+                    Raser.FarMesher.Spandrel(part, arches[k], arches[k + 1], arches[k + 2], arches[k + 3], -arches[k + 8] * 0.4, -arches[k + 9] * 0.4, arches[k + 4], arches[k + 5], arches[k + 6], arches[k + 7] > 0.5, m.wallColor, wall)
+                }
+                var ps = m.passages
+                for (int q = 0; q + 6 < ps.Count; q = q + 7) {
+                    float mx = (ps[q] + ps[q + 2]) / 2.0
+                    float my = (ps[q + 1] + ps[q + 3]) / 2.0
+                    if (mx < x0 || my < y0 || mx >= x0 + size || my >= y0 + size) { continue }
+                    float dx = ps[q + 2] - ps[q]
+                    float dy = ps[q + 3] - ps[q + 1]
+                    float len = Math.Sqrt(dx * dx + dy * dy)
+                    if (len < 0.3) { continue }
+                    float px = -dy / len * ps[q + 4]
+                    float py = dx / len * ps[q + 4]
+                    float g = m.building.ground
+                    Raser.FarMesher.Spandrel(part, ps[q] - px, ps[q + 1] - py, ps[q] + px, ps[q + 1] + py, dx, dy, g + ps[q + 5] - ps[q + 6], ps[q + 6], g + ps[q + 5], false, m.wallColor, wall)
+                    // die Seitenwände (glatt, vom Boden bis zur Oberkante; die Voxel liegen 25 cm dahinter) und an beiden Enden die Gewände
+                    // (25 cm breit, in der Fassade)
+                    float top = g + ps[q + 5]
+                    float bot = g - 0.2
+                    float ux = dx / len
+                    float uy = dy / len
+                    float sx = px / ps[q + 4]
+                    float sy = py / ps[q + 4]
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float ex = ps[q] + px * side
+                        float ey = ps[q + 1] + py * side
+                        part.Quad(ex, ey, bot, ex + dx, ey + dy, bot, ex + dx, ey + dy, top, ex, ey, top, -sx * side, -sy * side, 0.0, m.wallColor, wall)
+                        float jx = sx * side * 0.3
+                        float jy = sy * side * 0.3
+                        part.Quad(ex, ey, bot, ex + jx, ey + jy, bot, ex + jx, ey + jy, top, ex, ey, top, -ux, -uy, 0.0, m.wallColor, wall)
+                        part.Quad(ex + dx, ey + dy, bot, ex + dx + jx, ey + dy + jy, bot, ex + dx + jx, ey + dy + jy, top, ex + dx, ey + dy, top, ux, uy, 0.0, m.wallColor, wall)
+                    }
+                }
+            }
+        }
+
+        // Ein Bogenstück: die Zwickel zwischen dem Bogen (Kämpfer spring, Stich rise; Rund- oder Spitzbogen über die Breite a .. b) und der Oberkante
+        // top, von der Vorderseite (a .. b) um (dx, dy) nach hinten gezogen: Stirn vorn und hinten, darunter die Laibung des Bogens.
+        static undefined Spandrel(MeshPart part, defined float ax, defined float ay, defined float bx, defined float by, defined float dx, defined float dy, defined float spring, defined float rise, defined float top, defined bool pointed, defined int color, defined int material) {
+            float wx = bx - ax
+            float wy = by - ay
+            float w = Math.Sqrt(wx * wx + wy * wy)
+            float dl = Math.Sqrt(dx * dx + dy * dy)
+            if (w < 0.1 || dl < 0.01) { return }
+            float ux = wx / w
+            float uy = wy / w
+            float fx = -dx / dl
+            float fy = -dy / dl
+            int kind = Raser.Facade.Portal
+            if (pointed) { kind = Raser.Facade.Lancet }
+            int steps = 12
+            for (int i = 0; i < steps; i++) {
+                float t0 = i * 1.0 / steps
+                float t1 = (i + 1) * 1.0 / steps
+                float h0 = spring + Raser.Facade.ArchRise(kind, rise, (t0 * 2.0 - 1.0), 1.0)
+                float h1 = spring + Raser.Facade.ArchRise(kind, rise, (t1 * 2.0 - 1.0), 1.0)
+                float x0 = ax + wx * t0
+                float y0 = ay + wy * t0
+                float x1 = ax + wx * t1
+                float y1 = ay + wy * t1
+                // Stirn vorn und hinten
+                if (top - h0 > 0.001 || top - h1 > 0.001) {
+                    part.Quad(x0, y0, h0, x1, y1, h1, x1, y1, top, x0, y0, top, fx, fy, 0.0, color, material)
+                    part.Quad(x0 + dx, y0 + dy, h0, x1 + dx, y1 + dy, h1, x1 + dx, y1 + dy, top, x0 + dx, y0 + dy, top, -fx, -fy, 0.0, color, material)
+                }
+                // die Laibung: nach unten, zur Mitte der Öffnung geneigt
+                float sl = (h1 - h0) / (w / steps)
+                float nl = Math.Sqrt(1.0 + sl * sl)
+                part.Quad(x0, y0, h0, x1, y1, h1, x1 + dx, y1 + dy, h1, x0 + dx, y0 + dy, h0, ux * sl / nl, uy * sl / nl, -1.0 / nl, color, material)
+            }
+        }
+
         // Die Fenster, Türen und Tore der Gebäude im Block (nahe Stufe): je Öffnung ein Parallelogramm zwischen den Laibungen (Raser.Facade.Panes) -
         // Glas mit Rahmen (10 cm, weiß bei Lochfenstern, dunkel bei Schaufenstern) nach glass und opaque, Türblätter aus Holz, Tore aus Metall.
         // Ein Element gehört dem Block, in dem seine Mitte liegt.

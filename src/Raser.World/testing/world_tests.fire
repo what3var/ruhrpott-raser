@@ -583,7 +583,7 @@ class VoxelizerTests {
         Testing.Assert.IsTrue(verge >= 1)
     }
 
-    [Test "Durchfahrt: ein Weg durch das Haus bekommt einen Torbogen"]
+    [Test "Durchfahrt: ein Weg durch das Haus ist bis zur vollen Höhe frei, das Gewölbe ein Stück"]
     undefined Passage() {
         var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
         var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
@@ -608,28 +608,27 @@ class VoxelizerTests {
         tile.data.roads.Add(take r)
         var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
         var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
-        // Boden 60 m = Voxel 300 (z 44); in der Mitte des Durchgangs (x = 35, y = 30): Pflaster, darüber frei bis gut 2,8 m (z 45 .. 57)
+        // Boden 60 m = Voxel 300 (z 44); in der Mitte des Durchgangs (x = 35, y = 30): Pflaster, darüber frei bis 3 m (z 45 .. 58) - auch am Rand
+        // (x = 29: 25 cm hinter der Seitenwand des Gewölbes): das Gewölbe ist ein eingehängtes Stück
         Testing.Assert.AreEqual(Raser.Material.Paving!int, c.MaterialAt(35, 30, 44))
-        for (int z = 45; z <= 57; z++) { Testing.Assert.AreEqual(0, c.MaterialAt(35, 30, z)) }
-        // in der Außenwand (y = 10) ist der Bogen offen
-        Testing.Assert.AreEqual(0, c.MaterialAt(35, 10, 50))
-        // über dem Scheitel (3 m) die Decke
-        Testing.Assert.IsTrue(c.MaterialAt(35, 30, 60) != 0)
-        // am Rand des Bogens Voxel mit Schnitt in der Ansicht (der Weg läuft entlang y: Achse 0)
-        int arched = 0
-        foreach (pair in c.plans) {
-            if (Raser.Plan.IsElevation(pair.Value)) {
-                arched++
-                Testing.Assert.AreEqual(0, Raser.Plan.ElevationAxis(pair.Value))
-            }
+        for (int z = 45; z <= 58; z++) {
+            Testing.Assert.AreEqual(0, c.MaterialAt(35, 30, z))
+            Testing.Assert.AreEqual(0, c.MaterialAt(29, 30, z))
         }
-        Testing.Assert.IsTrue(arched > 20)
+        // in der Außenwand (y = 10) ist der Durchgang offen, darüber die Decke
+        Testing.Assert.AreEqual(0, c.MaterialAt(35, 10, 50))
+        Testing.Assert.IsTrue(c.MaterialAt(35, 30, 60) != 0)
+        // ein Stück durch das ganze Haus (8 m), 1,2 m halbe Breite, 3 m hoch, 1,2 m Stich
+        var ps = Raser.Voxelizer.Passages(tile.data.buildings[0], tile.data.roads)
+        Testing.Assert.AreEqual(7, ps.Count)
+        Testing.Assert.IsTrue(Math.Abs(Math.Abs(ps[3] - ps[1]) - 8.0) < 0.01)
+        Testing.Assert.IsTrue(Math.Abs(ps[5] - 3.0) < 0.001 && Math.Abs(ps[6] - 1.2) < 0.001)
         // neben dem Durchgang (x = 20) das Haus wie sonst: die Bodenplatte, Wand an der Außenseite
         Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(20, 30, 44))
         Testing.Assert.IsTrue(c.MaterialAt(20, 10, 50) != 0)
     }
 
-    [Test "Haustür mit Rundbogen: außen der Bogen mit Schnitt in der Ansicht, innen das Oberlicht"]
+    [Test "Haustür mit Rundbogen: Bogenstück auf der Wandflucht, die Wand darüber offen"]
     undefined ArchedDoor() {
         var roads = new List<Road>()
         var road = new Raser.Road()
@@ -653,18 +652,20 @@ class VoxelizerTests {
         tile.data.buildings.Add(take b)
         var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
         var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
-        // die Südwand (y = 8 m: Voxel 40 außen, 41 innen) läuft entlang x: Bögen mit Achse 0; Türblatt und Oberlicht sind eingehängte Elemente
-        int arches = 0
-        for (int x = 10; x < 60; x++) {
-            for (int z = 44; z < 64; z++) {
-                int p = c.PlanAt(x, 40, z)
-                if (Raser.Plan.IsElevation(p)) {
-                    arches++
-                    Testing.Assert.AreEqual(0, Raser.Plan.ElevationAxis(p))
-                }
-            }
-        }
-        Testing.Assert.IsTrue(arches >= 2)
+        // die Südwand (y = 8 m: Voxel 40 außen, 41 innen): Türblatt, Oberlicht und Bogenstück sind eingehängt; die Wand ist über der Tür zwei
+        // Voxel höher offen als neben ihr
+        var af = Raser.Facade.Plan(tile.data.buildings[0], tile.data.roads)
+        var arches = new List<float>()
+        af.Arches(tile.data.buildings[0], 300, arches)
+        Testing.Assert.AreEqual(10, arches.Count)
+        Testing.Assert.IsTrue(Math.Abs(arches[1] - 8.0) < 0.001 && Math.Abs(arches[3] - 8.0) < 0.001)       // auf der Wandflucht
+        Testing.Assert.IsTrue(Math.Abs(arches[6] - arches[4] - 0.4) < 0.001)                                 // Oberkante 40 cm über dem Kämpfer
+        Testing.Assert.IsTrue(Math.Abs(arches[9] + 1.0) < 0.001)                                             // Normale nach Süden
+        int doorX = Math.Floor((arches[0] + arches[2]) / 2.0 / 0.2)!int
+        int springZ = Math.Round(arches[4] / 0.2)!int - 256
+        Testing.Assert.AreEqual(0, c.MaterialAt(doorX, 40, springZ))
+        Testing.Assert.AreEqual(0, c.MaterialAt(doorX, 41, springZ + 1))
+        Testing.Assert.IsTrue(c.MaterialAt(doorX, 40, springZ + 2) != 0)
         var facade = Raser.Facade.Plan(tile.data.buildings[0], tile.data.roads)
         var panes = new List<float>()
         facade.Panes(tile.data.buildings[0], 300, panes)
@@ -774,15 +775,20 @@ class VoxelizerTests {
         // die Voxel: in der Ostwand (x = 10 m: Säule 49 außen) ist ein Fenster offen und hat oben Bogen-Voxel; innen keine Zwischendecke
         var c = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
         int open = 0
-        int arched = 0
         for (int y = 21; y < 49; y++) {
             if (c.MaterialAt(49, y, 60) == 0 && c.MaterialAt(48, y, 60) == 0) { open++ }
         }
-        foreach (pair in c.plans) {
-            if (Raser.Plan.IsElevation(pair.Value)) { arched++ }
-        }
         Testing.Assert.IsTrue(open >= 4)
-        Testing.Assert.IsTrue(arched >= 4)
+        // je Fenster und Portal ein Bogenstück: Spitzbogen an den Fenstern, Rundbogen am Portal
+        var arches = new List<float>()
+        f.Arches(tile.data.buildings[0], 300, arches)
+        Testing.Assert.AreEqual((lancets + portals) * 10, arches.Count)
+        int pointed = 0
+        for (int k = 0; k + 9 < arches.Count; k = k + 10) {
+            if (arches[k + 7] > 0.5) { pointed++ }
+            Testing.Assert.IsTrue(arches[k + 6] >= arches[k + 4] + arches[k + 5] - 0.001)
+        }
+        Testing.Assert.AreEqual(lancets, pointed)
         Testing.Assert.AreEqual(0, c.MaterialAt(30, 35, 58))          // 2,8 m über dem Boden (z 44 + 14): keine Decke
         // der Turm: 5 x 5 m, 30 m hoch
         var tower = new Raser.Building()

@@ -197,6 +197,8 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 29: Durchfahrten 25 cm breiter in den Voxeln (glatte Seitenwände im eingehängten Gewölbe)
+        // 28: Bögen als eingehängte Stücke (Raser.Facade.Arches, Gewölbe der Durchfahrten): die Wand lässt Rechtecke bis zum Scheitel frei
         // 27: Bögen bleiben in der Wandflucht (kein Bogenschnitt, wo ein Schnitt im Grundriss ist), innen wie außen glatt; schräge Durchfahrten mit
         //     geradem Sturz; keine Fenster und Türen in Durchfahrten
         // 26: Wandsäulen unter Steildächern ab der tiefsten Dachecke mit Dachmaterial (graue Streifen im Dach)
@@ -219,7 +221,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 27
+        static readonly defined int Version = 29
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -1083,15 +1085,15 @@ namespace Raser {
                             for (int q = 0; q + 6 < model.passages.Count; q = q + 7) {
                                 float dist = Raser.Voxelizer.PassageDistance(model.passages, q, pcx, pcy)
                                 float hw = model.passages[q + 4]
-                                if (dist < hw) {
+                                // (die Voxel treten 25 cm hinter die glatten Seitenwände des eingehängten Gewölbes zurück)
+                                if (dist < hw + 0.25) {
                                     float pdx = model.passages[q + 2] - model.passages[q]
                                     float pdy = model.passages[q + 3] - model.passages[q + 1]
                                     float pl = Math.Sqrt(pdx * pdx + pdy * pdy)
                                     // der Bogen wird entlang einer Rasterachse durchgezogen: nur bei Durchfahrten entlang x oder y (bis 3°); schräge
                                     // bekommen einen geraden Sturz in voller Höhe (ein schräger Bogen gäbe einen Kamm)
+                                    // die Voxel lassen den Durchgang bis zur vollen Höhe frei; das Gewölbe ist ein eingehängtes Stück (FarMesher.Arches)
                                     int axis = -1
-                                    if (pl > 0.0 && Math.Abs(pdx) / pl > 0.9986) { axis = 1 }
-                                    if (pl > 0.0 && Math.Abs(pdy) / pl > 0.9986) { axis = 0 }
                                     float hc = Raser.Voxelizer.ArchAt(model.passages, q, dist)
                                     float h0 = hc
                                     float h1 = hc
@@ -1112,7 +1114,7 @@ namespace Raser {
                                     plan.passEdge1[c] = bd.ground + h1
                                     plan.passAxis[c] = axis
                                     break
-                                } else if (dist < hw + 0.4) {
+                                } else if (dist < hw + 0.65) {
                                     passWall = true
                                 }
                             }
@@ -1507,70 +1509,24 @@ namespace Raser {
                     if (wall) {
                         int kind = this.upperKind[c]
                         if (vz - ground < this.storey) { kind = this.groundKind[c] }
-                        // Kirche: eine Öffnung über die ganze Höhe - gerade bis zum Kämpfer, darüber der Bogen (außen mit Schnitt in der Ansicht)
+                        // Öffnungen mit Bogen: die Wand lässt ein Rechteck bis zum Scheitel frei, die Zwickel füllt ein eingehängtes Bogenstück
+                        // (Raser.Facade.Arches, vernetzt in Raser.FarMesher.Arches) - Kirchenfenster, Portale, Schallöffnungen ...
                         int ak = this.archKind[c]
                         if (ak != 0) {
                             kind = 0
                             float zb = vz * 0.2
-                            float spring = this.archSpring[c]
-                            if (zb + 0.1 >= this.archLow[c] && vz < top - 1) {
-                                if (zb + 0.2 <= spring + 0.001) { continue }
-                                float off = this.archOffset[c]
-                                float half = this.archHalf[c]
-                                float rise = this.archRise[c]
-                                float ac = spring + Raser.Facade.ArchRise(ak, rise, off, half)
-                                // glatt (Schnitt in der Ansicht) in beiden Wandlagen, wo die Säule keinen Schnitt im Grundriss hat - ein Voxel trägt nur
-                                // eine Form; am schrägen Wandrand bleibt der Bogen gestuft, dafür in der Wandflucht
-                                if (this.archAxis[c] >= 0 && this.planShape[c] == 0) {
-                                    float a0 = spring + Raser.Facade.ArchRise(ak, rise, off - 0.1 * this.archSign[c], half)
-                                    float a1 = spring + Raser.Facade.ArchRise(ak, rise, off + 0.1 * this.archSign[c], half)
-                                    float f0 = Math.Clamp((a0 - zb) / 0.2, 0.0, 1.0)
-                                    float f1 = Math.Clamp((a1 - zb) / 0.2, 0.0, 1.0)
-                                    if (f0 >= 0.999 && f1 >= 0.999) { continue }
-                                    if (f0 > 0.001 || f1 > 0.001) {
-                                        chunk.materials[i] = this.below[c]
-                                        chunk.colors[i] = this.belowColor[c]
-                                        chunk.plans[i] = Raser.Plan.Elevation(this.archAxis[c], Raser.Plan.RimOf(0.0, f0), Raser.Plan.RimOf(1.0, f1))
-                                        continue
-                                    }
-                                } else if (zb + 0.1 < ac) {
-                                    continue
-                                }
-                            }
+                            if (zb + 0.1 >= this.archLow[c] && zb < Raser.Facade.ArchTop(this.archSpring[c], this.archRise[c]) - 0.001 && vz < top - 1) { continue }
                         }
-                        int open = 0
-                        if (kind != 0 && vz < top - 1) { open = Raser.Voxelizer.Opening(kind, inStorey, vz - ground - 1, vz, top) }
-                        // über der Haustür ein Rundbogen (Stich 35 cm): außen offen bis zum Bogen (am Rand mit Schnitt in der Ansicht), innen ein
-                        // Oberlicht aus Glas
-                        // (der Bogen kann ins nächste Geschoss reichen: die Art des Erdgeschosses zählt)
+                        // ... und Haustüren: zwei Voxel über dem Türblatt (Rundbogen mit Oberlicht)
                         int dk = this.groundKind[c] & 127
-                        if (open == 0 && this.doorAxis[c] > -2 && (dk == Raser.Facade.Door || dk == Raser.Facade.RaisedDoor) && vz - ground < this.storey + 3) {
+                        if (this.thick[c] && (dk == Raser.Facade.Door || dk == Raser.Facade.RaisedDoor)) {
                             int topRel = 10
                             if (dk == Raser.Facade.RaisedDoor) { topRel = 12 }
                             int rel = vz - ground - 1
-                            if (rel == topRel + 1 || rel == topRel + 2) {
-                                float spring = (ground + 1 + topRel + 1) * 0.2
-                                float zb = vz * 0.2
-                                float half = Math.Max(this.doorHalf[c], 0.3)
-                                float off = this.doorOffset[c]
-                                float ac = Raser.Voxelizer.DoorArch(spring, off, half)
-                                bool outer = this.thick[c]
-                                if (outer) {
-                                    if (this.doorAxis[c] >= 0 && this.planShape[c] == 0) {
-                                        float a0 = Raser.Voxelizer.DoorArch(spring, off - 0.1 * this.doorSign[c], half)
-                                        float a1 = Raser.Voxelizer.DoorArch(spring, off + 0.1 * this.doorSign[c], half)
-                                        float f0 = Math.Clamp((a0 - zb) / 0.2, 0.0, 1.0)
-                                        float f1 = Math.Clamp((a1 - zb) / 0.2, 0.0, 1.0)
-                                        if (f0 >= 0.999 && f1 >= 0.999) { continue }
-                                        chunk.materials[i] = this.below[c]
-                                        chunk.colors[i] = this.belowColor[c]
-                                        if (f0 > 0.001 || f1 > 0.001) { chunk.plans[i] = Raser.Plan.Elevation(this.doorAxis[c], Raser.Plan.RimOf(0.0, f0), Raser.Plan.RimOf(1.0, f1)) }
-                                        continue
-                                    }
-                                    if (zb + 0.1 < ac) { continue }
-                                }
-                            }
+                            if (rel == topRel + 1 || rel == topRel + 2) { continue }
                         }
+                        int open = 0
+                        if (kind != 0 && vz < top - 1) { open = Raser.Voxelizer.Opening(kind, inStorey, vz - ground - 1, vz, top) }
                         // eine Öffnung bleibt in beiden Lagen frei: Scheibe, Tür und Rahmen werden als Elemente zwischen die Laibungen gehängt
                         // (Raser.Facade.Panes, vernetzt in Raser.FarMesher.Windows) - glatt auch in schrägen und runden Wänden
                         if (open != 0 && this.thick[c]) { continue }

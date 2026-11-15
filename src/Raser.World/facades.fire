@@ -551,6 +551,56 @@ namespace Raser {
             }
         }
 
+        // Die eingehängten Bogenstücke des Gebäudes: über jeder Öffnung mit Bogen (Haustür, Kirchenfenster, Portal, Schallöffnung) lässt die Wand ein
+        // Rechteck bis zum Scheitel frei; das Bogenstück füllt die Zwickel über die ganze Wanddicke - glatt in jeder Wandrichtung. Je Stück 10
+        // Werte: ax, ay, bx, by (die Ränder der Öffnung auf der Wandflucht), Kämpfer, Stich, Oberkante (m, absolut), Art (0 Rundbogen, 1 Spitzbogen),
+        // die Normale nach außen (nx, ny).
+        undefined Arches(Building b, defined int groundVoxel, List<float> out) {
+            float g = groundVoxel * 0.2
+            for (int r = 0; r < this.runs.Count; r++) {
+                var fr = this.runs[r]
+                foreach (s in fr.ground) {
+                    int kind = s.kind
+                    float spring = 0.0
+                    float rise = 0.0
+                    float top = 0.0
+                    float pointed = 0.0
+                    if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
+                        spring = g + 2.4
+                        if (kind == Raser.Facade.RaisedDoor) { spring = g + 2.8 }
+                        rise = 0.4
+                        top = spring + 0.4
+                    } else if (kind == Raser.Facade.Lancet || kind == Raser.Facade.Portal || kind == Raser.Facade.Louvre) {
+                        this.ChurchExtent(kind, g, b.eaves, s.half)
+                        if (this.cspring <= this.cz0) { continue }
+                        spring = this.cspring
+                        rise = this.crise
+                        top = Raser.Facade.ArchTop(spring, rise)
+                        if (kind != Raser.Facade.Portal) { pointed = 1.0 }
+                    } else {
+                        continue
+                    }
+                    this.PointOn(r, Math.Max(s.center - s.half, 0.0))
+                    out.Add(this.px)
+                    out.Add(this.py)
+                    float nx = this.pnx
+                    float ny = this.pny
+                    this.PointOn(r, Math.Min(s.center + s.half, fr.length))
+                    out.Add(this.px)
+                    out.Add(this.py)
+                    out.Add(spring)
+                    out.Add(rise)
+                    out.Add(top)
+                    out.Add(pointed)
+                    out.Add(nx)
+                    out.Add(ny)
+                }
+            }
+        }
+
+        // Die Oberkante der Öffnung über einem Bogen: der Scheitel, auf ganze Voxel aufgerundet.
+        static defined float ArchTop(defined float spring, defined float rise) { return Math.Ceiling((spring + rise) / 0.2 - 0.001) * 0.2 }
+
         // Die Stufen vor einer erhöhten Tür an (x, y): 0 .. 3 (die höchste direkt an der Wand, je Stufe 30 cm tief).
         defined int StepsAt(defined float x, defined float y) {
             for (int k = 0; k + 4 < this.stairs.Count; k = k + 5) {

@@ -342,7 +342,7 @@ namespace Raser {
         defined float nearSpacing       // Geländeraster der nahen Stufe
         defined bool opaqueOnly
         defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
-        static readonly defined int CacheVersion = 10     // das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        static readonly defined int CacheVersion = 12     // das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)
@@ -446,6 +446,7 @@ namespace Raser {
                 var frames = new Raser.MeshPart()
                 var panes = new Raser.MeshPart()
                 fm.Windows(frames, panes, east - tileKey.East, north - tileKey.North, 51.2)
+                fm.Arches(frames, east - tileKey.East, north - tileKey.North, 51.2)
                 opaque.Add(take frames, tileKey.East - east, tileKey.North - north, 0.0)
                 glass.Add(take panes, tileKey.East - east, tileKey.North - north, 0.0)
             }

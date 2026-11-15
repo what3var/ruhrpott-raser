@@ -44,7 +44,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
   - [x] Haustüren mit Rundbogen (Stich 35 cm) und Oberlicht aus Glas; Wände zwei Voxel dick mit Laibung
   - [x] Dachziegel in Pixel-Art mit Relief (Bumpmap des Atlas: Ziegelreihen, Mauer- und Pflasterfugen) - `docs/images/viewer-dachziegel.png`
   - [ ] Türen und Torbögen als Fertigteile im Baumodus, Klinken; Traufzähne
-  - [ ] Bögen in schrägen Wänden und schrägen Durchfahrten glatt: heute ist der Bogen dort gestuft bzw. ein gerader Sturz, weil ein Voxel nur eine Form trägt (Schnitt im Grundriss oder in der Ansicht) - braucht eine Form mit beidem oder eingehängte Bogenstücke
+  - [x] Bögen als eingehängte Stücke (Generator 29): die Wand lässt ein Rechteck bis zum Scheitel frei, ein Bogenstück in Wandfarbe füllt die Zwickel (Raser.Facade.Arches, FarMesher.Spandrel) - Haustüren, Kirchenfenster, Portale; Durchfahrten bekommen ein Gewölbe mit glatten Seitenwänden durch das ganze Haus. Glatt in jeder Wandrichtung - `docs/images/viewer-durchfahrt.png`
+  - [ ] Bogenstücke auch in der fernen Stufe; als Fertigteil im Baumodus
 - [x] Baumscheiben: einzelne Bäume (Plätze, Fußgängerzonen) in einem Quadrat aus Gras (1,4 m), an der nächsten Straße ausgerichtet, mit schmalen Kantensteinen (6 cm); zu nahe Bäume rücken beim Laden von der Fahrbahn weg (Raser.Props.Settle)
 - [x] Grünstreifen (Raser.Strips): Baumreihen an Straßen werden Beete zwischen Fahrbahn und Gehweg - zur Straße direkt am Bordstein, sonst schmale Kantensteine, Erde mit niedrigen Sträuchern (Voxel, zum Teil mit Blüten); der Gehweg liegt dahinter - `docs/images/viewer-gruenstreifen.png`
 - [x] Bordstein oben als Band von 12 cm; Pflasterrinne (30 cm) vor dem Bordstein bei etwa 4 von 10 Wohn- und Nebenstraßen; eckige Gullis etwa alle 30 m je Seite (in der Rinne, sonst im Asphalt am Bordstein)
