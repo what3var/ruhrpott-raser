@@ -232,7 +232,9 @@ class Atmosphere {
                 string name = key + ""
                 wanted.Add(name)
                 if (burning && !this.tileLights.ContainsKey(name)) {
-                    var lights = new List<Light>()
+                    // (die Liste gehört dem Wörterbuch, die Lichter der Szene - die Liste hält sie nur)
+                    this.tileLights[name] = new List<Light>()
+                    var lights = this.tileLights[name]
                     var heads = this.LampsOf(key)
                     for (int k = 0; k + 2 < heads.Count; k = k + 3) {
                         var l = Light.Point((heads[k] - this.view.originE) * 1m, (heads[k + 2] - this.view.originZ) * 1m, -(heads[k + 1] - this.view.originN) * 1m, S3D.Rgb(255, 214, 160), 1.8)
@@ -242,7 +244,6 @@ class Atmosphere {
                         lights.Add(l)
                         this.scene.Add(take l)
                     }
-                    this.tileLights[name] = lights
                 }
             }
         }
