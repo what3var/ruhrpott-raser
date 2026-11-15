@@ -197,6 +197,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 24: Punkte auf Läufen, die über den Ringanfang laufen (Stufen vor Türen lagen falsch); Pavillons ohne Zwischendecken
         // 23: Fenster und Türen als eingehängte Elemente (Raser.Facade.Panes), die Wand lässt nur die Öffnung frei
         // 22: innere Wandlage auch hinter Schnitten (Glas in runden und schrägen Wänden fehlte)
         // 21: Haustüren mit Rundbogen und Oberlicht; Durchfahrten immer mit glattem Bogen (Achse nach der Rasterrichtung)
@@ -214,7 +215,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 23
+        static readonly defined int Version = 24
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -1114,6 +1115,7 @@ namespace Raser {
                         }
                         plan.flags[c] = flags
                         plan.thick[c] = model.facade != undefined && model.facade.style != Raser.Facade.None
+                        plan.hall[c] = model.facade != undefined && model.facade.style == Raser.Facade.Pavilion
                         plan.planShape[c] = planOf[o]
                         plan.eaveFull[c] = model.eaveRing != undefined
                         if (planOf[o] != 0) {
@@ -1243,6 +1245,7 @@ namespace Raser {
         defined int groundKind[4096]    // Wände: was im Erdgeschoss in der Säule ist (Raser.Facade: Fenster, Schaufenster, Tür ...)
         defined int upperKind[4096]     // und darüber
         defined bool thick[4096]        // Wand zwei Voxel dick (flags & 4: die innere Lage)
+        defined bool hall[4096]         // Pavillon: ein Raum ohne Zwischendecken (hinter den hohen Scheiben)
         defined int doorAxis[4096]      // Haustür mit Bogen: Achse (-2: keine, -1: schräge Wand), Lage im Türplatz, halbe Breite, Richtung
         defined float doorOffset[4096]
         defined float doorHalf[4096]
@@ -1506,7 +1509,7 @@ namespace Raser {
                             chunk.materials[i] = this.below[c]
                             chunk.colors[i] = this.belowColor[c]
                         }
-                    } else if (inStorey == 0) {
+                    } else if (inStorey == 0 && (vz == ground || !this.hall[c])) {
                         chunk.materials[i] = concrete
                         chunk.colors[i] = concreteColor
                     }

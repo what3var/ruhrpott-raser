@@ -52,7 +52,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
   - [x] Fenster je Nutzung (ALKIS-Funktion, POI): Wohnhaus Lochfenster (1,4 m, weißer Rahmen ringsum, keine Kreuze), Laden/Gastro/Büro Schaufenster im Erdgeschoss zur Straße (dunkle Rahmen), Pavillon/Kiosk hohe Fenster, Gewerbe Fensterbänder, öffentlich hohe breite Fenster, Garagen Tore, Überdachungen nichts - `docs/images/viewer-pavillon-fenster.png`, `docs/images/viewer-schaufenster.png`
   - [x] Eingänge auf der Hauptseite (zur nächsten Straße): Haustür aus Holz, jede zweite drei Stufen hoch mit Betonstufen davor; Glastüren bei Läden (eine je 10 m), breite Automatiktür bei Märkten
   - [x] Fenster, Türen und Tore als eingehängte Elemente (Raser.Facade.Panes, Generator 23): je Öffnung ein Parallelogramm zwischen linker und rechter Laibung, Glas mit Rahmenleisten, Türblatt mit Oberlicht - glatt auch in schrägen und runden Wänden; die Wand lässt nur die Öffnung frei. Dasselbe Prinzip für den Baumodus: linken und rechten Rand setzen, die Scheibe spannt sich dazwischen
-  - [ ] Pavillons ohne Zwischendecke hinter hohen Scheiben; Elemente auch für Balkontüren, Schaufenster über Eck
+  - [x] Pavillons ohne Zwischendecke hinter den hohen Scheiben
+  - [ ] Elemente auch für Balkontüren, Schaufenster über Eck
   - [ ] Die ferne Stufe (Fassaden-Textur) nach derselben Planung; Fenster mit Fensterbank, Laibung nach innen versetzt; Türen als Bauelement zwischen zwei Wänden; Vordächer und Markisen an Läden
   - [ ] Die innere Kante dicker Wände (hinter Schnitten) treppt in den Fensteröffnungen; Glas spiegelt kaum (Licht und Wetter)
 - [ ] (aufgegangen in den Bauelementen) Gerade Fronten in jedem Winkel: senkrechter Schnitt im Grundriss je Voxel (zwei Randpunkte in Vierteln, mit den Nachbarn geteilt), Fassaden schräg zum Gitter glatt, Fenster entlang der Wand; Grundstücke zur Straße ausrichten (gemeinsame Fluchtlinie), an der Grundstücksgrenze schräg abschneiden

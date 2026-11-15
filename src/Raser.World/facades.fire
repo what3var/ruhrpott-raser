@@ -300,19 +300,24 @@ namespace Raser {
 
         undefined PointOn(defined int r, defined float s) {
             int n = this.len.length
+            // die Kante des Laufs, auf der s liegt (ein Lauf kann über den Anfang des Rings hinweg laufen: nach der Lage im Lauf, nicht nach dem
+            // Index); sonst die mit dem nächsten Ende
+            int best = -1
+            float miss = 1.0e30
             for (int k = 0; k < n; k++) {
                 if (this.runOf[k] != r) { continue }
-                if (s <= this.offset[k] + this.len[k] || k == n - 1) {
-                    float t = s - this.offset[k]
-                    this.px = this.ax[k] + this.ux[k] * t
-                    this.py = this.ay[k] + this.uy[k] * t
-                    this.Normal(k)
-                    return
+                float d = 0.0
+                if (s < this.offset[k]) { d = this.offset[k] - s } else if (s > this.offset[k] + this.len[k]) { d = s - this.offset[k] - this.len[k] }
+                if (d < miss) {
+                    miss = d
+                    best = k
                 }
             }
-            this.px = this.ax[0]
-            this.py = this.ay[0]
-            this.Normal(0)
+            if (best < 0) { best = 0 }
+            float t = Math.Clamp(s - this.offset[best], 0.0, this.len[best])
+            this.px = this.ax[best] + this.ux[best] * t
+            this.py = this.ay[best] + this.uy[best] * t
+            this.Normal(best)
         }
 
         undefined Normal(defined int k) {

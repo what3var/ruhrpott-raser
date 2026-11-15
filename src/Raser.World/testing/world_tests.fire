@@ -680,6 +680,52 @@ class VoxelizerTests {
         Testing.Assert.AreEqual(1, doors)
     }
 
+    [Test "Fassade: Elemente bleiben auf der Wand, auch wenn ein Lauf über den Anfang des Rings läuft"]
+    undefined PanesOnWall() {
+        var roads = new List<Road>()
+        var b = new Raser.Building()
+        b.source = "test:rund"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.function = "shop=kiosk"
+        // ein Kreis (Radius 4 m um (10, 10), 24 Punkte): ein einziger Lauf rundherum; dazu ein Rechteck, dessen Ring mitten in einer Wand beginnt
+        float fp[] = new float[48]
+        for (int k = 0; k < 24; k++) {
+            float a = k * Math.PI / 12.0
+            fp[k * 2] = 10.0 + 4.0 * Math.Cos(a)
+            fp[k * 2 + 1] = 10.0 + 4.0 * Math.Sin(a)
+        }
+        b.footprint = fp
+        b.ground = 60.0
+        b.eaves = 64.0
+        b.ridge = 64.0
+        var f = Raser.Facade.Plan(b, roads)
+        var panes = new List<float>()
+        f.Panes(b, 300, panes)
+        Testing.Assert.IsTrue(panes.Count >= 9 * 6)
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            // beide Enden 20 cm innen vom Kreis (3,8 m von der Mitte, die Sehnen der 24 Kanten liegen bis 3 cm weiter innen)
+            float ra = Math.Sqrt((panes[k] - 10.0) * (panes[k] - 10.0) + (panes[k + 1] - 10.0) * (panes[k + 1] - 10.0))
+            float rb = Math.Sqrt((panes[k + 2] - 10.0) * (panes[k + 2] - 10.0) + (panes[k + 3] - 10.0) * (panes[k + 3] - 10.0))
+            Testing.Assert.IsTrue(ra > 3.7 && ra < 3.85)
+            Testing.Assert.IsTrue(rb > 3.7 && rb < 3.85)
+        }
+        var c = new Raser.Building()
+        c.source = "test:eck"
+        c.id = Raser.Ids.Stable(Raser.IdKind.Building, c.source)
+        c.footprint = [6.0, 0.0, 12.0, 0.0, 12.0, 8.0, 0.0, 8.0, 0.0, 0.0]
+        c.ground = 60.0
+        c.eaves = 66.0
+        c.ridge = 66.0
+        var g = Raser.Facade.Plan(c, roads)
+        var q = new List<float>()
+        g.Panes(c, 300, q)
+        Testing.Assert.IsTrue(q.Count >= 9 * 4)
+        for (int k = 0; k + 8 < q.Count; k = k + 9) {
+            Testing.Assert.IsTrue(q[k] >= 0.19 && q[k] <= 11.81 && q[k + 2] >= 0.19 && q[k + 2] <= 11.81)
+            Testing.Assert.IsTrue(q[k + 1] >= 0.19 && q[k + 1] <= 7.81 && q[k + 3] >= 0.19 && q[k + 3] <= 7.81)
+        }
+    }
+
     [Test "Straße und Fläche"]
     undefined Surfaces() {
         var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
