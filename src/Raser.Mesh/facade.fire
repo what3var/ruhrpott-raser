@@ -165,11 +165,16 @@ namespace Raser {
             // Putz: ruhig, große Flecken (Wetter), kaum Korn
             if (c == 14 || c == 19 || c == 20 || c == 21) { return 1.0 + blot * 0.05 + mid * 0.02 + grain * 0.015 }
             // Dachziegel: Reihen, die Ziegel gegeneinander leicht verschieden
+            // Dachziegel wie in Pixel-Art: Reihen von zwei Voxeln, je Reihe um einen halben Ziegel versetzt; die untere Zeile eines Ziegels liegt im
+            // Schatten des nächsten (dunkler), die obere fängt Licht, zwischen den Ziegeln eine dunkle Fuge, jeder Ziegel mit eigenem Ton
             if (c == 15 || c == 22) {
-                float row = 0.0
-                if (y % 2 == 1) { row = -0.07 }
-                int tile = (x + (y / 2) % 2) / 2
-                return 1.0 + row + (Raser.Atlas.Hash(tile, y / 2, c + 400) * 2.0 - 1.0) * 0.06 + blot * 0.04
+                int rowNo = y / 2
+                int along = x + rowNo % 2
+                int tile = along / 2
+                float f = 1.0 + (Raser.Atlas.Hash(tile, rowNo, c + 400) * 2.0 - 1.0) * 0.09 + blot * 0.04
+                if (y % 2 == 0) { f = f - 0.13 } else { f = f + 0.05 }
+                if (along % 2 == 0 && y % 2 == 0) { f = f - 0.06 }
+                return f
             }
             // Holz: Maserung entlang y (Bretter 1 Voxel breit)
             if (c == 10) { return 1.0 + (Raser.Atlas.Hash(x, 0, c + 500) * 2.0 - 1.0) * 0.08 + Raser.Atlas.Smooth(x * 4 % 64, y, 4, c + 600) * 0.05 }
@@ -241,7 +246,8 @@ namespace Raser {
         }
 
         // wet: nass - Beläge deutlich dunkler (Asphalt, Pflaster, Beton, Kies, Erde), Rasen etwas, Wände und Dächer ein wenig.
-        static byte[] Rgba(defined bool night = false, defined bool wet = false) {
+        // puddles: dazu Pfützen in den Belägen (Raser.Atlas.Puddle).
+        static byte[] Rgba(defined bool night = false, defined bool wet = false, defined bool puddles = false) {
             byte data[] = new byte[1024 * 1024 * 4]
             // Materialkacheln (mit Rand: -2 .. 65 Texel setzen das Muster fort)
             for (int c = 1; c < 128; c++) {
@@ -251,7 +257,12 @@ namespace Raser {
                 int y0 = Raser.Atlas.TileY(c)
                 int shades[] = new int[4096]
                 for (int vy = 0; vy < 64; vy++) {
-                    for (int vx = 0; vx < 64; vx++) { shades[vx + vy * 64] = Raser.Atlas.Scaled(baseRgb, Raser.Atlas.Shade(c, vx, vy)) }
+                    for (int vx = 0; vx < 64; vx++) {
+                        int rgb = Raser.Atlas.Scaled(baseRgb, Raser.Atlas.Shade(c, vx, vy))
+                        // eine Pfütze: dunkel und glatt, mit einem Hauch Himmel
+                        if (puddles && Raser.Atlas.Puddle(c, vx, vy)) { rgb = Raser.Weather.Mix(Raser.Atlas.Scaled(baseRgb, 0.55), 0x5A6470, 0.35) }
+                        shades[vx + vy * 64] = rgb
+                    }
                 }
                 for (int ty = -2; ty < 66; ty++) {
                     for (int tx = -2; tx < 66; tx++) {
@@ -291,6 +302,69 @@ namespace Raser {
                 }
             }
             return data
+        }
+
+        // Das Relief zum Atlas (scene3d Texture.AddBumpmap: Helligkeit ist Höhe, 1024 x 1024): Dachziegel als überlappende Reihen (jeder Ziegel
+        // steigt zur unteren Kante an, dazwischen Fugen), Mauerziegel, Pflaster und Gehwegsteine mit Fugen, Betonplatten - im Licht wirkt es plastisch,
+        // ohne ein Dreieck mehr.
+        // puddles: in den Pfützen ist die Fläche glatt und liegt tiefer.
+        static byte[] Relief(defined bool puddles = false) {
+            byte data[] = new byte[1024 * 1024]
+            for (int k = 0; k < 1024 * 1024; k++) { data[k] = 128 }
+            for (int c = 1; c < 128; c++) {
+                if (!Raser.Atlas.HasTile(c)) { continue }
+                int b = Raser.Palette.BaseOf(c)
+                int x0 = Raser.Atlas.TileX(c)
+                int y0 = Raser.Atlas.TileY(c)
+                for (int ty = -2; ty < 66; ty++) {
+                    for (int tx = -2; tx < 66; tx++) {
+                        int vx = (tx + 64) % 64
+                        int vy = 63 - (ty + 64) % 64
+                        int h = Raser.Atlas.Height(b, vx, vy)
+                        if (puddles && Raser.Atlas.Puddle(c, vx, vy)) { h = 84 }
+                        data[(y0 + ty) * 1024 + x0 + tx] = h
+                    }
+                }
+            }
+            return data
+        }
+
+        // Liegt im Muster der Farbe c an (x, y) eine Pfütze? Nur auf Belägen (Asphalt, Pflaster, Gehweg, Beton): unregelmäßige Flecken aus weichem
+        // Rauschen, etwa ein Achtel der Fläche; je Farbe (und Dreckstufe) anders gelegen.
+        static defined bool Puddle(defined int c, defined int x, defined int y) {
+            int b = Raser.Palette.BaseOf(c)
+            if (!(b == Raser.Palette.Asphalt || b == Raser.Palette.Paving || b == Raser.Palette.Sidewalk || b == Raser.Palette.Concrete)) { return false }
+            return Raser.Atlas.Smooth(x, y, 16, c + 2000) + 0.35 * Raser.Atlas.Smooth(x, y, 4, c + 2100) > 0.38
+        }
+
+        // Die Höhe (0 .. 255, 128: eben) im Muster der Farbe b.
+        static defined int Height(defined int b, defined int x, defined int y) {
+            if (b == 15 || b == 22) {
+                int rowNo = y / 2
+                int along = x + rowNo % 2
+                int h = 90
+                if (y % 2 == 0) { h = 200 }                     // die untere Kante liegt auf dem nächsten Ziegel
+                if (along % 2 == 0) { h = h - 40 }              // zur Fuge hin abfallend
+                return h
+            }
+            if (b == 13 || b == 17 || b == 18) {
+                if ((x + (y % 2)) % 2 == 0) { return 105 }      // Stoßfugen
+                return 140
+            }
+            if (b == 8) {
+                if (x % 2 == 0 || y % 2 == 0) { return 100 }
+                return 145
+            }
+            if (b == 31) {
+                if ((x + (y % 2)) % 2 == 0) { return 112 }
+                return 138
+            }
+            if (b == 9) {
+                if (x % 16 == 0 || y % 16 == 0) { return 95 }
+                return 132
+            }
+            if (b == 7 || b == 4) { return 122 + Math.Round(Raser.Atlas.Hash(x, y, b + 1300) * 12.0)!int }
+            return 128
         }
 
         // Die Emissions-Textur für die Nacht (scene3d Object.EmissiveTexture): schwarz (nichts), nur was selbst leuchtet - Fenster mit Licht dahinter

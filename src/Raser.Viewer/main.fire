@@ -328,6 +328,7 @@ class WorldView {
     defined float wetness
     Texture emission
     Texture wetPalette
+    Texture puddlePalette
     Material wetMaterial
     Material dryMaterial
     defined int near                // Radius der Stufe 0 in Blöcken (0: nur der Block des Blickpunkts, -1: keiner)
@@ -385,6 +386,9 @@ class WorldView {
         this.palette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba())
         this.palette.Filter = TextureFilter.Sharp         // scharfe Voxel, an den Kanten über ein Pixel geglättet (Konzept: Pixel-Art)
         this.dryMaterial = new Material(0.0, 32.0)
+        // das Relief: Dachziegel, Fugen (ohne Dreiecke mehr)
+        this.palette.AddBumpmap(1024, 1024, Raser.Atlas.Relief())
+        this.palette.BumpStrength = 1.2
     }
 
     // Das Aussehen nach Tageszeit und Nässe (Raser.Weather):
@@ -408,12 +412,19 @@ class WorldView {
     undefined SetWet(defined float wetness) {
         bool wet = wetness > 0.15
         if (wet && this.wetPalette == undefined) {
-            this.wetPalette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba(false, true))
+            // nass mit Pfützen (ab Regen; bei Niesel bleibt es bei feuchtem Belag ohne Pfützen - die Textur wechselt mit der Nässe)
+            this.wetPalette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba(false, true, false))
             this.wetPalette.Filter = TextureFilter.Sharp
+            this.wetPalette.AddBumpmap(1024, 1024, Raser.Atlas.Relief())
+            this.wetPalette.BumpStrength = 1.2
+            this.puddlePalette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba(false, true, true))
+            this.puddlePalette.Filter = TextureFilter.Sharp
+            this.puddlePalette.AddBumpmap(1024, 1024, Raser.Atlas.Relief(true))
+            this.puddlePalette.BumpStrength = 1.2
             this.wetMaterial = new Material(0.5, 40.0)
         }
         if (wet) { this.wetMaterial.Specular = 0.25 + 0.4 * Math.Clamp(wetness, 0.0, 1.0) }
-        bool changed = wet != this.wet || Math.Abs(wetness - this.wetness) > 0.05
+        bool changed = wet != this.wet || Math.Abs(wetness - this.wetness) > 0.05 || (wetness > 0.6) != (this.wetness > 0.6)
         this.wet = wet
         this.wetness = wetness
         if (changed) { this.LookAll() }
@@ -445,7 +456,7 @@ class WorldView {
             return
         }
         if (this.wet) {
-            obj.Texture = this.wetPalette
+            if (this.wetness > 0.6) { obj.Texture = this.puddlePalette } else { obj.Texture = this.wetPalette }
             obj.Material = this.wetMaterial
             obj.Reflectivity = 0.55 * Math.Clamp(this.wetness, 0.0, 1.0)
         } else {
