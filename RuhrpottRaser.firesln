@@ -7,8 +7,10 @@
     "src/Raser.Import/Raser.Import.fireproj",
     "src/Raser.Store/Raser.Store.fireproj",
     "src/Raser.Mesh/Raser.Mesh.fireproj",
+    "src/Raser.Client/Raser.Client.fireproj",
     "src/Raser.Tool/Raser.Tool.fireproj",
-    "src/Raser.Viewer/Raser.Viewer.fireproj"
+    "src/Raser.Viewer/Raser.Viewer.fireproj",
+    "src/Raser.Game/Raser.Game.fireproj"
   ],
   "startup": "Raser.Tool",
   "settings": {

@@ -1,0 +1,95 @@
+// Raser.Core: ein Fahrzeug auf der Ebene (Roadmap M3: Fahrzeugphysik inkl. Nässe und Aquaplaning) - ohne Szene, also testbar und später auf dem
+// Server dieselbe Rechnung.
+//
+// Ein Einspurmodell: Lage (Ost, Nord in m), Richtung (Grad, 0 = Nord, gegen den Uhrzeigersinn: vorwärts ist (-sin, cos)), Tempo entlang der
+// Richtung. Der Motor zieht bis zur Höchstgeschwindigkeit immer schwächer, Bremse, Roll- und Luftwiderstand halten dagegen. Gelenkt wird über
+// den Radstand; die Querbeschleunigung ist durch die Haftung begrenzt (Grip x 9 m/s²) - darüber untersteuert der Wagen (er fährt den weitesten
+// Bogen, den die Reifen halten) und rutscht. Der Grip kommt aus der Nässe (Raser.Weather.wetness): trocken 1, nass 0,7, mit Pfützen 0,55; ab
+// 110 km/h auf stehendem Wasser schwimmt der Wagen auf (Aquaplaning: 0,25).
+namespace Raser {
+    class Vehicle {
+        defined float east
+        defined float north
+        defined float heading           // Grad
+        defined float speed             // m/s, rückwärts negativ
+        defined float steerAngle        // der Lenkeinschlag (Grad), folgt der Eingabe mit Verzögerung
+        defined bool sliding            // die Reifen halten den Bogen nicht (oder Aquaplaning)
+        defined float grip              // der Grip des letzten Schritts
+        // das Fahrzeug
+        defined float wheelbase
+        defined float topSpeed          // m/s
+        defined float power             // Beschleunigung aus dem Stand (m/s²)
+        defined float brakes            // Verzögerung bei vollem Bremsen und Grip 1 (m/s²)
+        defined float maxSteer          // Grad im Stand
+
+        construct() {
+            this.wheelbase = 2.6
+            this.topSpeed = 55.0
+            this.power = 5.5
+            this.brakes = 9.0
+            this.maxSteer = 32.0
+            this.grip = 1.0
+        }
+
+        // Der Grip aus der Nässe (0 .. 1) und dem Tempo.
+        static defined float GripOf(defined float wetness, defined float speed) {
+            float w = Math.Clamp(wetness, 0.0, 1.0)
+            float g = 1.0 - 0.3 * Math.Min(w / 0.6, 1.0)
+            if (w > 0.6) {
+                g = 0.7 - 0.15 * (w - 0.6) / 0.4
+                if (Math.Abs(speed) > 30.5) { g = 0.25 }
+            }
+            return g
+        }
+
+        // Ein Schritt: throttle 0 .. 1 (Gas), brake 0 .. 1, steer -1 (rechts) .. 1 (links), reverse: Rückwärtsgang, wetness 0 .. 1.
+        undefined Step(defined float dt, defined float throttle, defined float brake, defined float steer, defined bool reverse, defined float wetness) {
+            float g = Raser.Vehicle.GripOf(wetness, this.speed)
+            this.grip = g
+            float v = this.speed
+            // Antrieb (begrenzt durch den Grip), Bremse, Widerstände
+            float drive = Math.Clamp(throttle, 0.0, 1.0) * this.power
+            if (reverse) {
+                drive = -drive * 0.6
+                if (v < -8.0) { drive = 0.0 }
+            } else {
+                drive = drive * Math.Max(0.0, 1.0 - v / this.topSpeed)
+            }
+            drive = Math.Clamp(drive, -g * 7.0, g * 7.0)
+            float resist = 0.15 + 0.0009 * v * v + Math.Clamp(brake, 0.0, 1.0) * this.brakes * g
+            float before = v
+            v = v + drive * dt
+            if (v > 0.0) { v = Math.Max(0.0, v - resist * dt) } else if (v < 0.0) { v = Math.Min(0.0, v + resist * dt) }
+            // (über null hinweg bremst nichts)
+            if (before > 0.0 && v < 0.0 && drive >= 0.0) { v = 0.0 }
+            if (before < 0.0 && v > 0.0 && drive <= 0.0) { v = 0.0 }
+            this.speed = v
+            // Lenkung: der Einschlag folgt der Eingabe (120°/s), bei Tempo kleiner
+            float want = Math.Clamp(steer, -1.0, 1.0) * this.maxSteer / (1.0 + Math.Abs(v) / 14.0)
+            float turn = 120.0 * dt
+            this.steerAngle = this.steerAngle + Math.Clamp(want - this.steerAngle, -turn, turn)
+            float yawRate = v / this.wheelbase * Math.Tan(this.steerAngle * Math.PI / 180.0)      // rad/s
+            float lateral = Math.Abs(v * yawRate)
+            float limit = g * 9.0
+            this.sliding = false
+            if (lateral > limit && Math.Abs(v) > 0.5) {
+                yawRate = yawRate * limit / lateral
+                this.sliding = true
+                // rutschen kostet Tempo
+                this.speed = this.speed * (1.0 - Math.Min(1.0, 0.6 * dt))
+            }
+            if (g < 0.3) { this.sliding = true }
+            this.heading = this.heading + yawRate * 180.0 / Math.PI * dt
+            float h = this.heading * Math.PI / 180.0
+            this.east = this.east - Math.Sin(h) * this.speed * dt
+            this.north = this.north + Math.Cos(h) * this.speed * dt
+        }
+
+        // Ein Aufprall: zurück an die alte Stelle, das Tempo zum Teil umgekehrt.
+        undefined Bounce(defined float east, defined float north) {
+            this.east = east
+            this.north = north
+            this.speed = -this.speed * 0.25
+        }
+    }
+}

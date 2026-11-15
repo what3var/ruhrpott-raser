@@ -463,8 +463,12 @@ namespace Raser {
             opaque.EncodeTo(data, 24)
             glass.EncodeTo(data, 24 + opaque.quads * 49)
             if (this.useCache) {
-                IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(path))
-                IO.File.WriteAllBytes(path, Compression.Deflate.Compress(data))
+                // (der Cache ist nur ein Vorrat: wird der Ordner gerade von einem Voxelisieren gelöscht, bleibt der Block eben ungespeichert)
+                try {
+                    IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(path))
+                    IO.File.WriteAllBytes(path, Compression.Deflate.Compress(data))
+                } catch (IO.IOException e) {
+                }
             }
             BlockMesh.BatchesFrom(data, 24, opaque.quads, 1.0, sx, sy, sz, result.batches)
             if (!this.opaqueOnly) { BlockMesh.BatchesFrom(data, 24 + opaque.quads * 49, glass.quads, 0.45, sx, sy, sz, result.batches) }

@@ -354,3 +354,50 @@ class WeatherTests {
         Testing.Assert.AreEqual(0x808080, Raser.Weather.Mix(0x000000, 0xFFFFFF, 0.5) & 0xFEFEFE)
     }
 }
+
+class VehicleTests {
+    [Test "Fahrzeug: beschleunigt bis zur Höchstgeschwindigkeit, bremst nass länger, fährt Bögen"]
+    undefined Drive() {
+        var car = new Raser.Vehicle()
+        for (int i = 0; i < 300; i++) { car.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        // nach 15 s: schnell, aber unter der Höchstgeschwindigkeit; geradeaus nach Norden
+        Testing.Assert.IsTrue(car.speed > 35.0 && car.speed < 55.0)
+        Testing.Assert.IsTrue(Math.Abs(car.east) < 0.001 && car.north > 250.0)
+        // bremsen aus 30 m/s: trocken kürzer als nass
+        float dry = VehicleTests.BrakeDistance(0.0)
+        float wet = VehicleTests.BrakeDistance(1.0)
+        Testing.Assert.IsTrue(dry > 40.0 && dry < 70.0)
+        Testing.Assert.IsTrue(wet > dry * 1.5)
+        // ein Linksbogen bei 10 m/s: die Richtung wächst, der Wagen kommt nach Westen
+        var turn = new Raser.Vehicle()
+        turn.speed = 10.0
+        for (int i = 0; i < 40; i++) { turn.Step(0.05, 0.3, 0.0, 1.0, false, 0.0) }
+        Testing.Assert.IsTrue(turn.heading > 20.0)
+        Testing.Assert.IsTrue(turn.east < -2.0)
+        // zu schnell in die Kurve: er rutscht und hält höchstens Grip x 9 m/s² quer
+        var fast = new Raser.Vehicle()
+        fast.speed = 40.0
+        fast.Step(0.05, 0.0, 0.0, 1.0, false, 0.0)
+        for (int i = 0; i < 10; i++) { fast.Step(0.05, 0.0, 0.0, 1.0, false, 0.0) }
+        Testing.Assert.IsTrue(fast.sliding)
+        // rückwärts
+        var back = new Raser.Vehicle()
+        for (int i = 0; i < 40; i++) { back.Step(0.05, 1.0, 0.0, 0.0, true, 0.0) }
+        Testing.Assert.IsTrue(back.speed < -2.0 && back.north < -2.0)
+        // Aquaplaning
+        Testing.Assert.IsTrue(Raser.Vehicle.GripOf(1.0, 35.0) < 0.3)
+        Testing.Assert.IsTrue(Raser.Vehicle.GripOf(1.0, 20.0) > 0.5)
+        Testing.Assert.IsTrue(Math.Abs(Raser.Vehicle.GripOf(0.0, 50.0) - 1.0) < 0.001)
+    }
+
+    static defined float BrakeDistance(defined float wetness) {
+        var car = new Raser.Vehicle()
+        car.speed = 30.0
+        int steps = 0
+        while (car.speed > 0.0 && steps < 2000) {
+            car.Step(0.02, 0.0, 1.0, 0.0, false, wetness)
+            steps++
+        }
+        return car.north
+    }
+}
