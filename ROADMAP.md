@@ -95,7 +95,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Aufprall: der Wagen (zwei Kreise) rutscht an Wänden entlang und dreht dabei weg, frontal prallt er zurück (`Vehicle.Collide`, `Obstacles.Push`)
 - [x] Verfolgerkamera weicht Gebäuden aus (rückt heran und höher, weich wieder hinaus)
 - [ ] Glätte; Bordsteine; Schaden aus der Wucht des Aufpralls; Laternen und Schilder umfahren
-- [ ] Fahrzeugklassen: Fahrrad, Motorrad, Auto, Nutzfahrzeug; Tank/Akku, Zustand
+- [x] Fahrzeugklassen (`Vehicle.Of`): Auto, Transporter, Motorrad, Fahrrad - eigene Fahrwerte, Modelle, Kamera; die anderen Klassen stehen am Start geparkt, der Spieler steigt ins nächste ein; Fahrzeuge halten einander auf
+- [ ] Fahrzeuge: Tank/Akku, Zustand; Zweiräder legen sich in die Kurve, der Fahrer sitzt; angefahrene Fahrzeuge bewegen sich; Fahrzeuge in der Welt verteilt (Parkplätze)
 - [ ] Streaming mehrerer Kacheln, Vorausgenerierung in Fahrtrichtung
 - [ ] LOD für weite Sichtweiten
 

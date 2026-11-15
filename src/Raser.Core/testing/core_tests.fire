@@ -416,6 +416,25 @@ class VehicleTests {
         Testing.Assert.IsTrue(Math.Abs(front.heading) < 0.001)
     }
 
+    [Test "Fahrzeugklassen: Transporter träge, Motorrad schnell, Fahrrad langsam"]
+    undefined Classes() {
+        float after[] = new float[4]
+        string kinds[] = ["auto", "transporter", "motorrad", "fahrrad"]
+        for (int k = 0; k < 4; k++) {
+            var v = Raser.Vehicle.Of(kinds[k])
+            Testing.Assert.AreEqual(kinds[k], v.kind)
+            for (int i = 0; i < 100; i++) { v.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+            after[k] = v.speed
+        }
+        // nach 5 s Vollgas
+        Testing.Assert.IsTrue(after[1] < after[0] && after[0] < after[2])
+        Testing.Assert.IsTrue(after[3] > 5.0 && after[3] < 9.0)
+        var van = Raser.Vehicle.Of("transporter")
+        Testing.Assert.IsTrue(Math.Abs(van.radius - 1.1) < 0.001 && Math.Abs(van.spread - 1.7) < 0.001)
+        Testing.Assert.IsTrue(Raser.Vehicle.Of("fahrrad").IsBike() && !van.IsBike())
+        Testing.Assert.AreEqual("auto", Raser.Vehicle.Of("panzer").kind)
+    }
+
     static defined float BrakeDistance(defined float wetness) {
         var car = new Raser.Vehicle()
         car.speed = 30.0

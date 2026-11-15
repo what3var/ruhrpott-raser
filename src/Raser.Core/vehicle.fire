@@ -21,6 +21,13 @@ namespace Raser {
         defined float power             // Beschleunigung aus dem Stand (m/s²)
         defined float brakes            // Verzögerung bei vollem Bremsen und Grip 1 (m/s²)
         defined float maxSteer          // Grad im Stand
+        // die Klasse und die Maße (für Modell und Aufprall: zwei Kreise mit radius, je spread m vor und hinter der Mitte)
+        string kind                     // "auto", "transporter", "motorrad", "fahrrad"
+        string name
+        defined float length
+        defined float width
+        defined float radius
+        defined float spread
 
         construct() {
             this.wheelbase = 2.6
@@ -29,7 +36,54 @@ namespace Raser {
             this.brakes = 9.0
             this.maxSteer = 32.0
             this.grip = 1.0
+            this.kind = "auto"
+            this.name = "Auto"
+            this.Size(4.2, 1.8)
         }
+
+        undefined Size(defined float length, defined float width) {
+            this.length = length
+            this.width = width
+            this.radius = width / 2.0 + 0.1
+            this.spread = Math.Max(0.0, length / 2.0 - this.radius)
+        }
+
+        // Ein Fahrzeug seiner Klasse (Roadmap M3: Fahrrad, Motorrad, Auto, Nutzfahrzeug); unbekannt: ein Auto.
+        static Vehicle Of(string kind) {
+            var v = new Raser.Vehicle()
+            if (kind == "transporter") {
+                v.kind = kind
+                v.name = "Transporter"
+                v.wheelbase = 3.4
+                v.topSpeed = 42.0
+                v.power = 3.2
+                v.brakes = 7.5
+                v.maxSteer = 30.0
+                v.Size(5.6, 2.0)
+            }
+            if (kind == "motorrad") {
+                v.kind = kind
+                v.name = "Motorrad"
+                v.wheelbase = 1.45
+                v.topSpeed = 62.0
+                v.power = 8.5
+                v.maxSteer = 28.0
+                v.Size(2.1, 0.7)
+            }
+            if (kind == "fahrrad") {
+                v.kind = kind
+                v.name = "Fahrrad"
+                v.wheelbase = 1.1
+                v.topSpeed = 9.0
+                v.power = 2.0
+                v.brakes = 6.0
+                v.maxSteer = 40.0
+                v.Size(1.8, 0.5)
+            }
+            return v
+        }
+
+        defined bool IsBike() { return this.kind == "motorrad" || this.kind == "fahrrad" }
 
         // Der Grip aus der Nässe (0 .. 1) und dem Tempo.
         static defined float GripOf(defined float wetness, defined float speed) {
