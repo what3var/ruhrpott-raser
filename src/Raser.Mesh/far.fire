@@ -311,7 +311,7 @@ namespace Raser {
         // Die Öffnungen eines Gebäudes für die ferne Stufe: je Element eine undurchsichtige Fläche 3 cm vor der Wand (Fenster dunkel, mit Licht
         // dahinter nachts leuchtend - dieselbe Auslosung wie nah; Türen Holz, Tore Metall).
         undefined FarWindows(MeshPart part, RoofModel m) {
-            if (m.facade == undefined) { m.facade = Raser.Facade.Plan(m.building, this.tile.data.roads) }
+            if (m.facade == undefined) { Raser.Voxelizer.PlanFacade(m, this.tile.data.roads) }
             var panes = new List<float>()
             m.facade.Panes(m.building, m.groundVoxel, panes)
             for (int k = 0; k + 8 < panes.Count; k = k + 9) {
@@ -373,7 +373,7 @@ namespace Raser {
             var panes = new List<float>()
             foreach (m in this.models) {
                 if (!m.box.Overlaps(x0 - 1.0, y0 - 1.0, x0 + size + 1.0, y0 + size + 1.0)) { continue }
-                if (m.facade == undefined) { m.facade = Raser.Facade.Plan(m.building, this.tile.data.roads) }
+                if (m.facade == undefined) { Raser.Voxelizer.PlanFacade(m, this.tile.data.roads) }
                 panes.Clear()
                 m.facade.Panes(m.building, m.groundVoxel, panes)
                 for (int k = 0; k + 8 < panes.Count; k = k + 9) {

@@ -197,6 +197,8 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 27: Bögen bleiben in der Wandflucht (kein Bogenschnitt, wo ein Schnitt im Grundriss ist), innen wie außen glatt; schräge Durchfahrten mit
+        //     geradem Sturz; keine Fenster und Türen in Durchfahrten
         // 26: Wandsäulen unter Steildächern ab der tiefsten Dachecke mit Dachmaterial (graue Streifen im Dach)
         // 25: Kirchen (Spitzbogenfenster, Portal, Schallöffnungen, ohne Zwischendecken)
         // 24: Punkte auf Läufen, die über den Ringanfang laufen (Stufen vor Türen lagen falsch); Pavillons ohne Zwischendecken
@@ -217,7 +219,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 26
+        static readonly defined int Version = 27
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -248,8 +250,7 @@ namespace Raser {
                 if (b.footprint == undefined || b.footprint.length < 6) { continue }
                 if (b.ridge <= b.ground) { continue }
                 var model = new Raser.RoofModel(b, seed)
-                model.facade = Raser.Facade.Plan(b, tile.data.roads)
-                model.passages = Raser.Voxelizer.Passages(b, tile.data.roads)
+                Raser.Voxelizer.PlanFacade(model, tile.data.roads)
                 this.models.Add(take model)
             }
             this.roadBoxes = new List<Box2>()
@@ -676,6 +677,28 @@ namespace Raser {
             if (v >= 0) { result[cell] = Raser.Plan.CutCorner(a, v, b) } else { result[cell] = Raser.Plan.Cut(a, b) }
         }
 
+        // Fassade und Durchfahrten eines Gebäudes planen (Voxel und Netze gleich): wo eine Durchfahrt durch die Wand geht, sind keine Fenster und Türen.
+        static undefined PlanFacade(RoofModel model, List<Road> roads) {
+            model.facade = Raser.Facade.Plan(model.building, roads)
+            model.passages = Raser.Voxelizer.Passages(model.building, roads)
+            if (model.passages.Count == 0) { return }
+            var f = model.facade
+            for (int r = 0; r < f.runs.Count; r++) {
+                for (int level = 0; level < 2; level++) {
+                    var slots = f.runs[r].upper
+                    if (level == 0) { slots = f.runs[r].ground }
+                    foreach (slot in slots) {
+                        f.PointOn(r, slot.center)
+                        for (int q = 0; q + 6 < model.passages.Count; q = q + 7) {
+                            // (im Erdgeschoss; darüber nur, wenn der Bogen bis ins nächste Geschoss reicht)
+                            if (level == 1 && model.passages[q + 5] < 2.6) { continue }
+                            if (Raser.Voxelizer.PassageDistance(model.passages, q, f.px, f.py) < model.passages[q + 4] + slot.half + 0.5) { slot.kind = Raser.Facade.Wall }
+                        }
+                    }
+                }
+            }
+        }
+
         // Die Durchfahrten eines Gebäudes: Straßen und Wege (Ebene 0), die den Grundriss ganz durchqueren (mindestens zwei Schnittpunkte), je
         // Stück im Grundriss ax, ay, bx, by, die halbe Breite (Fußweg ab 1,2 m), die lichte Höhe (Fußweg 3 m, sonst 4 m) und der Stich des Bogens
         // (Fußweg bis 1,2 m, sonst bis 1,5 m); nur, wenn das Gebäude einen Meter höher ist als der Durchgang.
@@ -1064,9 +1087,11 @@ namespace Raser {
                                     float pdx = model.passages[q + 2] - model.passages[q]
                                     float pdy = model.passages[q + 3] - model.passages[q + 1]
                                     float pl = Math.Sqrt(pdx * pdx + pdy * pdy)
-                                    // die Achse des Bogens: die nächste Rasterrichtung (die Höhen an den Rändern der Säule kommen aus dem echten Abstand)
-                                    int axis = 0
-                                    if (Math.Abs(pdx) > Math.Abs(pdy)) { axis = 1 }
+                                    // der Bogen wird entlang einer Rasterachse durchgezogen: nur bei Durchfahrten entlang x oder y (bis 3°); schräge
+                                    // bekommen einen geraden Sturz in voller Höhe (ein schräger Bogen gäbe einen Kamm)
+                                    int axis = -1
+                                    if (pl > 0.0 && Math.Abs(pdx) / pl > 0.9986) { axis = 1 }
+                                    if (pl > 0.0 && Math.Abs(pdy) / pl > 0.9986) { axis = 0 }
                                     float hc = Raser.Voxelizer.ArchAt(model.passages, q, dist)
                                     float h0 = hc
                                     float h1 = hc
@@ -1076,6 +1101,11 @@ namespace Raser {
                                     } else if (axis == 1) {
                                         h0 = Raser.Voxelizer.ArchAt(model.passages, q, Raser.Voxelizer.PassageDistance(model.passages, q, pcx, pcy - 0.1))
                                         h1 = Raser.Voxelizer.ArchAt(model.passages, q, Raser.Voxelizer.PassageDistance(model.passages, q, pcx, pcy + 0.1))
+                                    }
+                                    if (axis < 0) {
+                                        hc = model.passages[q + 5]
+                                        h0 = hc
+                                        h1 = hc
                                     }
                                     plan.passCenter[c] = bd.ground + hc
                                     plan.passEdge0[c] = bd.ground + h0
@@ -1416,7 +1446,7 @@ namespace Raser {
                             continue
                         }
                         if (zb + 0.2 <= lo + 0.0001) { continue }
-                        if (zb < hi && this.passAxis[c] >= 0) {
+                        if (zb < hi && this.passAxis[c] >= 0 && this.planShape[c] == 0) {
                             float f0 = Math.Clamp((e0 - zb) / 0.2, 0.0, 1.0)
                             float f1 = Math.Clamp((e1 - zb) / 0.2, 0.0, 1.0)
                             if (f0 >= 1.0 && f1 >= 1.0) { continue }
@@ -1489,8 +1519,9 @@ namespace Raser {
                                 float half = this.archHalf[c]
                                 float rise = this.archRise[c]
                                 float ac = spring + Raser.Facade.ArchRise(ak, rise, off, half)
-                                bool outer = (this.flags[c] & 4) == 0
-                                if (outer && this.archAxis[c] >= 0) {
+                                // glatt (Schnitt in der Ansicht) in beiden Wandlagen, wo die Säule keinen Schnitt im Grundriss hat - ein Voxel trägt nur
+                                // eine Form; am schrägen Wandrand bleibt der Bogen gestuft, dafür in der Wandflucht
+                                if (this.archAxis[c] >= 0 && this.planShape[c] == 0) {
                                     float a0 = spring + Raser.Facade.ArchRise(ak, rise, off - 0.1 * this.archSign[c], half)
                                     float a1 = spring + Raser.Facade.ArchRise(ak, rise, off + 0.1 * this.archSign[c], half)
                                     float f0 = Math.Clamp((a0 - zb) / 0.2, 0.0, 1.0)
@@ -1523,9 +1554,9 @@ namespace Raser {
                                 float half = Math.Max(this.doorHalf[c], 0.3)
                                 float off = this.doorOffset[c]
                                 float ac = Raser.Voxelizer.DoorArch(spring, off, half)
-                                bool outer = (this.flags[c] & 4) == 0 && this.thick[c]
+                                bool outer = this.thick[c]
                                 if (outer) {
-                                    if (this.doorAxis[c] >= 0) {
+                                    if (this.doorAxis[c] >= 0 && this.planShape[c] == 0) {
                                         float a0 = Raser.Voxelizer.DoorArch(spring, off - 0.1 * this.doorSign[c], half)
                                         float a1 = Raser.Voxelizer.DoorArch(spring, off + 0.1 * this.doorSign[c], half)
                                         float f0 = Math.Clamp((a0 - zb) / 0.2, 0.0, 1.0)
@@ -1537,8 +1568,6 @@ namespace Raser {
                                         continue
                                     }
                                     if (zb + 0.1 < ac) { continue }
-                                } else if (zb + 0.1 < ac) {
-                                    open = 1
                                 }
                             }
                         }
