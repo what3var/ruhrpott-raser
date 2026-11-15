@@ -210,12 +210,25 @@ namespace Raser {
         }
 
         // Die Textur als RGBA-Bytes (Zeile 0 oben).
-        static byte[] Rgba() {
+        // night: die Nacht-Fassung für Glas und Wasser (unbeleuchtet gezeichnet): Glas dunkel, Fenster mit Licht (GlassLit) und Laternen warm.
+        // Die Farbe eines Palettenindex, nachts für das, was unbeleuchtet gezeichnet wird (Glas, Wasser, Laternen).
+        static defined int NightRgb(defined int c, defined bool night) {
+            if (!night) { return Raser.Palette.Rgb(c) }
+            if (c == Raser.Palette.GlassLit) { return 0xFFC478 }
+            if (c == Raser.Palette.Lamp) { return 0xFFE8B8 }
+            if (c >= 128) { return Raser.Palette.Rgb(c) }
+            int b = Raser.Palette.BaseOf(c)
+            if (b == Raser.Palette.Glass) { return 0x1C2430 }
+            if (b == Raser.Palette.Water) { return 0x0E1620 }
+            return Raser.Palette.Rgb(c)
+        }
+
+        static byte[] Rgba(defined bool night = false) {
             byte data[] = new byte[1024 * 1024 * 4]
             // Materialkacheln (mit Rand: -2 .. 65 Texel setzen das Muster fort)
             for (int c = 1; c < 128; c++) {
                 if (!Raser.Atlas.HasTile(c)) { continue }
-                int baseRgb = Raser.Palette.Rgb(c)
+                int baseRgb = Raser.Atlas.NightRgb(c, night)
                 int x0 = Raser.Atlas.TileX(c)
                 int y0 = Raser.Atlas.TileY(c)
                 int shades[] = new int[4096]
@@ -233,7 +246,7 @@ namespace Raser {
             // Palette
             for (int c = 0; c < 256; c++) {
                 for (int dy = 0; dy < 3; dy++) {
-                    for (int dx = 0; dx < 4; dx++) { Raser.Atlas.Put(data, c * 4 + dx, 616 + dy, Raser.Palette.Rgb(c)) }
+                    for (int dx = 0; dx < 4; dx++) { Raser.Atlas.Put(data, c * 4 + dx, 616 + dy, Raser.Atlas.NightRgb(c, night)) }
                 }
             }
             // Fassaden: Wand mit dem Muster der Materialkachel, Fenster als Glas über dem dunklen Inneren (wie die Voxel: Glas mit Deckkraft 0,45)

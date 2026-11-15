@@ -182,6 +182,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 17: Fenster mit Licht dahinter (Raser.Palette.GlassLit: am Tag wie Glas, nachts warm)
         // 16: Fenster und Türen aus der Fassade (Raser.Facade): Läufe, Plätze, Stil nach Nutzung, Stufen vor erhöhten Haustüren
         // 15: Grünstreifen mit Sträuchern (Raser.Strips)
         // 14: Grundrisse bereinigt (Raser.Footprints: Punkte rasten ein), Bäume rücken mit ihrer Baumscheibe von der Fahrbahn weg (Raser.Props.Settle beim Laden)
@@ -192,7 +193,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 16
+        static readonly defined int Version = 17
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -879,6 +880,9 @@ namespace Raser {
                             model.facade.At((lx0 + x + 0.5) * 0.2, (ly0 + y + 0.5) * 0.2)
                             plan.groundKind[c] = model.facade.ground
                             plan.upperKind[c] = model.facade.upper
+                            plan.groundSlot[c] = model.facade.groundSlot
+                            plan.upperSlot[c] = model.facade.upperSlot
+                            plan.building[c] = bd.id
                         } else {
                             plan.groundKind[c] = 0
                             plan.upperKind[c] = 0
@@ -981,6 +985,9 @@ namespace Raser {
         int flags[4096]
         defined int groundKind[4096]    // Wände: was im Erdgeschoss in der Säule ist (Raser.Facade: Fenster, Schaufenster, Tür ...)
         defined int upperKind[4096]     // und darüber
+        defined int groundSlot[4096]    // welches Fenster (Lauf und Platz, Raser.Facade) - ob abends Licht dahinter brennt, ist je Fenster gleich
+        defined int upperSlot[4096]
+        defined int building[4096]      // die ID des Gebäudes der Säule
         defined int stair[4096]         // Gelände: Stufen vor einer Tür bis zu diesem Voxel (0: keine)
         defined int storey
         defined int highest
@@ -1115,6 +1122,15 @@ namespace Raser {
                         if (open == 1) {
                             chunk.materials[i] = glass
                             chunk.colors[i] = glassColor
+                            // abends Licht dahinter: in gut einem Drittel der Wohnungen, in den meisten Läden (je Fenster und Geschoss gleich)
+                            int storeyNo = (vz - ground) / this.storey
+                            int slot = this.upperSlot[c]
+                            float chance = 0.35
+                            if (storeyNo == 0) {
+                                slot = this.groundSlot[c]
+                                if ((kind & 127) == Raser.Facade.Shop || (kind & 127) == Raser.Facade.GlassDoor) { chance = 0.8 }
+                            }
+                            if (Raser.Props.Rand(this.building[c], slot, storeyNo) < chance) { chunk.colors[i] = Raser.Palette.GlassLit }
                         } else if (open == 2) {
                             chunk.materials[i] = Raser.Material.Wood!int
                             chunk.colors[i] = Raser.Palette.Wood + 64

@@ -176,3 +176,12 @@ var r = new R()
 print(r.StaticInExpr(5) + " " + r.FromWordBits())
 ```
 
+## Wünsche aus Licht und Wetter (Raser.Weather, Viewer)
+
+| Was | Warum | Stand |
+|---|---|---|
+| **Punktlichter mit Reichweite, die wirklich endet** (oder eine Auswahl je Dreieck/Band): heute rechnet jedes Pixel jedes Punktlicht (`1 / (1 + q²)`, nie 0) - der Viewer schaltet deshalb nur die 10 nächsten Laternen als Licht, der Rest der Straße bleibt dunkel. | Nachtszenen mit hunderten Laternen und Fenstern | offen |
+| **Partikel als Striche in Flugrichtung** (gestreckt nach der Geschwindigkeit): Regen aus runden Scheiben sieht wie Schnee aus. | Regen | offen |
+| **Leuchtende Texturen** (eine Emissions-Textur oder ein Kanal, der unbeleuchtet bleibt): nachts tauscht der Viewer für Glas, Wasser und Laternen die Textur und schaltet `Lit` aus - für Fenster in den undurchsichtigen fernen Fassaden geht das nicht. | Fenster nachts in der Ferne | offen |
+| Nebel auch auf der GPU (laut Doku nur Fast und Software). | Hardware-Renderer | offen |
+

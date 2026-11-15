@@ -52,9 +52,11 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Fenster ab Stufe 1 als Fassaden-Textur (gleiches Raster wie die Voxel-Fenster, 1 Texel je Voxel); nachts einzelne Fenster als Lichtquellen
 - [ ] Ausstattung der Gebäude, zufällig aber stabil (aus ID und Seed): vorgerenderte Innenansichten hinter den Fenstern für das schnelle Vorbeifahren, detaillierte Ausstattung in der Nähe und beim Betreten
 - [ ] Sharp-bilinear-Shader
-- [ ] Tag/Nacht, viele Lichtquellen, warme Straßenbeleuchtung als Basis
-- [ ] Wetterzustand als gemeinsamer Eingang für Renderer, Physik und Gameplay
-- [ ] Wetterlagen: klar, Nebel, Regen (nasse Straßen, Spiegelungen), später Gewitter, Schnee, Wind
+- [x] Tag/Nacht: Sonnenstand über Bochum nach Datum und Uhrzeit (Raser.Weather), Sonne mit Schatten, Mond, Dämmerungsfarben; nachts die 10 nächsten Laternen als Punktlichter, Fenster mit Licht dahinter (gut ein Drittel der Wohnungen, die meisten Läden) und Laternenköpfe leuchten - `docs/images/viewer-nacht.png`, `docs/images/viewer-sonne.png`
+- [ ] Viele Lichtquellen: alle Laternen als Licht (braucht Punktlichter mit endender Reichweite in scene3d, docs/FIRE.md), Fenster nachts auch in der fernen Stufe, Autoscheinwerfer
+- [x] Wetterzustand als gemeinsamer Eingang (Raser.Weather in Raser.Core): Datum, Uhrzeit, Wolken, Regen, Nebel, Nässe - stufenlos 0..1; Physik und Gameplay lesen später dasselbe
+- [x] Wetterlagen in Stärken: klar, wolkig, bedeckt, Niesel, Regen, Starkregen, Dunst, Nebel, dichter Nebel (Viewer: --weather, --rain/--fog/--clouds, Tasten T/G Uhr, R Wetter, +/- Stärke) - `docs/images/viewer-regen.png`, `docs/images/viewer-nebel.png`
+- [ ] Nasse Straßen mit Spiegelungen und Pfützen, Regen als Striche (Partikel in Flugrichtung, docs/FIRE.md); Gewitter, Schnee, Wind; Wetter, das sich mit der Zeit ändert
 - [ ] Ingame-Uhr in Echtzeit (deutsche Ortszeit, echter Sonnenstand), Zeitfaktor als Server-Einstellung
 - [ ] Mondphase/-stand astronomisch korrekt, Wolken mit orangem Stadtlicht-Himmel
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos

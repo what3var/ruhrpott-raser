@@ -94,6 +94,7 @@ namespace Raser {
         static readonly defined int FlowerPink = 166      // Blüten in Beeten
         static readonly defined int FlowerYellow = 167
         static readonly defined int FlowerWhite = 168
+        static readonly defined int GlassLit = 169        // Glas eines Fensters, hinter dem abends Licht brennt (am Tag wie Glas)
 
         static int colors[] = Raser.Palette.Build()
 
@@ -141,6 +142,7 @@ namespace Raser {
             c[166] = 0xE8A0A8
             c[167] = 0xF0D070
             c[168] = 0xF4F0E6
+            c[169] = 0xA8C8D8
             for (int level = 1; level < 4; level++) {
                 for (int i = 1; i < 32; i++) { c[i + 32 * level] = Raser.Palette.Soiled(c[i], level) }
             }

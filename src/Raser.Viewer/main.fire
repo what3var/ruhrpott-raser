@@ -13,13 +13,18 @@
 //   raser-viewer ... --fly 1500 [--speed 83] [--budget-ms 30] [--lead m] [--shot ende.png]   (lead: Ladepunkt voraus, Standard Tempo x 2,5 s)
 //                                         ohne Fenster in Echtzeit geradeaus fliegen, nachladen und rendern; die Zeiten am Ende
 //
-// Im Fenster: W/S vor und zurück, A/D seitwärts, Q/E hoch und runter, Pfeile drehen, Umschalt schneller.
+//   raser-viewer ... --date 12-21 --time 17:30 --weather klar|wolkig|bedeckt|niesel|regen|starkregen|dunst|nebel|dichter-nebel
+//                    [--rain 0..1] [--fog 0..1] [--clouds 0..1]     Licht und Wetter (Raser.Weather), die Stärken auch einzeln
+//
+// Im Fenster: W/S vor und zurück, A/D seitwärts, Q/E hoch und runter, Pfeile drehen, Umschalt schneller; T/G die Uhr eine halbe Stunde vor und
+// zurück, R das nächste Wetter, +/- Regen bzw. Nebel stärker oder schwächer.
 // Detailstufen (Roadmap M2): nah die Voxel-Chunks, vernetzt mit Raser.Mesh (Stufe 0); weiter weg Netze direkt aus dem Zwischenlayer (Raser.FarMesher:
 // Höhenraster, Grundrisse, LoD2-Dächer). Je Block ein scene3d-Objekt, die Farben aus einer Palette-Textur. Je Bild wird bis zu einem Zeitbudget
 // nachgeladen: grob vor fein, vom Blickpunkt nach außen; zu weit weg wird entladen.
 // Szene: x = Ost, y = oben, z = -Nord (scene3d: Y oben, die Kamera blickt nach -Z), Ursprung beim Zielpunkt.
 #import "windows"
 #import "scene3d"
+#import "scene3d.effects"
 #import "filesystem"
 #import "time"
 #import "raser.core"
@@ -138,6 +143,155 @@ class BlockState {
 // Zeitbudget gearbeitet: erst fehlende ferne Blöcke vom Blickpunkt nach außen (billig), dann die nahen (in den Workern). Bleibt Zeit, wird über die Radien
 // hinaus vorausgeladen (versteckt), solange reichlich Speicher frei ist. Was aus den Radien fällt, bleibt versteckt im Vorrat; entladen wird erst, wenn
 // der Speicher knapp wird - das Entfernteste zuerst.
+// Licht und Wetter (Raser.Weather): Sonne (gerichtet, mit Schatten, wenn sie scheint) oder Mond, Himmel als Hintergrund, Umgebungslicht, Dunst
+// bzw. Nebel, Regen als Partikel um die Kamera. Nachts leuchten die Laternen: die nächsten als echte Punktlichter (scene3d rechnet jedes
+// Punktlicht für jedes Pixel - hunderte wären zu teuer), neu verteilt, wenn die Kamera ein Stück weiter ist.
+class Atmosphere {
+    Raser.Weather weather
+    Scene scene
+    Camera cam
+    WorldView view
+    Raser.FileTileStore store
+    Light sun
+    Light moon
+    List<Light> pool                        // die Punktlichter der Laternen
+    Emitter rain
+    Dictionary<string, List<float>> lamps   // je Kachel: die Laternenköpfe in der Welt (Ost, Nord, Höhe)
+    defined float lastE
+    defined float lastN
+    static readonly defined int Lamps = 10
+
+    construct(Raser.Weather weather, Scene scene, Camera cam, WorldView view, string world) {
+        this.weather = weather
+        this.scene = scene
+        this.cam = cam
+        this.view = view
+        this.store = new Raser.FileTileStore(world)
+        this.sun = Light.Directional(-0.45, -1.0, -0.3)
+        this.sun.CastShadows = true
+        scene.Add(this.sun)
+        this.moon = Light.Directional(0.3, -1.0, 0.5, S3D.Rgb(150, 165, 210), 0.0)
+        scene.Add(this.moon)
+        this.pool = new List<Light>()
+        for (int k = 0; k < Atmosphere.Lamps; k++) {
+            var l = Light.Point(0m, -1000m, 0m, S3D.Rgb(255, 214, 160), 1.8)
+            l.Range = 6m
+            l.Enabled = false
+            this.pool.Add(l)
+            scene.Add(take l)
+        }
+        this.rain = Emitter.Rain(0m, 20m, 0m, 40m)
+        this.rain.Running = false
+        this.rain.SetArea(14m, 3m, 14m)
+        // (Partikel sind in scene3d runde Scheiben: Regen als viele kleine, blasse Tropfen - Striche in Flugrichtung wären besser, docs/FIRE.md)
+        this.rain.StartSize = 0.035m
+        this.rain.EndSize = 0.03m
+        this.rain.StartColor = S3D.Rgba(190, 200, 215, 120)
+        this.rain.EndColor = S3D.Rgba(190, 200, 215, 80)
+        this.rain.MaxParticles = 30000
+        scene.Add(this.rain)
+        this.lamps = new Dictionary<string, List<float>>()
+        this.lastE = 1.0e30
+        this.lastN = 1.0e30
+        scene.ShadowResolution = 2048
+    }
+
+    static defined int Rgb(defined int c) { return S3D.Rgb((c >> 16) & 255, (c >> 8) & 255, c & 255) }
+
+    // Das Wetter auf die Szene legen (nach jeder Änderung des Wetters).
+    undefined Apply() {
+        var w = this.weather
+        this.scene.AmbientColor = Atmosphere.Rgb(w.ambientColor)
+        this.scene.AmbientIntensity = w.ambientIntensity
+        this.cam.Background = Atmosphere.Rgb(w.skyColor)
+        this.scene.Fog(Atmosphere.Rgb(w.skyColor), w.hazeStart * 1m, w.hazeEnd * 1m)
+        // Szene: x = Ost, y = oben, z = -Nord; das Licht läuft von der Sonne weg
+        this.sun.Direction(-w.sunX, -w.sunZ, w.sunY)
+        this.sun.Color = Atmosphere.Rgb(w.sunColor)
+        this.sun.Intensity = w.sunIntensity
+        this.sun.Enabled = w.sunIntensity > 0.01
+        this.scene.Shadows = w.shadows
+        // nachts der Mond (schwach, bläulich), in der Dämmerung ausgeblendet
+        this.moon.Intensity = Math.Clamp((-w.elevation - 2.0) / 8.0, 0.0, 1.0) * 0.12 * (1.0 - 0.7 * w.clouds)
+        this.moon.Enabled = this.moon.Intensity > 0.005
+        this.rain.Running = w.rain > 0.0
+        this.rain.Rate = 3000.0 + 17000.0 * w.rain
+        // nass: alles etwas dunkler und kühler
+        if (w.wetness > 0.0) { this.scene.Tint(S3D.Rgb(30, 38, 50), 0.14 * w.wetness) } else { this.scene.Tint(0, 0.0) }
+        this.view.SetNight(w.lampsOn)
+        this.lastE = 1.0e30
+    }
+
+    // Je Bild: Regen über der Kamera, die Laternen in der Nähe (e, n: wo die Kamera ist).
+    undefined Update(defined float e, defined float n, defined float dt) {
+        this.rain.SetPosition(this.cam.X, this.cam.Y + 7m, this.cam.Z)
+        if (!this.weather.lampsOn) {
+            foreach (l in this.pool) { l.Enabled = false }
+            return
+        }
+        if ((e - this.lastE) * (e - this.lastE) + (n - this.lastN) * (n - this.lastN) < 25.0) { return }
+        this.lastE = e
+        this.lastN = n
+        // die Laternen der Kacheln drumherum, die nächsten zuerst
+        var near = new List<float>()
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                var key = Raser.TileKey.Of(e + dx * 256.0, n + dy * 256.0)
+                var heads = this.LampsOf(key)
+                for (int k = 0; k + 2 < heads.Count; k = k + 3) {
+                    float d2 = (heads[k] - e) * (heads[k] - e) + (heads[k + 1] - n) * (heads[k + 1] - n)
+                    if (d2 > 120.0 * 120.0) { continue }
+                    near.Add(d2)
+                    near.Add(heads[k])
+                    near.Add(heads[k + 1])
+                    near.Add(heads[k + 2])
+                }
+            }
+        }
+        for (int i = 0; i < Atmosphere.Lamps; i++) {
+            // das nächste noch freie
+            int best = -1
+            for (int k = 0; k + 3 < near.Count; k = k + 4) {
+                if (near[k] < 0.0) { continue }
+                if (best < 0 || near[k] < near[best]) { best = k }
+            }
+            var l = this.pool[i]
+            if (best < 0) {
+                l.Enabled = false
+                continue
+            }
+            l.X = (near[best + 1] - this.view.originE) * 1m
+            l.Y = (near[best + 3] - this.view.originZ) * 1m
+            l.Z = -(near[best + 2] - this.view.originN) * 1m
+            l.Enabled = true
+            near[best] = -1.0
+        }
+    }
+
+    // Die Laternenköpfe einer Kachel (Ost, Nord, Höhe in der Welt): der Mast 4,9 m hoch, der Kopf 0,7 m zur Straße (wie Raser.Props.Lamp).
+    List<float> LampsOf(Raser.TileKey key) {
+        string name = key + ""
+        if (this.lamps.ContainsKey(name)) { return this.lamps[name] }
+        var heads = new List<float>()
+        var tile = this.store.Load(key)
+        if (tile != undefined) {
+            foreach (p in tile.data.props) {
+                if (p.kind != "lamp") { continue }
+                int q = (Math.Round(p.angle / 90.0)!int % 4 + 4) % 4
+                float hx = p.x + 0.7 * Math.Cos(q * Math.PI / 2.0)
+                float hy = p.y + 0.7 * Math.Sin(q * Math.PI / 2.0)
+                float g = 0.0
+                if (tile.heights != undefined) { g = tile.heights.At(p.x, p.y) }
+                heads.Add(hx + key.East)
+                heads.Add(hy + key.North)
+                heads.Add(g + 4.8)
+            }
+        }
+        this.lamps[name] = heads
+        return heads
+    }
+}
+
 class WorldView {
     Scene scene
     Texture palette
@@ -151,6 +305,8 @@ class WorldView {
     defined float originE
     defined float originN
     defined float originZ
+    defined bool night              // Glas und Laternen leuchten (SetNight)
+    Texture nightPalette
     defined int near                // Radius der Stufe 0 in Blöcken (0: nur der Block des Blickpunkts, -1: keiner)
     defined int far                 // Radius der fernen Stufe in Blöcken
     defined int farAhead            // so viele Ringe über `far` hinaus wird die ferne Stufe vorausgeladen
@@ -207,6 +363,40 @@ class WorldView {
         this.palette.Filter = TextureFilter.Sharp         // scharfe Voxel, an den Kanten über ein Pixel geglättet (Konzept: Pixel-Art)
     }
 
+    // Nachts: Glas, Wasser und Laternen (die durchsichtigen Teile) unbeleuchtet mit der Nacht-Textur - Fenster mit Licht dahinter und Laternen
+    // leuchten warm, die anderen Fenster sind dunkel (Raser.Atlas.Rgba(true)); am Tag wieder wie alles andere.
+    undefined SetNight(defined bool night) {
+        if (night == this.night) { return }
+        this.night = night
+        if (night && this.nightPalette == undefined) {
+            this.nightPalette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba(true))
+            this.nightPalette.Filter = TextureFilter.Sharp
+        }
+        foreach (pair in this.blocks) {
+            this.GlowSet(pair.Value.nearSet, night)
+            this.GlowSet(pair.Value.farSet, night)
+        }
+    }
+
+    undefined GlowSet(LodSet set, defined bool night) {
+        if (set == undefined || !set.shown) { return }
+        for (int i = 0; i < set.objects.Count && i < set.opacities.Count; i++) {
+            if (set.opacities[i] < 1.0) { this.Glow(set.objects[i], night, set.opacities[i]) }
+        }
+    }
+
+    undefined Glow(Object obj, defined bool night, defined float opacity) {
+        if (night) {
+            obj.Texture = this.nightPalette
+            obj.Lit = false
+            obj.Opacity = 0.9
+        } else {
+            obj.Texture = this.palette
+            obj.Lit = true
+            obj.Opacity = opacity
+        }
+    }
+
     // Schließt den Auftragskanal: die Worker enden, wenn sie fertig sind.
     undefined Close() {
         if (this.jobs != undefined) { this.jobs.Close() }
@@ -239,7 +429,10 @@ class WorldView {
                 var obj = new Object(set.models[i])
                 obj.KeepMeshCoordinates = true          // die Koordinaten des Netzes sind Welt-Koordinaten (Ursprung des Netzes an der Position 0, 0, 0)
                 obj.Texture = this.palette
-                if (set.opacities[i] < 1.0) { obj.Opacity = set.opacities[i] }
+                if (set.opacities[i] < 1.0) {
+                    obj.Opacity = set.opacities[i]
+                    if (this.night) { this.Glow(obj, true, set.opacities[i]) }
+                }
                 set.objects.Add(obj)
                 this.scene.Add(take obj)
             }
@@ -506,13 +699,22 @@ class Viewer {
         var scene = new Scene()
         scene.Shadows = false
         scene.Threads = options.Get("render-threads", "0").ToInt()     // 0: so viele wie die Maschine hat (scene3d); weniger lässt den Workern Kerne
-        scene.AmbientIntensity = 0.45
-        scene.Add(Light.Directional(-0.45, -1.0, -0.3))
         var cam = new Camera(fb)
         cam.FieldOfView = 60deg
         cam.Near = 0.2m
-        cam.Far = 2000m
-        cam.Background = S3D.Rgb(150, 170, 190)
+        cam.Far = 3000m
+        // das Wetter: --date MM-TT, --time HH:MM, --weather (Raser.Weather.Preset), --rain/--fog/--clouds
+        var weather = new Raser.Weather()
+        var date = options.Get("date", "07-01").Split("-")
+        weather.day = Raser.Weather.DayOf(date[0].ToInt(), date[1].ToInt())
+        var clock = options.Get("time", "14:00").Split(":")
+        weather.hour = clock[0].ToFloat() + clock[1].ToFloat() / 60.0
+        weather.Preset(options.Get("weather", "klar"))
+        // die Stärken einzeln (0 .. 1)
+        if (options.Get("clouds", "") != "") { weather.clouds = options.Get("clouds", "").ToFloat() }
+        if (options.Get("rain", "") != "") { weather.SetRain(options.Get("rain", "").ToFloat()) }
+        if (options.Get("fog", "") != "") { weather.SetFog(options.Get("fog", "").ToFloat()) }
+        weather.Light()
         float yr = yaw * Math.PI / 180.0
         float pr = pitch * Math.PI / 180.0
         // Kamera hinter dem Ziel, Blick auf das Ziel
@@ -531,6 +733,9 @@ class Viewer {
         view.nearAhead = options.Get("near-ahead", "2").ToInt()
         view.memory.minFree = options.Get("min-free", "20").ToFloat()
         view.memory.budgetMb = options.Get("memory-mb", "0").ToInt()
+        var atmosphere = new Atmosphere(weather, scene, cam, view, options.Get("world", "world"))
+        atmosphere.Apply()
+        print("Wetter: Sonne " + Math.Round(weather.elevation) + "°, Wolken " + weather.clouds + ", Regen " + weather.rain + ", Nebel " + weather.fog + ", Sicht " + Math.Round(weather.hazeEnd) + " m, Schatten " + weather.shadows + ", Laternen " + weather.lampsOn)
         int start = DateTime.Now.Ticks
         print("Lade um " + e + ", " + n + " (Voxel im Radius " + near + ", fern bis " + far + " Blöcke à 51,2 m, " + workers + " Worker)")
         var here = view.WorldOf(cam)
@@ -581,6 +786,12 @@ class Viewer {
 
         string shot = options.Get("shot", "")
         if (shot != "") {
+            var at0 = view.WorldOf(cam)
+            atmosphere.Update(at0[0], at0[1], 0.0)
+            // der Regen braucht ein paar Sekunden, bis er fällt
+            if (weather.rain > 0.0) {
+                for (int k = 0; k < 30; k++) { scene.Advance(0.1s) }
+            }
             int t0 = DateTime.Now.Ticks
             cam.Render()
             print("Bild in " + ((DateTime.Now.Ticks - t0) / 10000.0) + " ms")
@@ -605,6 +816,8 @@ class Viewer {
         bool fast = false
         float heading = cam.RotationY / 1deg
         float tilt = cam.RotationX / 1deg
+        string presets[] = ["klar", "wolkig", "bedeckt", "niesel", "regen", "starkregen", "dunst", "nebel", "dichter-nebel"]
+        int presetIndex = 0
         int last = DateTime.Now.Ticks
         while (win.Tick()) {
             any ev = win.NextEvent()
@@ -623,6 +836,31 @@ class Viewer {
                     else if (key == 1073741906) { lookUp = pressed }
                     else if (key == 1073741905) { lookDown = pressed }
                     else if (key == 1073742049 || key == 1073742053) { fast = pressed }
+                    else if (pressed && key == 116) {
+                        // T: eine halbe Stunde weiter, G: zurück, R: das nächste Wetter
+                        weather.hour = (weather.hour + 0.5) % 24.0
+                        weather.Update()
+                        atmosphere.Apply()
+                    } else if (pressed && key == 103) {
+                        weather.hour = (weather.hour + 23.5) % 24.0
+                        weather.Update()
+                        atmosphere.Apply()
+                    } else if (pressed && (key == 43 || key == 61 || key == 1073741911 || key == 45 || key == 1073741910)) {
+                        // + / -: Regen bzw. Nebel stärker oder schwächer (je nachdem, was gerade ist), sonst die Wolken
+                        float step = 0.1
+                        if (key == 45 || key == 1073741910) { step = -0.1 }
+                        if (weather.rain > 0.0) { weather.SetRain(weather.rain + step) } else if (weather.fog > 0.0) { weather.SetFog(weather.fog + step) } else {
+                            weather.clouds = Math.Clamp(weather.clouds + step, 0.0, 1.0)
+                            weather.Light()
+                        }
+                        atmosphere.Apply()
+                        print("Regen " + weather.rain + ", Nebel " + weather.fog + ", Wolken " + weather.clouds)
+                    } else if (pressed && key == 114) {
+                        presetIndex = (presetIndex + 1) % presets.length
+                        weather.Preset(presets[presetIndex])
+                        atmosphere.Apply()
+                        print("Wetter: " + presets[presetIndex] + ", " + Math.Floor(weather.hour) + " Uhr")
+                    }
                 }
                 ev = win.NextEvent()
             }
@@ -664,6 +902,8 @@ class Viewer {
             cam.RotationX = tilt * 1deg
             var w = view.WorldOf(cam)
             view.Update(w[0], w[1], 15.0)
+            atmosphere.Update(w[0], w[1], dt)
+            scene.Advance(dt * 1s)
             cam.Render()
         }
         view.Close()

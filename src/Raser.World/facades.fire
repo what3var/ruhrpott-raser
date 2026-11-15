@@ -70,9 +70,11 @@ namespace Raser {
         // die erhöhten Türen (für die Stufen davor): Punkt auf der Wand, Normale nach außen, halbe Breite
         List<float> stairs
 
-        // nach At: die Arten in der Säule
+        // nach At: die Arten in der Säule und welches Fenster es ist (Lauf und Platz - für Licht dahinter, je Fenster gleich)
         defined int ground
         defined int upper
+        defined int groundSlot
+        defined int upperSlot
 
         construct() {
             this.runs = new List<FacadeRun>()
@@ -322,6 +324,8 @@ namespace Raser {
         undefined At(defined float x, defined float y) {
             this.ground = Raser.Facade.Wall
             this.upper = Raser.Facade.Wall
+            this.groundSlot = 0
+            this.upperSlot = 0
             int n = this.len.length
             int best = -1
             float bestD = 1.0e30
@@ -342,6 +346,15 @@ namespace Raser {
             var fr = this.runs[this.runOf[best]]
             this.ground = Raser.Facade.KindAt(fr.ground, along)
             this.upper = Raser.Facade.KindAt(fr.upper, along)
+            this.groundSlot = this.runOf[best] * 4096 + Raser.Facade.SlotAt(fr.ground, along)
+            this.upperSlot = this.runOf[best] * 4096 + Raser.Facade.SlotAt(fr.upper, along)
+        }
+
+        static defined int SlotAt(List<FacadeSlot> slots, defined float along) {
+            for (int i = 0; i < slots.Count; i++) {
+                if (Math.Abs(along - slots[i].center) < slots[i].half) { return i }
+            }
+            return 4095
         }
 
         // Die Art an der Stelle along; + Frame in der äußeren Säule eines Fensters (der Rahmen ringsum - Fensterkreuze sind hier selten).

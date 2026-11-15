@@ -300,3 +300,57 @@ class IdTests {
         Testing.Assert.AreEqual(Raser.IdKind.Vehicle, Raser.Ids.KindOf(v))
     }
 }
+
+class WeatherTests {
+    [Test "Sonnenstand über Bochum: Sommer hoch, Winter tief, nachts darunter, morgens im Osten"]
+    undefined Sun() {
+        var w = new Raser.Weather()
+        w.day = Raser.Weather.DayOf(6, 21)
+        w.hour = 13.5                       // Sommerzeit: Mittag um 13:30
+        w.Update()
+        Testing.Assert.IsTrue(w.elevation > 60.0 && w.elevation < 63.0)
+        Testing.Assert.IsTrue(w.azimuth > 170.0 && w.azimuth < 190.0)
+        w.day = Raser.Weather.DayOf(12, 21)
+        w.hour = 12.5
+        w.Update()
+        Testing.Assert.IsTrue(w.elevation > 13.5 && w.elevation < 16.5)
+        w.hour = 0.5
+        w.Update()
+        Testing.Assert.IsTrue(w.elevation < -40.0)
+        Testing.Assert.IsTrue(w.lampsOn)
+        w.day = Raser.Weather.DayOf(3, 20)
+        w.hour = 8.0
+        w.Update()
+        Testing.Assert.IsTrue(w.azimuth > 80.0 && w.azimuth < 125.0)
+        Testing.Assert.IsTrue(w.sunX > 0.5)
+    }
+
+    [Test "Wetter: bedeckt ohne Schatten, Nebel nah, Regen macht nass"]
+    undefined Presets() {
+        var w = new Raser.Weather()
+        w.day = Raser.Weather.DayOf(7, 1)
+        w.hour = 14.0
+        w.Preset("klar")
+        Testing.Assert.IsTrue(w.shadows)
+        Testing.Assert.IsTrue(!w.lampsOn)
+        float clearSun = w.sunIntensity
+        w.Preset("bedeckt")
+        Testing.Assert.IsTrue(!w.shadows)
+        Testing.Assert.IsTrue(w.sunIntensity < clearSun * 0.5)
+        w.Preset("nebel")
+        Testing.Assert.IsTrue(w.hazeEnd < 300.0)
+        w.Preset("dichter-nebel")
+        float dense = w.hazeEnd
+        Testing.Assert.IsTrue(dense < 80.0)
+        w.SetFog(0.3)
+        Testing.Assert.IsTrue(w.hazeEnd > dense * 3.0)
+        w.Preset("niesel")
+        float drizzle = w.hazeEnd
+        w.Preset("starkregen")
+        Testing.Assert.IsTrue(w.wetness > 0.9)
+        Testing.Assert.IsTrue(w.hazeEnd < drizzle)
+        w.SetRain(0.1)
+        Testing.Assert.IsTrue(w.wetness < 0.2)
+        Testing.Assert.AreEqual(0x808080, Raser.Weather.Mix(0x000000, 0xFFFFFF, 0.5) & 0xFEFEFE)
+    }
+}

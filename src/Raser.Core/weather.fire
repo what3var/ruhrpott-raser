@@ -1,0 +1,157 @@
+// Raser.Core: der Wetterzustand - ein gemeinsamer Eingang für Renderer, Physik und Gameplay (Roadmap: Atmosphäre).
+//
+// Datum und Uhrzeit (Ortszeit, Sommerzeit von Ende März bis Ende Oktober), Bewölkung, Regen, Nebel. Daraus, deterministisch und ohne Zufall:
+// der Sonnenstand über Bochum (51,48° N, 7,22° O; Näherung nach NOAA, auf etwa ein Grad genau), die Farben und Stärken von Sonne,
+// Himmel und Umgebungslicht, Dunst bzw. Nebel und ob Laternen und Fenster leuchten. Die Nässe der Straßen folgt dem Regen (Fahrphysik später).
+// Farben als 0xRRGGBB.
+namespace Raser {
+    class Weather {
+        static readonly defined float Latitude = 51.48
+        static readonly defined float Longitude = 7.22
+
+        defined int day                 // Tag im Jahr (1 .. 365)
+        defined float hour              // Ortszeit (0 .. 24)
+        defined float clouds            // 0 klar .. 1 bedeckt
+        defined float rain              // 0 trocken .. 1 Starkregen
+        defined float fog               // 0 klar .. 1 dichter Nebel
+        defined float wetness           // 0 trocken .. 1 nass (folgt dem Regen)
+
+        // nach Update: der Sonnenstand (Grad) und die Richtung zur Sonne (x Ost, y Nord, z oben)
+        defined float elevation
+        defined float azimuth
+        defined float sunX
+        defined float sunY
+        defined float sunZ
+        // das Licht
+        defined int sunColor
+        defined float sunIntensity
+        defined int ambientColor
+        defined float ambientIntensity
+        defined int skyColor            // der Himmel am Horizont (Hintergrund und Dunst)
+        defined float hazeStart         // Dunst/Nebel ab (m)
+        defined float hazeEnd           // ganz im Dunst ab (m)
+        defined bool shadows            // lohnt ein Schatten (Sonne über dem Horizont, nicht bedeckt)
+        defined bool lampsOn            // Straßenlaternen und Fenster leuchten
+
+        construct() {
+            this.day = 172
+            this.hour = 12.0
+            this.Update()
+        }
+
+        // Ein Wetter nach Namen: klar, wolkig, bedeckt; niesel, regen, starkregen; dunst, nebel, dichter-nebel (sonst klar). Stärken danach mit
+        // SetRain / SetFog anpassen.
+        undefined Preset(string name) {
+            this.clouds = 0.1
+            this.rain = 0.0
+            this.fog = 0.0
+            if (name == "wolkig" || name == "cloudy") { this.clouds = 0.5 }
+            if (name == "bedeckt" || name == "overcast") { this.clouds = 0.9 }
+            if (name == "niesel" || name == "drizzle") {
+                this.clouds = 0.9
+                this.rain = 0.2
+            }
+            if (name == "regen" || name == "rain") {
+                this.clouds = 1.0
+                this.rain = 0.55
+            }
+            if (name == "starkregen" || name == "downpour") {
+                this.clouds = 1.0
+                this.rain = 1.0
+            }
+            if (name == "dunst" || name == "haze") {
+                this.clouds = 0.4
+                this.fog = 0.3
+            }
+            if (name == "nebel" || name == "fog") {
+                this.clouds = 0.8
+                this.fog = 0.65
+            }
+            if (name == "dichter-nebel" || name == "dense-fog") {
+                this.clouds = 0.9
+                this.fog = 1.0
+            }
+            this.wetness = Math.Clamp(this.rain * 1.5, 0.0, 1.0)
+            this.Update()
+        }
+
+        // Die Stärke von Regen bzw. Nebel (0 .. 1); Regen bringt Wolken und Nässe mit.
+        undefined SetRain(defined float amount) {
+            this.rain = Math.Clamp(amount, 0.0, 1.0)
+            if (this.rain > 0.0) { this.clouds = Math.Max(this.clouds, 0.8 + 0.2 * this.rain) }
+            this.wetness = Math.Clamp(this.rain * 1.5, 0.0, 1.0)
+            this.Light()
+        }
+
+        undefined SetFog(defined float amount) {
+            this.fog = Math.Clamp(amount, 0.0, 1.0)
+            this.Light()
+        }
+
+        static defined int DayOf(defined int month, defined int dayOfMonth) {
+            defined int starts[] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+            return starts[Math.Clamp(month, 1, 12) - 1] + dayOfMonth
+        }
+
+        // Der Sonnenstand und alles Licht neu.
+        undefined Update() {
+            float rad = Math.PI / 180.0
+            // Sommerzeit grob: Tag 87 .. 300
+            float utc = this.hour - 1.0
+            if (this.day >= 87 && this.day <= 300) { utc = utc - 1.0 }
+            float g = 2.0 * Math.PI / 365.0 * (this.day - 1 + (utc - 12.0) / 24.0)
+            // Deklination und Zeitgleichung (Minuten), nach NOAA
+            float decl = 0.006918 - 0.399912 * Math.Cos(g) + 0.070257 * Math.Sin(g) - 0.006758 * Math.Cos(2.0 * g) + 0.000907 * Math.Sin(2.0 * g) - 0.002697 * Math.Cos(3.0 * g) + 0.00148 * Math.Sin(3.0 * g)
+            float eqt = 229.18 * (0.000075 + 0.001868 * Math.Cos(g) - 0.032077 * Math.Sin(g) - 0.014615 * Math.Cos(2.0 * g) - 0.040849 * Math.Sin(2.0 * g))
+            float solar = utc * 60.0 + eqt + 4.0 * Raser.Weather.Longitude
+            float ha = (solar / 4.0 - 180.0) * rad
+            float lat = Raser.Weather.Latitude * rad
+            float sinEl = Math.Sin(lat) * Math.Sin(decl) + Math.Cos(lat) * Math.Cos(decl) * Math.Cos(ha)
+            float el = Math.Asin(Math.Clamp(sinEl, -1.0, 1.0))
+            // Azimut von Nord im Uhrzeigersinn
+            float az = Math.Atan2(Math.Sin(ha), Math.Cos(ha) * Math.Sin(lat) - Math.Tan(decl) * Math.Cos(lat)) + Math.PI
+            this.elevation = el / rad
+            this.azimuth = az / rad
+            this.sunX = Math.Sin(az) * Math.Cos(el)
+            this.sunY = Math.Cos(az) * Math.Cos(el)
+            this.sunZ = Math.Sin(el)
+            this.Light()
+        }
+
+        // Die Farben aus Sonnenstand und Wetter.
+        undefined Light() {
+            float e = this.elevation
+            float day = Math.Clamp((e + 4.0) / 12.0, 0.0, 1.0)            // Dämmerung von -4° bis 8°
+            float low = Math.Clamp(1.0 - e / 25.0, 0.0, 1.0)               // tief stehende Sonne: wärmer
+            float overcast = Math.Clamp(this.clouds, 0.0, 1.0)
+            // die Sonne: tief orange, hoch fast weiß; Wolken nehmen ihr die Kraft
+            this.sunColor = Raser.Weather.Mix(0xFFF6E8, 0xFFA060, low * low)
+            this.sunIntensity = Math.Clamp(e / 6.0, 0.0, 1.0) * (0.55 + 0.45 * Math.Clamp(e / 40.0, 0.0, 1.0)) * (1.0 - 0.8 * overcast) * (1.0 - 0.5 * this.fog)
+            // der Himmel: Nacht (Stadtglühen), Dämmerung (rötlich am Horizont), Tag (blau, bedeckt grau)
+            int clear = Raser.Weather.Mix(0x96B4D7, 0xE8A07A, low * low * Math.Clamp(1.0 - overcast * 1.4, 0.0, 1.0))
+            int dayColor = Raser.Weather.Mix(clear, 0xA8ACB2, overcast)
+            if (this.rain > 0.0) { dayColor = Raser.Weather.Mix(dayColor, 0x80868E, Math.Clamp(this.rain, 0.0, 1.0)) }
+            this.skyColor = Raser.Weather.Mix(0x141826, dayColor, day)
+            if (this.fog > 0.0) { this.skyColor = Raser.Weather.Mix(this.skyColor, Raser.Weather.Mix(0x30333A, 0xB8BCC0, day), this.fog) }
+            // das Umgebungslicht: nachts schwach und bläulich, am Tag vom Himmel; bedeckt mehr Anteil als bei Sonne
+            this.ambientColor = Raser.Weather.Mix(0x8090C0, Raser.Weather.Mix(0xD8E4F4, 0xE6E8EA, overcast), day)
+            this.ambientIntensity = 0.12 + day * (0.33 + 0.27 * overcast) - 0.08 * this.rain
+            // Sicht: klar 2,6 km, Regen näher (Starkregen 900 m), Nebel exponentiell (Dunst 0,3: gut 800 m, Nebel 0,65: gut 200 m, dicht 1: 60 m)
+            float far = (2600.0 - 1700.0 * Math.Clamp(this.rain, 0.0, 1.0)) * Math.Exp(-3.8 * Math.Clamp(this.fog, 0.0, 1.0))
+            // (der Dunst nimmt in scene3d linear zu; echter Nebel schluckt schon auf halbem Weg das meiste: das Ende rückt mit dem Nebel näher)
+            this.hazeEnd = Math.Max(far * (1.0 - 0.45 * Math.Clamp(this.fog * 2.0, 0.0, 1.0)), 25.0)
+            this.hazeStart = this.hazeEnd * (0.25 - 0.25 * Math.Clamp(this.fog * 1.5, 0.0, 1.0))
+            this.shadows = e > 2.0 && overcast < 0.65 && this.fog < 0.3
+            this.lampsOn = e < 2.0 || (this.fog > 0.5 && e < 10.0) || (this.rain > 0.6 && e < 6.0)
+        }
+
+        // a .. b nach t (0 .. 1), je Kanal
+        static defined int Mix(defined int a, defined int b, defined float t) {
+            float u = Math.Clamp(t, 0.0, 1.0)
+            int r = Math.Round(((a >> 16) & 255) * (1.0 - u) + ((b >> 16) & 255) * u)!int
+            int g = Math.Round(((a >> 8) & 255) * (1.0 - u) + ((b >> 8) & 255) * u)!int
+            int bl = Math.Round((a & 255) * (1.0 - u) + (b & 255) * u)!int
+            return (r << 16) | (g << 8) | bl
+        }
+    }
+}
