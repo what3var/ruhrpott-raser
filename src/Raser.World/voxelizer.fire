@@ -196,6 +196,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 19: Außenwände zwei Voxel dick, Öffnungen mit Laibung (außen frei, Glas und Tür innen)
         // 18: Dachüberstand bei Steildächern (40 cm, RoofModel.eaveRing), das Dach über der Wand voll
         // 17: Fenster mit Licht dahinter (Raser.Palette.GlassLit: am Tag wie Glas, nachts warm)
         // 16: Fenster und Türen aus der Fassade (Raser.Facade): Läufe, Plätze, Stil nach Nutzung, Stufen vor erhöhten Haustüren
@@ -208,7 +209,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 18
+        static readonly defined int Version = 19
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -921,9 +922,16 @@ namespace Raser {
                         if (owner[o - 1] != b || owner[o + 1] != b || owner[o - 66] != b || owner[o + 66] != b) { flags = 1 }
                         // hinter einem Bauelement (Diagonale, Rundung) ist die Wand eine Säule dicker - sonst bliebe dort nur ein schmaler Keil
                         if (planOf[o - 1] != 0 || planOf[o + 1] != 0 || planOf[o - 66] != 0 || planOf[o + 66] != 0) { flags = flags | 1 }
+                        // Die Außenwand ist zwei Voxel dick (40 cm): außen die Lage am Rand, dahinter eine zweite - in Öffnungen bleibt die äußere frei,
+                        // Glas, Tür und Rahmen sitzen in der inneren (Laibung). Nach dem Abstand zur Kante des Grundrisses, so auch an schrägen Wänden.
+                        if (model.facade != undefined) {
+                            model.facade.At((lx0 + x + 0.5) * 0.2, (ly0 + y + 0.5) * 0.2)
+                            float wd = model.facade.distance
+                            if (wd < 0.4 && (flags & 1) == 0) { flags = 1 | 4 }
+                            else if ((flags & 1) != 0 && wd >= 0.2 && planOf[o] == 0 && owner[o - 1] == b && owner[o + 1] == b && owner[o - 66] == b && owner[o + 66] == b) { flags = flags | 4 }
+                        }
                         // Fenster und Türen: aus der Fassade des Gebäudes, nach der Lage der Säule auf ihrem Lauf (über Chunk-Grenzen gleich)
                         if ((flags & 1) != 0 && model.facade != undefined) {
-                            model.facade.At((lx0 + x + 0.5) * 0.2, (ly0 + y + 0.5) * 0.2)
                             plan.groundKind[c] = model.facade.ground
                             plan.upperKind[c] = model.facade.upper
                             plan.groundSlot[c] = model.facade.groundSlot
@@ -934,6 +942,7 @@ namespace Raser {
                             plan.upperKind[c] = 0
                         }
                         plan.flags[c] = flags
+                        plan.thick[c] = model.facade != undefined && model.facade.style != Raser.Facade.None
                         plan.planShape[c] = planOf[o]
                         plan.eaveFull[c] = model.eaveRing != undefined
                         if (planOf[o] != 0) {
@@ -1062,6 +1071,7 @@ namespace Raser {
         int flags[4096]
         defined int groundKind[4096]    // Wände: was im Erdgeschoss in der Säule ist (Raser.Facade: Fenster, Schaufenster, Tür ...)
         defined int upperKind[4096]     // und darüber
+        defined bool thick[4096]        // Wand zwei Voxel dick (flags & 4: die innere Lage)
         defined int groundSlot[4096]    // welches Fenster (Lauf und Platz, Raser.Facade) - ob abends Licht dahinter brennt, ist je Fenster gleich
         defined int upperSlot[4096]
         defined int building[4096]      // die ID des Gebäudes der Säule
@@ -1217,6 +1227,8 @@ namespace Raser {
                         if (vz - ground < this.storey) { kind = this.groundKind[c] }
                         int open = 0
                         if (kind != 0 && vz < top - 1) { open = Raser.Voxelizer.Opening(kind, inStorey, vz - ground - 1, vz, top) }
+                        // die äußere Lage einer Öffnung bleibt frei (die Laibung), nur die innere trägt Glas, Tür und Rahmen
+                        if (open != 0 && (this.flags[c] & 4) == 0 && this.thick[c]) { continue }
                         if (open == 1) {
                             chunk.materials[i] = glass
                             chunk.colors[i] = glassColor

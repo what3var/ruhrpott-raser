@@ -75,6 +75,7 @@ namespace Raser {
         defined int upper
         defined int groundSlot
         defined int upperSlot
+        defined float distance          // zur nächsten Kante des Grundrisses (m)
 
         construct() {
             this.runs = new List<FacadeRun>()
@@ -326,6 +327,7 @@ namespace Raser {
             this.upper = Raser.Facade.Wall
             this.groundSlot = 0
             this.upperSlot = 0
+            this.distance = 1.0e30
             int n = this.len.length
             int best = -1
             float bestD = 1.0e30
@@ -342,6 +344,7 @@ namespace Raser {
                     along = this.offset[k] + t
                 }
             }
+            this.distance = Math.Sqrt(bestD)
             if (best < 0) { return }
             var fr = this.runs[this.runOf[best]]
             this.ground = Raser.Facade.KindAt(fr.ground, along)

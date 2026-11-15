@@ -177,17 +177,22 @@ class VoxelizerTests {
         // Das Haus steht bei x 2..10, y 4..11 m: Säulen 10..49, 20..54. Boden 60,2 m = Voxel 301 (z 45 im Chunk 4).
         Testing.Assert.AreEqual(Raser.Material.Concrete!int, low.MaterialAt(30, 37, 45))
         Testing.Assert.AreEqual(0, low.MaterialAt(30, 37, 50))
+        // die Wand zwei Voxel dick (Säulen 10 und 11); in einem Fenster ist die äußere Lage frei (Laibung), das Glas sitzt in der inneren
         bool wallFound = false
         bool glassFound = false
+        bool reveal = false
         for (int y = 21; y < 54; y++) {
             for (int z = 46; z < 64; z++) {
-                int m = low.MaterialAt(10, y, z)
-                if (m == Raser.Material.Brick!int) { wallFound = true }
-                if (m == Raser.Material.Glass!int) { glassFound = true }
+                if (low.MaterialAt(10, y, z) == Raser.Material.Brick!int && low.MaterialAt(11, y, z) == Raser.Material.Brick!int) { wallFound = true }
+                if (low.MaterialAt(11, y, z) == Raser.Material.Glass!int) {
+                    glassFound = true
+                    if (low.MaterialAt(10, y, z) == 0) { reveal = true }
+                }
             }
         }
         Testing.Assert.IsTrue(wallFound)
         Testing.Assert.IsTrue(glassFound)
+        Testing.Assert.IsTrue(reveal)
         // Der First (69 m = Voxel 344, z 24 im Chunk 5) läuft in x-Richtung (die längere Seite) bei y = 7,5 m (Säule 37).
         Testing.Assert.AreEqual(24, VoxelizerTests.Top(high, 30, 37))
         Testing.Assert.AreEqual(Raser.Material.RoofTiles!int, high.MaterialAt(30, 37, 24))
@@ -283,7 +288,7 @@ class VoxelizerTests {
         tile.heights = take raster
         var b = new Raser.Building()
         b.source = "test:schraeg"
-        b.function = "alkis=31001_2000"      // Gewerbe: Fensterbänder, keine Stufen vor der Tür (die Flächen-Summe zählt nur das Gebäude)
+        b.function = "alkis=51009_1610"      // ohne Fenster und Türen (hier geht es um die Form)
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
         // ein Parallelogramm: die untere Kante steigt 1:2 von (2, 2) nach (10, 6)
         b.footprint = [2.0, 2.0, 10.0, 6.0, 10.0, 11.0, 2.0, 11.0]
@@ -321,7 +326,7 @@ class VoxelizerTests {
         tile.heights = take raster
         var b = new Raser.Building()
         b.source = "test:turm"
-        b.function = "alkis=31001_2000"      // Gewerbe: Fensterbänder, keine Stufen vor der Tür (die Flächen-Summe zählt nur das Gebäude)
+        b.function = "alkis=51009_1610"      // ohne Fenster und Türen (hier geht es um die Form)
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
         // ein Kreis mit 2 m Radius um (6, 6) aus 32 Punkten: im Raster der Mittelpunkt (30, 30), Radius 10 Voxel
         float fp[] = new float[64]
@@ -536,7 +541,7 @@ class VoxelizerTests {
         var b = new Raser.Building()
         b.source = "test:satteldach"
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
-        b.function = "alkis=31001_2000"
+        b.function = "alkis=51009_1610"
         // 10 x 8 m, First entlang x (die längere Seite), Traufe 64 m, First 69 m: Neigung 5 m auf 4 m
         b.footprint = [10.0, 10.0, 20.0, 10.0, 20.0, 18.0, 10.0, 18.0]
         b.ground = 60.0
