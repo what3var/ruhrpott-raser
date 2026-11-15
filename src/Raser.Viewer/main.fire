@@ -219,6 +219,7 @@ class Atmosphere {
         // nass: alles etwas dunkler und kühler
         if (w.wetness > 0.0) { this.scene.Tint(S3D.Rgb(30, 38, 50), 0.14 * w.wetness) } else { this.scene.Tint(0, 0.0) }
         this.view.SetNight(w.lampsOn)
+        this.view.SetWet(w.wetness)
         this.lastE = 1.0e30
     }
 
@@ -307,6 +308,10 @@ class WorldView {
     defined float originZ
     defined bool night              // Glas und Laternen leuchten (SetNight)
     Texture nightPalette
+    defined bool wet                // nass (SetWet)
+    Texture wetPalette
+    Material wetMaterial
+    Material dryMaterial
     defined int near                // Radius der Stufe 0 in Blöcken (0: nur der Block des Blickpunkts, -1: keiner)
     defined int far                 // Radius der fernen Stufe in Blöcken
     defined int farAhead            // so viele Ringe über `far` hinaus wird die ferne Stufe vorausgeladen
@@ -361,6 +366,7 @@ class WorldView {
         // die Textur aller Blöcke: Materialkacheln, Fassaden, Palette (Raser.Atlas)
         this.palette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba())
         this.palette.Filter = TextureFilter.Sharp         // scharfe Voxel, an den Kanten über ein Pixel geglättet (Konzept: Pixel-Art)
+        this.dryMaterial = new Material(0.0, 32.0)
     }
 
     // Nachts: Glas, Wasser und Laternen (die durchsichtigen Teile) unbeleuchtet mit der Nacht-Textur - Fenster mit Licht dahinter und Laternen
@@ -382,6 +388,41 @@ class WorldView {
         if (set == undefined || !set.shown) { return }
         for (int i = 0; i < set.objects.Count && i < set.opacities.Count; i++) {
             if (set.opacities[i] < 1.0) { this.Glow(set.objects[i], night, set.opacities[i]) }
+        }
+    }
+
+    // Nass (Raser.Weather.wetness): die undurchsichtigen Teile mit der nassen Textur (Beläge dunkler, Raser.Atlas.Rgba(false, true)) und
+    // glänzend - Sonne und Laternen spiegeln sich als Lichter auf der Straße.
+    undefined SetWet(defined float wetness) {
+        bool wet = wetness > 0.15
+        if (wet && this.wetPalette == undefined) {
+            this.wetPalette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba(false, true))
+            this.wetPalette.Filter = TextureFilter.Sharp
+            this.wetMaterial = new Material(0.5, 40.0)
+        }
+        if (wet) { this.wetMaterial.Specular = 0.25 + 0.4 * Math.Clamp(wetness, 0.0, 1.0) }
+        if (wet == this.wet) { return }
+        this.wet = wet
+        foreach (pair in this.blocks) {
+            this.WetSet(pair.Value.nearSet, wet)
+            this.WetSet(pair.Value.farSet, wet)
+        }
+    }
+
+    undefined WetSet(LodSet set, defined bool wet) {
+        if (set == undefined || !set.shown) { return }
+        for (int i = 0; i < set.objects.Count && i < set.opacities.Count; i++) {
+            if (set.opacities[i] >= 1.0) { this.Wetten(set.objects[i], wet) }
+        }
+    }
+
+    undefined Wetten(Object obj, defined bool wet) {
+        if (wet) {
+            obj.Texture = this.wetPalette
+            obj.Material = this.wetMaterial
+        } else {
+            obj.Texture = this.palette
+            obj.Material = this.dryMaterial
         }
     }
 
@@ -432,6 +473,8 @@ class WorldView {
                 if (set.opacities[i] < 1.0) {
                     obj.Opacity = set.opacities[i]
                     if (this.night) { this.Glow(obj, true, set.opacities[i]) }
+                } else if (this.wet) {
+                    this.Wetten(obj, true)
                 }
                 set.objects.Add(obj)
                 this.scene.Add(take obj)

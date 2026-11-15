@@ -211,6 +211,18 @@ namespace Raser {
 
         // Die Textur als RGBA-Bytes (Zeile 0 oben).
         // night: die Nacht-Fassung für Glas und Wasser (unbeleuchtet gezeichnet): Glas dunkel, Fenster mit Licht (GlassLit) und Laternen warm.
+        // Nass: die Farbe dunkler je nach Material (Glas, Wasser und Lichter bleiben).
+        static defined int Wet(defined int rgb, defined int c, defined bool wet) {
+            if (!wet) { return rgb }
+            int b = c
+            if (c < 128) { b = Raser.Palette.BaseOf(c) }
+            float f = 0.85
+            if (b == Raser.Palette.Asphalt || b == Raser.Palette.Paving || b == Raser.Palette.Sidewalk || b == Raser.Palette.Concrete || b == Raser.Palette.Gravel || b == Raser.Palette.Soil || b == Raser.Palette.Sand || b == Raser.Palette.RoadMarking || b == Raser.Palette.Rock) { f = 0.6 }
+            if (b == Raser.Palette.Grass || b == Raser.Palette.Forest || b == Raser.Palette.Field || b == Raser.Palette.Leaves || b == Raser.Palette.LeavesDark || b == Raser.Palette.LeavesLight) { f = 0.8 }
+            if (b == Raser.Palette.Glass || b == Raser.Palette.Water || c >= 160) { f = 1.0 }
+            return Raser.Atlas.Scaled(rgb, f)
+        }
+
         // Die Farbe eines Palettenindex, nachts für das, was unbeleuchtet gezeichnet wird (Glas, Wasser, Laternen).
         static defined int NightRgb(defined int c, defined bool night) {
             if (!night) { return Raser.Palette.Rgb(c) }
@@ -223,12 +235,13 @@ namespace Raser {
             return Raser.Palette.Rgb(c)
         }
 
-        static byte[] Rgba(defined bool night = false) {
+        // wet: nass - Beläge deutlich dunkler (Asphalt, Pflaster, Beton, Kies, Erde), Rasen etwas, Wände und Dächer ein wenig.
+        static byte[] Rgba(defined bool night = false, defined bool wet = false) {
             byte data[] = new byte[1024 * 1024 * 4]
             // Materialkacheln (mit Rand: -2 .. 65 Texel setzen das Muster fort)
             for (int c = 1; c < 128; c++) {
                 if (!Raser.Atlas.HasTile(c)) { continue }
-                int baseRgb = Raser.Atlas.NightRgb(c, night)
+                int baseRgb = Raser.Atlas.Wet(Raser.Atlas.NightRgb(c, night), c, wet)
                 int x0 = Raser.Atlas.TileX(c)
                 int y0 = Raser.Atlas.TileY(c)
                 int shades[] = new int[4096]
@@ -246,7 +259,7 @@ namespace Raser {
             // Palette
             for (int c = 0; c < 256; c++) {
                 for (int dy = 0; dy < 3; dy++) {
-                    for (int dx = 0; dx < 4; dx++) { Raser.Atlas.Put(data, c * 4 + dx, 616 + dy, Raser.Atlas.NightRgb(c, night)) }
+                    for (int dx = 0; dx < 4; dx++) { Raser.Atlas.Put(data, c * 4 + dx, 616 + dy, Raser.Atlas.Wet(Raser.Atlas.NightRgb(c, night), c, wet)) }
                 }
             }
             // Fassaden: Wand mit dem Muster der Materialkachel, Fenster als Glas über dem dunklen Inneren (wie die Voxel: Glas mit Deckkraft 0,45)
