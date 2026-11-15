@@ -181,7 +181,9 @@ print(r.StaticInExpr(5) + " " + r.FromWordBits())
 | Was | Warum | Stand |
 |---|---|---|
 | **Punktlichter mit Reichweite, die wirklich endet** (oder eine Auswahl je Dreieck/Band): heute rechnet jedes Pixel jedes Punktlicht (`1 / (1 + q²)`, nie 0) - der Viewer schaltet deshalb nur die 10 nächsten Laternen als Licht, der Rest der Straße bleibt dunkel. | Nachtszenen mit hunderten Laternen und Fenstern | offen |
-| **Partikel als Striche in Flugrichtung** (gestreckt nach der Geschwindigkeit): Regen aus runden Scheiben sieht wie Schnee aus. | Regen | offen |
-| **Leuchtende Texturen** (eine Emissions-Textur oder ein Kanal, der unbeleuchtet bleibt): nachts tauscht der Viewer für Glas, Wasser und Laternen die Textur und schaltet `Lit` aus - für Fenster in den undurchsichtigen fernen Fassaden geht das nicht. | Fenster nachts in der Ferne | offen |
+| **Partikel als Striche in Flugrichtung** (gestreckt nach der Geschwindigkeit): Regen aus runden Scheiben sieht wie Schnee aus. | Regen | gelöst in `native-c` (Emitter.Stretch) |
+| **Leuchtende Texturen** (eine Emissions-Textur oder ein Kanal, der unbeleuchtet bleibt): nachts tauscht der Viewer für Glas, Wasser und Laternen die Textur und schaltet `Lit` aus - für Fenster in den undurchsichtigen fernen Fassaden geht das nicht. | Fenster nachts in der Ferne | gelöst in `native-c` (Object.EmissiveTexture) |
 | Nebel auch auf der GPU (laut Doku nur Fast und Software). | Hardware-Renderer | offen |
+
+Stand fire `native-c` (13081580 .. 5844bd30, noch nicht im master): `Light.Cutoff` und `Scene.LightCulling` (300 Laternen: 790 → 14 ms je Bild), `Emitter.Stretch`, `Object.EmissiveTexture`/`EmissiveStrength`, `Object.Reflectivity` (nur Software, rund +45 ms bei viel nassem Boden). Der Viewer nutzt alle vier; offen bleiben Kacheln und Spiegelungen auf der GPU.
 

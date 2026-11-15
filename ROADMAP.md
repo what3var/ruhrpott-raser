@@ -36,7 +36,10 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
   - [ ] Bodennetz an Gebäuden genau am Grundriss ausschneiden statt in harten Zellen von 80 cm - heute bleibt an schrägen Wänden eine Treppe aus Voxel-Gelände (ohne Gehweg-Erhöhung) am Wandfuß
   - [x] Dachüberstand bei Steildächern (40 cm an Traufe und Ortgang): eine Platte unter der fortgesetzten Dachfläche, Außenkante mit Schnitten, darunter die Untersicht - `docs/images/viewer-dachueberstand.png`
   - [ ] Dachüberstand auch in der fernen Stufe; Dachrinne und Fallrohr; Überstand je Baujahr/Stil (Altbau knapp, Siedlungshaus breit)
-  - [ ] Stufe 2: Torbögen, Türen zwischen zwei Wänden, 3D-Dachziegel, Traufzähne
+  - [x] Schnitte in der Ansicht (Raser.Plan.Elevation): dieselben Schnitte wie im Grundriss, aber senkrecht und entlang einer Achse durchgezogen - für Bögen
+  - [x] Durchfahrten: Wege und Straßen, die ein Gebäude ganz durchqueren (mindestens 2,5 m darin), bekommen einen Durchgang mit Torbogen (Fußweg 3 m, sonst 4 m hoch, Stich bis 1,5 m), Pflaster am Boden, Decke darüber, fensterlose Seitenwände - `docs/images/viewer-durchfahrt.png`
+  - [x] Haustüren mit Rundbogen (Stich 35 cm) und Oberlicht aus Glas; Wände zwei Voxel dick mit Laibung
+  - [ ] Türen als Bauelement im Baumodus (zwischen zwei Wänden eingehängt), Türblätter mit Füllungen und Klinke, Torbögen als Fertigteil; 3D-Dachziegel, Traufzähne
 - [x] Baumscheiben: einzelne Bäume (Plätze, Fußgängerzonen) in einem Quadrat aus Gras (1,4 m), an der nächsten Straße ausgerichtet, mit schmalen Kantensteinen (6 cm); zu nahe Bäume rücken beim Laden von der Fahrbahn weg (Raser.Props.Settle)
 - [x] Grünstreifen (Raser.Strips): Baumreihen an Straßen werden Beete zwischen Fahrbahn und Gehweg - zur Straße direkt am Bordstein, sonst schmale Kantensteine, Erde mit niedrigen Sträuchern (Voxel, zum Teil mit Blüten); der Gehweg liegt dahinter - `docs/images/viewer-gruenstreifen.png`
 - [x] Bordstein oben als Band von 12 cm; Pflasterrinne (30 cm) vor dem Bordstein bei etwa 4 von 10 Wohn- und Nebenstraßen; eckige Gullis etwa alle 30 m je Seite (in der Rinne, sonst im Asphalt am Bordstein)
@@ -55,11 +58,12 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Ausstattung der Gebäude, zufällig aber stabil (aus ID und Seed): vorgerenderte Innenansichten hinter den Fenstern für das schnelle Vorbeifahren, detaillierte Ausstattung in der Nähe und beim Betreten
 - [ ] Sharp-bilinear-Shader
 - [x] Tag/Nacht: Sonnenstand über Bochum nach Datum und Uhrzeit (Raser.Weather), Sonne mit Schatten, Mond, Dämmerungsfarben; nachts die 10 nächsten Laternen als Punktlichter, Fenster mit Licht dahinter (gut ein Drittel der Wohnungen, die meisten Läden) und Laternenköpfe leuchten - `docs/images/viewer-nacht.png`, `docs/images/viewer-sonne.png`
-- [ ] Viele Lichtquellen: alle Laternen als Licht (braucht Punktlichter mit endender Reichweite in scene3d, docs/FIRE.md), Fenster nachts auch in der fernen Stufe, Autoscheinwerfer
+- [ ] Autoscheinwerfer, Ampeln und Leuchtreklamen als Licht
 - [x] Wetterzustand als gemeinsamer Eingang (Raser.Weather in Raser.Core): Datum, Uhrzeit, Wolken, Regen, Nebel, Nässe - stufenlos 0..1; Physik und Gameplay lesen später dasselbe
 - [x] Wetterlagen in Stärken: klar, wolkig, bedeckt, Niesel, Regen, Starkregen, Dunst, Nebel, dichter Nebel (Viewer: --weather, --rain/--fog/--clouds, Tasten T/G Uhr, R Wetter, +/- Stärke) - `docs/images/viewer-regen.png`, `docs/images/viewer-nebel.png`
 - [x] Nasse Straßen (Stufe 1): bei Nässe eine nasse Textur (Beläge 40 % dunkler, Rasen und Wände etwas) und Glanz (Specular nach Nässe) - Laternen und Sonne als Lichter auf dem Asphalt - `docs/images/viewer-nass-nacht.png`, `docs/images/viewer-nass.png`
-- [ ] Spiegelungen (Bildschirm-Spiegelung in scene3d, in Arbeit) und Pfützen; Regen als Striche (in Arbeit); Gewitter, Schnee, Wind; Wetter, das sich mit der Zeit ändert
+- [x] Spiegelungen auf nassen Flächen (scene3d Object.Reflectivity, Bildschirm-Spiegelung), Regen als Striche (Emitter.Stretch), alle Laternen als Licht (Light.Cutoff mit Kacheln), Fenster der fernen Stufe leuchten nachts (Object.EmissiveTexture) - braucht fire `native-c`
+- [ ] Pfützen; Gewitter, Schnee, Wind; Wetter, das sich mit der Zeit ändert; Spiegelungen auch auf der GPU
 - [ ] Ingame-Uhr in Echtzeit (deutsche Ortszeit, echter Sonnenstand), Zeitfaktor als Server-Einstellung
 - [ ] Mondphase/-stand astronomisch korrekt, Wolken mit orangem Stadtlicht-Himmel
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos

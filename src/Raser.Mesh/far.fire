@@ -673,6 +673,7 @@ namespace Raser {
                 float start = Math.Floor((a0 + a1) / 2.0 / 9.0) * 9.0
                 float u0 = a0 - start
                 float u1 = a1 - start
+                int window = Math.Floor(start / 9.0)!int
                 float top = Math.Max(tp, tq)
                 int first = Math.Floor((g0 - floor0) / 2.8)!int
                 for (int st = first; floor0 + st * 2.8 < top; st++) {
@@ -686,7 +687,9 @@ namespace Raser {
                     float sb = (zb - floor0) / 0.2 - st * 14.0
                     float sp = (zp - floor0) / 0.2 - st * 14.0
                     float sq = (zq - floor0) / 0.2 - st * 14.0
-                    part.QuadUV(px, py, zb, qx, qy, zb, qx, qy, zq, px, py, zp, onx, ony, 0.0, color, wall, Raser.Atlas.FacadeU(color, u0), Raser.Atlas.FacadeV(color, sb), Raser.Atlas.FacadeU(color, u1), Raser.Atlas.FacadeV(color, sb), Raser.Atlas.FacadeU(color, u1), Raser.Atlas.FacadeV(color, sq), Raser.Atlas.FacadeU(color, u0), Raser.Atlas.FacadeV(color, sp))
+                    // nachts Licht hinter gut einem Drittel der Fenster (je Fenster und Geschoss, wie in den Voxeln): der zweite Satz der Kacheln
+                    bool lit = Raser.Props.Rand(b.id, window, st) < 0.35
+                    part.QuadUV(px, py, zb, qx, qy, zb, qx, qy, zq, px, py, zp, onx, ony, 0.0, color, wall, Raser.Atlas.FacadeU(color, u0), Raser.Atlas.FacadeV(color, sb, lit), Raser.Atlas.FacadeU(color, u1), Raser.Atlas.FacadeV(color, sb, lit), Raser.Atlas.FacadeU(color, u1), Raser.Atlas.FacadeV(color, sq, lit), Raser.Atlas.FacadeU(color, u0), Raser.Atlas.FacadeV(color, sp, lit))
                 }
             }
         }

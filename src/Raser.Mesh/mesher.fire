@@ -597,6 +597,90 @@ namespace Raser {
             return this.Hides(nx, ny, nz, m, dir == 5)
         }
 
+        // Ein Voxel mit Schnitt in der Ansicht (Raser.Plan.Elevation, Bögen): das Polygon in (u, z) entlang der Achse durchgezogen - die beiden
+        // Stirnflächen, wo der Nachbar entlang der Achse nicht dieselbe Form oder voll ist, und je Kante ein Viereck über die Tiefe; Kanten auf dem
+        // Rand des Voxels nur, wo der Nachbar dort nicht verdeckt.
+        undefined ElevationFaces(ChunkMesh mesh, byte mats[], byte cols[], byte cut[], defined int i, defined int p, defined float us[], defined float zs[]) {
+            defined int m = mats[i]
+            defined int x = i & 63
+            defined int y = (i >> 6) & 63
+            defined int z = i >> 12
+            defined int color = cols[i]
+            var part = mesh.opaque
+            if (Raser.Mesher.IsTransparent(m)) { part = mesh.transparent }
+            int axis = Raser.Plan.ElevationAxis(p)
+            int n = Raser.Plan.ElevationPolygon(p, us, zs)
+            if (n < 3) { return }
+            float bx = x * 0.2
+            float by = y * 0.2
+            float bz = z * 0.2
+            // die Stirnflächen (v = 0 und v = 1)
+            for (int side = 0; side < 2; side++) {
+                int step = side * 2 - 1
+                int nx = x
+                int ny = y
+                if (axis == 0) { ny = y + step } else { nx = x + step }
+                if (this.ElevationHidden(mats, cut, nx, ny, z, m, p)) { continue }
+                float fv = side * 0.2
+                for (int k = 1; k + 1 < n; k = k + 2) {
+                    int c = k + 1
+                    int d = Math.Min(k + 2, n - 1)
+                    if (axis == 0) {
+                        part.Quad(bx + us[0] * 0.2, by + fv, bz + zs[0] * 0.2, bx + us[k] * 0.2, by + fv, bz + zs[k] * 0.2, bx + us[c] * 0.2, by + fv, bz + zs[c] * 0.2, bx + us[d] * 0.2, by + fv, bz + zs[d] * 0.2, 0.0, step * 1.0, 0.0, color, m)
+                    } else {
+                        part.Quad(bx + fv, by + us[0] * 0.2, bz + zs[0] * 0.2, bx + fv, by + us[k] * 0.2, bz + zs[k] * 0.2, bx + fv, by + us[c] * 0.2, bz + zs[c] * 0.2, bx + fv, by + us[d] * 0.2, bz + zs[d] * 0.2, step * 1.0, 0.0, 0.0, color, m)
+                    }
+                }
+            }
+            // die Kanten über die Tiefe
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                float du = us[l] - us[k]
+                float dz = zs[l] - zs[k]
+                float el = Math.Sqrt(du * du + dz * dz)
+                if (el < 0.0001) { continue }
+                float nu = dz / el
+                float nz = -du / el
+                // auf dem Rand: der Nachbar dort
+                int ou = 0
+                int oz = 0
+                if (us[k] < 0.0001 && us[l] < 0.0001) { ou = -1 } else if (us[k] > 0.9999 && us[l] > 0.9999) { ou = 1 } else if (zs[k] < 0.0001 && zs[l] < 0.0001) { oz = -1 } else if (zs[k] > 0.9999 && zs[l] > 0.9999) { oz = 1 }
+                if (ou != 0 || oz != 0) {
+                    int nx = x
+                    int ny = y
+                    if (axis == 0) { nx = x + ou } else { ny = y + ou }
+                    if (this.SolidAt(mats, cut, nx, ny, z + oz, m)) { continue }
+                }
+                if (axis == 0) {
+                    part.Quad(bx + us[k] * 0.2, by, bz + zs[k] * 0.2, bx + us[l] * 0.2, by, bz + zs[l] * 0.2, bx + us[l] * 0.2, by + 0.2, bz + zs[l] * 0.2, bx + us[k] * 0.2, by + 0.2, bz + zs[k] * 0.2, nu, 0.0, nz, color, m)
+                } else {
+                    part.Quad(bx, by + us[k] * 0.2, bz + zs[k] * 0.2, bx, by + us[l] * 0.2, bz + zs[l] * 0.2, bx + 0.2, by + us[l] * 0.2, bz + zs[l] * 0.2, bx + 0.2, by + us[k] * 0.2, bz + zs[k] * 0.2, 0.0, nu, nz, color, m)
+                }
+            }
+        }
+
+        // Verdeckt ein volles Voxel (oder eines mit derselben Ansicht-Form) die Stirnfläche?
+        defined bool ElevationHidden(byte mats[], byte cut[], defined int nx, defined int ny, defined int nz, defined int m, defined int p) {
+            if (nx >= 0 && ny >= 0 && nx < 64 && ny < 64 && nz >= 0 && nz < 64) {
+                defined int ni = nx + (ny << 6) + (nz << 12)
+                defined int nm = mats[ni]
+                if (nm == 0) { return false }
+                if (Raser.Mesher.IsTransparent(nm) && nm != m) { return false }
+                if (cut[ni] == 0) { return true }
+                return cut[ni] == 2 && this.center.plans.Get(ni, 0) == p
+            }
+            return this.Hides(nx, ny, nz, m, false)
+        }
+
+        defined bool SolidAt(byte mats[], byte cut[], defined int nx, defined int ny, defined int nz, defined int m) {
+            if (nx >= 0 && ny >= 0 && nx < 64 && ny < 64 && nz >= 0 && nz < 64) {
+                defined int ni = nx + (ny << 6) + (nz << 12)
+                defined int nm = mats[ni]
+                return nm != 0 && cut[ni] == 0 && (!Raser.Mesher.IsTransparent(nm) || nm == m)
+            }
+            return this.Hides(nx, ny, nz, m, false)
+        }
+
         // Die Voxel mit Grundriss-Form (Raser.Plan): das Polygon oben (mit den Eckhöhen, bilinear) und unten, die schräge Kante und die Seiten auf dem
         // Rand des Voxels, wo der Nachbar sie nicht verdeckt.
         undefined PlanFaces(ChunkMesh mesh, byte mats[], byte cols[], byte cut[]) {
@@ -609,7 +693,11 @@ namespace Raser {
                 defined int m = mats[i]
                 if (m == 0) { continue }
                 if (this.skipTerrain && m <= 8 && this.Skips(i)) { continue }
-                defined int x = i & 63
+if (Raser.Plan.IsElevation(p)) {
+                    this.ElevationFaces(mesh, mats, cols, cut, i, p, xs, ys)
+                    continue
+                }
+                                defined int x = i & 63
                 defined int y = (i >> 6) & 63
                 defined int z = i >> 12
                 defined int color = cols[i]

@@ -18,6 +18,9 @@
 //   Nachbarn teilen sich die Punkte auf der gemeinsamen Seite, so schließen die Kanten ohne Stufen aneinander, in jedem Winkel und an jeder Stelle.
 //   Werte ab 262313 (Schnitt: + a * 128 + b; Ecke ab 278697: + (a * 128 + b) * 289 + v).
 //
+// - Schnitte in der Ansicht (Bögen, Gewölbe): derselbe Schnitt wie oben, aber in der senkrechten Ebene quer zur Achse (Achse 0: Schnitt in x und
+//   z, durchgezogen entlang y; Achse 1: in y und z, entlang x) - im Grundriss ist das Voxel voll. Werte ab 5013673: + Achse * 16384 + a * 128 + b.
+//
 // Gespeichert als Zahl je Voxel (0: voll) in einer Tabelle des Chunks, wie die Eckhöhen. Weitere Elemente (Bögen) bekommen die Werte danach.
 namespace Raser {
     class Plan {
@@ -31,6 +34,8 @@ namespace Raser {
         static readonly defined int RimSteps = 32        // Lagen je Seite
         static readonly defined int CornerBase = 278697  // CutBase + 128 * 128
         static readonly defined int CutEnd = 5013673     // CornerBase + 128 * 128 * 289
+        static readonly defined int ElevationBase = 5013673
+        static readonly defined int ElevationEnd = 5046441   // ElevationBase + 2 * 16384
 
         // Die Form der Diagonale: Länge n (1..6), Teil k (0..n-1), Ausrichtung o (0..7).
         static defined int Diagonal(defined int n, defined int k, defined int o) {
@@ -77,6 +82,17 @@ namespace Raser {
         static defined int CutCorner(defined int a, defined int v, defined int b) { return 278697 + ((a & 127) * 128 + (b & 127)) * 289 + Math.Clamp(v, 0, 288) }
 
         static defined bool IsCut(defined int p) { return p >= 262313 && p < 5013673 }
+
+        // Der Schnitt in der Ansicht: Achse (0: durchgezogen entlang y, 1: entlang x), von a nach b auf dem Rand des Quadrats (u, z), gefüllt links.
+        static defined int Elevation(defined int axis, defined int a, defined int b) { return 5013673 + (axis & 1) * 16384 + (a & 127) * 128 + (b & 127) }
+
+        static defined bool IsElevation(defined int p) { return p >= 5013673 && p < 5046441 }
+        static defined int ElevationAxis(defined int p) { return (p - 5013673) / 16384 }
+
+        // Das Polygon in der Ansicht (u quer, z hoch, 0..1), gegen den Uhrzeigersinn.
+        static defined int ElevationPolygon(defined int p, defined float us[], defined float zs[]) {
+            return Raser.Plan.CutPolygon(262313 + (p - 5013673) % 16384, us, zs)
+        }
 
         // Der Punkt der Lage s (0..127) auf dem Rand: unten nach rechts, rechts nach oben, oben nach links, links nach unten.
         static defined float RimX(defined int s) {
@@ -176,6 +192,7 @@ namespace Raser {
         static defined int Polygon(defined int p, defined float xs[], defined float ys[]) {
             if (Raser.Plan.IsArc(p)) { return Raser.Plan.ArcPolygon(p, xs, ys) }
             if (Raser.Plan.IsCut(p)) { return Raser.Plan.CutPolygon(p, xs, ys) }
+            if (Raser.Plan.IsElevation(p)) { p = 0 }          // im Grundriss voll
             if (!Raser.Plan.IsDiagonal(p)) {
                 xs[0] = 0.0
                 ys[0] = 0.0

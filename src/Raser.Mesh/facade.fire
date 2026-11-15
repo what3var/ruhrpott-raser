@@ -33,7 +33,12 @@ namespace Raser {
 
         // Die Fassadenkachel der Farbe c (Inneres, Texel).
         static defined int FacadeX(defined int c) { return (c % 78) * 13 + 2 }
-        static defined int FacadeY(defined int c) { return 624 + (c / 78) * 18 + 2 }
+        // lit: der zweite Satz (am Tag gleich, in der Emissions-Textur leuchtet das Fenster - Raser.Atlas.Emission)
+        static defined int FacadeY(defined int c, defined bool lit = false) {
+            int y = 624 + (c / 78) * 18 + 2
+            if (lit) { y = y + 36 }
+            return y
+        }
 
         // Palette: die Mitte des Felds der Farbe c.
         static defined float PaletteU(defined int c) { return ((c & 255) * 4 + 2) / 1024.0 }
@@ -45,7 +50,7 @@ namespace Raser {
 
         // Fassade: a entlang der Wand (Voxel, 0 .. 9 im Raster), s in der Höhe (Voxel, 0 .. 14 im Geschoss, von unten).
         static defined float FacadeU(defined int c, defined float a) { return (Raser.Atlas.FacadeX(c) + a) / 1024.0 }
-        static defined float FacadeV(defined int c, defined float s) { return (Raser.Atlas.FacadeY(c) + 14.0 - s) / 1024.0 }
+        static defined float FacadeV(defined int c, defined float s, defined bool lit = false) { return (Raser.Atlas.FacadeY(c, lit) + 14.0 - s) / 1024.0 }
 
         // Ist (i entlang, j in der Höhe, im Fensterraster) ein Fenster?
         static defined bool IsWindow(defined int i, defined int j) { return i >= 3 && i <= 6 && j >= 5 && j <= 11 }
@@ -270,16 +275,44 @@ namespace Raser {
             int window = (wr << 16) | (wg << 8) | wbl
             for (int c = 1; c < 128; c++) {
                 if (!Raser.Atlas.HasTile(c)) { continue }
-                int baseRgb = Raser.Palette.Rgb(c)
+                int baseRgb = Raser.Atlas.Wet(Raser.Palette.Rgb(c), c, wet)
                 int x0 = Raser.Atlas.FacadeX(c)
-                int y0 = Raser.Atlas.FacadeY(c)
+                for (int set = 0; set < 2; set++) {
+                    int y0 = Raser.Atlas.FacadeY(c, set == 1)
+                    for (int ty = -2; ty < 16; ty++) {
+                        for (int tx = -2; tx < 11; tx++) {
+                            int i = (tx + 9) % 9
+                            int j = 13 - (ty + 14) % 14
+                            int rgb = Raser.Atlas.Scaled(baseRgb, Raser.Atlas.Shade(c, i, j))
+                            if (Raser.Atlas.IsWindow(i, j)) { rgb = window }
+                            Raser.Atlas.Put(data, x0 + tx, y0 + ty, rgb)
+                        }
+                    }
+                }
+            }
+            return data
+        }
+
+        // Die Emissions-Textur für die Nacht (scene3d Object.EmissiveTexture): schwarz (nichts), nur was selbst leuchtet - Fenster mit Licht dahinter
+        // (Palette.GlassLit), Laternen und die Fenster im zweiten Satz der Fassaden-Kacheln (die ferne Stufe wählt ihn je Fenster aus).
+        static byte[] Emission() {
+            byte data[] = new byte[1024 * 1024 * 4]
+            for (int k = 0; k < 1024 * 1024; k++) { data[k * 4 + 3] = 255 }
+            for (int dy = 0; dy < 3; dy++) {
+                for (int dx = 0; dx < 4; dx++) {
+                    Raser.Atlas.Put(data, Raser.Palette.GlassLit * 4 + dx, 616 + dy, 0xFFC070)
+                    Raser.Atlas.Put(data, Raser.Palette.Lamp * 4 + dx, 616 + dy, 0xFFE0A8)
+                }
+            }
+            for (int c = 1; c < 128; c++) {
+                if (!Raser.Atlas.HasTile(c)) { continue }
+                int x0 = Raser.Atlas.FacadeX(c)
+                int y0 = Raser.Atlas.FacadeY(c, true)
                 for (int ty = -2; ty < 16; ty++) {
                     for (int tx = -2; tx < 11; tx++) {
                         int i = (tx + 9) % 9
                         int j = 13 - (ty + 14) % 14
-                        int rgb = Raser.Atlas.Scaled(baseRgb, Raser.Atlas.Shade(c, i, j))
-                        if (Raser.Atlas.IsWindow(i, j)) { rgb = window }
-                        Raser.Atlas.Put(data, x0 + tx, y0 + ty, rgb)
+                        if (Raser.Atlas.IsWindow(i, j)) { Raser.Atlas.Put(data, x0 + tx, y0 + ty, 0xE8A860) }
                     }
                 }
             }

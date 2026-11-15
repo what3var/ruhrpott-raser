@@ -149,6 +149,32 @@ class MeshTests {
         Testing.Assert.AreEqual(4 + 6, mesh2.opaque.Count)
     }
 
+    [Test "Schnitt in der Ansicht (Bogen): zwei Stirnflächen, die Schräge und die Ränder; gleiche Nachbarn entlang der Achse verdecken die Stirn"]
+    undefined ElevationVoxel() {
+        var c = MeshTests.Empty()
+        c.Set(10, 10, 10, Raser.Material.Brick!int, Raser.Palette.Brick)
+        // Achse 0 (durchgezogen entlang y): gefüllt über der Linie von (u 0, z 0,5) nach (u 1, z 1) - ein Dreieck in x und z
+        int p = Raser.Plan.Elevation(0, Raser.Plan.RimOf(0.0, 0.5), Raser.Plan.RimOf(1.0, 1.0))
+        c.SetPlan(10, 10, 10, p)
+        var mesh = new Raser.Mesher(c).Build()
+        // zwei Stirnflächen (y = 0 und y = 1) + Schräge + oben + links = 5
+        Testing.Assert.AreEqual(5, mesh.opaque.Count)
+        bool slope = false
+        for (int q = 0; q < mesh.opaque.Count; q++) {
+            float nx = mesh.opaque.normals[q * 3]
+            float nz = mesh.opaque.normals[q * 3 + 2]
+            if (nx > 0.3 && nz < -0.3) { slope = true }            // die Schräge zeigt nach rechts unten (die Unterseite eines Bogens)
+        }
+        Testing.Assert.IsTrue(slope)
+        // ein gleiches Voxel dahinter (y + 1): zwischen den beiden keine Stirnflächen
+        c.Set(10, 11, 10, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(10, 11, 10, p)
+        var mesh2 = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(2 * 5 - 2, mesh2.opaque.Count)
+        Testing.Assert.IsTrue(Raser.Plan.IsElevation(p))
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(p) - 1.0) < 0.0001)        // im Grundriss voll
+    }
+
     [Test "Glas: eigener Teil, keine Flächen zwischen Glas"]
     undefined Glass() {
         var c = MeshTests.Empty()

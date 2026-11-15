@@ -38,7 +38,7 @@ namespace Raser {
         static readonly defined int Window = 1           // Lochfenster (1,4 m breit, mit Rahmen): 1,0 .. 2,4 m im Geschoss
         static readonly defined int Shop = 2             // Schaufenster: 0,4 .. 2,6 m
         static readonly defined int Door = 3             // Haustür (Holz): 0 .. 2,2 m
-        static readonly defined int RaisedDoor = 4       // Haustür drei Stufen hoch (0,6 .. 2,8 m), davor die Stufen
+        static readonly defined int RaisedDoor = 4       // Haustür drei Stufen hoch (0,6 .. 2,6 m, darüber der Bogen), davor die Stufen
         static readonly defined int GlassDoor = 5        // Ladentür, Automatiktür: Glas 0 .. 2,4 m
         static readonly defined int Garage = 6           // Garagentor (Metall): 0 .. 2,2 m
         static readonly defined int Ribbon = 7           // Fensterband: 1,2 .. 2,4 m
@@ -76,6 +76,10 @@ namespace Raser {
         defined int groundSlot
         defined int upperSlot
         defined float distance          // zur nächsten Kante des Grundrisses (m)
+        defined float slotOffset        // die Lage im Platz des Erdgeschosses (m von seiner Mitte, entlang der Wand) und seine halbe Breite
+        defined float slotHalf
+        defined float wallX             // die Richtung der Wand (Einheitsvektor entlang)
+        defined float wallY
 
         construct() {
             this.runs = new List<FacadeRun>()
@@ -349,8 +353,17 @@ namespace Raser {
             var fr = this.runs[this.runOf[best]]
             this.ground = Raser.Facade.KindAt(fr.ground, along)
             this.upper = Raser.Facade.KindAt(fr.upper, along)
-            this.groundSlot = this.runOf[best] * 4096 + Raser.Facade.SlotAt(fr.ground, along)
+            int gs = Raser.Facade.SlotAt(fr.ground, along)
+            this.groundSlot = this.runOf[best] * 4096 + gs
             this.upperSlot = this.runOf[best] * 4096 + Raser.Facade.SlotAt(fr.upper, along)
+            this.slotOffset = 0.0
+            this.slotHalf = 0.0
+            if (gs < fr.ground.Count) {
+                this.slotOffset = along - fr.ground[gs].center
+                this.slotHalf = fr.ground[gs].half
+            }
+            this.wallX = this.ux[best]
+            this.wallY = this.uy[best]
         }
 
         static defined int SlotAt(List<FacadeSlot> slots, defined float along) {

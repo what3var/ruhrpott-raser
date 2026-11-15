@@ -144,8 +144,7 @@ class BlockState {
 // hinaus vorausgeladen (versteckt), solange reichlich Speicher frei ist. Was aus den Radien fällt, bleibt versteckt im Vorrat; entladen wird erst, wenn
 // der Speicher knapp wird - das Entfernteste zuerst.
 // Licht und Wetter (Raser.Weather): Sonne (gerichtet, mit Schatten, wenn sie scheint) oder Mond, Himmel als Hintergrund, Umgebungslicht, Dunst
-// bzw. Nebel, Regen als Partikel um die Kamera. Nachts leuchten die Laternen: die nächsten als echte Punktlichter (scene3d rechnet jedes
-// Punktlicht für jedes Pixel - hunderte wären zu teuer), neu verteilt, wenn die Kamera ein Stück weiter ist.
+// bzw. Nebel, Regen als Striche um die Kamera. Nachts leuchten alle Laternen in der Nähe als Punktlichter mit Ende.
 class Atmosphere {
     Raser.Weather weather
     Scene scene
@@ -154,12 +153,12 @@ class Atmosphere {
     Raser.FileTileStore store
     Light sun
     Light moon
-    List<Light> pool                        // die Punktlichter der Laternen
+    Dictionary<string, List<Light>> tileLights   // je Kachel die Punktlichter ihrer Laternen
+    defined bool lit                        // die Laternen sind an
     Emitter rain
     Dictionary<string, List<float>> lamps   // je Kachel: die Laternenköpfe in der Welt (Ost, Nord, Höhe)
     defined float lastE
     defined float lastN
-    static readonly defined int Lamps = 10
 
     construct(Raser.Weather weather, Scene scene, Camera cam, WorldView view, string world) {
         this.weather = weather
@@ -172,23 +171,17 @@ class Atmosphere {
         scene.Add(this.sun)
         this.moon = Light.Directional(0.3, -1.0, 0.5, S3D.Rgb(150, 165, 210), 0.0)
         scene.Add(this.moon)
-        this.pool = new List<Light>()
-        for (int k = 0; k < Atmosphere.Lamps; k++) {
-            var l = Light.Point(0m, -1000m, 0m, S3D.Rgb(255, 214, 160), 1.8)
-            l.Range = 6m
-            l.Enabled = false
-            this.pool.Add(l)
-            scene.Add(take l)
-        }
+        this.tileLights = new Dictionary<string, List<Light>>()
         this.rain = Emitter.Rain(0m, 20m, 0m, 40m)
         this.rain.Running = false
         this.rain.SetArea(14m, 3m, 14m)
-        // (Partikel sind in scene3d runde Scheiben: Regen als viele kleine, blasse Tropfen - Striche in Flugrichtung wären besser, docs/FIRE.md)
-        this.rain.StartSize = 0.035m
-        this.rain.EndSize = 0.03m
-        this.rain.StartColor = S3D.Rgba(190, 200, 215, 120)
-        this.rain.EndColor = S3D.Rgba(190, 200, 215, 80)
-        this.rain.MaxParticles = 30000
+        // Striche in Flugrichtung (scene3d Emitter.Stretch)
+        this.rain.Stretch = 0.05s
+        this.rain.StartSize = 0.02m
+        this.rain.EndSize = 0.02m
+        this.rain.StartColor = S3D.Rgba(190, 200, 215, 140)
+        this.rain.EndColor = S3D.Rgba(190, 200, 215, 100)
+        this.rain.MaxParticles = 20000
         scene.Add(this.rain)
         this.lamps = new Dictionary<string, List<float>>()
         this.lastE = 1.0e30
@@ -215,7 +208,7 @@ class Atmosphere {
         this.moon.Intensity = Math.Clamp((-w.elevation - 2.0) / 8.0, 0.0, 1.0) * 0.12 * (1.0 - 0.7 * w.clouds)
         this.moon.Enabled = this.moon.Intensity > 0.005
         this.rain.Running = w.rain > 0.0
-        this.rain.Rate = 3000.0 + 17000.0 * w.rain
+        this.rain.Rate = 2000.0 + 10000.0 * w.rain
         // nass: alles etwas dunkler und kühler
         if (w.wetness > 0.0) { this.scene.Tint(S3D.Rgb(30, 38, 50), 0.14 * w.wetness) } else { this.scene.Tint(0, 0.0) }
         this.view.SetNight(w.lampsOn)
@@ -223,49 +216,39 @@ class Atmosphere {
         this.lastE = 1.0e30
     }
 
-    // Je Bild: Regen über der Kamera, die Laternen in der Nähe (e, n: wo die Kamera ist).
+    // Je Bild: Regen über der Kamera, die Laternen der Kacheln rundherum (3 x 3) als Punktlichter mit Ende (scene3d Light.Cutoff: jedes Pixel
+    // rechnet nur die Lichter, die es erreichen - hunderte sind so bezahlbar). Neu verteilt, wenn die Kamera ein Stück weiter ist.
     undefined Update(defined float e, defined float n, defined float dt) {
         this.rain.SetPosition(this.cam.X, this.cam.Y + 7m, this.cam.Z)
-        if (!this.weather.lampsOn) {
-            foreach (l in this.pool) { l.Enabled = false }
-            return
-        }
-        if ((e - this.lastE) * (e - this.lastE) + (n - this.lastN) * (n - this.lastN) < 25.0) { return }
+        bool burning = this.weather.lampsOn
+        if (burning == this.lit && (e - this.lastE) * (e - this.lastE) + (n - this.lastN) * (n - this.lastN) < 400.0) { return }
+        this.lit = burning
         this.lastE = e
         this.lastN = n
-        // die Laternen der Kacheln drumherum, die nächsten zuerst
-        var near = new List<float>()
+        var wanted = new List<string>()
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
                 var key = Raser.TileKey.Of(e + dx * 256.0, n + dy * 256.0)
-                var heads = this.LampsOf(key)
-                for (int k = 0; k + 2 < heads.Count; k = k + 3) {
-                    float d2 = (heads[k] - e) * (heads[k] - e) + (heads[k + 1] - n) * (heads[k + 1] - n)
-                    if (d2 > 120.0 * 120.0) { continue }
-                    near.Add(d2)
-                    near.Add(heads[k])
-                    near.Add(heads[k + 1])
-                    near.Add(heads[k + 2])
+                string name = key + ""
+                wanted.Add(name)
+                if (burning && !this.tileLights.ContainsKey(name)) {
+                    var lights = new List<Light>()
+                    var heads = this.LampsOf(key)
+                    for (int k = 0; k + 2 < heads.Count; k = k + 3) {
+                        var l = Light.Point((heads[k] - this.view.originE) * 1m, (heads[k + 2] - this.view.originZ) * 1m, -(heads[k + 1] - this.view.originN) * 1m, S3D.Rgb(255, 214, 160), 1.8)
+                        l.Range = 5m
+                        l.Cutoff = 11m
+                        l.CastShadows = false
+                        lights.Add(l)
+                        this.scene.Add(take l)
+                    }
+                    this.tileLights[name] = lights
                 }
             }
         }
-        for (int i = 0; i < Atmosphere.Lamps; i++) {
-            // das nächste noch freie
-            int best = -1
-            for (int k = 0; k + 3 < near.Count; k = k + 4) {
-                if (near[k] < 0.0) { continue }
-                if (best < 0 || near[k] < near[best]) { best = k }
-            }
-            var l = this.pool[i]
-            if (best < 0) {
-                l.Enabled = false
-                continue
-            }
-            l.X = (near[best + 1] - this.view.originE) * 1m
-            l.Y = (near[best + 3] - this.view.originZ) * 1m
-            l.Z = -(near[best + 2] - this.view.originN) * 1m
-            l.Enabled = true
-            near[best] = -1.0
+        foreach (pair in this.tileLights) {
+            bool keep = burning && wanted.Contains(pair.Key)
+            foreach (l in pair.Value) { l.Enabled = keep }
         }
     }
 
@@ -309,6 +292,8 @@ class WorldView {
     defined bool night              // Glas und Laternen leuchten (SetNight)
     Texture nightPalette
     defined bool wet                // nass (SetWet)
+    defined float wetness
+    Texture emission
     Texture wetPalette
     Material wetMaterial
     Material dryMaterial
@@ -369,30 +354,24 @@ class WorldView {
         this.dryMaterial = new Material(0.0, 32.0)
     }
 
-    // Nachts: Glas, Wasser und Laternen (die durchsichtigen Teile) unbeleuchtet mit der Nacht-Textur - Fenster mit Licht dahinter und Laternen
-    // leuchten warm, die anderen Fenster sind dunkel (Raser.Atlas.Rgba(true)); am Tag wieder wie alles andere.
+    // Das Aussehen nach Tageszeit und Nässe (Raser.Weather):
+    // - nachts: Glas, Wasser und Laternen (die durchsichtigen Teile) unbeleuchtet mit der Nacht-Textur (Raser.Atlas.Rgba(true)) - Fenster mit
+    //   Licht dahinter und Laternen leuchten warm, die anderen sind dunkel; die undurchsichtigen Teile bekommen die Emissions-Textur
+    //   (Raser.Atlas.Emission: die Fenster der fernen Fassaden, Laternenköpfe);
+    // - nass: die undurchsichtigen Teile mit der nassen Textur (Beläge dunkler), glänzend und spiegelnd (scene3d Object.Reflectivity: nur
+    //   was nach oben zeigt).
     undefined SetNight(defined bool night) {
         if (night == this.night) { return }
         this.night = night
         if (night && this.nightPalette == undefined) {
             this.nightPalette = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Rgba(true))
             this.nightPalette.Filter = TextureFilter.Sharp
+            this.emission = new Texture(Raser.Atlas.Size, Raser.Atlas.Size, Raser.Atlas.Emission())
+            this.emission.Filter = TextureFilter.Sharp
         }
-        foreach (pair in this.blocks) {
-            this.GlowSet(pair.Value.nearSet, night)
-            this.GlowSet(pair.Value.farSet, night)
-        }
+        this.LookAll()
     }
 
-    undefined GlowSet(LodSet set, defined bool night) {
-        if (set == undefined || !set.shown) { return }
-        for (int i = 0; i < set.objects.Count && i < set.opacities.Count; i++) {
-            if (set.opacities[i] < 1.0) { this.Glow(set.objects[i], night, set.opacities[i]) }
-        }
-    }
-
-    // Nass (Raser.Weather.wetness): die undurchsichtigen Teile mit der nassen Textur (Beläge dunkler, Raser.Atlas.Rgba(false, true)) und
-    // glänzend - Sonne und Laternen spiegeln sich als Lichter auf der Straße.
     undefined SetWet(defined float wetness) {
         bool wet = wetness > 0.15
         if (wet && this.wetPalette == undefined) {
@@ -401,41 +380,47 @@ class WorldView {
             this.wetMaterial = new Material(0.5, 40.0)
         }
         if (wet) { this.wetMaterial.Specular = 0.25 + 0.4 * Math.Clamp(wetness, 0.0, 1.0) }
-        if (wet == this.wet) { return }
+        bool changed = wet != this.wet || Math.Abs(wetness - this.wetness) > 0.05
         this.wet = wet
+        this.wetness = wetness
+        if (changed) { this.LookAll() }
+    }
+
+    undefined LookAll() {
         foreach (pair in this.blocks) {
-            this.WetSet(pair.Value.nearSet, wet)
-            this.WetSet(pair.Value.farSet, wet)
+            this.LookSet(pair.Value.nearSet)
+            this.LookSet(pair.Value.farSet)
         }
     }
 
-    undefined WetSet(LodSet set, defined bool wet) {
+    undefined LookSet(LodSet set) {
         if (set == undefined || !set.shown) { return }
-        for (int i = 0; i < set.objects.Count && i < set.opacities.Count; i++) {
-            if (set.opacities[i] >= 1.0) { this.Wetten(set.objects[i], wet) }
-        }
+        for (int i = 0; i < set.objects.Count && i < set.opacities.Count; i++) { this.Look(set.objects[i], set.opacities[i]) }
     }
 
-    undefined Wetten(Object obj, defined bool wet) {
-        if (wet) {
+    undefined Look(Object obj, defined float opacity) {
+        if (opacity < 1.0) {
+            if (this.night) {
+                obj.Texture = this.nightPalette
+                obj.Lit = false
+                obj.Opacity = 0.9
+            } else {
+                obj.Texture = this.palette
+                obj.Lit = true
+                obj.Opacity = opacity
+            }
+            return
+        }
+        if (this.wet) {
             obj.Texture = this.wetPalette
             obj.Material = this.wetMaterial
+            obj.Reflectivity = 0.55 * Math.Clamp(this.wetness, 0.0, 1.0)
         } else {
             obj.Texture = this.palette
             obj.Material = this.dryMaterial
+            obj.Reflectivity = 0.0
         }
-    }
-
-    undefined Glow(Object obj, defined bool night, defined float opacity) {
-        if (night) {
-            obj.Texture = this.nightPalette
-            obj.Lit = false
-            obj.Opacity = 0.9
-        } else {
-            obj.Texture = this.palette
-            obj.Lit = true
-            obj.Opacity = opacity
-        }
+        if (this.night) { obj.EmissiveTexture = this.emission } else { obj.EmissiveTexture = undefined }
     }
 
     // Schließt den Auftragskanal: die Worker enden, wenn sie fertig sind.
@@ -470,12 +455,8 @@ class WorldView {
                 var obj = new Object(set.models[i])
                 obj.KeepMeshCoordinates = true          // die Koordinaten des Netzes sind Welt-Koordinaten (Ursprung des Netzes an der Position 0, 0, 0)
                 obj.Texture = this.palette
-                if (set.opacities[i] < 1.0) {
-                    obj.Opacity = set.opacities[i]
-                    if (this.night) { this.Glow(obj, true, set.opacities[i]) }
-                } else if (this.wet) {
-                    this.Wetten(obj, true)
-                }
+                if (set.opacities[i] < 1.0) { obj.Opacity = set.opacities[i] }
+                if (this.night || this.wet) { this.Look(obj, set.opacities[i]) }
                 set.objects.Add(obj)
                 this.scene.Add(take obj)
             }
