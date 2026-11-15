@@ -95,6 +95,9 @@ namespace Raser {
         static readonly defined int FlowerYellow = 167
         static readonly defined int FlowerWhite = 168
         static readonly defined int GlassLit = 169        // Glas eines Fensters, hinter dem abends Licht brennt (am Tag wie Glas)
+        static readonly defined int Window = 170          // ferne Stufe: ein Fenster als undurchsichtige Fläche (Glas vor dunklem Inneren)
+        static readonly defined int WindowLit = 171       // dasselbe mit Licht dahinter (am Tag gleich, nachts leuchtet es)
+        static readonly defined int WindowFrame = 172     // ferne Stufe: Schaufenster und Türen aus Glas, etwas heller
 
         static int colors[] = Raser.Palette.Build()
 
@@ -143,6 +146,9 @@ namespace Raser {
             c[167] = 0xF0D070
             c[168] = 0xF4F0E6
             c[169] = 0xA8C8D8
+            c[170] = 0x566470
+            c[171] = 0x566470
+            c[172] = 0x6A7C88
             for (int level = 1; level < 4; level++) {
                 for (int i = 1; i < 32; i++) { c[i + 32 * level] = Raser.Palette.Soiled(c[i], level) }
             }

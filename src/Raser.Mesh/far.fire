@@ -195,7 +195,10 @@ namespace Raser {
                 float cy = (m.box.minY + m.box.maxY) / 2.0
                 if (cx < x0 || cy < y0 || cx >= x0 + size || cy >= y0 + size) { continue }
                 if (cx < 0.0 || cy < 0.0 || cx >= 256.0 || cy >= 256.0) { continue }
-                Raser.FarMesher.Building(part, m, windows, this.tile.key.x * 1280, this.tile.key.y * 1280)
+                // Wände mit dem Muster ihres Materials; die Fenster und Türen aus derselben Fassadenplanung wie die nahe Stufe (Raser.Facade.Panes) als
+                // Flächen knapp vor der Wand - beim Näherkommen bleibt jedes Fenster, wo es ist
+                Raser.FarMesher.Building(part, m, false, this.tile.key.x * 1280, this.tile.key.y * 1280)
+                if (windows) { this.FarWindows(part, m) }
             }
             // Bäume grob: Stamm und Krone als Quader (Laternen, Bänke und Schilder sind von weitem kleiner als ein Pixel)
             foreach (p in this.tile.data.props) {
@@ -217,6 +220,55 @@ namespace Raser {
                 Raser.FarMesher.Box(part, p.x - r, p.y - r, g + trunk, p.x + r, p.y + r, g + h, leaf, Raser.Material.Leaves!int)
             }
             return part
+        }
+
+        // Die Öffnungen eines Gebäudes für die ferne Stufe: je Element eine undurchsichtige Fläche 3 cm vor der Wand (Fenster dunkel, mit Licht
+        // dahinter nachts leuchtend - dieselbe Auslosung wie nah; Türen Holz, Tore Metall).
+        undefined FarWindows(MeshPart part, RoofModel m) {
+            if (m.facade == undefined) { m.facade = Raser.Facade.Plan(m.building, this.tile.data.roads) }
+            var panes = new List<float>()
+            m.facade.Panes(m.building, m.groundVoxel, panes)
+            for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+                float ax = panes[k]
+                float ay = panes[k + 1]
+                float bx = panes[k + 2]
+                float by = panes[k + 3]
+                float z0 = panes[k + 4]
+                float z1 = panes[k + 5]
+                int kind = Math.Round(panes[k + 6])!int
+                int slot = Math.Round(panes[k + 7])!int
+                int storey = Math.Round(panes[k + 8])!int
+                float dx = bx - ax
+                float dy = by - ay
+                float len = Math.Sqrt(dx * dx + dy * dy)
+                if (len < 0.2) { continue }
+                float nx = dy / len
+                float ny = -dx / len
+                if (!m.facade.ccw) {
+                    nx = -nx
+                    ny = -ny
+                }
+                // die Elemente liegen 20 cm in der Laibung: 23 cm nach außen
+                float ox = nx * 0.23
+                float oy = ny * 0.23
+                int color = Raser.Palette.Window
+                int material = Raser.Material.Glass!int
+                if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
+                    color = Raser.Palette.Wood + 64
+                    material = Raser.Material.Wood!int
+                } else if (kind == Raser.Facade.Garage) {
+                    color = Raser.Palette.Metal + 32
+                    material = Raser.Material.Metal!int
+                } else {
+                    float chance = 0.35
+                    if (kind == Raser.Facade.Shop || kind == Raser.Facade.GlassDoor) {
+                        chance = 0.8
+                        color = Raser.Palette.WindowFrame
+                    }
+                    if (Raser.Props.Rand(m.building.id, slot, storey) < chance) { color = Raser.Palette.WindowLit }
+                }
+                part.Quad(ax + ox, ay + oy, z0, bx + ox, by + oy, z0, bx + ox, by + oy, z1, ax + ox, ay + oy, z1, nx, ny, 0.0, color, Raser.Material.Concrete!int)
+            }
         }
 
         // Die Fenster, Türen und Tore der Gebäude im Block (nahe Stufe): je Öffnung ein Parallelogramm zwischen den Laibungen (Raser.Facade.Panes) -

@@ -375,6 +375,7 @@ namespace Raser {
             for (int dy = 0; dy < 3; dy++) {
                 for (int dx = 0; dx < 4; dx++) {
                     Raser.Atlas.Put(data, Raser.Palette.GlassLit * 4 + dx, 616 + dy, 0xFFC070)
+                    Raser.Atlas.Put(data, Raser.Palette.WindowLit * 4 + dx, 616 + dy, 0xE8A860)
                     Raser.Atlas.Put(data, Raser.Palette.Lamp * 4 + dx, 616 + dy, 0xFFE0A8)
                 }
             }
