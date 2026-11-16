@@ -193,4 +193,66 @@ Stand fire master 1f74e29 (native-c ist gemergt): `Light.Cutoff` und `Scene.Ligh
 |---|---|---|
 | **`Dictionary.Clear`/`Remove` (und `List.Clear`) geben Werte nicht frei, die mit `TakeTo(dict)` übergeben wurden** - sie bleiben bis zum Ende des Containers belegt. Schlimmer: **ein neuer Container im selben Feld** (`this.d = new Dictionary<...>()`) gibt den alten samt Inhalt auch nicht frei. Nachbau (nativ, 200 Chunks + 200 × 200 KB je Runde, 6 Runden): nach `Clear` 142 → 846 MB, mit neuem Wörterbuch ebenso 846 MB, mit `delete pair.Value` vor `Clear` bleibt es bei 141 MB. Im Netzbau des Werkzeugs wuchs der Speicher so auf 14 GB (OOM nach 20 bzw. 39 von 49 Kacheln). | `delete` je Wert vor `Clear` (`ColumnBuilder.Forget`, `NearBuilder.Forget`) | `Clear`, `Remove` und das Überschreiben eines Schlüssels behoben (fire 5922d0a: nach 6 Runden 141 statt 846 MB); die `delete`-Schleifen in Raser sind wieder weg. **Offen:** ein neuer Container im selben Feld (`this.d = new Dictionary<...>()`) gibt den alten samt Inhalt weiter nicht frei (846 MB) |
 | **Netzbau: der Speicher wuchs je Kachel um rund 350 MB, auch mit `Forget`.** Ursache war derselbe Befund wie oben, an einer zweiten Stelle: `ColumnBuilder.Parts` leerte den Zwischenspeicher ab 200 Chunks selbst mit `Clear` - die Chunks blieben belegt und waren danach für `Forget` nicht mehr zu finden. Gemessen (25 Blöcke einer Kachel, drei Durchgänge, Aufräumen je Kachel): vorher 1012 → 1835 → 2657 MB, jetzt 359 → 366 → 371 MB; das Werkzeug über drei Kacheln: Spitze 319 MB statt 1,9 GB. | `Forget` (mit `delete`) statt `Clear` | behoben in Raser; `tools/meshes-per-tile.sh` ist nicht mehr nötig. Mit fire 5922d0a reicht `Clear` (drei Kacheln: Spitze 353 MB) |
+| **Ein Objekt in einem Feld ersetzen gibt das alte nicht frei** (derselbe offene Punkt, jetzt mit einem Objekt statt eines Containers): `this.making = take res` für jedes Ergebnis eines Workers (`NearResult` mit großen Arrays), danach `this.making = undefined` - der Speicher wuchs in 48 s auf 12 GB (OOM). | das Ergebnis in einer `List` halten und mit `Clear` freigeben (`WorldView.making`) | offen |
+
+## Threads: Natives verschiedener Pakete sperren einander
+
+**Befund (fire master c9e8e84, nativ, Linux):** Solange ein Worker-Thread in `Compression.Deflate` steckt, wartet das Hauptprogramm - auch wenn es
+selbst nur `DateTime.Now.Ticks` (Paket `time`) aufruft. Ruft der Worker `Deflate` in einer Schleife ohne Pause, kommt das Hauptprogramm gar nicht mehr
+dran (die Sperre geht sofort wieder an den Worker). Im Spiel entpacken drei bis vier Worker Chunks und den Netz-Cache, das Hauptprogramm liest
+für sein Zeitbudget oft die Uhr: einzelne Bilder dauern dadurch 0,3 bis 1,3 s, quer durch alle Abschnitte des Nachladens (einzeln gemessen kostet
+dort nichts mehr als ein paar ms, z. B. `Model.FromArrays` mit 16000 Vierecken 2,5 ms).
+
+Gemessen (ein Worker, das Hauptprogramm baut Zeichenketten und liest je Runde die Uhr, 4 s):
+
+| Worker | Runden | längste Runde |
+|---|---|---|
+| keiner | 215170 | 1,5 ms |
+| rechnet nur | 214836 | 3,7 ms |
+| legt große Arrays an | 188806 | 5,3 ms |
+| `byte[].ReadFloat32` in Schleife | 197526 | 18 ms |
+| `IO.File.Exists` in Schleife | 43175 | 7,9 ms |
+| `DateTime.Now.Ticks` in Schleife | 65131 | 2,7 ms |
+| `Deflate.Compress` + `Decompress` (8 MB) in Schleife | 975 | **14655 ms** |
+| dasselbe mit `Sleep(1ms)` nach jedem Aufruf | 17925 | 25 ms |
+| dasselbe mit Rechnen zwischen den Aufrufen | 160037 | 24 ms |
+
+Nachbau:
+
+```fire
+#import "time"
+#import "compression"
+class Probe {
+    static undefined Work(Channel<int> stop) {
+        byte raw[] = new byte[8000000]
+        for (int i = 0; i < raw.length; i++) { raw[i] = (i * 31 % 251) }
+        while (stop.TryReceive() == undefined) {
+            byte packed[] = Compression.Deflate.Compress(raw)
+            byte back[] = Compression.Deflate.Decompress(packed)
+        }
+    }
+    static defined int Main() {
+        var stop = new Channel<int>(4)
+        fire with stop { Probe.Work(stop) }
+        int worst = 0
+        int began = DateTime.Now.Ticks
+        int last = began
+        int rounds = 0
+        while (DateTime.Now.Ticks - began < 40000000) {
+            int now = DateTime.Now.Ticks
+            if (now - last > worst) { worst = now - last }
+            last = now
+            rounds++
+        }
+        stop.Send(1)
+        print(rounds + " Runden, längste " + (worst / 10000.0) + " ms")     // 975 Runden, längste 14655 ms
+        return 0
+    }
+}
+Environment.Exit(Probe.Main())
+```
+
+Wunsch: Natives ohne gemeinsamen Zustand (Deflate, Hash, die Uhr, Dateien lesen) ohne Sperre (`"threadSafe": true`) oder je Paket eine eigene, und
+eine faire Übergabe. Vermutung (nicht geprüft): `time` und `compression` teilen sich eine Sperre (`PkgLock` in `CppGenerator.cs`).
+Im Spiel bleibt es bis dahin bei den Rucklern beim Nachladen; `raser --live 60` misst sie (längstes Bild, je Abschnitt).
 

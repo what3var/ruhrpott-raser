@@ -97,7 +97,10 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Glätte; Bordsteine; Schaden aus der Wucht des Aufpralls; Laternen und Schilder umfahren
 - [x] Fahrzeugklassen (`Vehicle.Of`): Auto, Transporter, Motorrad, Fahrrad - eigene Fahrwerte, Modelle, Kamera; die anderen Klassen stehen am Start geparkt, der Spieler steigt ins nächste ein; Fahrzeuge halten einander auf
 - [ ] Fahrzeuge: Tank/Akku, Zustand; Zweiräder legen sich in die Kurve, der Fahrer sitzt; angefahrene Fahrzeuge bewegen sich; Fahrzeuge in der Welt verteilt (Parkplätze)
-- [ ] Streaming mehrerer Kacheln, Vorausgenerierung in Fahrtrichtung
+- [x] Streaming gemessen (`raser --live 60 [--speed 50]`: Autopilot, 30 Bilder je s): über Kachelgrenzen hinweg fehlt unter dem Wagen und 60 m voraus nie eine Stufe (50 km/h, nah 1, fern 5)
+- [x] Die fernen Stufen baut ein eigener Worker (vorher das Hauptprogramm), Modelle entstehen Netz für Netz im Zeitbudget
+- [ ] Ruckler beim Nachladen (einzelne Bilder 0,3 bis 1,3 s): Natives sperren einander über Threads hinweg - Befund in docs/FIRE.md, liegt bei fire
+- [ ] Vorausladen gezielt in Fahrtrichtung (heute: Ringe um einen Punkt voraus); Kacheln in Obstacles/Ground bei langen Fahrten wieder freigeben
 - [ ] LOD für weite Sichtweiten
 
 ## M4: Multiplayer-Grundgerüst

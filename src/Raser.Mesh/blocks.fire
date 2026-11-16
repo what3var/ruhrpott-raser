@@ -306,10 +306,12 @@ namespace Raser {
         construct() { }
     }
 
-    // Ein Auftrag an die Worker: die Stufe 0 eines Blocks.
+    // Ein Auftrag an die Worker: die Stufe 0 eines Blocks - oder (spacing > 0) seine ferne Stufe mit diesem Geländeraster.
     class NearJob {
         defined int bx
         defined int by
+        defined float spacing
+        defined bool windows        // ferne Stufe: mit den Fenstern als Textur
         construct(defined int bx, defined int by) {
             this.bx = bx
             this.by = by
@@ -323,6 +325,7 @@ namespace Raser {
         List<MeshBatch> batches
         defined int ticks
         defined bool cached         // aus dem Netz-Cache
+        defined float spacing       // > 0: die ferne Stufe mit diesem Geländeraster
         construct(defined int bx, defined int by) {
             this.bx = bx
             this.by = by
@@ -476,14 +479,33 @@ namespace Raser {
             return result
         }
 
+        // Die ferne Stufe eines Blocks (Geländeraster sp; windows: die Fenster als Textur), fertig für scene3d.
+        NearResult BuildFar(defined int bx, defined int by, defined float sp, defined bool windows) {
+            int t0 = DateTime.Now.Ticks
+            var result = new NearResult(bx, by)
+            result.spacing = sp
+            var mesh = new BlockMesh()
+            float east = bx * 51.2
+            float north = by * 51.2
+            var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
+            var fm = this.FarFor(tileKey)
+            if (fm != undefined) {
+                var part = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, sp, true, undefined, windows)
+                mesh.Add(take part, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
+            }
+            mesh.Batches(1.0, result.batches)
+            result.ticks = DateTime.Now.Ticks - t0
+            return result
+        }
+
         // Der Worker-Thread: Aufträge, bis der Kanal zu ist.
         static undefined Work(Channel<NearJob> jobs, Channel<NearResult> results, string root, defined float e, defined float n, defined float z, defined bool opaqueOnly, defined bool useCache) {
             var builder = new NearBuilder(root, e, n, z, opaqueOnly)
             builder.useCache = useCache
             foreach (job in jobs) {
-                results.Send(builder.Build(job.bx, job.by))
+                if (job.spacing > 0.0) { results.Send(builder.BuildFar(job.bx, job.by, job.spacing, job.windows)) } else { results.Send(builder.Build(job.bx, job.by)) }
                 // bei langen Fahrten nicht ohne Ende zwischenspeichern (ein Chunk sind bis 0,5 MB)
-                if (builder.columns.Cached > 600) { builder.Forget() }
+                if (builder.columns.Cached > 600 || builder.farMeshers.Count > 16) { builder.Forget() }
             }
         }
     }

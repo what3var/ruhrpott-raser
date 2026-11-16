@@ -315,6 +315,115 @@ class Game {
         var ink = new SolidBrush(0xFFFFFFFF)
         var shade = new SolidBrush(0xA0000000)
 
+        if (options.Get("bench-model", "") != "") {
+            // Messung: Model.FromArrays mit 16000 Vierecken, als Zahlen-Arrays und als float32-Puffer
+            int nq = 16000
+            defined float pos[] = new float[nq * 12]
+            defined float uv[] = new float[nq * 8]
+            defined int idx[] = new int[nq * 6]
+            byte bp[] = new byte[nq * 48]
+            byte bu[] = new byte[nq * 32]
+            byte bi[] = new byte[nq * 24]
+            for (int i = 0; i < nq * 12; i++) {
+                pos[i] = (i * 7919 % 1000) * 0.05
+                bp.WriteFloat32(i * 4, pos[i])
+            }
+            for (int i = 0; i < nq * 8; i++) {
+                uv[i] = (i % 97) * 0.01
+                bu.WriteFloat32(i * 4, uv[i])
+            }
+            for (int q = 0; q < nq; q++) {
+                int order[] = [0, 1, 2, 0, 2, 3]
+                for (int k = 0; k < 6; k++) {
+                    idx[q * 6 + k] = q * 4 + order[k]
+                    bi.WriteInt32((q * 6 + k) * 4, q * 4 + order[k])
+                }
+            }
+            for (int round = 0; round < 3; round++) {
+                int a0 = DateTime.Now.Ticks
+                var m1 = Model.FromArrays(pos, uv, idx)
+                int a1 = DateTime.Now.Ticks
+                var m2 = Model.FromArrays(bp, bu, bi)
+                int a2 = DateTime.Now.Ticks
+                print("FromArrays 16000 Vierecke: Arrays " + ((a1 - a0) / 10000.0) + " ms, Puffer " + ((a2 - a1) / 10000.0) + " ms")
+            }
+            return 0
+        }
+
+        // --live s [--speed 50]: ohne Fenster in Echtzeit fahren (der Autopilot weicht Wänden aus), je Bild nachladen und rendern - misst das
+        // Nachladen: wie oft unter dem Wagen bzw. 60 m voraus die nahe bzw. irgendeine Stufe fehlte.
+        float live = options.Get("live", "0").ToFloat()
+        if (live > 0.0) {
+            float want = options.Get("speed", "50").ToFloat() / 3.6
+            for (int i = 0; i < 12; i++) { view.spent[i] = 0 }
+            int began = DateTime.Now.Ticks
+            int last = began
+            int frames = 0
+            int noNear = 0
+            int noAhead = 0
+            int worst = 0
+            int hits = 0
+            float way = 0.0
+            float clock = 0.0
+            int pilotTicks = 0
+            bool renderAll = options.Get("render", "") != ""
+            int updateTicks = 0
+            int renderTicks = 0
+            int otherTicks = 0
+            while (clock < live) {
+                int now = DateTime.Now.Ticks
+                float dt = Math.Min((now - last) / 10000000.0, 0.1)
+                if (frames == 0) { dt = 0.03 }
+                if (frames > 0) { worst = Math.Max(worst, now - last) }
+                last = now
+                clock = clock + dt
+                int t1 = DateTime.Now.Ticks
+                float pilot[] = Game.Pilot(car, obstacles, want)
+                pilotTicks = pilotTicks + (DateTime.Now.Ticks - t1)
+                float e0 = car.east
+                float n0 = car.north
+                if (Game.Advance(car, vehicles, obstacles, dt, pilot[0], pilot[1], pilot[2], false, weather.wetness)) { hits++ }
+                way = way + Math.Sqrt((car.east - e0) * (car.east - e0) + (car.north - n0) * (car.north - n0))
+                float diff = car.heading - camHeading
+                camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
+                Game.PlaceAll(vehicles, models, terrain, view)
+                Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
+                view.lead = Math.Abs(car.speed) * 2.5
+                if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
+                float h = car.heading * Math.PI / 180.0
+                int t2 = DateTime.Now.Ticks
+                view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
+                int t3 = DateTime.Now.Ticks
+                atmosphere.Update(car.east, car.north, dt)
+                scene.Advance(dt * 1s)
+                int t4 = DateTime.Now.Ticks
+                // ohne --render 1: 30 Bilder je Sekunde ohne Bild (wie mit Grafikkarte: das Rendern kostet hier sonst 0,7 s je Bild)
+                if (renderAll) { cam.Render() } else {
+                    int rest = (333333 - (DateTime.Now.Ticks - now)) / 10000
+                    if (rest > 0) { Sleep(rest * 1ms) }
+                }
+                updateTicks = updateTicks + (t3 - t2)
+                otherTicks = otherTicks + (t4 - t3) + (t2 - t1)
+                renderTicks = renderTicks + (DateTime.Now.Ticks - t4)
+                frames++
+                if (view.near >= 0 && view.StageAt(car.east, car.north) < 2) { noNear++ }
+                if (view.StageAt(car.east - Math.Sin(h) * 60.0, car.north + Math.Cos(h) * 60.0) < 1) { noAhead++ }
+            }
+            cam.Render()
+            Game.Hud(hud, ink, shade, car, weather, height, false, "")
+            float seconds = (DateTime.Now.Ticks - began) / 10000000.0
+            print("Fahrt " + Math.Round(seconds) + " s, " + Math.Round(way) + " m, " + frames + " Bilder (" + (Math.Round(frames / seconds * 10.0) / 10.0) + " je s, längstes " + (worst / 10000) + " ms), " + hits + " Aufpralle")
+            print("ohne nahe Stufe unter dem Wagen: " + noNear + " Bilder, ohne jede Stufe 60 m voraus: " + noAhead + " Bilder; gebaut " + view.nearBuilt + " nah, " + view.farBuilt + " fern, verworfen " + view.dropped + ", zu spät " + view.late)
+            print("je Bild: Autopilot " + (pilotTicks / frames / 10000) + " ms, Nachladen " + (updateTicks / frames / 10000) + " ms, Rendern " + (renderTicks / frames / 10000) + " ms, Rest mit Autopilot " + (otherTicks / frames / 10000) + " ms")
+            string parts = ""
+            for (int i = 0; i < 6; i++) { parts = parts + " " + (view.spent[i] / frames / 10000.0) + "/" + (view.spent[i + 6] / 10000) }
+            print("Nachladen je Abschnitt (Mittel/längstes ms: Speicher, Anordnen, fern, Ergebnisse, nah bestellen, voraus):" + parts)
+            string liveShot = options.Get("shot", "")
+            if (liveShot != "") { IO.File.WriteAllBytes(liveShot, fb.ToPng()) }
+            view.Close()
+            return 0
+        }
+
         // ohne Fenster: eine Probefahrt
         float auto = options.Get("auto", "0").ToFloat()
         string shot = options.Get("shot", "")
@@ -488,6 +597,36 @@ class Game {
         }
         view.Close()
         return 0
+    }
+
+    // Ein einfacher Autopilot für Messfahrten: fünf Fühler (bis 50° nach links und rechts, 60 m weit) - er lenkt dorthin, wo am meisten frei
+    // ist, hält das Wunschtempo und bremst vor Wänden. Gibt Gas, Bremse, Lenkung.
+    static float[] Pilot(Raser.Vehicle car, Obstacles obstacles, defined float want) {
+        float bestScore = -1.0
+        float bestTurn = 0.0
+        float straight = 0.0
+        foreach (turn in [0.0, 25.0, -25.0, 50.0, -50.0]) {
+            float h = (car.heading + turn) * Math.PI / 180.0
+            float free = 60.0
+            for (float d = 3.0; d <= 60.0; d = d + 3.0) {
+                if (obstacles.Blocked(car.east - Math.Sin(h) * d, car.north + Math.Cos(h) * d, 1.6)) {
+                    free = d - 3.0
+                    break
+                }
+            }
+            if (turn == 0.0) { straight = free }
+            float score = free - Math.Abs(turn) * 0.15
+            if (score > bestScore) {
+                bestScore = score
+                bestTurn = turn
+            }
+        }
+        float result[] = [0.0, 0.0, bestTurn / 25.0]
+        float stop = car.speed * car.speed / 12.0 + 6.0
+        float target = want
+        if (straight < stop) { target = Math.Min(want, 3.0) }
+        if (car.speed < target) { result[0] = 1.0 } else if (car.speed > target + 1.0) { result[1] = 0.6 }
+        return result
     }
 
     // Ein Schritt des Wagens mit Aufprall an Gebäuden (in Teilschritten von höchstens 0,5 m): der Wagen rutscht an Wänden entlang. true: aufgeprallt.
