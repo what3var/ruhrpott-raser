@@ -94,9 +94,14 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Fahrzeugphysik (Einspurmodell `Raser.Vehicle`) inkl. Nässe und Aquaplaning
 - [x] Aufprall: der Wagen (zwei Kreise) rutscht an Wänden entlang und dreht dabei weg, frontal prallt er zurück (`Vehicle.Collide`, `Obstacles.Push`)
 - [x] Verfolgerkamera weicht Gebäuden aus (rückt heran und höher, weich wieder hinaus)
-- [ ] Glätte; Bordsteine; Schaden aus der Wucht des Aufpralls; Laternen und Schilder umfahren
+- [x] Schaden aus der Wucht des Aufpralls (`Vehicle.health`, `DamageOf`: bis 7 km/h nichts, 50 km/h frontal 39 %; kaputt fährt nichts), Anzeige „Zustand“
+- [ ] Glätte; Bordsteine; Laternen und Schilder umfahren
 - [x] Fahrzeugklassen (`Vehicle.Of`): Auto, Transporter, Motorrad, Fahrrad - eigene Fahrwerte, Modelle, Kamera; die anderen Klassen stehen am Start geparkt, der Spieler steigt ins nächste ein; Fahrzeuge halten einander auf
-- [ ] Fahrzeuge: Tank/Akku, Zustand; Zweiräder legen sich in die Kurve, der Fahrer sitzt; angefahrene Fahrzeuge bewegen sich; Fahrzeuge in der Welt verteilt (Parkplätze)
+- [x] Zweiräder legen sich in die Kurve (`Vehicle.lean` = atan(v · Gierrate / g), höchstens 40°), der Fahrer sitzt (Sitzhaltung der Figur)
+- [x] Tank je Fahrzeug (`Vehicle.fuel`, Gas x Antrieb verbraucht; das Fahrrad braucht keinen; leer fährt nichts), Anzeige „Tank“
+- [x] Angefahrene Fahrzeuge rutschen los (`Vehicle.Shove`: unelastischer Stoß nach Masse, die Reifen bremsen, Wände halten auf) und nehmen Schaden
+- [x] Fahrzeuge am Straßenrand verteilt (`Game.Parking`: Straßen für Autos der Startkachel, 20 bis 200 m vom Start, nicht an Gebäuden und Pfosten; `--parked 8`)
+- [ ] Fahrzeuge: Akku statt Tank für E-Fahrzeuge, Tankstellen; angestoßene Fahrzeuge drehen sich; Parkplätze in allen Kacheln (beim Nachladen), Parkplatzflächen aus OSM
 - [x] Streaming gemessen (`raser --live 60 [--speed 50]`: Autopilot, 30 Bilder je s): über Kachelgrenzen hinweg fehlt unter dem Wagen und 60 m voraus nie eine Stufe (50 km/h, nah 1, fern 5)
 - [x] Die fernen Stufen baut ein eigener Worker (vorher das Hauptprogramm), Modelle entstehen Netz für Netz im Zeitbudget
 - [x] Ruckler beim Nachladen kleiner (fire a9d8598d: Natives sperren einander nicht mehr; Netze als Byte-Puffer durch den Kanal; Worker `dedicated`): 24 statt 15 Bilder je s, das längste Bild 0,25 bis 0,55 statt 0,8 bis 1,3 s

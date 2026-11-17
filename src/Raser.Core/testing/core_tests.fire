@@ -435,6 +435,107 @@ class VehicleTests {
         Testing.Assert.AreEqual("auto", Raser.Vehicle.Of("panzer").kind)
     }
 
+    [Test "Zweiräder legen sich in die Kurve: atan(v · Gierrate / g), höchstens 40°, Autos nicht"]
+    undefined Lean() {
+        // Motorrad mit 15 m/s, links gelenkt: es legt sich nach links, so weit wie Fliehkraft und Gewicht es verlangen
+        var bike = Raser.Vehicle.Of("motorrad")
+        bike.speed = 15.0
+        for (int i = 0; i < 40; i++) { bike.Step(0.02, 0.0, 0.0, 0.15, false, 0.0) }
+        float yawRate = bike.speed / bike.wheelbase * Math.Tan(bike.steerAngle * Math.PI / 180.0)
+        float expect = Math.Atan(bike.speed * yawRate / 9.81) * 180.0 / Math.PI
+        Testing.Assert.IsTrue(bike.lean > 15.0 && Math.Abs(bike.lean - expect) < 1.0)
+        // voll rechts: höchstens 40° nach rechts
+        for (int i = 0; i < 60; i++) { bike.Step(0.02, 0.3, 0.0, -1.0, false, 0.0) }
+        Testing.Assert.IsTrue(bike.lean < -35.0 && bike.lean >= -40.0)
+        // geradeaus: es richtet sich wieder auf
+        for (int i = 0; i < 100; i++) { bike.Step(0.02, 0.3, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(bike.lean) < 0.5)
+        // ein Auto bleibt gerade
+        var car = new Raser.Vehicle()
+        car.speed = 15.0
+        for (int i = 0; i < 40; i++) { car.Step(0.02, 0.3, 0.0, 1.0, false, 0.0) }
+        Testing.Assert.IsTrue(car.lean == 0.0)
+    }
+
+    [Test "Schaden aus der Wucht: kleine Stöße fast nichts, 50 km/h frontal viel, kaputt fährt nicht"]
+    undefined Damage() {
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(1.5) == 0.0)
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(5.0) < 0.05)
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(30.0) == 1.0)
+        // 50 km/h frontal gegen eine Wand im Norden
+        var car = new Raser.Vehicle()
+        Testing.Assert.IsTrue(car.health == 1.0)
+        car.speed = 50.0 / 3.6
+        car.Collide(1.2, 0.0, -1.0, 0.1)
+        Testing.Assert.IsTrue(car.health > 0.5 && car.health < 0.7)
+        // schräg und langsam an der Wand entlang: kaum etwas
+        var slant = new Raser.Vehicle()
+        slant.heading = -20.0
+        slant.speed = 8.0
+        slant.Collide(1.2, -1.0, 0.0, 0.05)
+        Testing.Assert.IsTrue(slant.health > 0.99)
+        // noch zweimal: hin, er fährt nicht mehr
+        for (int i = 0; i < 2; i++) {
+            car.speed = 50.0 / 3.6
+            car.Collide(1.2, 0.0, -1.0, 0.1)
+        }
+        Testing.Assert.IsTrue(car.health == 0.0)
+        car.speed = 0.0
+        for (int i = 0; i < 20; i++) { car.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(car.speed == 0.0)
+    }
+
+    [Test "Tank: Gas verbraucht Sprit, leer fährt nichts, das Fahrrad braucht keinen"]
+    undefined Fuel() {
+        // eine Minute Vollgas: ein Zehntel des Tanks
+        var car = new Raser.Vehicle()
+        for (int i = 0; i < 1200; i++) { car.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(car.fuel - 0.9) < 0.001)
+        // rollen kostet nichts
+        for (int i = 0; i < 100; i++) { car.Step(0.05, 0.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(car.fuel - 0.9) < 0.001)
+        // halbes Gas: halb so viel
+        var half = Raser.Vehicle.Of("motorrad")
+        for (int i = 0; i < 600; i++) { half.Step(0.05, 0.5, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(half.fuel - 0.95) < 0.001)
+        // leer: kein Antrieb
+        var empty = new Raser.Vehicle()
+        empty.fuel = 0.0
+        for (int i = 0; i < 20; i++) { empty.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(empty.speed == 0.0 && empty.fuel == 0.0)
+        // das Fahrrad
+        var bike = Raser.Vehicle.Of("fahrrad")
+        for (int i = 0; i < 1200; i++) { bike.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(bike.fuel == 1.0 && bike.speed > 5.0)
+    }
+
+    [Test "Stoß: ein angefahrenes Fahrzeug rutscht los und bleibt stehen, Wände halten es auf"]
+    undefined Shove() {
+        // mit 10 m/s nach Norden frontal auf ein gleich schweres, das nördlich steht: beide gut 5 m/s
+        var car = new Raser.Vehicle()
+        var other = new Raser.Vehicle()
+        other.north = 4.2
+        car.speed = 10.0
+        float into = car.Collide(1.2, 0.0, -1.0, 0.1)
+        car.Shove(other, 0.0, -1.0, into)
+        Testing.Assert.IsTrue(Math.Abs(other.pushN - 5.0) < 0.001 && Math.Abs(other.pushE) < 0.001)
+        Testing.Assert.IsTrue(car.speed > 2.0 && car.speed < 4.0)
+        Testing.Assert.IsTrue(other.health < 1.0)
+        // es rutscht 5² / (2 x 7) = 1,8 m (in Schritten etwas mehr) und steht
+        for (int i = 0; i < 40; i++) { other.Step(0.05, 0.0, 1.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(other.pushN == 0.0 && Math.Abs(other.north - 4.2 - 1.85) < 0.15)
+        // ein Fahrrad fliegt fast mit dem ganzen Tempo davon, ein Transporter kaum
+        var bike = Raser.Vehicle.Of("fahrrad")
+        var van = Raser.Vehicle.Of("transporter")
+        var c2 = new Raser.Vehicle()
+        c2.Shove(bike, 0.0, -1.0, 10.0)
+        c2.Shove(van, 0.0, -1.0, 10.0)
+        Testing.Assert.IsTrue(bike.pushN > 9.5 && van.pushN < 4.0)
+        // rutscht es gegen eine Wand im Norden, hört das Rutschen dorthin auf
+        van.Collide(1.7, 0.0, -1.0, 0.05)
+        Testing.Assert.IsTrue(van.pushN == 0.0)
+    }
+
     static defined float BrakeDistance(defined float wetness) {
         var car = new Raser.Vehicle()
         car.speed = 30.0
