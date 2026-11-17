@@ -1,7 +1,8 @@
 // Raser.Core: der Wetterzustand - ein gemeinsamer Eingang für Renderer, Physik und Gameplay (Roadmap: Atmosphäre).
 //
 // Datum und Uhrzeit (Ortszeit, Sommerzeit von Ende März bis Ende Oktober), Bewölkung, Regen, Nebel. Daraus, deterministisch und ohne Zufall:
-// der Sonnenstand über Bochum (51,48° N, 7,22° O; Näherung nach NOAA, auf etwa ein Grad genau), die Farben und Stärken von Sonne,
+// der Sonnenstand über Bochum (51,48° N, 7,22° O; Näherung nach NOAA, auf etwa ein Grad genau), Stand und Phase des Mondes (Näherung nach
+// Meeus, auf etwa ein Grad genau; dafür zählt auch das Jahr), die Farben und Stärken von Sonne,
 // Himmel und Umgebungslicht, Dunst bzw. Nebel und ob Laternen und Fenster leuchten. Die Nässe der Straßen folgt dem Regen (Fahrphysik später).
 // Farben als 0xRRGGBB.
 namespace Raser {
@@ -9,6 +10,7 @@ namespace Raser {
         static readonly defined float Latitude = 51.48
         static readonly defined float Longitude = 7.22
 
+        defined int year                // das Jahr (nur für den Mond)
         defined int day                 // Tag im Jahr (1 .. 365)
         defined float hour              // Ortszeit (0 .. 24)
         defined float clouds            // 0 klar .. 1 bedeckt
@@ -32,8 +34,16 @@ namespace Raser {
         defined float hazeEnd           // ganz im Dunst ab (m)
         defined bool shadows            // lohnt ein Schatten (Sonne über dem Horizont, nicht bedeckt)
         defined bool lampsOn            // Straßenlaternen und Fenster leuchten
+        // nach Update: der Mond - Stand (Grad, mit Parallaxe), Richtung (x Ost, y Nord, z oben), beleuchteter Teil (0 Neumond .. 1 Vollmond)
+        defined float moonElevation
+        defined float moonAzimuth
+        defined float moonX
+        defined float moonY
+        defined float moonZ
+        defined float moonLit
 
         construct() {
+            this.year = 2026
             this.day = 172
             this.hour = 12.0
             this.Update()
@@ -93,12 +103,17 @@ namespace Raser {
             return starts[Math.Clamp(month, 1, 12) - 1] + dayOfMonth
         }
 
-        // Der Sonnenstand und alles Licht neu.
-        undefined Update() {
-            float rad = Math.PI / 180.0
-            // Sommerzeit grob: Tag 87 .. 300
+        // Die Weltzeit (Stunden) zur Ortszeit; Sommerzeit grob: Tag 87 .. 300.
+        defined float Utc() {
             float utc = this.hour - 1.0
             if (this.day >= 87 && this.day <= 300) { utc = utc - 1.0 }
+            return utc
+        }
+
+        // Der Sonnenstand, der Mond und alles Licht neu.
+        undefined Update() {
+            float rad = Math.PI / 180.0
+            float utc = this.Utc()
             float g = 2.0 * Math.PI / 365.0 * (this.day - 1 + (utc - 12.0) / 24.0)
             // Deklination und Zeitgleichung (Minuten), nach NOAA
             float decl = 0.006918 - 0.399912 * Math.Cos(g) + 0.070257 * Math.Sin(g) - 0.006758 * Math.Cos(2.0 * g) + 0.000907 * Math.Sin(2.0 * g) - 0.002697 * Math.Cos(3.0 * g) + 0.00148 * Math.Sin(3.0 * g)
@@ -115,7 +130,48 @@ namespace Raser {
             this.sunX = Math.Sin(az) * Math.Cos(el)
             this.sunY = Math.Cos(az) * Math.Cos(el)
             this.sunZ = Math.Sin(el)
+            this.Moon()
             this.Light()
+        }
+
+        // Der Mond (Meeus, Astronomical Algorithms, gekürzt auf die größten Glieder): ekliptikale Länge und Breite, daraus Rektaszension und
+        // Deklination, mit der Sternzeit Höhe und Azimut über Bochum. Der beleuchtete Teil folgt dem Winkel zwischen Sonne und Mond.
+        undefined Moon() {
+            float rad = Math.PI / 180.0
+            // Julianisches Datum: 0. Januar des Jahres, dann Tag und Weltzeit; n Tage seit J2000.0
+            // (DayOf zählt ohne Schalttag: im Schaltjahr ab März einen Tag dazu)
+            int y = this.year - 1
+            int leap = 0
+            if (this.day > 59 && this.year % 4 == 0 && (this.year % 100 != 0 || this.year % 400 == 0)) { leap = 1 }
+            float jd = 1721424.5 + 365.0 * y + y / 4 - y / 100 + y / 400 + this.day + leap + this.Utc() / 24.0
+            float n = jd - 2451545.0
+            float lm = 218.316 + 13.176396 * n          // mittlere Länge
+            float mm = (134.963 + 13.064993 * n) * rad  // mittlere Anomalie
+            float f = (93.272 + 13.22935 * n) * rad     // Argument der Breite
+            float d = (297.850 + 12.190749 * n) * rad   // mittlere Elongation
+            float ms = (357.529 + 0.98560028 * n) * rad // Anomalie der Sonne
+            float lon = (lm + 6.289 * Math.Sin(mm) + 1.274 * Math.Sin(2.0 * d - mm) + 0.658 * Math.Sin(2.0 * d) + 0.214 * Math.Sin(2.0 * mm) - 0.186 * Math.Sin(ms) - 0.114 * Math.Sin(2.0 * f)) * rad
+            float lat = (5.128 * Math.Sin(f) + 0.281 * Math.Sin(mm + f) + 0.278 * Math.Sin(mm - f)) * rad
+            float eps = (23.439 - 0.0000004 * n) * rad
+            float ra = Math.Atan2(Math.Sin(lon) * Math.Cos(eps) - Math.Tan(lat) * Math.Sin(eps), Math.Cos(lon))
+            float dec = Math.Asin(Math.Sin(lat) * Math.Cos(eps) + Math.Cos(lat) * Math.Sin(eps) * Math.Sin(lon))
+            // Sternzeit von Greenwich, Stundenwinkel am Ort
+            float gmst = 280.46061837 + 360.98564736629 * n
+            float ha = (gmst + Raser.Weather.Longitude) * rad - ra
+            float phi = Raser.Weather.Latitude * rad
+            float sinEl = Math.Sin(phi) * Math.Sin(dec) + Math.Cos(phi) * Math.Cos(dec) * Math.Cos(ha)
+            float el = Math.Asin(Math.Clamp(sinEl, -1.0, 1.0))
+            float az = Math.Atan2(Math.Sin(ha), Math.Cos(ha) * Math.Sin(phi) - Math.Tan(dec) * Math.Cos(phi)) + Math.PI
+            el = el - 0.95 * rad * Math.Cos(el)         // Parallaxe: vom Erdboden aus steht der Mond knapp ein Grad tiefer
+            this.moonElevation = el / rad
+            this.moonAzimuth = az / rad
+            this.moonX = Math.Sin(az) * Math.Cos(el)
+            this.moonY = Math.Cos(az) * Math.Cos(el)
+            this.moonZ = Math.Sin(el)
+            // die Sonne in der Ekliptik; Elongation und beleuchteter Teil
+            float ls = (280.460 + 0.9856474 * n) * rad + (1.915 * Math.Sin(ms) + 0.020 * Math.Sin(2.0 * ms)) * rad
+            float cosPsi = Math.Cos(lat) * Math.Cos(lon - ls)
+            this.moonLit = (1.0 - cosPsi) / 2.0
         }
 
         // Die Farben aus Sonnenstand und Wetter.
