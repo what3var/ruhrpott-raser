@@ -143,4 +143,4 @@ Deltas der Welt im Key-Value-Store (Konzept, Abschnitt 8).
 | `src/Raser.Client` | `NetSession` (Verbindung, Chat, Konsole), `ChatOverlay` |
 | `src/Raser.Game` | `online.fire`: die anderen Spieler in der Szene; `--bot`: ein Client ohne Welt und Fenster (für Tests) |
 
-Probe von Hand (`tools/server-smoke.sh`): Server starten, über HTTP registrieren, zwei Bots verbinden, Chat und Befehle prüfen.
+Probe von Hand: `tools/server-smoke.sh <raser-server> <raser-game>` startet den Server, registriert über HTTP, verbindet zwei Bots (`raser-game --bot 12 --say "..."`) und prüft, dass sie sich sehen, den Chat lesen, dass `/time` von einem Spieler abgelehnt wird und von einem Admin wirkt, und dass ein falsches Token abgelehnt wird.
