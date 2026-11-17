@@ -23,6 +23,7 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 | Was | Umweg | Stand |
 |---|---|---|
 | **Ein neuer Container im selben Feld gibt den alten samt Inhalt nicht frei** (`this.d = new Dictionary<...>()`). Nachbau unten: 6 Runden mit je 20 Objekten à 16 MB - 2 → 1923 MB, nichts kommt zurück. | `Clear` statt eines neuen Containers | offen (a9d8598d) |
+| **Ein Array-Feld auf `undefined` setzen gibt das Array nicht frei** - es hängt weiter am Objekt und geht mit ihm durch einen Kanal: ein Objekt mit einem Byte-Puffer, dessen `float`-Feld (2 Mio. Werte) vorher auf `undefined` gesetzt wurde, braucht beim `TryReceive` 47 ms (mit `delete` vorher 0,009 ms). Im Spiel waren das die Rest-Ruckler beim Nachladen (`MeshBatch.Pack`: 40 bis 210 ms je abgeholtem Block, mit `delete` höchstens 4 ms). | `delete this.f` vor `this.f = undefined` | offen (a9d8598d) |
 | **Ein Objekt in einem Feld ersetzen gibt das alte nicht frei**: `this.one = take b` 60-mal mit je 16 MB, danach `this.one = undefined` - 1923 → 2883 MB. Im Spiel (`WorldView.making`, je Ergebnis eines Workers) wuchs der Speicher so in 48 s auf 12 GB (OOM). | das Objekt in einer `List` halten und mit `Clear` freigeben | offen (a9d8598d) |
 
 ```fire
@@ -57,8 +58,9 @@ print("Objekt im Feld ersetzt: " + Math.Round(start) + " -> " + Math.Round(Envir
 
 ## Threads
 
-- **Zahlen-Arrays werden beim Abholen aus einem Kanal kopiert, Byte-Puffer nicht** (ein Worker schickt ein Objekt mit einem Array, das
-  Hauptprogramm misst sein `TryReceive`):
+- **Zahlen-Arrays kosten beim Abholen aus einem Kanal Zeit je Wert, Byte-Puffer nicht - auch mit `take`** (ein Worker schickt ein Objekt mit
+  einem Array, das Hauptprogramm misst sein `TryReceive`). `Send(take x)` gibt laut Doku weiter wie `handover`; trotzdem kosten 2 Mio. Werte
+  65 ms - ob als Array direkt (`Channel<float[]>`, `Send(take a)`), als Feld eines Objekts oder als frisches Ergebnis eines Aufrufs:
 
   | Inhalt | TryReceive |
   |---|---|
@@ -97,7 +99,5 @@ print("Objekt im Feld ersetzt: " + Math.Round(start) + " -> " + Math.Round(Envir
   Hauptprogramms übernimmt beim `Sleep` offenbar den Worker und kommt erst zurück, wenn der nachgibt - und `TryReceive` in der Schleife gibt
   nicht nach. Rechnet das Hauptprogramm vor dem `Sleep` 300 ms selbst (der Worker hat dann schon einen anderen Thread), kommt es zurück.
   Umweg in Raser: die Worker laufen mit `fire dedicated`.
-- **Ohne Nachbau:** im Spiel dauert das Abholen eines Ergebnisses aus dem Kanal der Worker trotzdem noch oft 40 bis 175 ms - auch für
-  kleine Ergebnisse (eine ferne Stufe, 80 KB, 128 ms), bei 3 Workern (`dedicated`) plus einem für die fernen Stufen. Nachgebaut mit gleich großen
-  Ergebnissen (bis 30 Netze, 23 MB, Byte-Puffer), mit Workern daneben in `Decompress`, Dateilesen, `Compress` oder beim Freigeben von 20 000
-  Objekten: nie über 0,3 ms. Die Worker im Spiel laden Chunks (Dateien, Deflate), bauen Netze und schreiben den Netz-Cache.
+- `Send(new float[n])` lehnt der Typprüfer mit TC029 ab („An object goes into a channel only with a word … - or fresh ('new', the result of a
+  call)“) - für ein Array zählt `new` nicht als frisch, das Ergebnis eines Aufrufs schon.
