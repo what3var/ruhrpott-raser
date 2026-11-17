@@ -1,0 +1,15 @@
+{
+  "format": 1,
+  "name": "Raser.Traffic",
+  "type": "library",
+  "import": "raser.traffic",
+  "references": [
+    { "project": "../Raser.Core/Raser.Core.fireproj" },
+    { "project": "../Raser.World/Raser.World.fireproj" },
+    { "project": "../Raser.Mesh/Raser.Mesh.fireproj" }
+  ],
+  "settings": {
+    "version": "0.1.0",
+    "description": "Ruhrpott-Raser: Verkehr und Fußgänger - Spurgraph aus den Straßen der Kacheln, Simulation ohne Szene (deterministisch, später auf dem Server)."
+  }
+}

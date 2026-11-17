@@ -1,0 +1,378 @@
+// Die Tests von Raser.Traffic (forge test src/Raser.Traffic/Raser.Traffic.fireproj).
+#import "testing"
+#import "raser.core"
+#import "raser.world"
+#import "raser.traffic"
+
+// Kleine Straßennetze zum Testen (Kachel 0_0: global = lokal).
+class Net {
+    static Raser.Road Road(defined int id, string kind, float pts[], defined float width, defined int lanes = 0, string sidewalk = undefined) {
+        var r = new Raser.Road()
+        r.id = id
+        r.source = "osm:way/" + id
+        r.kind = "highway=" + kind
+        r.points = copy pts
+        r.width = width
+        r.lanes = lanes
+        r.layer = 0
+        r.sidewalk = sidewalk
+        return r
+    }
+
+    // Eine Kreuzung: Ost-West-Straße (Hauptstraße) und Nord-Süd-Straße (Wohnstraße) kreuzen sich bei (100, 100).
+    static Raser.RoadGraph Cross() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        tile.data.roads.Add(Net.Road(1, "secondary", [0.0, 100.0, 100.0, 100.0, 200.0, 100.0], 7.0, 0, "both"))
+        tile.data.roads.Add(Net.Road(2, "residential", [100.0, 0.0, 100.0, 100.0, 100.0, 200.0], 5.5, 0, "both"))
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        return g
+    }
+}
+
+class GraphTests {
+    [Test "Kreuzung: Knoten, Abschnitte, Abbiegespuren"]
+    undefined Junction() {
+        var g = Net.Cross()
+        // 5 Knoten: die Mitte und vier Enden
+        Testing.Assert.AreEqual(5, g.NodeCount)
+        // 4 Abschnitte, je zwei Richtungen
+        Testing.Assert.AreEqual(8, g.Count(Raser.LaneKind.Road))
+        // an der Kreuzung: 4 ankommende x 3 abgehende (ohne Wenden), an den 4 Enden je eine Wende
+        Testing.Assert.AreEqual(16, g.Count(Raser.LaneKind.Turn))
+    }
+}
+
+class Scene {
+    // Ein Spieler zu Fuß abseits (Ost, Nord), sonst nichts.
+    static List<float> Walker(defined float e, defined float n) {
+        var players = new List<float>()
+        foreach (x in [e, n, 0.0, 0.0, 0.35, 0.0, 0.0]) { players.Add(x) }
+        return players
+    }
+
+    // Eine Simulation ohne Erscheinen auf dem Graphen g (die Tests setzen Autos und Fußgänger selbst).
+    static Raser.Traffic Of(Raser.RoadGraph g) {
+        var t = new Raser.Traffic(0, 0, 7)
+        replace t.graph = take g
+        t.populated = true
+        t.spawnClock = 1.0e9
+        t.graphVersion = t.graph.version
+        return t
+    }
+
+    // Ein Auto auf der Spur, die bei (e, n) in Richtung heading liegt.
+    static Raser.NpcCar Car(Raser.Traffic t, defined float e, defined float n, defined float heading, defined float speed) {
+        Testing.Assert.IsTrue(t.graph.Nearest(e, n, true, heading, 3.0))
+        var c = t.AddCar(t.graph.foundLane, t.graph.foundS, new Raser.TrafficRandom(1))
+        c.speed = speed
+        return c
+    }
+
+    static defined float Gap(Raser.NpcCar a, Raser.NpcCar b) {
+        // der kleinste Abstand ihrer Kreise (je zwei, wie Raser.Vehicle) minus die Radien
+        float best = 1.0e30
+        foreach (ka in [1.0, -1.0]) {
+            foreach (kb in [1.0, -1.0]) {
+                float ha = a.heading * Math.PI / 180.0
+                float hb = b.heading * Math.PI / 180.0
+                float ax = a.east - Math.Sin(ha) * a.body.spread * ka
+                float ay = a.north + Math.Cos(ha) * a.body.spread * ka
+                float bx = b.east - Math.Sin(hb) * b.body.spread * kb
+                float by = b.north + Math.Cos(hb) * b.body.spread * kb
+                float d = Math.Sqrt((ax - bx) * (ax - bx) + (ay - by) * (ay - by)) - a.body.radius - b.body.radius
+                if (d < best) { best = d }
+            }
+        }
+        return best
+    }
+}
+
+class LaneTests {
+    [Test "Fahrspuren rechts der Mitte, Einbahnstraße in der Mitte"]
+    undefined RightSide() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        tile.data.roads.Add(Net.Road(1, "residential", [0.0, 100.0, 200.0, 100.0], 6.0))
+        tile.data.roads.Add(Net.Road(2, "residential", [0.0, 50.0, 200.0, 50.0], 6.0, 1))
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        var p = new Raser.LanePoint()
+        int seen = 0
+        foreach (l in g.lanes) {
+            if (l.kind != Raser.LaneKind.Road) { continue }
+            l.At(l.length / 2.0, p)
+            if (l.road == 1) {
+                // nach Osten: rechts ist Süden (1,5 m = Breite / 4); nach Westen: Norden
+                if (p.dx > 0.0) { Testing.Assert.IsTrue(Math.Abs(p.n - 98.5) < 0.01) } else { Testing.Assert.IsTrue(Math.Abs(p.n - 101.5) < 0.01) }
+                seen++
+            } else {
+                Testing.Assert.IsTrue(p.dx > 0.0)
+                Testing.Assert.IsTrue(Math.Abs(p.n - 50.0) < 0.01)
+                seen = seen + 10
+            }
+        }
+        Testing.Assert.AreEqual(12, seen)
+    }
+
+    [Test "Über den Kachelrand: eine Straße zählt einmal, Knoten verbinden die Kacheln"]
+    undefined Stitch() {
+        // Straße 1 liegt in beiden Kacheln (je kachel-lokal), Straße 2 nur in der östlichen und beginnt an ihrem Ende
+        var a = new Raser.Tile(new Raser.TileKey(0, 0))
+        var b = new Raser.Tile(new Raser.TileKey(1, 0))
+        a.data.roads.Add(Net.Road(1, "residential", [200.0, 100.0, 300.0, 100.0], 5.5))
+        b.data.roads.Add(Net.Road(1, "residential", [-56.0, 100.0, 44.0, 100.0], 5.5))
+        b.data.roads.Add(Net.Road(2, "residential", [44.0, 100.0, 44.0, 200.0], 5.5))
+        var g = new Raser.RoadGraph()
+        g.AddTile(a)
+        Testing.Assert.IsTrue(g.AddTile(b))
+        Testing.Assert.IsTrue(!g.AddTile(b))
+        g.Build()
+        Testing.Assert.AreEqual(2, g.roads.Count)
+        Testing.Assert.AreEqual(3, g.NodeCount)
+        Testing.Assert.AreEqual(4, g.Count(Raser.LaneKind.Road))
+        // am Stoß (300, 100): zwei hinein, je eine Verbindung (ohne Wenden); an den beiden Enden je eine Wende
+        Testing.Assert.AreEqual(4, g.Count(Raser.LaneKind.Turn))
+        // nur die östliche Kachel behalten: Straße 1 bleibt (steht auch dort)
+        var keep = new List<string>()
+        keep.Add("1_0")
+        g.Keep(keep)
+        Testing.Assert.AreEqual(2, g.roads.Count)
+    }
+
+    [Test "Gehwege: beidseitig auf dem Gehweg, an der Kreuzung gekürzt, mit Überwegen"]
+    undefined Sidewalks() {
+        var g = Net.Cross()
+        var p = new Raser.LanePoint()
+        int walks = 0
+        foreach (l in g.lanes) {
+            if (l.kind != Raser.LaneKind.Sidewalk) { continue }
+            walks++
+            // jeder Punkt neben jeder Fahrbahn
+            for (float s = 0.0; s <= l.length; s = s + 0.5) {
+                l.At(s, p)
+                float dEW = Math.Abs(p.n - 100.0) - 3.5
+                float dNS = Math.Abs(p.e - 100.0) - 2.75
+                Testing.Assert.IsTrue(dEW > 0.5 || p.e < 95.0 || p.e > 105.0 || dNS > 0.5)
+                if (l.road == 1 && (p.e < 90.0 || p.e > 110.0)) { Testing.Assert.IsTrue(Math.Abs(Math.Abs(p.n - 100.0) - (3.5 + 1.5)) < 0.05) }
+            }
+        }
+        // 4 Abschnitte x 2 Seiten x 2 Richtungen
+        Testing.Assert.AreEqual(16, walks)
+        Testing.Assert.IsTrue(g.Count(Raser.LaneKind.Crossing) >= 8)
+        Testing.Assert.IsTrue(g.Count(Raser.LaneKind.Link) >= 8)
+    }
+}
+
+class DriveTests {
+    [Test "IDM: das Auto dahinter bremst, keine Überlappung"]
+    undefined Follow() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        tile.data.roads.Add(Net.Road(1, "residential", [0.0, 100.0, 600.0, 100.0], 6.0))
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        var t = Scene.Of(g)
+        var lead = Scene.Car(t, 150.0, 98.5, -90.0, 5.0)
+        var back = Scene.Car(t, 100.0, 98.5, -90.0, 8.0)
+        var players = Scene.Walker(300.0, 150.0)
+        float minGap = 1.0e30
+        bool braked = false
+        // (nach 3 s hinter einem stehenden Auto ohne Grund führe es vorbei: so lange nicht)
+        for (int i = 0; i < 700; i++) {
+            // der vordere hält nach 10 s an
+            if (i > 300) { lead.wish = 0.0 }
+            t.Step(1.0 / 30.0, players)
+            if (back.accel < -0.5) { braked = true }
+            minGap = Math.Min(minGap, Scene.Gap(lead, back))
+        }
+        Testing.Assert.IsTrue(braked)
+        Testing.Assert.IsTrue(minGap > 0.5)
+        Testing.Assert.IsTrue(back.speed < 0.2)
+        Testing.Assert.IsTrue(lead.east - back.east > 4.5)
+    }
+
+    [Test "IDM: bremst vor dem Spieler auf der Spur"]
+    undefined Player() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        tile.data.roads.Add(Net.Road(1, "residential", [0.0, 100.0, 600.0, 100.0], 6.0))
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        var t = Scene.Of(g)
+        var c = Scene.Car(t, 100.0, 98.5, -90.0, 8.0)
+        // ein stehender Wagen des Spielers 60 m voraus auf der Spur
+        var players = new List<float>()
+        foreach (x in [160.0, 98.5, -90.0, 0.0, 1.0, 1.1, 1.0]) { players.Add(x) }
+        bool stopped = false
+        for (int i = 0; i < 900; i++) {
+            t.Step(1.0 / 30.0, players)
+            // bis es vorbeifährt (nach 3 s Stehen): vor dem Wagen
+            if (c.pass <= 0.0 && c.offset > -0.3 && c.east < 162.0) { Testing.Assert.IsTrue(c.east < 160.0 - 1.1 - 1.0 - 2.1 + 0.2) }
+            if (c.speed < 0.1) { stopped = true }
+        }
+        Testing.Assert.IsTrue(stopped)
+        // dann links vorbei
+        Testing.Assert.IsTrue(c.east > 170.0)
+    }
+
+    [Test "Kreuzung: zwei Autos zugleich, nie überlappt, beide fahren durch"]
+    undefined Yield() {
+        var g = Net.Cross()
+        var t = Scene.Of(g)
+        // von Westen (Hauptstraße, nach Osten) und von Süden (Wohnstraße, nach Norden), beide 40 m vor der Mitte, geradeaus
+        var a = Scene.Car(t, 60.0, 98.25, -90.0, 10.0)
+        var b = Scene.Car(t, 101.375, 60.0, 0.0, 8.0)
+        foreach (c in [a, b]) {
+            c.plan.Clear()
+            var l = t.graph.lanes[c.lane]
+            foreach (n in l.next) {
+                if (Math.Abs(t.graph.lanes[n].turn) < 10.0) { c.plan.Add(n) }
+            }
+            t.Plan(c)
+        }
+        var players = Scene.Walker(150.0, 150.0)
+        float minGap = 1.0e30
+        for (int i = 0; i < 600; i++) {
+            t.Step(1.0 / 30.0, players)
+            minGap = Math.Min(minGap, Scene.Gap(a, b))
+        }
+        Testing.Assert.IsTrue(minGap > 0.3)
+        Testing.Assert.IsTrue(a.east > 120.0)
+        Testing.Assert.IsTrue(b.north > 120.0)
+    }
+
+    [Test "Kreuzung: viele Autos 60 s, keine zwei überlappen"]
+    undefined Busy() {
+        var g = Net.Cross()
+        var t = new Raser.Traffic(12, 0, 3)
+        replace t.graph = take g
+        var players = Scene.Walker(100.0, 100.0)
+        float minGap = 1.0e30
+        int seen = 0
+        for (int i = 0; i < 1800; i++) {
+            t.Step(1.0 / 30.0, players)
+            seen = Math.Max(seen, t.cars.Count)
+            for (int x = 0; x < t.cars.Count; x++) {
+                for (int y = x + 1; y < t.cars.Count; y++) {
+                    float gg = Scene.Gap(t.cars[x], t.cars[y])
+                    if (gg < 0.0 && minGap >= 0.0) {
+                        var u = t.cars[x]
+                        var w = t.cars[y]
+                        print("t " + i + " Überlappung: " + u.id + " lane " + u.lane + " kind " + t.graph.lanes[u.lane].kind + " s " + u.s + " at " + u.east + "," + u.north + " h " + u.heading + " v " + u.speed + " res " + u.reserved + " off " + u.offset + " / " + w.id + " lane " + w.lane + " kind " + t.graph.lanes[w.lane].kind + " s " + w.s + " at " + w.east + "," + w.north + " h " + w.heading + " v " + w.speed + " res " + w.reserved + " off " + w.offset)
+                    }
+                    minGap = Math.Min(minGap, gg)
+                }
+            }
+        }
+        print("Autos höchstens " + seen + ", kleinster Abstand " + minGap)
+        Testing.Assert.IsTrue(seen >= 6)
+        Testing.Assert.IsTrue(minGap > 0.0)
+    }
+}
+
+class WalkTests {
+    [Test "Fußgänger bleiben auf dem Gehweg (außer auf Überwegen)"]
+    undefined StayOff() {
+        var g = Net.Cross()
+        var t = new Raser.Traffic(0, 30, 5)
+        replace t.graph = take g
+        var players = Scene.Walker(100.0, 100.0)
+        int checks = 0
+        for (int i = 0; i < 1800; i++) {
+            t.Step(1.0 / 30.0, players)
+            foreach (p in t.people) {
+                var l = t.graph.lanes[p.lane]
+                if (l.kind == Raser.LaneKind.Crossing || p.state == 3) { continue }
+                // nicht auf einer Fahrbahn (Ost-West 7 m, Nord-Süd 5,5 m breit)
+                bool onEW = Math.Abs(p.north - 100.0) < 3.5 && p.east > 0.0 && p.east < 200.0
+                bool onNS = Math.Abs(p.east - 100.0) < 2.75 && p.north > 0.0 && p.north < 200.0
+                Testing.Assert.IsTrue(!onEW && !onNS)
+                checks++
+            }
+        }
+        Testing.Assert.IsTrue(checks > 1000)
+    }
+
+    [Test "Fußgänger springen vor dem Spieler zur Seite oder fallen um"]
+    undefined Dodge() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        tile.data.roads.Add(Net.Road(1, "footway", [0.0, 100.0, 300.0, 100.0], 2.0))
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        var t = Scene.Of(g)
+        Testing.Assert.IsTrue(t.graph.Nearest(150.0, 100.0, false, -90.0, 2.0))
+        var p = t.AddPerson(t.graph.foundLane, t.graph.foundS, new Raser.TrafficRandom(2))
+        p.side = 0.0
+        p.keep = 0.0
+        // ein Wagen kommt mit 30 km/h von Osten entgegen, genau auf der Linie
+        var players = new List<float>()
+        float ce = 200.0
+        foreach (x in [ce, 100.0, 90.0, 8.3, 1.0, 1.1, 1.0]) { players.Add(x) }
+        for (int i = 0; i < 300; i++) {
+            ce = ce - 8.3 / 30.0
+            players[0] = ce
+            t.Step(1.0 / 30.0, players)
+        }
+        // er ist ausgewichen (nicht umgefallen) und steht neben der Linie, oder er liegt
+        Testing.Assert.IsTrue(p.state == 4 || Math.Abs(p.north - 100.0) > 1.0 || t.knocked == 0)
+        Testing.Assert.AreEqual(0, t.knocked)
+    }
+}
+
+class SpawnTests {
+    [Test "Erscheinen: 80 .. 250 m vom Spieler, nicht im Blick; weit weg verschwinden"]
+    undefined Ring() {
+        // ein Gitter von 700 x 700 m, alle 100 m eine Straße
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        int id = 1
+        for (int k = 0; k <= 7; k++) {
+            tile.data.roads.Add(Net.Road(id, "residential", [0.0, k * 100.0, 700.0, k * 100.0], 5.5))
+            id++
+            tile.data.roads.Add(Net.Road(id, "residential", [k * 100.0, 0.0, k * 100.0, 700.0], 5.5))
+            id++
+        }
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        var t = new Raser.Traffic(30, 0, 11)
+        replace t.graph = take g
+        // der Spieler bei (350, 350), Blick nach Norden
+        var players = Scene.Walker(350.0, 350.0)
+        t.Step(0.1, players)
+        print("am Anfang " + t.cars.Count + " Autos")
+        Testing.Assert.IsTrue(t.cars.Count >= 20)
+        // alle weg, dann neu: jetzt nur im Ring und außer Sicht
+        t.cars.Clear()
+        for (int i = 0; i < 40; i++) { t.Step(0.5, players) }
+        print("nach 20 s " + t.cars.Count + " Autos")
+        Testing.Assert.IsTrue(t.cars.Count >= 5)
+        foreach (c in t.cars) {
+            // (die ersten sind inzwischen gefahren: höchstens 20 s x 9 m/s näher)
+            float d = Math.Sqrt((c.east - 350.0) * (c.east - 350.0) + (c.north - 350.0) * (c.north - 350.0))
+            if (d > 310.0) { print("zu weit: " + d) }
+            Testing.Assert.IsTrue(d <= 310.0)
+        }
+        // ein Schritt, der nur erscheinen lässt: prüfen, wo
+        t.cars.Clear()
+        for (int i = 0; i < 20 && t.cars.Count == 0; i++) {
+            t.spawnClock = 0.0
+            t.Step(0.001, players)
+        }
+        Testing.Assert.IsTrue(t.cars.Count > 0)
+        foreach (c in t.cars) {
+            float d = Math.Sqrt((c.east - 350.0) * (c.east - 350.0) + (c.north - 350.0) * (c.north - 350.0))
+            print("neu bei " + d + " m, gesehen " + t.Seen(players, c.east, c.north))
+            Testing.Assert.IsTrue(d >= 79.0 && d <= 251.0)
+            Testing.Assert.IsTrue(!t.Seen(players, c.east, c.north))
+        }
+        // der Spieler geht 2 km weg: alle verschwinden
+        players[0] = 2350.0
+        t.spawnClock = 0.0
+        t.Step(0.01, players)
+        print("weit weg: " + t.cars.Count)
+        Testing.Assert.AreEqual(0, t.cars.Count)
+    }
+}

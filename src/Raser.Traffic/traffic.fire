@@ -1,0 +1,1106 @@
+// Raser.Traffic: Autos und Fußgänger auf dem Spurgraph (Raser.RoadGraph) - eine reine Simulation ohne Szene: Step(dt, Spieler) rechnet, eine
+// Ansicht im Spiel (Raser.Game, npcs.fire) stellt die Figuren in die Szene. Mit demselben Seed, denselben Kacheln und denselben Eingaben ist
+// das Ergebnis gleich - so kann der Regionsserver später dieselbe Rechnung führen (docs/SERVER.md).
+//
+// Autos: fahren ihre Spur entlang, mit dem Intelligent Driver Model (IDM: Wunschtempo nach Straßenart, Abstand 2 m + 1,2 s, sanft bremsen
+// 2 m/s², höchstens 8 m/s²). Vor Kurven und Abbiegespuren werden sie langsamer (Kurventempo je Punkt). Vorausgeschaut wird entlang des
+// geplanten Wegs: bremsen für das Auto davor, für den Spieler (Fahrzeug oder zu Fuß), geparkte Wagen und Fußgänger auf der Fahrbahn.
+// An Knoten wählt jedes Auto zufällig (aus seinem eigenen Seed) die nächste Spur; geradeaus öfter als abbiegen. Kreuzungen: wer auf eine
+// Abbiegespur will, reserviert sie; kreuzt sie eine schon reservierte, wartet er an der Haltelinie. Vorfahrt: die höhere Straßenart geht
+// vor, bei gleicher rechts vor links; links Abbiegende lassen den Gegenverkehr durch. Nach 6 s Warten zählt nur noch die Reservierung.
+// Steht ein Hindernis (geparkt, Unfall, der Spieler) länger als 3 s, fährt das Auto links daran vorbei.
+// Angefahren (Raser.Vehicle.Shove gibt dem Körper pushE/pushN) wird es ein Körper mit Physik (Raser.Vehicle.Step, gebremst): es rutscht aus,
+// hupt nach 2 s und fädelt sich nach 6 s wieder auf die nächste Spur ein (kaputt: bleibt stehen).
+//
+// Fußgänger: gehen 1,2 .. 1,6 m/s die Gehwege und Fußwege entlang, an Knoten um die Ecke oder (seltener) über einen Überweg - dort warten sie,
+// bis kein Auto kommt. Sie weichen einander aus (rechts halten), dem Spieler zu Fuß, und springen zur Seite, wenn ein Fahrzeug auf sie
+// zuhält. Wer doch angefahren wird, fällt um, bleibt 9 s liegen und steht wieder auf.
+//
+// Erscheinen und verschwinden: um die Spieler herum, Autos 80 .. 250 m entfernt, Fußgänger 40 .. 150 m, nicht im Blickfeld (Richtung des
+// Spielers ± 55°, bis 200 m); beim ersten Schritt auch näher. Die Dichte kommt aus der Straßenart (Raser.RoadGraph.CarDensityOf), gedeckelt
+// durch maxCars und maxPeople. Wer weiter als 300 m (Fußgänger 190 m) von jedem Spieler ist, verschwindet. Ferne (über 120 m) rechnen nur
+// jeden dritten Schritt.
+//
+// Die Spieler kommen als Liste mit je 7 Zahlen: Ost, Nord, Richtung (Grad), Tempo (m/s), Radius (m), spread (m: zwei Kreise davor und dahinter,
+// wie Raser.Vehicle), Art (0 zu Fuß, 1 fährt, 2 steht nur da: ein geparkter Wagen - kein Mittelpunkt für das Erscheinen).
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    // Ein Zufall mit eigenem Zustand (linear kongruent, 31 Bit): dieselbe Folge auf jedem Rechner.
+    class TrafficRandom {
+        defined int state
+
+        construct(defined int seed) { this.state = (Math.Abs(seed) % 2147483647) + 1 }
+
+        defined float Next() {
+            this.state = (this.state * 1103515245 + 12345) % 2147483648
+            return this.state / 2147483648.0
+        }
+    }
+
+    // Ein Auto der Simulation.
+    class NpcCar {
+        defined int id
+        string kind                   // "auto", "transporter"
+        defined int color             // 0xRRGGBB
+        defined int lane
+        defined float s               // m entlang der Spur
+        defined float speed           // m/s
+        defined float accel
+        defined float wish            // Faktor auf das Wunschtempo (0,85 .. 1,1)
+        defined float east
+        defined float north
+        defined float heading         // Grad (vorwärts ist (-sin, cos), wie Raser.Vehicle)
+        defined float length
+        defined float width
+        defined float offset          // seitlich (m, rechts positiv): beim Vorbeifahren negativ
+        defined float wait            // so lange (s) steht es schon an einer Haltelinie
+        defined float blocked         // so lange (s) steht es hinter einem Hindernis
+        defined float pass            // > 0: fährt noch so weit (m) links vorbei
+        defined float gap             // die Lücke zum nächsten Hindernis (m, nach Decide)
+        defined float stuck           // so lange (s) steht es schon (gleich warum)
+        defined int state             // 0 fährt, 1 Unfall (Physik), 2 kaputt
+        defined float stateTime
+        defined float honk            // > 0: hupt noch so lange (s)
+        defined int reserved          // die reservierte Abbiegespur (-1: keine)
+        defined float pending         // ferne Autos: aufgelaufene Zeit
+        defined float blend           // nach dem Unfall: so weit (m) liegt die Anzeige noch neben der Spur
+        defined float blendE
+        defined float blendN
+        List<int> plan                // die nächsten Spuren
+        Vehicle body                  // Lage und Tempo für Aufprall und Physik
+        TrafficRandom random
+
+        construct(defined int id, defined int seed) {
+            this.id = id
+            this.plan = new List<int>()
+            this.reserved = -1
+            this.random = new Raser.TrafficRandom(seed)
+            this.wish = 1.0
+        }
+    }
+
+    // Ein Fußgänger der Simulation.
+    class NpcPerson {
+        defined int id
+        defined int lane
+        defined float s
+        defined float speed           // jetzt (m/s)
+        defined float pace            // gewünscht (1,2 .. 1,6 m/s)
+        defined float side            // seitlich auf der Spur (m, rechts positiv)
+        defined float keep            // dorthin will er seitlich (beim Ausweichen)
+        defined float east
+        defined float north
+        defined float heading         // Grad, wie Raser.Vehicle
+        defined float stride          // der gelaufene Weg (m)
+        defined float height          // Körpergröße (m)
+        defined int shirt             // Farben 0xRRGGBB
+        defined int legs
+        defined int hair
+        defined int skin
+        defined int state             // 0 geht, 1 wartet am Überweg, 3 springt zur Seite, 4 liegt
+        defined float stateTime
+        defined float dodgeE          // zur Seite gesprungen: so weit (m) neben der Spur
+        defined float dodgeN
+        defined float jumpE           // m/s beim Sprung
+        defined float jumpN
+        defined float pending
+        defined int next              // die gewählte nächste Spur (-1: noch keine)
+        TrafficRandom random
+
+        construct(defined int id, defined int seed) {
+            this.id = id
+            this.random = new Raser.TrafficRandom(seed)
+            this.next = -1
+        }
+    }
+
+    class Traffic {
+        RoadGraph graph
+        List<NpcCar> cars
+        List<NpcPerson> people
+        defined int maxCars
+        defined int maxPeople
+        defined int seed
+        defined int made              // so viele wurden erzeugt (für IDs und Seeds)
+        defined int frame
+        defined float time
+        defined float wetness         // 0 .. 1 (für die Physik nach einem Unfall)
+        defined bool populated
+        defined float spawnClock
+        defined int graphVersion
+        // Abstände (m)
+        defined float carNear
+        defined float carFar
+        defined float carGone
+        defined float walkNear
+        defined float walkFar
+        defined float walkGone
+        defined float viewHalf        // halber Blickwinkel (Grad) zum Verbergen beim Erscheinen
+        defined float viewReach
+        List<string> events           // was im letzten Schritt geschah (für die Anzeige): "hup", "umgefahren", "unfall"
+        defined int crashes
+        defined int knocked
+        // Hilfen ohne neue Objekte je Schritt
+        LanePoint at
+        float pathE[]
+        float pathN[]
+        float pathDx[]
+        float pathDy[]
+        float pathD[]
+        float pathV[]
+        defined int pathCount
+        List<int> candidates
+        List<float> weights
+
+        construct(defined int maxCars, defined int maxPeople, defined int seed) {
+            this.graph = new Raser.RoadGraph()
+            this.cars = new List<NpcCar>(Owns.Values)
+            this.people = new List<NpcPerson>(Owns.Values)
+            this.maxCars = maxCars
+            this.maxPeople = maxPeople
+            this.seed = seed
+            this.carNear = 80.0
+            this.carFar = 250.0
+            this.carGone = 300.0
+            this.walkNear = 40.0
+            this.walkFar = 150.0
+            this.walkGone = 190.0
+            this.viewHalf = 55.0
+            this.viewReach = 200.0
+            this.events = new List<string>()
+            this.at = new Raser.LanePoint()
+            this.pathE = new float[48]
+            this.pathN = new float[48]
+            this.pathDx = new float[48]
+            this.pathDy = new float[48]
+            this.pathD = new float[48]
+            this.pathV = new float[48]
+            this.candidates = new List<int>()
+            this.weights = new List<float>()
+        }
+
+        // Nach einem Neubau des Graphen: jedes Auto und jeder Fußgänger sucht seine Spur wieder (nach Lage und Richtung); wer keine findet, geht.
+        undefined Rebind() {
+            if (this.graphVersion == this.graph.version) { return }
+            this.graphVersion = this.graph.version
+            for (int i = this.cars.Count - 1; i >= 0; i--) {
+                var c = this.cars[i]
+                c.plan.Clear()
+                c.reserved = -1
+                if (c.state != 0) { continue }
+                if (this.graph.Nearest(c.east, c.north, true, c.heading, 4.0)) {
+                    c.lane = this.graph.foundLane
+                    c.s = this.graph.foundS
+                    this.Plan(c)
+                } else { this.cars.RemoveAt(i) }
+            }
+            for (int i = this.people.Count - 1; i >= 0; i--) {
+                var p = this.people[i]
+                p.next = -1
+                if (this.graph.Nearest(p.east - p.dodgeE, p.north - p.dodgeN, false, p.heading, 4.0)) {
+                    p.lane = this.graph.foundLane
+                    p.s = this.graph.foundS
+                } else { this.people.RemoveAt(i) }
+            }
+        }
+
+        // Ein Schritt: dt s, die Spieler wie oben beschrieben.
+        undefined Step(defined float dt, List<float> players) {
+            this.events.Clear()
+            this.Rebind()
+            this.frame++
+            this.time = this.time + dt
+            this.spawnClock = this.spawnClock - dt
+            if (!this.populated || this.spawnClock <= 0.0) {
+                this.spawnClock = 0.5
+                this.Despawn(players)
+                this.Spawn(players, !this.populated)
+                this.populated = true
+            }
+            // Autos: erst alle entscheiden (aus dem Stand aller), dann alle bewegen - die Reihenfolge zählt nicht
+            for (int i = 0; i < this.cars.Count; i++) {
+                var c = this.cars[i]
+                float step = this.Due(c.east, c.north, c.id, players)
+                c.pending = c.pending + dt
+                if (step == 0.0) { continue }
+                if (c.state == 0) { this.Decide(c, players, c.pending) }
+            }
+            for (int i = 0; i < this.cars.Count; i++) {
+                var c = this.cars[i]
+                if (this.Due(c.east, c.north, c.id, players) == 0.0) { continue }
+                float h = c.pending
+                c.pending = 0.0
+                if (c.state == 0) { this.Move(c, h) } else { this.Crashed(c, h) }
+                if (c.honk > 0.0) { c.honk = c.honk - h }
+            }
+            for (int i = 0; i < this.people.Count; i++) {
+                var p = this.people[i]
+                p.pending = p.pending + dt
+                if (this.Due(p.east, p.north, p.id, players) == 0.0) { continue }
+                float h = p.pending
+                p.pending = 0.0
+                this.Walk(p, h, players)
+            }
+        }
+
+        // Ist dieser Schritt für einen an (e, n) fällig? Nah: immer, fern (über 120 m von jedem Spieler): jeden dritten. 0: nicht.
+        defined float Due(defined float e, defined float n, defined int id, List<float> players) {
+            if (Raser.Traffic.Distance(players, e, n, false) < 120.0) { return 1.0 }
+            if ((this.frame + id) % 3 == 0) { return 1.0 }
+            return 0.0
+        }
+
+        // Der kleinste Abstand zu einem Spieler (all: auch zu den nur dastehenden).
+        static defined float Distance(List<float> players, defined float e, defined float n, defined bool all) {
+            float best = 1.0e30
+            for (int i = 0; i + 6 < players.Count; i = i + 7) {
+                if (!all && players[i + 6] > 1.5) { continue }
+                float dx = players[i] - e
+                float dy = players[i + 1] - n
+                float d = Math.Sqrt(dx * dx + dy * dy)
+                if (d < best) { best = d }
+            }
+            return best
+        }
+
+        // Sieht ein Spieler (e, n)? Im Blickwinkel seiner Richtung und näher als viewReach.
+        defined bool Seen(List<float> players, defined float e, defined float n) {
+            for (int i = 0; i + 6 < players.Count; i = i + 7) {
+                if (players[i + 6] > 1.5) { continue }
+                float dx = e - players[i]
+                float dy = n - players[i + 1]
+                float d = Math.Sqrt(dx * dx + dy * dy)
+                if (d > this.viewReach) { continue }
+                if (d < 1.0) { return true }
+                float h = players[i + 2] * Math.PI / 180.0
+                float c = (dx * -Math.Sin(h) + dy * Math.Cos(h)) / d
+                if (c > Math.Cos(this.viewHalf * Math.PI / 180.0)) { return true }
+            }
+            return false
+        }
+
+        undefined Despawn(List<float> players) {
+            for (int i = this.cars.Count - 1; i >= 0; i--) {
+                var c = this.cars[i]
+                float d = Raser.Traffic.Distance(players, c.east, c.north, false)
+                bool gone = d > this.carGone
+                // Unfallwagen und steckengebliebene gehen, sobald keiner hinsieht
+                if (!gone && c.state == 2 && d > 60.0 && !this.Seen(players, c.east, c.north)) { gone = true }
+                if (!gone && c.state == 0 && c.stuck > 40.0 && !this.Seen(players, c.east, c.north)) { gone = true }
+                if (gone) { this.cars.RemoveAt(i) }
+            }
+            for (int i = this.people.Count - 1; i >= 0; i--) {
+                var p = this.people[i]
+                if (Raser.Traffic.Distance(players, p.east, p.north, false) > this.walkGone) { this.people.RemoveAt(i) }
+            }
+        }
+
+        // Neue Autos und Fußgänger, bis die Dichte erreicht ist (first: der Anfang - dann auch nah und im Blick).
+        undefined Spawn(List<float> players, defined bool first) {
+            if (this.graph.lanes.Count == 0) { return }
+            bool any = false
+            for (int i = 0; i + 6 < players.Count; i = i + 7) {
+                if (players[i + 6] < 1.5) { any = true }
+            }
+            if (!any) { return }
+            var rnd = new Raser.TrafficRandom(this.seed * 7919 + this.frame)
+            // Autos
+            if (this.maxCars > 0) {
+                float total = this.Candidates(players, true, this.carFar)
+                int want = Math.Min(this.maxCars, Math.Round(total)!int)
+                int near = 0
+                foreach (c in this.cars) {
+                    if (Raser.Traffic.Distance(players, c.east, c.north, false) < this.carFar + 30.0) { near++ }
+                }
+                float lo = this.carNear
+                if (first) { lo = 15.0 }
+                int tries = 4
+                if (first) { tries = want * 8 }
+                for (int t = 0; t < tries && near < want; t++) {
+                    int li = this.Pick(rnd)
+                    if (li < 0) { break }
+                    var lane = this.graph.lanes[li]
+                    float s = rnd.Next() * lane.length
+                    lane.At(s, this.at)
+                    float d = Raser.Traffic.Distance(players, this.at.e, this.at.n, false)
+                    if (d < lo || d > this.carFar) { continue }
+                    if (!first && d < this.viewReach && this.Seen(players, this.at.e, this.at.n)) { continue }
+                    if (Raser.Traffic.Distance(players, this.at.e, this.at.n, true) < 8.0) { continue }
+                    if (!this.FreeAt(this.at.e, this.at.n, 14.0)) { continue }
+                    this.AddCar(li, s, rnd)
+                    near++
+                }
+            }
+            // Fußgänger
+            if (this.maxPeople > 0) {
+                float total = this.Candidates(players, false, this.walkFar)
+                int want = Math.Min(this.maxPeople, Math.Round(total)!int)
+                int near = 0
+                foreach (p in this.people) {
+                    if (Raser.Traffic.Distance(players, p.east, p.north, false) < this.walkFar + 20.0) { near++ }
+                }
+                float lo = this.walkNear
+                if (first) { lo = 6.0 }
+                int tries = 6
+                if (first) { tries = want * 8 }
+                for (int t = 0; t < tries && near < want; t++) {
+                    int li = this.Pick(rnd)
+                    if (li < 0) { break }
+                    var lane = this.graph.lanes[li]
+                    float s = rnd.Next() * lane.length
+                    lane.At(s, this.at)
+                    float d = Raser.Traffic.Distance(players, this.at.e, this.at.n, false)
+                    if (d < lo || d > this.walkFar) { continue }
+                    if (!first && d < 80.0 && this.Seen(players, this.at.e, this.at.n)) { continue }
+                    this.AddPerson(li, s, rnd)
+                    near++
+                }
+            }
+        }
+
+        // Die Spuren, auf denen etwas erscheinen kann (Fahrspuren bzw. Geh- und Fußwege mit der Mitte bis far m von einem Spieler), mit ihrem
+        // Gewicht (Dichte x Länge). Gibt die Summe: so viele sollten es sein.
+        defined float Candidates(List<float> players, defined bool car, defined float far) {
+            this.candidates.Clear()
+            this.weights.Clear()
+            float total = 0.0
+            for (int li = 0; li < this.graph.lanes.Count; li++) {
+                var l = this.graph.lanes[li]
+                if (car && l.kind != Raser.LaneKind.Road) { continue }
+                if (!car && l.kind != Raser.LaneKind.Sidewalk && l.kind != Raser.LaneKind.Footway) { continue }
+                if (l.density <= 0.0 || l.length < 6.0) { continue }
+                l.At(l.length / 2.0, this.at)
+                float d = Raser.Traffic.Distance(players, this.at.e, this.at.n, false)
+                if (d > far + l.length / 2.0) { continue }
+                // der Teil im Umkreis, grob
+                float inside = l.length
+                if (d > far - l.length / 2.0) { inside = Math.Max(0.0, far + l.length / 2.0 - d) }
+                float w = l.density * inside
+                if (w <= 0.0) { continue }
+                total = total + w
+                this.candidates.Add(li)
+                this.weights.Add(total)
+            }
+            return total
+        }
+
+        // Eine Spur aus den Kandidaten, nach Gewicht.
+        defined int Pick(TrafficRandom rnd) {
+            if (this.candidates.Count == 0) { return -1 }
+            float total = this.weights[this.weights.Count - 1]
+            float x = rnd.Next() * total
+            int lo = 0
+            int hi = this.weights.Count - 1
+            while (lo < hi) {
+                int mid = (lo + hi) / 2
+                if (this.weights[mid] < x) { lo = mid + 1 } else { hi = mid }
+            }
+            return this.candidates[lo]
+        }
+
+        // Steht dort (im Umkreis r m) schon ein Auto?
+        defined bool FreeAt(defined float e, defined float n, defined float r) {
+            foreach (c in this.cars) {
+                if ((c.east - e) * (c.east - e) + (c.north - n) * (c.north - n) < r * r) { return false }
+            }
+            return true
+        }
+
+        static readonly int Colors[] = [0x1E1E23, 0xE6E6E1, 0xAAAFB4, 0x3C4650, 0x8C1E1E, 0x1E3C78, 0x2D5A37, 0xC8B482, 0x5A3C28, 0xDC7828, 0x6E7882, 0xF0F0F0]
+
+        // Ein Auto auf Spur li bei s (Art, Farbe und Fahrweise aus dem Zufall).
+        NpcCar AddCar(defined int li, defined float s, TrafficRandom rnd) {
+            this.made++
+            var c = new Raser.NpcCar(this.made, this.seed * 31 + this.made * 977)
+            c.kind = "auto"
+            if (rnd.Next() < 0.12) { c.kind = "transporter" }
+            c.color = Raser.Traffic.Colors[Math.Floor(rnd.Next() * Raser.Traffic.Colors.length)!int % Raser.Traffic.Colors.length]
+            c.wish = 0.85 + rnd.Next() * 0.25
+            c.body = Raser.Vehicle.Of(c.kind)
+            try c.body.TakeTo(c)
+            c.length = c.body.length
+            c.width = c.body.width
+            c.lane = li
+            c.s = Math.Clamp(s, 0.0, this.graph.lanes[li].length)
+            c.speed = this.graph.lanes[li].limit * 0.6
+            this.Plan(c)
+            this.Pose(c)
+            this.cars.Add(take c)
+            return this.cars[this.cars.Count - 1]
+        }
+
+        static readonly int Shirts[] = [0x3C6E46, 0x8C2828, 0x283C78, 0xC8A03C, 0x505050, 0xE6E6E6, 0x6E3C78, 0x2896A0, 0xD26E32, 0x1E1E1E]
+        static readonly int Trousers[] = [0x324664, 0x1E1E23, 0x5A5046, 0x3C3C46, 0x6E6450, 0x283250]
+        static readonly int Hairs[] = [0x463223, 0x1E1914, 0x8C6E46, 0xB4AA96, 0x5A2D1E]
+        static readonly int Skins[] = [0xE1B496, 0xC8966E, 0x8C6446, 0xF0C8AA]
+
+        NpcPerson AddPerson(defined int li, defined float s, TrafficRandom rnd) {
+            this.made++
+            var p = new Raser.NpcPerson(this.made, this.seed * 37 + this.made * 1031)
+            var lane = this.graph.lanes[li]
+            p.lane = li
+            p.s = s
+            p.pace = 1.2 + rnd.Next() * 0.4
+            p.speed = p.pace
+            p.side = (rnd.Next() * 2.0 - 1.0) * lane.spread
+            p.keep = p.side
+            p.height = 1.6 + rnd.Next() * 0.32
+            p.shirt = Raser.Traffic.Shirts[Math.Floor(rnd.Next() * 10.0)!int % 10]
+            p.legs = Raser.Traffic.Trousers[Math.Floor(rnd.Next() * 6.0)!int % 6]
+            p.hair = Raser.Traffic.Hairs[Math.Floor(rnd.Next() * 5.0)!int % 5]
+            p.skin = Raser.Traffic.Skins[Math.Floor(rnd.Next() * 4.0)!int % 4]
+            p.stride = rnd.Next() * 1.5
+            this.PosePerson(p)
+            this.people.Add(take p)
+            return this.people[this.people.Count - 1]
+        }
+
+        // Die nächsten Spuren planen (bis drei voraus): an jedem Ende zufällig, geradeaus doppelt so oft wie abbiegen, Zufahrten selten.
+        undefined Plan(NpcCar c) {
+            int last = c.lane
+            if (c.plan.Count > 0) { last = c.plan[c.plan.Count - 1] }
+            while (c.plan.Count < 3) {
+                var l = this.graph.lanes[last]
+                if (l.next.Count == 0) { return }
+                int pick = l.next[0]
+                if (l.next.Count > 1) {
+                    float total = 0.0
+                    foreach (n in l.next) { total = total + this.Weight(n) }
+                    float x = c.random.Next() * total
+                    foreach (n in l.next) {
+                        pick = n
+                        x = x - this.Weight(n)
+                        if (x <= 0.0) { break }
+                    }
+                }
+                c.plan.Add(pick)
+                last = pick
+            }
+        }
+
+        defined float Weight(defined int lane) {
+            var l = this.graph.lanes[lane]
+            float w = 1.0
+            if (l.kind == Raser.LaneKind.Turn) {
+                if (Math.Abs(l.turn) < 30.0) { w = 2.0 }
+                if (l.target >= 0) {
+                    var t = this.graph.lanes[l.target]
+                    if (t.rank == 0) { w = w * 0.25 }
+                    // in eine Sackgasse (nur wenden dort) selten
+                    if (t.next.Count == 1 && this.graph.lanes[t.next[0]].target == t.reverse) { w = w * 0.4 }
+                }
+            }
+            return w
+        }
+
+        // Lage und Richtung aus Spur, s und Versatz.
+        undefined Pose(NpcCar c) {
+            var lane = this.graph.lanes[c.lane]
+            lane.At(c.s, this.at)
+            float e = this.at.e + this.at.dy * c.offset
+            float n = this.at.n - this.at.dx * c.offset
+            if (c.blend > 0.0) {
+                e = e + c.blendE * c.blend
+                n = n + c.blendN * c.blend
+            }
+            c.east = e
+            c.north = n
+            c.heading = Math.Atan2(-this.at.dx, this.at.dy) * 180.0 / Math.PI
+            c.body.east = c.east
+            c.body.north = c.north
+            c.body.heading = c.heading
+            c.body.speed = c.speed
+        }
+
+        // Der Weg voraus (bis look m, alle 2 m): Lage, Richtung, Abstand, Kurventempo - entlang der Spur und der geplanten.
+        undefined Path(NpcCar c, defined float look) {
+            this.pathCount = 0
+            int li = c.lane
+            float s = c.s
+            float d = 0.0
+            int k = 0
+            while (this.pathCount < 48 && d <= look) {
+                var l = this.graph.lanes[li]
+                if (s > l.length) {
+                    if (k >= c.plan.Count) {
+                        // das Ende: nichts mehr voraus
+                        l.At(l.length, this.at)
+                        this.Sample(d - (s - l.length), 0.0)
+                        return
+                    }
+                    s = s - l.length
+                    li = c.plan[k]
+                    k++
+                    continue
+                }
+                l.At(s, this.at)
+                this.Sample(d, this.at.vmax)
+                s = s + 2.0
+                d = d + 2.0
+            }
+        }
+
+        undefined Sample(defined float d, defined float vmax) {
+            int i = this.pathCount
+            this.pathE[i] = this.at.e
+            this.pathN[i] = this.at.n
+            this.pathDx[i] = this.at.dx
+            this.pathDy[i] = this.at.dy
+            this.pathD[i] = d
+            this.pathV[i] = vmax
+            this.pathCount++
+        }
+
+        // Ein Punkt gegen den Weg voraus: along (m entlang ab dem Auto, -1: nicht davor) und lateral (m quer) nach projAlong, projLateral.
+        defined float projAlong
+        defined float projLateral
+        defined float projDx
+        defined float projDy
+        undefined Project(defined float e, defined float n) {
+            this.projAlong = -1.0
+            this.projLateral = 1.0e30
+            float best = 1.0e30
+            for (int i = 0; i < this.pathCount; i++) {
+                float dx = e - this.pathE[i]
+                float dy = n - this.pathN[i]
+                float d2 = dx * dx + dy * dy
+                if (d2 < best) {
+                    best = d2
+                    float along = dx * this.pathDx[i] + dy * this.pathDy[i]
+                    this.projAlong = this.pathD[i] + along
+                    // rechts positiv: (dy, -dx)
+                    this.projLateral = dx * this.pathDy[i] - dy * this.pathDx[i]
+                    this.projDx = this.pathDx[i]
+                    this.projDy = this.pathDy[i]
+                }
+            }
+            // hinter dem ersten Punkt: nicht davor
+            if (this.pathCount > 0 && this.projAlong < 0.0) { this.projAlong = -1.0 }
+        }
+
+        // Das IDM: Beschleunigung aus Tempo, Wunschtempo, Lücke und dem Tempo des Vordermanns.
+        static defined float Idm(defined float v, defined float v0, defined float gap, defined float lead) {
+            float amax = 1.6
+            float b = 2.0
+            float s0 = 2.0
+            float headway = 1.2
+            float free = 1.0
+            if (v0 > 0.1) {
+                float r = v / v0
+                free = 1.0 - r * r * r * r
+            } else { free = -1.0 }
+            float a = amax * free
+            if (gap < 1.0e20) {
+                float star = s0 + Math.Max(0.0, v * headway + v * (v - lead) / (2.0 * Math.Sqrt(amax * b)))
+                float g = Math.Max(gap, 0.1)
+                a = a - amax * (star / g) * (star / g)
+            }
+            return Math.Clamp(a, -8.0, amax)
+        }
+
+        // Ein Auto entscheidet: Wunschtempo aus Spur und Kurven, Lücke zum nächsten Hindernis auf dem Weg, Haltelinie an Kreuzungen.
+        undefined Decide(NpcCar c, List<float> players, defined float dt) {
+            var lane = this.graph.lanes[c.lane]
+            float v = c.speed
+            float look = Math.Clamp(v * v / 3.0 + v * 2.0 + 14.0, 20.0, 90.0)
+            this.Path(c, look)
+            // Wunschtempo: so schnell, dass es vor jeder Kurve mit 1,5 m/s² auf deren Tempo kommt
+            float v0 = lane.limit * c.wish
+            for (int i = 0; i < this.pathCount; i++) {
+                float allowed = Math.Sqrt(this.pathV[i] * c.wish * this.pathV[i] * c.wish + 2.0 * 1.5 * Math.Max(0.0, this.pathD[i] - 1.0))
+                if (allowed < v0) { v0 = allowed }
+            }
+            // das Ende des Wegs (Einbahnstraße in eine Sackgasse ...): dort halten
+            float half = c.length / 2.0
+            float gap = 1.0e30
+            float lead = 0.0
+            bool still = false            // das nächste Hindernis steht und ist kein fahrendes Auto
+            bool player = false           // das nächste Hindernis ist ein Spieler
+            if (this.pathCount > 0 && this.pathV[this.pathCount - 1] == 0.0) {
+                gap = this.pathD[this.pathCount - 1] - half
+            }
+            float myHalfW = c.width / 2.0
+            // beim Vorbeifahren zählt schon die Lage daneben (es lenkt hinüber, während es anrollt)
+            float lat = c.offset
+            float aside = -Math.Min(2.6, Math.Max(1.8, lane.width / 2.0))
+            if (c.pass > 0.0) { lat = aside }
+            // andere Autos
+            foreach (o in this.cars) {
+                if (o == c) { continue }
+                float dx = o.east - c.east
+                float dy = o.north - c.north
+                if (dx * dx + dy * dy > (look + 8.0) * (look + 8.0)) { continue }
+                float h = o.heading * Math.PI / 180.0
+                float ox = -Math.Sin(h)
+                float oy = Math.Cos(h)
+                float spread = Math.Max(0.0, o.length / 2.0 - o.width / 2.0)
+                float radius = o.width / 2.0 + 0.1
+                foreach (k in [1.0, -1.0]) {
+                    this.Project(o.east + ox * spread * k, o.north + oy * spread * k)
+                    if (this.projAlong <= 0.0) { continue }
+                    float facing = ox * this.projDx + oy * this.projDy
+                    float limit = myHalfW + radius + 0.2
+                    if (facing < -0.5) { limit = 1.1 }
+                    if (Math.Abs(this.projLateral - lat) > limit) { continue }
+                    float g = this.projAlong - half - radius
+                    if (g < gap) {
+                        gap = g
+                        lead = Math.Max(0.0, o.speed * facing)
+                        still = o.state != 0 || (o.speed < 0.3 && o.stuck > 3.0 && o.wait <= 0.0 && o.gap > 25.0)
+                        player = false
+                    }
+                }
+            }
+            // Fußgänger auf dem Weg
+            foreach (p in this.people) {
+                float dx = p.east - c.east
+                float dy = p.north - c.north
+                if (dx * dx + dy * dy > (look + 3.0) * (look + 3.0)) { continue }
+                this.Project(p.east, p.north)
+                if (this.projAlong <= 0.0) { continue }
+                if (Math.Abs(this.projLateral - lat) > myHalfW + 0.9) { continue }
+                float g = this.projAlong - half - 0.6
+                if (g < gap) {
+                    gap = g
+                    lead = 0.0
+                    still = false
+                    player = false
+                }
+            }
+            // Spieler und geparkte Wagen
+            for (int i = 0; i + 6 < players.Count; i = i + 7) {
+                float dx = players[i] - c.east
+                float dy = players[i + 1] - c.north
+                if (dx * dx + dy * dy > (look + 10.0) * (look + 10.0)) { continue }
+                float h = players[i + 2] * Math.PI / 180.0
+                float ox = -Math.Sin(h)
+                float oy = Math.Cos(h)
+                float radius = players[i + 4]
+                float spread = players[i + 5]
+                foreach (k in [1.0, 0.0, -1.0]) {
+                    if (spread <= 0.0 && k != 0.0) { continue }
+                    this.Project(players[i] + ox * spread * k, players[i + 1] + oy * spread * k)
+                    if (this.projAlong <= 0.0) { continue }
+                    if (Math.Abs(this.projLateral - lat) > myHalfW + radius + 0.3) { continue }
+                    float g = this.projAlong - half - radius
+                    if (g < gap) {
+                        gap = g
+                        float facing = ox * this.projDx + oy * this.projDy
+                        lead = Math.Max(0.0, players[i + 3] * facing)
+                        still = Math.Abs(players[i + 3]) < 0.3
+                        player = players[i + 6] < 1.5
+                    }
+                }
+            }
+            // die Kreuzung voraus: reservieren oder an der Haltelinie warten
+            bool yield = false
+            if (lane.kind == Raser.LaneKind.Road && c.plan.Count > 0) {
+                int turn = c.plan[0]
+                float toEnd = lane.length - c.s
+                float approach = Math.Max(10.0, v * v / 4.0 + 6.0)
+                float stop = toEnd - half - 0.3
+                // ist hinter der Kreuzung kein Platz, wird nicht hineingefahren
+                bool full = gap > stop && gap < stop + this.graph.lanes[turn].length + 2.0 * half + 1.0
+                if (toEnd < approach && c.reserved != turn && gap > stop) {
+                    if (!full && this.CanGo(c, turn)) {
+                        c.reserved = turn
+                    } else {
+                        yield = true
+                        if (stop < gap) {
+                            gap = stop
+                            lead = 0.0
+                            still = false
+                            player = false
+                        }
+                    }
+                }
+            }
+            if (yield && v < 0.5) { c.wait = c.wait + dt } else if (!yield) { c.wait = 0.0 }
+            // hinter einem stehenden Hindernis: nach 2 s hupen (der Spieler), nach 3 s links vorbei (5 s lang)
+            if (v < 0.3) { c.stuck = c.stuck + dt } else { c.stuck = 0.0 }
+            if (still && gap < 8.0 && v < 0.5) { c.blocked = c.blocked + dt } else if (!still || gap > 15.0) { c.blocked = 0.0 }
+            if (player && c.blocked > 2.0 && c.blocked - dt <= 2.0) {
+                c.honk = 1.0
+                this.events.Add("hup")
+            }
+            if (c.blocked > 3.0) {
+                // so weit: bis zum Hindernis, an ihm vorbei (bis 6 m lang) und eine Wagenlänge Platz
+                c.pass = gap + 6.0 + c.length * 2.0 + 4.0
+                c.blocked = 0.0
+            }
+            float target = 0.0
+            if (c.pass > 0.0) { target = aside }
+            c.gap = gap
+            // quer höchstens 0,3 m/s plus ein Viertel des Tempos (es lenkt, rutscht nicht)
+            float shift = (0.3 + 0.25 * v) * dt
+            c.offset = c.offset + Math.Clamp(target - c.offset, -shift, shift)
+            c.accel = Raser.Traffic.Idm(v, v0, gap, lead)
+        }
+
+        // Darf c auf die Abbiegespur turn? Nicht, solange eine kreuzende reserviert ist oder ein Vorfahrtberechtigter kommt.
+        defined bool CanGo(NpcCar c, defined int turn) {
+            var t = this.graph.lanes[turn]
+            if (t.kind != Raser.LaneKind.Turn) { return true }
+            int node = t.fromNode
+            var mine = this.graph.lanes[c.lane]
+            mine.At(mine.length, this.at)
+            float mx = this.at.dx
+            float my = this.at.dy
+            float ne = this.graph.NodeE(node)
+            float nn = this.graph.NodeN(node)
+            foreach (o in this.cars) {
+                if (o == c || o.state != 0) { continue }
+                // reserviert und kreuzend
+                if (o.reserved >= 0 && o.reserved != turn) {
+                    var r = this.graph.lanes[o.reserved]
+                    if (r.fromNode == node && this.graph.Conflict(turn, o.reserved)) { return false }
+                }
+                if (c.wait > 6.0) { continue }
+                // kommt einer mit Vorfahrt?
+                if (o.reserved >= 0 || o.plan.Count == 0) { continue }
+                var ol = this.graph.lanes[o.lane]
+                if (ol.kind != Raser.LaneKind.Road || ol.toNode != node) { continue }
+                float toEnd = ol.length - o.s
+                if (toEnd > 30.0 || (o.speed < 0.5 && toEnd > 8.0)) { continue }
+                int oturn = o.plan[0]
+                if (!this.graph.Conflict(turn, oturn)) { continue }
+                if (this.Before(o, ol, oturn, c, mine, t, mx, my, ne, nn)) { return false }
+            }
+            return true
+        }
+
+        // Hat o (auf ol, will auf oturn) Vorfahrt vor c (auf mine, will auf t, Richtung am Ende (mx, my))?
+        defined bool Before(NpcCar o, Lane ol, defined int oturn, NpcCar c, Lane mine, Lane t, defined float mx, defined float my, defined float ne, defined float nn) {
+            if (ol.rank != mine.rank) { return ol.rank > mine.rank }
+            ol.At(ol.length, this.at)
+            float facing = this.at.dx * mx + this.at.dy * my
+            // Gegenverkehr: wer links abbiegt, wartet
+            if (facing < -0.7) {
+                var ot = this.graph.lanes[oturn]
+                return t.turn > 30.0 && ot.turn <= 30.0
+            }
+            // rechts vor links: kommt o von rechts? (rechts von (mx, my) ist (my, -mx))
+            float rx = o.east - ne
+            float ry = o.north - nn
+            float rl = Math.Sqrt(rx * rx + ry * ry)
+            if (rl < 0.1) { return false }
+            return (rx * my - ry * mx) / rl > 0.3
+        }
+
+        // Ein Auto bewegt sich (nach Decide): Tempo, s, Spurwechsel am Ende, Lage.
+        undefined Move(NpcCar c, defined float dt) {
+            float v = Math.Max(0.0, c.speed + c.accel * dt)
+            float ds = (c.speed + v) * 0.5 * dt
+            if (c.accel < 0.0 && v == 0.0 && c.speed > 0.0) { ds = c.speed * c.speed / (-2.0 * c.accel) }
+            c.speed = v
+            c.s = c.s + Math.Max(0.0, ds)
+            if (c.pass > 0.0) { c.pass = c.pass - Math.Max(0.0, ds) }
+            var lane = this.graph.lanes[c.lane]
+            while (c.s > lane.length) {
+                if (c.plan.Count == 0) {
+                    c.s = lane.length
+                    c.speed = 0.0
+                    break
+                }
+                c.s = c.s - lane.length
+                c.lane = c.plan[0]
+                c.plan.RemoveAt(0)
+                // auf eine Abbiegespur nur mit Reservierung (sonst jetzt)
+                if (this.graph.lanes[c.lane].kind == Raser.LaneKind.Turn) { c.reserved = c.lane }
+                lane = this.graph.lanes[c.lane]
+                this.Plan(c)
+            }
+            // die Reservierung gilt, bis das Heck aus der Kreuzung ist
+            if (c.reserved >= 0) {
+                var r = this.graph.lanes[c.reserved]
+                bool keep = c.lane == c.reserved || (c.lane == r.source && c.plan.Count > 0 && c.plan[0] == c.reserved) || (c.lane == r.target && c.s < c.length)
+                if (!keep) { c.reserved = -1 }
+            }
+            if (c.blend > 0.0) { c.blend = Math.Max(0.0, c.blend - dt / 1.5) }
+            this.Pose(c)
+        }
+
+        // Nach einem Unfall: der Körper rutscht und rollt gebremst aus; danach hupt das Auto und fährt weiter (kaputt: bleibt).
+        undefined Crashed(NpcCar c, defined float dt) {
+            c.stateTime = c.stateTime + dt
+            var b = c.body
+            b.Step(dt, 0.0, 1.0, 0.0, false, this.wetness)
+            c.east = b.east
+            c.north = b.north
+            c.heading = b.heading
+            c.speed = Math.Abs(b.speed)
+            bool resting = Math.Abs(b.speed) < 0.1 && Math.Abs(b.pushE) + Math.Abs(b.pushN) < 0.1
+            if (c.state == 2) { return }
+            if (b.health <= 0.0) {
+                c.state = 2
+                return
+            }
+            if (resting && c.stateTime > 2.0 && c.honk <= -1.0) {
+                c.honk = 1.5
+                this.events.Add("hup")
+            }
+            if (resting && c.stateTime > 6.0) {
+                // zurück auf die nächste Spur in seiner Richtung
+                if (this.graph.Nearest(c.east, c.north, true, c.heading, 6.0)) {
+                    c.lane = this.graph.foundLane
+                    c.s = this.graph.foundS
+                    c.state = 0
+                    c.speed = 0.0
+                    c.offset = 0.0
+                    c.plan.Clear()
+                    c.reserved = -1
+                    b.pushE = 0.0
+                    b.pushN = 0.0
+                    // die Anzeige gleitet in 1,5 s vom Körper auf die Spur
+                    var lane = this.graph.lanes[c.lane]
+                    lane.At(c.s, this.at)
+                    c.blendE = c.east - this.at.e
+                    c.blendN = c.north - this.at.n
+                    c.blend = 1.0
+                    this.Plan(c)
+                    this.Pose(c)
+                } else if (c.stateTime > 20.0) { c.state = 2 }
+            }
+        }
+
+        // Für die Ansicht und das Spiel: hat der Körper einen Stoß bekommen (Raser.Vehicle.Shove), wird das Auto ein Unfallwagen.
+        undefined Hit(NpcCar c) {
+            if (c.state != 0) {
+                c.stateTime = 0.0
+                return
+            }
+            c.state = 1
+            c.stateTime = 0.0
+            c.honk = -1.0
+            c.reserved = -1
+            this.crashes++
+            this.events.Add("unfall")
+        }
+
+        // Lage eines Fußgängers aus Spur, s und Seite.
+        undefined PosePerson(NpcPerson p) {
+            var lane = this.graph.lanes[p.lane]
+            lane.At(p.s, this.at)
+            p.east = this.at.e + this.at.dy * p.side + p.dodgeE
+            p.north = this.at.n - this.at.dx * p.side + p.dodgeN
+            if (p.state != 4) { p.heading = Math.Atan2(-this.at.dx, this.at.dy) * 180.0 / Math.PI }
+        }
+
+        // Ein Schritt eines Fußgängers.
+        undefined Walk(NpcPerson p, defined float dt, List<float> players) {
+            p.stateTime = p.stateTime + dt
+            if (p.state == 4) {
+                // liegt: nach 9 s wieder auf
+                if (p.stateTime > 9.0) {
+                    p.state = 0
+                    p.stateTime = 0.0
+                }
+                return
+            }
+            // Fahrzeuge: angefahren, ausweichen
+            bool threat = false
+            for (int i = 0; i + 6 < players.Count; i = i + 7) {
+                int kind = Math.Round(players[i + 6])!int
+                float h = players[i + 2] * Math.PI / 180.0
+                float fx = -Math.Sin(h)
+                float fy = Math.Cos(h)
+                float rx = p.east - players[i]
+                float ry = p.north - players[i + 1]
+                if (rx * rx + ry * ry > 900.0) { continue }
+                float radius = players[i + 4]
+                float spread = players[i + 5]
+                float v = players[i + 3]
+                if (kind == 0) {
+                    // der Spieler zu Fuß: Platz machen
+                    float d = Math.Sqrt(rx * rx + ry * ry)
+                    if (d < 0.9 && d > 0.001) {
+                        p.dodgeE = p.dodgeE + rx / d * (0.9 - d)
+                        p.dodgeN = p.dodgeN + ry / d * (0.9 - d)
+                    }
+                    continue
+                }
+                // getroffen: ein Kreis des Fahrzeugs berührt ihn
+                foreach (k in [1.0, 0.0, -1.0]) {
+                    float cx = players[i] + fx * spread * k
+                    float cy = players[i + 1] + fy * spread * k
+                    float d = Math.Sqrt((p.east - cx) * (p.east - cx) + (p.north - cy) * (p.north - cy))
+                    if (d < radius + 0.3) {
+                        if (Math.Abs(v) > 1.5) {
+                            p.state = 4
+                            p.stateTime = 0.0
+                            p.heading = players[i + 2]
+                            p.jumpE = 0.0
+                            p.jumpN = 0.0
+                            this.knocked++
+                            this.events.Add("umgefahren")
+                            return
+                        }
+                        // langsam angeschoben: zur Seite
+                        if (d > 0.001) {
+                            p.dodgeE = p.dodgeE + (p.east - cx) / d * (radius + 0.3 - d)
+                            p.dodgeN = p.dodgeN + (p.north - cy) / d * (radius + 0.3 - d)
+                        }
+                    }
+                }
+                if (Math.Abs(v) < 2.0) { continue }
+                // hält es auf ihn zu? (vor dem Fahrzeug, in seiner Breite und in 1,6 s erreicht)
+                float dir = 1.0
+                if (v < 0.0) { dir = -1.0 }
+                float along = (rx * fx + ry * fy) * dir
+                float lateral = rx * fy - ry * fx
+                if (along > -1.0 && along < Math.Abs(v) * 1.6 + spread + 3.0 && Math.Abs(lateral) < radius + 1.6) {
+                    threat = true
+                    if (p.state != 3) {
+                        p.state = 3
+                        p.stateTime = 0.0
+                        float sign = 1.0
+                        if (lateral < 0.0) { sign = -1.0 }
+                        if (Math.Abs(lateral) < 0.2 && p.random.Next() < 0.5) { sign = -sign }
+                        // zur Seite, quer zum Fahrzeug: rechts von (fx, fy) ist (fy, -fx)
+                        p.jumpE = fy * sign * 3.5
+                        p.jumpN = -fx * sign * 3.5
+                    }
+                }
+            }
+            if (p.state == 3) {
+                if (p.stateTime < 0.7) {
+                    p.dodgeE = p.dodgeE + p.jumpE * dt
+                    p.dodgeN = p.dodgeN + p.jumpN * dt
+                } else if (!threat) {
+                    p.state = 0
+                    p.stateTime = 0.0
+                }
+            }
+            // zurück auf den Weg (0,5 m/s), wenn nichts droht
+            if (!threat && p.state != 3) {
+                float dl = Math.Sqrt(p.dodgeE * p.dodgeE + p.dodgeN * p.dodgeN)
+                if (dl > 0.001) {
+                    float back = Math.Min(dl, 0.5 * dt)
+                    p.dodgeE = p.dodgeE - p.dodgeE / dl * back
+                    p.dodgeN = p.dodgeN - p.dodgeN / dl * back
+                }
+            }
+            var lane = this.graph.lanes[p.lane]
+            float want = p.pace
+            if (p.state == 3) { want = 0.0 }
+            if (lane.kind == Raser.LaneKind.Crossing) { want = p.pace * 1.15 }
+            // andere Fußgänger: dem Langsameren davor folgen, Entgegenkommenden rechts ausweichen
+            lane.At(p.s, this.at)
+            float hx = this.at.dx
+            float hy = this.at.dy
+            p.keep = Math.Clamp(p.keep, -lane.spread, lane.spread)
+            float keep = p.keep
+            foreach (o in this.people) {
+                if (o == p) { continue }
+                float rx = o.east - p.east
+                float ry = o.north - p.north
+                float d2 = rx * rx + ry * ry
+                if (d2 > 4.0 || d2 < 0.0001) { continue }
+                float along = rx * hx + ry * hy
+                if (along <= 0.0) { continue }
+                float lateral = rx * hy - ry * hx
+                if (Math.Abs(lateral) > 0.7) { continue }
+                float oh = o.heading * Math.PI / 180.0
+                float facing = -Math.Sin(oh) * hx + Math.Cos(oh) * hy
+                if (facing < -0.3) {
+                    keep = Math.Min(lane.spread + 0.4, p.side + 0.5)
+                } else if (along < 1.2) { want = Math.Min(want, o.speed * 0.9) }
+            }
+            p.side = p.side + Math.Clamp(keep - p.side, -0.6 * dt, 0.6 * dt)
+            // am Ende: die nächste Spur wählen; vor einem Überweg warten, solange ein Auto kommt
+            if (p.next < 0) { p.next = this.ChooseWalk(p, lane) }
+            float toEnd = lane.length - p.s
+            if (p.next >= 0 && toEnd < 1.0) {
+                var nl = this.graph.lanes[p.next]
+                if (nl.kind == Raser.LaneKind.Crossing && !this.ClearToCross(nl, players)) {
+                    want = 0.0
+                    if (p.state == 0) {
+                        p.state = 1
+                        p.stateTime = 0.0
+                    }
+                    // zu lange: anders entscheiden
+                    if (p.stateTime > 12.0) {
+                        p.next = lane.reverse
+                        p.state = 0
+                    }
+                } else if (p.state == 1) { p.state = 0 }
+            }
+            float change = 2.0 * dt
+            p.speed = p.speed + Math.Clamp(want - p.speed, -change * 2.0, change)
+            p.s = p.s + p.speed * dt
+            p.stride = p.stride + p.speed * dt
+            while (p.s > lane.length) {
+                p.s = p.s - lane.length
+                int next = p.next
+                if (next < 0) { next = this.ChooseWalk(p, lane) }
+                if (next < 0) {
+                    p.s = lane.length
+                    break
+                }
+                // auf einen anderen Weg: die Seite wechselt mit (Verbindungen sind schmal)
+                p.lane = next
+                p.next = -1
+                lane = this.graph.lanes[p.lane]
+                p.keep = Math.Clamp(p.keep, -lane.spread, lane.spread)
+                p.side = Math.Clamp(p.side, -lane.spread - 0.3, lane.spread + 0.3)
+            }
+            this.PosePerson(p)
+        }
+
+        // Die nächste Spur eines Fußgängers: um die Ecke (Gewicht 1), über einen Überweg (0,35), sonst umkehren.
+        defined int ChooseWalk(NpcPerson p, Lane lane) {
+            if (lane.next.Count == 0) { return lane.reverse }
+            float total = 0.0
+            foreach (n in lane.next) { total = total + this.WalkWeight(n) }
+            if (total <= 0.0) { return lane.reverse }
+            float x = p.random.Next() * total
+            int pick = lane.next[0]
+            foreach (n in lane.next) {
+                pick = n
+                x = x - this.WalkWeight(n)
+                if (x <= 0.0) { break }
+            }
+            return pick
+        }
+
+        defined float WalkWeight(defined int lane) {
+            var l = this.graph.lanes[lane]
+            if (l.kind == Raser.LaneKind.Crossing) { return 0.35 }
+            // die Gegenrichtung des Wegs dahinter (zurück, wo man herkam) selten
+            return 1.0
+        }
+
+        // Ist der Überweg frei? Kein Auto (und kein fahrender Spieler) näher als 30 m, das in 5 s dort wäre.
+        defined bool ClearToCross(Lane crossing, List<float> players) {
+            float me = (crossing.pts[0] + crossing.pts[crossing.pts.length - 2]) * 0.5
+            float mn = (crossing.pts[1] + crossing.pts[crossing.pts.length - 1]) * 0.5
+            foreach (c in this.cars) {
+                float dx = me - c.east
+                float dy = mn - c.north
+                float d = Math.Sqrt(dx * dx + dy * dy)
+                if (d > 30.0) { continue }
+                if (d < c.length / 2.0 + 2.5) { return false }
+                if (c.speed < 0.5) { continue }
+                float h = c.heading * Math.PI / 180.0
+                float towards = (dx * -Math.Sin(h) + dy * Math.Cos(h)) / Math.Max(d, 0.01)
+                if (towards > 0.3 && d / c.speed < 5.0) { return false }
+            }
+            for (int i = 0; i + 6 < players.Count; i = i + 7) {
+                if (players[i + 6] != 1.0 || Math.Abs(players[i + 3]) < 0.5) { continue }
+                float dx = me - players[i]
+                float dy = mn - players[i + 1]
+                float d = Math.Sqrt(dx * dx + dy * dy)
+                if (d > 40.0) { continue }
+                float h = players[i + 2] * Math.PI / 180.0
+                float towards = (dx * -Math.Sin(h) + dy * Math.Cos(h)) / Math.Max(d, 0.01)
+                if (towards > 0.3 && d / Math.Abs(players[i + 3]) < 5.0) { return false }
+            }
+            return true
+        }
+
+        defined int CarCount { get { return this.cars.Count } }
+        defined int PeopleCount { get { return this.people.Count } }
+    }
+}
