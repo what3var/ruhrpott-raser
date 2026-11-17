@@ -309,6 +309,7 @@ class RegionServer {
                 p.credit = p.credit - 1.0
             }
             this.Follow(p)
+            this.Ops(p)
         }
         this.Knocks()
         this.Npcs()
@@ -456,6 +457,28 @@ class RegionServer {
             if (p.pawn == undefined) { continue }
             var s = this.SnapshotFor(p, time)
             p.link.Send(s)
+        }
+    }
+
+    // Eine Operation wartet, bis die Eingabe davor gerechnet ist (höchstens 16, höchstens 2 s - wer eine Nummer aus der Zukunft schickt, wartet
+    // nur auf sich selbst).
+    undefined QueueOp(Player p, Raser.Packet m) {
+        if (p.waitingOps.Count >= 16) {
+            this.SendInventory(p, m.seq, false)
+            return
+        }
+        m.tick = this.tick
+        p.waitingOps.Add(take m)
+        this.Ops(p)
+    }
+
+    // Die wartenden Operationen, deren Eingabe gerechnet ist.
+    undefined Ops(Player p) {
+        while (p.waitingOps.Count > 0) {
+            var m = p.waitingOps[0]
+            if (m.ack > p.pawn.seq && this.tick - m.tick < 60) { return }
+            this.Operate(p, m)
+            p.waitingOps.RemoveAt(0)
         }
     }
 

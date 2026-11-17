@@ -247,7 +247,9 @@ class NetSession {
     undefined SendOp(Raser.InvOp op) {
         if (op == undefined || !this.Online) { return }
         this.opSeq++
-        var p = Raser.Packet.Op(this.opSeq, op)
+        int after = 0
+        if (this.pred != undefined) { after = this.pred.seq }
+        var p = Raser.Packet.Op(this.opSeq, op, after)
         this.link.Send(p)
         this.pendingOps.Add(take p)
     }

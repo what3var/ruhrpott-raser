@@ -84,6 +84,7 @@ class Online {
     Gear gear                       // das Inventar des Spiels (an die Sitzung gehängt)
     defined int seenInv
     defined int lastOpened
+    defined bool hooked
 
     construct() {
         this.session = undefined
@@ -94,6 +95,7 @@ class Online {
         this.gear = undefined
         this.seenInv = -1
         this.lastOpened = 0
+        this.hooked = false
     }
 
     // Verbindet, wenn --server gegeben ist (sonst offline wie bisher): mit dem Fahrzeug von --vehicle (oder --on-foot 1) am Startpunkt --at.
@@ -120,13 +122,22 @@ class Online {
         foreach (m in models) {
             foreach (o in m.parts) { o.Visible = false }
         }
+        this.gear = gear
+        this.Hook()
+    }
+
+    // Das Inventar des Spiels auf das der Sitzung umstellen, sobald der Server es geschickt hat.
+    undefined Hook() {
         var s = this.session
+        if (this.gear == undefined || this.hooked || !s.hasInventory) { return }
+        var gear = this.gear
         gear.store = s.store
         gear.drops = s.drops
         gear.inv = s.inv
         gear.screen.inv = s.inv
         gear.seen = -1
-        this.gear = gear
+        gear.screen.done.Clear()
+        this.hooked = true
     }
 
     // Ein Ereignis für Chat oder Konsole? (true: verbraucht)
@@ -161,7 +172,8 @@ class Online {
     // Das Inventar mit dem Server abgleichen: was das Fenster getan hat, geht an den Server; ein geöffneter Rucksack am Boden auch.
     undefined Sync() {
         var s = this.session
-        if (this.gear == undefined || !s.Online) { return }
+        this.Hook()
+        if (!this.hooked || !s.Online) { return }
         var done = this.gear.screen.done
         foreach (op in done) { s.SendOp(op) }
         done.Clear()
@@ -394,10 +406,10 @@ class NetBot {
             }
             if (plan == "schummeln") {
                 if (t < 4.0) {
-                    if (cheatSeq == 0) {
+                    if (cheatSeq == 0 && s.selfKnown) {
                         startE = s.selfEast
                         startN = s.selfNorth
-                        cheatSeq = pred.seq
+                        cheatSeq = Math.Max(1, pred.seq)
                     }
                     // doppelt so viele Eingaben wie Takte: Vollgas (die eigene Rechnung fährt doppelt so schnell)
                     s.Poll()
@@ -410,7 +422,7 @@ class NetBot {
                         }
                     }
                     var mc = pred.Car()
-                    if (mc != undefined) { cheatOwn = Math.Sqrt((mc.east - startE) * (mc.east - startE) + (mc.north - startN) * (mc.north - startN)) }
+                    if (mc != undefined && cheatSeq != 0) { cheatOwn = Math.Sqrt((mc.east - startE) * (mc.east - startE) + (mc.north - startN) * (mc.north - startN)) }
                 } else if (phase == "start") {
                     float server = Math.Sqrt((s.selfEast - startE) * (s.selfEast - startE) + (s.selfNorth - startN) * (s.selfNorth - startN))
                     print("[" + user + "] Schummler: Server-Strecke " + Math.Round(server * 10.0) / 10.0 + " m in 4 s, eigene Rechnung " + Math.Round(cheatOwn * 10.0) / 10.0 + " m")

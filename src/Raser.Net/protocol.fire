@@ -186,7 +186,7 @@ namespace Raser {
         defined int time                // Serverzeit (ms seit 1970)
         defined int tick                // Takt des Servers (Welcome, Snapshot)
         defined int rate                // Takte je s (Welcome)
-        defined int ack                 // Snapshot: die zuletzt gerechnete Eingabe
+        defined int ack                 // Snapshot: die zuletzt gerechnete Eingabe; InvOp: die letzte Eingabe des Clients davor
         defined bool admin
         defined bool ok                 // InvSet: die Operation seq ist angenommen
         string text                     // Token, Chat, Befehl, Grund, Wetter
@@ -310,10 +310,12 @@ namespace Raser {
             return p
         }
 
-        // Eine Operation am Inventar mit Folgenummer.
-        static Raser.Packet Op(defined int seq, Raser.InvOp op) {
+        // Eine Operation am Inventar mit Folgenummer; after: die letzte Eingabe davor (der Server rechnet die Operation erst nach ihr - so
+        // gilt sie dort, wo der Client stand, z. B. gleich nach dem Aussteigen).
+        static Raser.Packet Op(defined int seq, Raser.InvOp op, defined int after = 0) {
             var p = new Raser.Packet(Raser.Protocol.InvOp)
             p.seq = seq
+            p.ack = after
             var o = new Raser.InvOp(op.kind, op.source, op.sourceSlot, op.target, op.targetSlot, op.count)
             o.drop = op.drop
             p.op = take o
@@ -348,6 +350,7 @@ namespace Raser {
                 foreach (c in p.controls) { Raser.Wire.WriteControls(w, c) }
             } else if (t == Raser.Protocol.InvOp) {
                 w.Varint(p.seq)
+                w.Varint(p.ack)
                 p.op.Write(w)
             } else if (t == Raser.Protocol.Chat || t == Raser.Protocol.Command || t == Raser.Protocol.Reject || t == Raser.Protocol.Kick) {
                 Raser.Wire.Text(w, p.text)
@@ -444,6 +447,7 @@ namespace Raser {
                     }
                 } else if (t == Raser.Protocol.InvOp) {
                     p.seq = r.Varint()
+                    p.ack = r.Varint()
                     p.op = Raser.InvOp.Read(r)
                     if (p.op.kind < 1 || p.op.kind > Raser.Protocol.OpClose) { throw new Raser.ProtocolException("Unbekannte Operation " + p.op.kind + ".") }
                 } else if (t == Raser.Protocol.Chat || t == Raser.Protocol.Command || t == Raser.Protocol.Reject || t == Raser.Protocol.Kick) {

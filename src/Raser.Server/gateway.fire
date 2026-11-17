@@ -63,6 +63,7 @@ class Player {
     defined float wantNorth
     Raser.Inventory inv             // undefined bis zum Eintritt; die Behälter stehen im Speicher der Region
     Bucket ops
+    List<Raser.Packet> waitingOps   // Operationen, deren Eingabe davor noch nicht gerechnet ist
     defined int opSeq               // die zuletzt geprüfte Operation am Inventar
     Dictionary<int, int> known      // je Entität, die sein Client hat: ihr Fingerabdruck
     Dictionary<int, int> knownAt    // ... und der Takt, zu dem sie zuletzt ging
@@ -101,6 +102,7 @@ class Player {
         this.wantNorth = 0.0
         this.inv = undefined
         this.ops = new Bucket(20.0, 20.0)
+        this.waitingOps = new List<Raser.Packet>()
         this.opSeq = 0
         this.known = new Dictionary<int, int>()
         this.knownAt = new Dictionary<int, int>()
@@ -193,7 +195,7 @@ class Gateway {
             }
             if (m.type == Raser.Protocol.Input) { this.Input(p, m, now) }
             else if (m.type == Raser.Protocol.InvOp) {
-                if (!p.ops.Take(now)) { this.regionServer.SendInventory(p, m.seq, false) } else { this.regionServer.Operate(p, m) }
+                if (!p.ops.Take(now)) { this.regionServer.SendInventory(p, m.seq, false) } else { this.regionServer.QueueOp(p, m) }
             }
             else if (m.type == Raser.Protocol.State) { this.Kick(p, "Protokoll v1 (Lagen vom Client) gibt es nicht mehr: bitte den Launcher aktualisieren.", false) }
             else if (m.type == Raser.Protocol.Chat || m.type == Raser.Protocol.Command) { this.Talk(p, m, now) }
