@@ -1,0 +1,19 @@
+{
+  "format": 1,
+  "name": "Raser.Server",
+  "type": "exe",
+  "entry": "main.fire",
+  "references": [
+    {
+      "project": "../Raser.Core/Raser.Core.fireproj"
+    },
+    {
+      "project": "../Raser.Net/Raser.Net.fireproj"
+    }
+  ],
+  "settings": {
+    "version": "0.1.0",
+    "subsystem": "console",
+    "description": "Ruhrpott-Raser: der Server - Launcher-API (HTTP 7480), Spielprotokoll (TCP 7481), Konten, Koordinator, Regionsserver, Uhr und Wetter."
+  }
+}

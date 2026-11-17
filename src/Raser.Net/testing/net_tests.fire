@@ -1,0 +1,228 @@
+// Die Tests von Raser.Net (forge test src/Raser.Net/Raser.Net.fireproj).
+#import "testing"
+#import "hash"
+
+class WireTests {
+    static Raser.Packet Round(Raser.Packet p) {
+        byte frame[] = Raser.Wire.Frame(p)
+        var frames = new Raser.FrameReader(Raser.Protocol.MaxServerFrame)
+        frames.Feed(frame, 0, frame.length)
+        byte body[] = frames.Next()
+        Testing.Assert.IsTrue(body != undefined, "ein ganzer Rahmen")
+        Testing.Assert.IsTrue(frames.Next() == undefined, "nur einer")
+        return Raser.Wire.Decode(body)
+    }
+
+    [Test "Hello hin und zurück, mit Umlauten"]
+    undefined Hello() {
+        var back = WireTests.Round(Raser.Packet.Hello("abc123", "Jürgen", "0.1.3"))
+        Testing.Assert.AreEqual(Raser.Protocol.Hello, back.type)
+        Testing.Assert.AreEqual(Raser.Protocol.Version, back.version)
+        Testing.Assert.AreEqual("abc123", back.text)
+        Testing.Assert.AreEqual("Jürgen|0.1.3", back.name)
+    }
+
+    [Test "State: Lage in cm, Richtung in 1/100 Grad, Kachel"]
+    undefined State() {
+        var p = Raser.Packet.Moved(7, 377123.456, 5706999.004, -90.0, -3.21, 3)
+        var back = WireTests.Round(p)
+        Testing.Assert.AreEqual(7, back.seq)
+        Testing.Assert.AreNear(377123.46, back.east, 0.001)
+        Testing.Assert.AreNear(5706999.0, back.north, 0.001)
+        Testing.Assert.AreNear(-90.0, back.heading, 0.001)
+        Testing.Assert.AreNear(-3.21, back.speed, 0.001)
+        Testing.Assert.AreEqual(3, back.kind)
+        Testing.Assert.AreEqual(1473, back.tileX)
+        Testing.Assert.AreEqual(22292, back.tileY)
+    }
+
+    [Test "Snapshot mit zwei Spielern, Weather, Said, Welcome, Teleport"]
+    undefined Server() {
+        var s = new Raser.Packet(Raser.Protocol.Snapshot)
+        s.time = 1795000000123
+        s.region = 1
+        var a = Raser.Packet.Moved(0, 376117.0, 5705005.0, 45.0, 10.0, 1)
+        a.id = Raser.Ids.Stable(Raser.IdKind.Player, "a")
+        var b = Raser.Packet.Moved(0, 376130.5, 5705010.25, 179.99, 0.0, 0)
+        b.id = 42
+        s.players.Add(take a)
+        s.players.Add(take b)
+        var back = WireTests.Round(s)
+        Testing.Assert.AreEqual(1795000000123, back.time)
+        Testing.Assert.AreEqual(2, back.players.Count)
+        Testing.Assert.AreEqual(Raser.Ids.Stable(Raser.IdKind.Player, "a"), back.players[0].id)
+        Testing.Assert.AreEqual(42, back.players[1].id)
+        Testing.Assert.AreNear(5705010.25, back.players[1].north, 0.001)
+        Testing.Assert.AreNear(179.99, back.players[1].heading, 0.001)
+
+        var w = new Raser.Packet(Raser.Protocol.Weather)
+        w.year = 2026
+        w.day = 321
+        w.seconds = 14 * 3600 + 30 * 60
+        w.scale = 60.0
+        w.text = "nebel"
+        var wb = WireTests.Round(w)
+        Testing.Assert.AreEqual(321, wb.day)
+        Testing.Assert.AreEqual(52200, wb.seconds)
+        Testing.Assert.AreNear(60.0, wb.scale, 0.001)
+        Testing.Assert.AreEqual("nebel", wb.text)
+
+        var said = WireTests.Round(Raser.Packet.Said("Server", "Moin, Kumpel! Glück auf.", Raser.Protocol.FromSystem))
+        Testing.Assert.AreEqual("Server", said.name)
+        Testing.Assert.AreEqual("Moin, Kumpel! Glück auf.", said.text)
+        Testing.Assert.AreEqual(Raser.Protocol.FromSystem, said.kind)
+
+        var welcome = new Raser.Packet(Raser.Protocol.Welcome)
+        welcome.id = 1234567890123
+        welcome.region = 1
+        welcome.admin = true
+        welcome.name = "Anna"
+        var wel = WireTests.Round(welcome)
+        Testing.Assert.AreEqual(1234567890123, wel.id)
+        Testing.Assert.IsTrue(wel.admin)
+        Testing.Assert.AreEqual("Anna", wel.name)
+
+        var tp = new Raser.Packet(Raser.Protocol.Teleport)
+        tp.east = 376000.5
+        tp.north = 5705000.25
+        tp.heading = 270.0
+        var tpb = WireTests.Round(tp)
+        Testing.Assert.AreNear(376000.5, tpb.east, 0.001)
+        Testing.Assert.AreNear(-90.0, tpb.heading, 0.001)
+    }
+
+    [Test "Rahmen: in Stücken, mehrere auf einmal, zu lang"]
+    undefined Frames() {
+        byte one[] = Raser.Wire.Frame(Raser.Packet.Line(Raser.Protocol.Chat, "eins"))
+        byte two[] = Raser.Wire.Frame(Raser.Packet.Line(Raser.Protocol.Chat, "zwei"))
+        var frames = new Raser.FrameReader(Raser.Protocol.MaxClientFrame)
+        frames.Feed(one, 0, 3)
+        Testing.Assert.IsTrue(frames.Next() == undefined, "halber Rahmen")
+        frames.Feed(one, 3, one.length - 3)
+        frames.Feed(two, 0, two.length)
+        Testing.Assert.AreEqual("eins", Raser.Wire.Decode(frames.Next()).text)
+        Testing.Assert.AreEqual("zwei", Raser.Wire.Decode(frames.Next()).text)
+        Testing.Assert.IsTrue(frames.Next() == undefined)
+        // 2000 Bytes angekündigt: mehr, als ein Client schicken darf
+        byte big[] = [208, 7, 1]
+        var strict = new Raser.FrameReader(Raser.Protocol.MaxClientFrame)
+        strict.Feed(big, 0, 3)
+        Testing.Assert.Throws(() => (taking strict).Next())
+        // ein leerer Rahmen
+        byte empty[] = [0, 0]
+        var e = new Raser.FrameReader(64)
+        e.Feed(empty, 0, 2)
+        Testing.Assert.Throws(() => (taking e).Next())
+    }
+
+    [Test "Unsinn wird abgelehnt"]
+    undefined Garbage() {
+        // unbekannte Art
+        byte unknown[] = [99, 1, 2]
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking unknown))
+        // zu kurz: State ohne Felder
+        byte short[] = [2, 1]
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking short))
+        // Bytes hinter der Nachricht
+        byte body[] = Raser.Wire.Encode(Raser.Packet.Line(Raser.Protocol.Chat, "x"))
+        byte longer[] = new byte[body.length + 1]
+        body.CopyTo(longer, 0)
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking longer))
+        // ein Text, der länger sein will als erlaubt
+        byte huge[] = [3, 255, 15, 65]
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking huge))
+        // eine Fahrzeugart, die es nicht gibt
+        var p = Raser.Packet.Moved(1, 10.0, 10.0, 0.0, 0.0, 1)
+        byte state[] = Raser.Wire.Encode(p)
+        state[state.length - 1] = 9
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking state))
+        // leer
+        byte none[] = new byte[0]
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking none))
+    }
+}
+
+class CommandTests {
+    [Test "Befehle lesen: Name, Argument, Groß- und Kleinschreibung"]
+    undefined Parse() {
+        var c = Raser.Commands.Parse("  /KICK   Bob  ", true)
+        Testing.Assert.IsTrue(c.Ok, c.error)
+        Testing.Assert.AreEqual("kick", c.name)
+        Testing.Assert.AreEqual("Bob", c.args)
+        var say = Raser.Commands.Parse("/say Glück auf, Leute", true)
+        Testing.Assert.AreEqual("Glück auf, Leute", say.args)
+        var t = Raser.Commands.Parse("/time 7:05", true)
+        Testing.Assert.IsTrue(t.Ok, t.error)
+        Testing.Assert.AreNear(7.0 + 5.0 / 60.0, t.hour, 0.0001)
+        var w = Raser.Commands.Parse("/weather Nebel", true)
+        Testing.Assert.IsTrue(w.Ok, w.error)
+        Testing.Assert.AreEqual("nebel", w.args)
+    }
+
+    [Test "Rechte: Spieler dürfen /help und /players, Admins alles"]
+    undefined Rights() {
+        foreach (line in ["/help", "/players"]) {
+            Testing.Assert.IsTrue(Raser.Commands.Parse(line, false).Ok, line)
+            Testing.Assert.IsTrue(Raser.Commands.Parse(line, true).Ok, line)
+        }
+        foreach (line in ["/kick Bob", "/say hallo", "/time 12:00", "/weather regen", "/tp Bob", "/admin Bob"]) {
+            var refused = Raser.Commands.Parse(line, false)
+            Testing.Assert.IsFalse(refused.Ok, line)
+            Testing.Assert.Contains("nur Admins", refused.error)
+            Testing.Assert.IsTrue(Raser.Commands.Parse(line, true).Ok, line)
+        }
+        Testing.Assert.AreEqual(2, Raser.Commands.Help(false).Count)
+        Testing.Assert.AreEqual(8, Raser.Commands.Help(true).Count)
+    }
+
+    [Test "Falsche Befehle und Argumente"]
+    undefined Wrong() {
+        Testing.Assert.Contains("Unbekannter Befehl", Raser.Commands.Parse("/fly", true).error)
+        Testing.Assert.Contains("Unbekannter Befehl", Raser.Commands.Parse("/fly", false).error)
+        Testing.Assert.IsFalse(Raser.Commands.Parse("hallo", true).Ok)
+        Testing.Assert.IsFalse(Raser.Commands.Parse("/kick", true).Ok)
+        Testing.Assert.IsFalse(Raser.Commands.Parse("/kick a b", true).Ok)
+        Testing.Assert.IsFalse(Raser.Commands.Parse("/say", true).Ok)
+        Testing.Assert.IsFalse(Raser.Commands.Parse("/time 24:00", true).Ok)
+        Testing.Assert.IsFalse(Raser.Commands.Parse("/time 12:5", true).Ok)
+        Testing.Assert.IsFalse(Raser.Commands.Parse("/time mittag", true).Ok)
+        Testing.Assert.IsFalse(Raser.Commands.Parse("/weather schnee", true).Ok)
+        // ein Spieler erfährt bei Admin-Befehlen nur, dass er sie nicht darf (nicht, ob das Argument passt)
+        Testing.Assert.Contains("nur Admins", Raser.Commands.Parse("/time quatsch", false).error)
+    }
+
+    [Test "Namen und Texte"]
+    undefined Names() {
+        Testing.Assert.IsTrue(Raser.Commands.ValidName("Kumpel_42"))
+        Testing.Assert.IsTrue(Raser.Commands.ValidName("a-b"))
+        Testing.Assert.IsFalse(Raser.Commands.ValidName("ab"))
+        Testing.Assert.IsFalse(Raser.Commands.ValidName("zu-lang-fuer-namen"))
+        Testing.Assert.IsFalse(Raser.Commands.ValidName("Jürgen"))
+        Testing.Assert.IsFalse(Raser.Commands.ValidName("a b c"))
+        Testing.Assert.AreEqual("hallo welt", Raser.Texts.Clean("  hallo\n welt\t ", 200))
+        Testing.Assert.AreEqual("abc", Raser.Texts.Clean("abcdef", 3))
+        Testing.Assert.AreEqual("Glueck auf, Strasse", Raser.Texts.Plain("Glück auf, Straße"))
+    }
+}
+
+class PasswordTests {
+    [Test "PBKDF2-HMAC-SHA-256 nach RFC 7914 (Abschnitt 11)"]
+    undefined Vector() {
+        byte salt[] = Hash.Hex.Decode("73616c74")    // "salt"
+        string one = Hash.Hex.Encode(Raser.Passwords.Pbkdf2("passwd", salt, 1, 64))
+        Testing.Assert.AreEqual("55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783", one)
+    }
+
+    [Test "Prüfen mit Salz und Runden"]
+    undefined Verify() {
+        string salt = "00112233445566778899aabbccddeeff"
+        string h = Raser.Passwords.Derive("geheim123", salt, 100)
+        Testing.Assert.AreEqual(64, h.Length)
+        Testing.Assert.IsTrue(Raser.Passwords.Verify("geheim123", salt, 100, h))
+        Testing.Assert.IsFalse(Raser.Passwords.Verify("geheim124", salt, 100, h))
+        Testing.Assert.IsFalse(Raser.Passwords.Verify("geheim123", "ffeeddccbbaa99887766554433221100", 100, h))
+        Testing.Assert.IsFalse(Raser.Passwords.Verify("geheim123", salt, 101, h))
+        Testing.Assert.IsFalse(Raser.Passwords.Valid("kurz"))
+        Testing.Assert.IsTrue(Raser.Passwords.Valid("lang genug"))
+    }
+}

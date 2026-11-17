@@ -1,0 +1,446 @@
+// Raser.Server: das Gateway des Spielprotokolls (Port 7481) - nimmt Verbindungen an, prüft die Anmeldung, liest und prüft jede Nachricht und gibt
+// sie an Regionsserver, Chat und Befehle weiter. Alles im Takt des Hauptthreads, ohne zu warten.
+#import "net"
+#import "time"
+#import "raser.core"
+#import "raser.net"
+
+// Ein Eimer für Raten: füllt sich mit rate je s bis burst; jede Nachricht nimmt eins.
+class Bucket {
+    defined float tokens
+    defined float rate
+    defined float burst
+    defined int last
+
+    construct(defined float rate, defined float burst) {
+        this.rate = rate
+        this.burst = burst
+        this.tokens = burst
+        this.last = DateTime.UtcNow.Ticks
+    }
+
+    defined bool Take(defined int now) {
+        this.tokens = Math.Min(this.burst, this.tokens + (now - this.last) / 10000000.0 * this.rate)
+        this.last = now
+        if (this.tokens < 1.0) { return false }
+        this.tokens = this.tokens - 1.0
+        return true
+    }
+}
+
+// Ein Spieler im Spiel: Konto, Verbindung, Lage.
+class Player {
+    defined int id                  // global (Raser.IdAllocator)
+    defined int account
+    string name
+    defined bool admin
+    Raser.Link link
+    defined int region
+    defined bool placed             // hat schon eine Lage geschickt
+    defined int tileX
+    defined int tileY
+    defined float east
+    defined float north
+    defined float heading
+    defined float speed
+    defined int kind
+    defined int seq
+    defined int movedAt             // Ticks der letzten übernommenen Lage
+    defined int heardAt             // Ticks der letzten Nachricht
+    defined int correctedAt         // Ticks des letzten Teleports zurück
+    defined int windowAt            // Beginn der laufenden Sekunde (Zählung der States)
+    defined int windowCount
+    Bucket talk
+
+    construct(Raser.Link link) {
+        this.link = try take link
+        this.id = 0
+        this.account = 0
+        this.name = ""
+        this.admin = false
+        this.region = 0
+        this.placed = false
+        this.tileX = 0
+        this.tileY = 0
+        this.east = 0.0
+        this.north = 0.0
+        this.heading = 0.0
+        this.speed = 0.0
+        this.kind = 0
+        this.seq = 0
+        int now = DateTime.UtcNow.Ticks
+        this.movedAt = now
+        this.heardAt = now
+        this.correctedAt = 0
+        this.windowAt = now
+        this.windowCount = 0
+        this.talk = new Bucket(1.0, 5.0)
+    }
+
+    defined bool Welcomed { get { return this.id != 0 } }
+}
+
+class Gateway {
+    static readonly defined int HelloSeconds = 5
+    static readonly defined int IdleSeconds = 30
+    static readonly defined float MaxSpeed = 100.0          // m/s
+    static readonly defined int MaxStates = 30              // je s, darüber verworfen
+    static readonly defined int KickStates = 100            // je s, darüber Kick
+
+    Net.TcpListener listener
+    Accounts accounts
+    Coordinator coordinator
+    RegionServer regionServer
+    WorldClock clock
+    Raser.IdAllocator ids
+    List<Player> players            // alle Verbindungen (auch die vor dem Hello); gehören dem Gateway
+    defined int startedTicks
+
+    construct(string host, defined int port, Accounts accounts, Coordinator coordinator, RegionServer regionServer, WorldClock clock) {
+        this.listener = new Net.TcpListener(host, port, 64)
+        this.accounts = accounts
+        this.coordinator = coordinator
+        this.regionServer = regionServer
+        this.clock = clock
+        this.ids = new Raser.IdAllocator(regionServer.region.server)
+        this.players = new List<Player>()
+        this.startedTicks = DateTime.UtcNow.Ticks
+    }
+
+    static defined int Millis() { return (DateTime.UtcNow.Ticks - TimeSpan.UnixEpoch) / 10000 }
+
+    static undefined Log(string text) { print(DateTime.Now.ToString("HH:mm:ss") + " " + text) }
+
+    defined int Online() {
+        int n = 0
+        foreach (p in this.players) { if (p.Welcomed) { n++ } }
+        return n
+    }
+
+    // Ein Takt: neue Verbindungen, alle Nachrichten, Zeitüberschreitungen; tote Verbindungen raus.
+    undefined Tick() {
+        int now = DateTime.UtcNow.Ticks
+        for (int k = 0; k < 16; k++) {
+            Net.TcpClient tcp = undefined
+            try { tcp = this.listener.TryAccept(0) } catch (Net.NetException e) { Gateway.Log("accept: " + e.message) }
+            if (tcp == undefined) { break }
+            var link = new Raser.Link(take tcp, Raser.Protocol.MaxClientFrame)
+            Gateway.Log("Verbindung von " + link.Peer)
+            this.players.Add(new Player(take link))
+        }
+        for (int i = 0; i < this.players.Count; i++) {
+            var p = this.players[i]
+            this.Read(p, now)
+            if (!p.link.IsOpen) { continue }
+            if (!p.Welcomed && now - p.heardAt > Gateway.HelloSeconds * 10000000) { this.Kick(p, "Keine Anmeldung.", true) }
+            else if (p.Welcomed && now - p.heardAt > Gateway.IdleSeconds * 10000000) { this.Kick(p, "Zeitüberschreitung.", false) }
+        }
+        int i = 0
+        while (i < this.players.Count) {
+            var p = this.players[i]
+            if (p.link.IsOpen) {
+                i++
+                continue
+            }
+            this.Drop(p)
+            this.players.RemoveAt(i)
+        }
+    }
+
+    // Was p geschickt hat (höchstens 64 Nachrichten je Takt).
+    undefined Read(Player p, defined int now) {
+        for (int n = 0; n < 64 && p.link.IsOpen; n++) {
+            Raser.Packet m = undefined
+            try {
+                m = p.link.Receive()
+            } catch (Raser.ProtocolException e) {
+                this.Kick(p, "Unsinn: " + e.message, !p.Welcomed)
+                return
+            }
+            if (m == undefined) { return }
+            p.heardAt = now
+            if (!p.Welcomed) {
+                this.Hello(p, m)
+                continue
+            }
+            if (m.type == Raser.Protocol.State) { this.Move(p, m, now) }
+            else if (m.type == Raser.Protocol.Chat || m.type == Raser.Protocol.Command) { this.Talk(p, m, now) }
+            else if (m.type == Raser.Protocol.Bye) { p.link.Fail("Abgemeldet.") }
+            else { this.Kick(p, "Unerwartete Nachricht " + m.type + ".", false) }
+        }
+    }
+
+    // Die Anmeldung: Version, Token, Name.
+    undefined Hello(Player p, Raser.Packet m) {
+        if (m.type != Raser.Protocol.Hello) {
+            this.Kick(p, "Erst anmelden (Hello).", true)
+            return
+        }
+        if (m.version != Raser.Protocol.Version) {
+            this.Reject(p, "Protokoll " + m.version + " passt nicht, der Server spricht " + Raser.Protocol.Version + ": bitte den Launcher aktualisieren.")
+            return
+        }
+        string user = m.name
+        int bar = user.IndexOf("|")
+        if (bar >= 0) { user = user.Substring(0, bar) }
+        var account = this.accounts.Validate(m.text)
+        if (account == undefined) {
+            this.Reject(p, "Anmeldung ungültig oder abgelaufen - bitte im Launcher neu anmelden.")
+            return
+        }
+        if (user.ToLower() != account.name.ToLower()) {
+            this.Reject(p, "Token und Name passen nicht zusammen.")
+            return
+        }
+        // ein zweiter Login desselben Kontos wirft den ersten hinaus
+        foreach (other in this.players) {
+            if (other != p && other.Welcomed && other.account == account.id) { this.Kick(other, "Mit diesem Konto hat sich jemand anderes angemeldet.", false) }
+        }
+        p.account = account.id
+        p.name = account.name
+        p.admin = account.admin
+        p.id = this.ids.Next(Raser.IdKind.Player)
+        this.regionServer.Enter(p)
+        var welcome = new Raser.Packet(Raser.Protocol.Welcome)
+        welcome.id = p.id
+        welcome.region = p.region
+        welcome.time = Gateway.Millis()
+        welcome.admin = p.admin
+        welcome.name = p.name
+        p.link.Send(welcome)
+        p.link.Send(this.clock.Packet())
+        foreach (other in this.players) {
+            if (other == p || !other.Welcomed || !other.link.IsOpen) { continue }
+            p.link.Send(Gateway.JoinOf(other))
+            other.link.Send(Gateway.JoinOf(p))
+        }
+        string role = "Spieler"
+        if (p.admin) { role = "Admin" }
+        Gateway.Log(p.name + " ist da (" + role + ", id " + Raser.Ids.Format(p.id) + ", von " + p.link.Peer + ")")
+        this.Broadcast(Raser.Packet.Said("Server", p.name + " ist da.", Raser.Protocol.FromSystem), p)
+        p.link.Send(Raser.Packet.Said("Server", "Glück auf, " + p.name + "! " + this.Online() + " Spieler online. /help zeigt die Befehle.", Raser.Protocol.FromSystem))
+    }
+
+    static Raser.Packet JoinOf(Player p) {
+        var j = new Raser.Packet(Raser.Protocol.Join)
+        j.id = p.id
+        j.admin = p.admin
+        j.name = p.name
+        return j
+    }
+
+    // Eine Lage: Rate, Kachel, Tempo und Sprung prüfen.
+    undefined Move(Player p, Raser.Packet m, defined int now) {
+        if (now - p.windowAt >= 10000000) {
+            p.windowAt = now
+            p.windowCount = 0
+        }
+        p.windowCount++
+        if (p.windowCount > Gateway.KickStates) {
+            this.Kick(p, "Zu viele Nachrichten.", false)
+            return
+        }
+        if (p.windowCount > Gateway.MaxStates) { return }
+        var tile = Raser.TileKey.Of(m.east, m.north)
+        if (tile.x != m.tileX || tile.y != m.tileY) {
+            this.Kick(p, "Lage und Kachel passen nicht zusammen.", false)
+            return
+        }
+        if (Math.Abs(m.speed) > Gateway.MaxSpeed) { return }
+        if (p.placed) {
+            float dt = (now - p.movedAt) / 10000000.0
+            float de = m.east - p.east
+            float dn = m.north - p.north
+            float reach = Gateway.MaxSpeed * dt + 20.0
+            if (de * de + dn * dn > reach * reach) {
+                // ein Sprung: nicht übernehmen, den Client zurücksetzen (höchstens einmal je s)
+                if (now - p.correctedAt > 10000000) {
+                    p.correctedAt = now
+                    p.link.Send(Gateway.TeleportTo(p.east, p.north, p.heading))
+                }
+                return
+            }
+        }
+        var region = this.coordinator.RegionOf(tile.x, tile.y)
+        if (region == undefined) { return }
+        // (später: eine andere Region übernimmt - Übergabe mit Hysterese; jetzt ist es immer dieselbe)
+        p.placed = true
+        p.east = m.east
+        p.north = m.north
+        p.heading = m.heading
+        p.speed = m.speed
+        p.kind = m.kind
+        p.tileX = tile.x
+        p.tileY = tile.y
+        p.seq = m.seq
+        p.movedAt = now
+    }
+
+    static Raser.Packet TeleportTo(defined float east, defined float north, defined float heading) {
+        var t = new Raser.Packet(Raser.Protocol.Teleport)
+        t.east = east
+        t.north = north
+        t.heading = heading
+        return t
+    }
+
+    // Chat und Befehle: Rate, Länge, Steuerzeichen.
+    undefined Talk(Player p, Raser.Packet m, defined int now) {
+        if (!p.talk.Take(now)) {
+            p.link.Send(Raser.Packet.Said("Server", "Langsam - höchstens eine Nachricht je Sekunde.", Raser.Protocol.Error))
+            return
+        }
+        if (m.text.Length > Raser.Protocol.MaxText * 2) {
+            this.Kick(p, "Zu langer Text.", false)
+            return
+        }
+        string text = Raser.Texts.Clean(m.text, Raser.Protocol.MaxText)
+        if (text == "") { return }
+        if (m.type == Raser.Protocol.Command || text.StartsWith("/")) {
+            Gateway.Log(p.name + ": " + text)
+            new CommandRunner(this).Run(p, text)
+            return
+        }
+        Gateway.Log("<" + p.name + "> " + text)
+        this.Broadcast(Raser.Packet.Said(p.name, text, Raser.Protocol.FromPlayer), undefined)
+    }
+
+    // An alle Angemeldeten (außer skip).
+    undefined Broadcast(Raser.Packet m, Player skip) {
+        byte frame[] = Raser.Wire.Frame(m)
+        foreach (p in this.players) {
+            if (p == skip || !p.Welcomed) { continue }
+            p.link.SendFrame(frame)
+        }
+    }
+
+    undefined Reject(Player p, string reason) {
+        Gateway.Log("abgelehnt (" + p.link.Peer + "): " + reason)
+        p.link.Send(Raser.Packet.Line(Raser.Protocol.Reject, reason))
+        p.link.Fail(reason)
+    }
+
+    // Wirft p hinaus (bad: vor dem Hello - dann ein Reject statt eines Kicks).
+    undefined Kick(Player p, string reason, defined bool beforeHello) {
+        if (!p.link.IsOpen) { return }
+        if (beforeHello) {
+            this.Reject(p, reason)
+            return
+        }
+        Gateway.Log(p.name + " hinausgeworfen: " + reason)
+        p.link.Send(Raser.Packet.Line(Raser.Protocol.Kick, reason))
+        p.link.Fail(reason)
+    }
+
+    // Eine Verbindung ist zu: aus der Region, den anderen Bescheid sagen.
+    undefined Drop(Player p) {
+        if (!p.Welcomed) { return }
+        this.regionServer.Leave(p)
+        Gateway.Log(p.name + " ist weg (" + p.link.reason + ")")
+        var gone = new Raser.Packet(Raser.Protocol.Leave)
+        gone.id = p.id
+        this.Broadcast(gone, p)
+        this.Broadcast(Raser.Packet.Said("Server", p.name + " ist weg.", Raser.Protocol.FromSystem), p)
+        p.id = 0
+    }
+
+    Player Find(string name) {
+        foreach (p in this.players) {
+            if (p.Welcomed && p.link.IsOpen && p.name.ToLower() == name.ToLower()) { return p }
+        }
+        return undefined
+    }
+
+    undefined Close() {
+        foreach (p in this.players) { p.link.Close() }
+        this.listener.Close()
+    }
+}
+
+// Führt einen geprüften Befehl aus (Rechte: Raser.Commands.Parse; geprüft wird hier, auf dem Server).
+class CommandRunner {
+    Gateway gateway
+
+    construct(Gateway gateway) { this.gateway = gateway }
+
+    undefined Answer(Player p, string text) { p.link.Send(Raser.Packet.Said("Server", text, Raser.Protocol.Answer)) }
+
+    undefined Error(Player p, string text) { p.link.Send(Raser.Packet.Said("Server", text, Raser.Protocol.Error)) }
+
+    undefined Run(Player p, string line) {
+        var c = Raser.Commands.Parse(line, p.admin)
+        if (!c.Ok) {
+            this.Error(p, c.error)
+            return
+        }
+        var g = this.gateway
+        if (c.name == "help") {
+            foreach (l in Raser.Commands.Help(p.admin)) { this.Answer(p, l) }
+        } else if (c.name == "players") {
+            this.Answer(p, g.Online() + " Spieler online:")
+            foreach (q in g.players) {
+                if (!q.Welcomed) { continue }
+                string place = "noch ohne Lage"
+                if (q.placed) { place = "Kachel " + q.tileX + "_" + q.tileY }
+                string role = ""
+                if (q.admin) { role = " (Admin)" }
+                this.Answer(p, "  " + q.name + role + " - " + place)
+            }
+        } else if (c.name == "kick") {
+            var q = g.Find(c.args)
+            if (q == undefined) {
+                this.Error(p, c.args + " ist nicht online.")
+                return
+            }
+            g.Kick(q, "Hinausgeworfen von " + p.name + ".", false)
+            g.Broadcast(Raser.Packet.Said("Server", q.name + " wurde hinausgeworfen.", Raser.Protocol.FromSystem), q)
+        } else if (c.name == "say") {
+            g.Broadcast(Raser.Packet.Said("Server", c.args, Raser.Protocol.FromSystem), undefined)
+        } else if (c.name == "time") {
+            g.clock.SetHour(c.hour)
+            g.Broadcast(g.clock.Packet(), undefined)
+            g.Broadcast(Raser.Packet.Said("Server", p.name + " stellt die Uhr auf " + g.clock.Clock() + ".", Raser.Protocol.FromSystem), undefined)
+        } else if (c.name == "weather") {
+            g.clock.SetPreset(c.args)
+            g.Broadcast(g.clock.Packet(), undefined)
+            g.Broadcast(Raser.Packet.Said("Server", p.name + " stellt das Wetter auf " + c.args + ".", Raser.Protocol.FromSystem), undefined)
+        } else if (c.name == "tp") {
+            var q = g.Find(c.args)
+            if (q == undefined) {
+                this.Error(p, c.args + " ist nicht online.")
+                return
+            }
+            if (!q.placed) {
+                this.Error(p, q.name + " hat noch keine Lage.")
+                return
+            }
+            // 4 m hinter ihn, in seine Richtung (vorwärts ist (-sin, cos))
+            float h = q.heading * Math.PI / 180.0
+            float e = q.east + Math.Sin(h) * 4.0
+            float n = q.north - Math.Cos(h) * 4.0
+            var tile = Raser.TileKey.Of(e, n)
+            p.east = e
+            p.north = n
+            p.heading = q.heading
+            p.speed = 0.0
+            p.tileX = tile.x
+            p.tileY = tile.y
+            p.placed = true
+            p.movedAt = DateTime.UtcNow.Ticks
+            p.link.Send(Gateway.TeleportTo(e, n, q.heading))
+            this.Answer(p, "Bei " + q.name + ".")
+        } else if (c.name == "admin") {
+            if (!g.accounts.Grant(c.args)) {
+                this.Error(p, "Kein Konto " + c.args + ".")
+                return
+            }
+            var q = g.Find(c.args)
+            if (q != undefined) {
+                q.admin = true
+                q.link.Send(Raser.Packet.Said("Server", p.name + " hat dich zum Admin gemacht.", Raser.Protocol.FromSystem))
+            }
+            Gateway.Log(p.name + " macht " + c.args + " zum Admin")
+            this.Answer(p, c.args + " ist jetzt Admin.")
+        }
+    }
+}
