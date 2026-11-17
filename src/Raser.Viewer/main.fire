@@ -153,7 +153,7 @@ class Viewer {
                 int missing = view.Update(w[0], w[1], budget)
                 if (missing > 0) { behind++ }
                 int t1 = DateTime.Now.Ticks
-                cam.Render()
+                atmosphere.Render()
                 int t2 = DateTime.Now.Ticks
                 updateTicks = updateTicks + (t1 - t0)
                 renderTicks = renderTicks + (t2 - t1)
@@ -176,7 +176,7 @@ class Viewer {
                 for (int k = 0; k < 30; k++) { scene.Advance(0.1s) }
             }
             int t0 = DateTime.Now.Ticks
-            cam.Render()
+            atmosphere.Render()
             print("Bild in " + ((DateTime.Now.Ticks - t0) / 10000.0) + " ms")
             IO.File.WriteAllBytes(shot, fb.ToPng())
             print(shot)
@@ -321,7 +321,7 @@ class Viewer {
                 view.Update(wd[0], wd[1], 15.0)
                 atmosphere.Update(wd[0], wd[1], dt)
                 scene.Advance(dt * 1s)
-                cam.Render()
+                atmosphere.Render()
                 continue
             }
             view.near = nearRadius
@@ -361,7 +361,7 @@ class Viewer {
             view.Update(w[0], w[1], 15.0)
             atmosphere.Update(w[0], w[1], dt)
             scene.Advance(dt * 1s)
-            cam.Render()
+            atmosphere.Render()
         }
         view.Close()
         return 0

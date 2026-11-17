@@ -3,7 +3,9 @@
 //   raser [--world world] [--vehicle auto|transporter|motorrad|fahrrad] [--at ost,nord] [--date 07-01] [--time 14:00] [--weather klar|regen|...] [--size 960x600] [--gpu 1]
 //         [--near 1] [--far 5] [--workers 3] [--parked 8]
 //   raser ... --auto 20 [--steer 0.2] [--back 1] --shot bild.png     ohne Fenster: so viele Sekunden Vollgas (mit festem Lenkeinschlag, auch
-//                                                       rückwärts), dann ein Bild
+//                                                       rückwärts), dann ein Bild; --look 30 dreht die Kamera, --pitch 20 hebt sie (Grad),
+//                                                       --sun 1 / --moon 1 blickt zur Sonne bzw. zum Mond; --no-sky 1: ohne Himmel (zum Messen)
+//   --date 2026-07-01 (auch 07-01): das Jahr zählt nur für den Mond
 //
 // W/S oder Pfeile: Gas und Bremse (im Stand: Rückwärtsgang), A/D: lenken, Leertaste: Handbremse, C: Kamera (hinter dem Wagen / Haube),
 // E: aussteigen (im Stand) und am Wagen wieder einsteigen; zu Fuß: W/S gehen, A/D drehen, Umschalt rennen, C: aus den Augen des Spielers.
@@ -372,7 +374,10 @@ class Game {
         scene.Add(cam)
         var weather = new Raser.Weather()
         var date = options.Get("date", "07-01").Split("-")
-        weather.day = Raser.Weather.DayOf(date[0].ToInt(), date[1].ToInt())
+        if (date.length == 3) {
+            weather.year = date[0].ToInt()
+            weather.day = Raser.Weather.DayOf(date[1].ToInt(), date[2].ToInt())
+        } else { weather.day = Raser.Weather.DayOf(date[0].ToInt(), date[1].ToInt()) }
         var clock = options.Get("time", "14:00").Split(":")
         weather.hour = clock[0].ToFloat() + clock[1].ToFloat() / 60.0
         weather.Preset(options.Get("weather", "klar"))
@@ -387,6 +392,7 @@ class Game {
         if (options.Get("gpu", "") != "") { scene.Renderer = RenderMode.Hardware }
         var atmosphere = new Atmosphere(weather, scene, cam, view, world)
         atmosphere.Apply()
+        atmosphere.drawSky = options.Get("no-sky", "") == ""
         var obstacles = new Obstacles(world)
 
         // die Fahrzeuge: das eigene (--vehicle auto|transporter|motorrad|fahrrad) am Start, die anderen Klassen dahinter am Rand geparkt
@@ -532,7 +538,7 @@ class Game {
                 scene.Advance(dt * 1s)
                 int t4 = DateTime.Now.Ticks
                 // ohne --render 1: 30 Bilder je Sekunde ohne Bild (wie mit Grafikkarte: das Rendern kostet hier sonst 0,7 s je Bild)
-                if (renderAll) { cam.Render() } else {
+                if (renderAll) { atmosphere.Render() } else {
                     int rest = (333333 - (DateTime.Now.Ticks - now)) / 10000
                     if (rest > 0) { Sleep(rest * 1ms) }
                 }
@@ -543,7 +549,7 @@ class Game {
                 if (view.near >= 0 && view.StageAt(car.east, car.north) < 2) { noNear++ }
                 if (view.StageAt(car.east - Math.Sin(h) * 60.0, car.north + Math.Cos(h) * 60.0) < 1) { noAhead++ }
             }
-            cam.Render()
+            atmosphere.Render()
             Game.Hud(hud, ink, shade, car, weather, height, false, "")
             float seconds = (DateTime.Now.Ticks - began) / 10000000.0
             print("Fahrt " + Math.Round(seconds) + " s, " + Math.Round(way) + " m, " + frames + " Bilder (" + (Math.Round(frames / seconds * 10.0) / 10.0) + " je s, längstes " + (worst / 10000) + " ms), " + hits + " Aufpralle")
@@ -575,6 +581,9 @@ class Game {
                 top = Math.Max(top, car.speed)
             }
             camHeading = car.heading + options.Get("look", "0").ToFloat()
+            // --sun 1: zur Sonne blicken (--pitch hebt dann von ihrer Höhe aus)
+            if (options.Get("sun", "") != "") { camHeading = -weather.azimuth }
+            if (options.Get("moon", "") != "") { camHeading = -weather.moonAzimuth }
             Game.PlaceAll(vehicles, models, terrain, view)
             Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
             Game.Ride(car, person, terrain, view, hood)
@@ -600,6 +609,14 @@ class Game {
                 if (tree != undefined) { print("zum Baum: noch " + Math.Sqrt((tree[0] - walker.east) * (tree[0] - walker.east) + (tree[1] - walker.north) * (tree[1] - walker.north)) + " m von seiner Mitte") }
                 onFoot = true
             }
+            // --pitch: die Kamera heben (den Himmel ansehen)
+            float pitch = options.Get("pitch", "0").ToFloat()
+            if (options.Get("sun", "") != "") { pitch = pitch + weather.elevation }
+            if (options.Get("moon", "") != "") {
+                pitch = pitch + weather.moonElevation
+                print("Mond: Höhe " + weather.moonElevation + "°, Azimut " + weather.moonAzimuth + "°, beleuchtet " + weather.moonLit)
+            }
+            if (pitch != 0.0) { cam.RotationX = cam.RotationX + pitch * 1deg }
             view.lead = Math.Abs(car.speed) * 2.5
             view.Fill(car.east, car.north)
             atmosphere.Update(car.east, car.north, 0.0)
@@ -607,7 +624,7 @@ class Game {
             if (weather.rain > 0.0) {
                 for (int k = 0; k < 30; k++) { scene.Advance(0.1s) }
             }
-            cam.Render()
+            atmosphere.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
             print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Tank " + Math.Round(car.fuel * 1000.0) / 10.0 + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m, " + Math.Round(chase.swing) + "°")
             for (int i = 1; i < vehicles.Count; i++) {
@@ -616,6 +633,25 @@ class Game {
             if (shot != "") {
                 IO.File.WriteAllBytes(shot, fb.ToPng())
                 print(shot)
+            }
+            // --bench-sky n: so oft die Welt und den Himmel rendern, getrennt gemessen
+            int benchSky = options.Get("bench-sky", "0").ToInt()
+            if (benchSky > 0) {
+                int worldTicks = 0
+                int skyTicks = 0
+                for (int i = 0; i < benchSky; i++) {
+                    int b0 = DateTime.Now.Ticks
+                    cam.Render()
+                    int b1 = DateTime.Now.Ticks
+                    atmosphere.sky.Follow()
+                    atmosphere.sky.Draw()
+                    skyTicks = skyTicks + (DateTime.Now.Ticks - b1)
+                    worldTicks = worldTicks + (b1 - b0)
+                }
+                int b2 = DateTime.Now.Ticks
+                for (int i = 0; i < benchSky; i++) { atmosphere.sky.eye.Render() }
+                int b3 = DateTime.Now.Ticks
+                print("je Bild: Welt " + (worldTicks / benchSky / 10000.0) + " ms, Himmel " + (skyTicks / benchSky / 10000.0) + " ms (davon seine Szene " + ((b3 - b2) / benchSky / 10000.0) + " ms)")
             }
             view.Close()
             return 0
@@ -735,7 +771,7 @@ class Game {
             }
             Game.PlaceAll(vehicles, models, terrain, view)
             scene.Advance(dt * 1s)
-            cam.Render()
+            atmosphere.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
         }
         view.Close()

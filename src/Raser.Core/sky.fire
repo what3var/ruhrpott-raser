@@ -198,16 +198,16 @@ namespace Raser {
             float cover = Math.Clamp(w.clouds, 0.0, 1.0)
             // Schwelle des Rauschens (Mittel 0,5): wenige Wolken bei 0,1, etwa halb bei 0,5, fast zu bei 0,9
             float cl = Math.Clamp(cover, 0.03, 0.97)
-            float thr = 0.5 + 0.1 * Math.Log((1.0 - cl) / cl)
+            float thr = 0.45 + 0.1 * Math.Log((1.0 - cl) / cl)
             float deck = Raser.SkyLook.Smooth(0.7, 1.0, cover)       // geschlossene Decke
             float fade = 1.0 - Math.Clamp(w.fog * 1.5, 0.0, 1.0)      // im Nebel sieht man keine Wolken
             float rain = Math.Clamp(w.rain, 0.0, 1.0)
             // das Licht auf den Wolken: von der Sonne (abends wie das Glühen), im Schatten vom Himmel; nachts von der Stadt
-            float sunW = Math.Clamp((this.e + 6.0) / 6.0, 0.0, 1.0) * (1.0 - 0.75 * deck)
+            float sunW = Math.Clamp((this.e + 7.0) / 5.0, 0.0, 1.0) * (1.0 - 0.75 * deck)
             float warm = Math.Clamp(1.0 - (this.e - 3.0) / 14.0, 0.0, 1.0)
-            float lit[] = [255.0 + (this.glow[0] - 255.0) * warm, 252.0 + (this.glow[1] - 252.0) * warm, 248.0 + (this.glow[2] - 248.0) * warm]
-            float bright = Math.Clamp((this.e + 8.0) / 14.0, 0.0, 1.0)
-            float shade[] = [this.overcastLow[0] * 0.78, this.overcastLow[1] * 0.80, this.overcastLow[2] * 0.84]
+            float lit[] = [255.0 + (this.glow[0] * 1.08 - 255.0) * warm, 252.0 + (this.glow[1] * 1.08 - 252.0) * warm, 248.0 + (this.glow[2] * 1.08 - 248.0) * warm]
+            float bright = Math.Clamp((this.e + 9.0) / 8.0, 0.0, 1.0)
+            float shade[] = [this.overcastLow[0] * 0.86, this.overcastLow[1] * 0.88, this.overcastLow[2] * 0.92]
             float nightGlow[] = [92.0, 70.0, 54.0]
             for (int j = 0; j < height; j++) {
                 float v = (j + 0.5) / height
@@ -234,7 +234,7 @@ namespace Raser {
                     int at = (j * width + i) * 4
                     if (a <= 0.004) { continue }
                     // dick ist unten dunkel; die Decke wird mit dem Rauschen fleckig
-                    float s = Math.Clamp(0.25 + 0.75 * thick + 0.35 * deck * (0.5 - n) + 0.35 * rain, 0.0, 1.0)
+                    float s = Math.Clamp(0.2 + 0.75 * thick * (1.0 - 0.5 * deck) + 0.6 * deck * (0.5 - n) + 0.35 * rain, 0.0, 1.0)
                     float sl = (1.0 - s) * sunW
                     float r = (shade[0] + (lit[0] - shade[0]) * sl) * (0.35 + 0.65 * bright)
                     float g = (shade[1] + (lit[1] - shade[1]) * sl) * (0.35 + 0.65 * bright)
@@ -277,16 +277,16 @@ namespace Raser {
                     float dy = (j + 0.5 - half) / half
                     float d = Math.Sqrt(dx * dx + dy * dy)
                     float core = Math.Clamp((disc - d) / (1.5 / half) + 0.5, 0.0, 1.0)
-                    float glow = 0.55 * Math.Exp(-(d - disc) / 0.035) + 0.25 * Math.Exp(-(d - disc) / 0.16)
+                    float glow = 0.85 * Math.Exp(-(d - disc) / 0.05) + 0.35 * Math.Exp(-(d - disc) / 0.2)
                     if (d < disc) { glow = 0.8 }
                     glow = glow * Math.Clamp((1.0 - d) / 0.25, 0.0, 1.0)
                     float a = Math.Clamp(core + glow * (1.0 - core), 0.0, 1.0) * visible
                     // die Scheibe heller als ihr Schein
                     float k = 0.75 + 0.25 * core
                     int at = (j * size + i) * 4
-                    data[at] = Raser.SkyLook.Byte(Math.Min(this.disc[0] * k + 40.0 * core, 255.0))
-                    data[at + 1] = Raser.SkyLook.Byte(Math.Min(this.disc[1] * k + 40.0 * core, 255.0))
-                    data[at + 2] = Raser.SkyLook.Byte(Math.Min(this.disc[2] * k + 40.0 * core, 255.0))
+                    data[at] = Raser.SkyLook.Byte(Math.Min(this.disc[0] * k + 60.0 * core, 255.0))
+                    data[at + 1] = Raser.SkyLook.Byte(Math.Min(this.disc[1] * k + 60.0 * core, 255.0))
+                    data[at + 2] = Raser.SkyLook.Byte(Math.Min(this.disc[2] * k + 60.0 * core, 255.0))
                     data[at + 3] = Raser.SkyLook.Byte(a * 255.0)
                 }
             }
@@ -321,7 +321,7 @@ namespace Raser {
                     if (d2 < 1.0) { halo = 0.0 }
                     float c = 250.0 * l
                     // der Mond deckt mit seiner Helligkeit (die dunkle Seite lässt den Himmel fast durch), sein Schein ist schwach
-                    float cover = Math.Clamp(a * (0.25 + 0.75 * l / 0.8), 0.0, 1.0)
+                    float cover = Math.Clamp(a * l / 0.45, 0.0, 1.0)
                     if (d2 >= 1.0) {
                         c = 235.0
                         cover = halo
