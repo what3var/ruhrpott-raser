@@ -230,8 +230,8 @@ class Gear {
         // hinten ist (sin, -cos) in (Ost, Nord)
         float w = 0.34
         float hh = 0.44
-        float dd = 0.16
-        float up = 1.14
+        float dd = 0.2
+        float up = 1.12
         if (item == Raser.Items.Turnbeutel) {
             w = 0.32
             hh = 0.36
@@ -244,17 +244,17 @@ class Gear {
             dd = 0.24
             up = 1.16
         }
-        float back = 0.12 + dd / 2.0
+        float back = 0.14 + dd / 2.0
         float e = walker.east + Math.Sin(h) * back
         float n = walker.north - Math.Cos(h) * back
         this.bag[0].SetPosition((e - view.originE) * 1m, (y + up) * 1m, -(n - view.originN) * 1m)
         this.bag[0].SetSize(w * 1m, hh * 1m, dd * 1m)
         this.bag[0].RotationY = walker.heading * 1deg
-        this.bag[0].Color = Gear.ColorOf(item, 1.0)
+        this.bag[0].Color = Gear.ColorOf(item, 0.8)
         this.bag[1].SetPosition((e - view.originE) * 1m, (y + up + hh * 0.36) * 1m, -(n - view.originN) * 1m)
         this.bag[1].SetSize(w * 1.04 * 1m, hh * 0.28 * 1m, dd * 1.2 * 1m)
         this.bag[1].RotationY = walker.heading * 1deg
-        this.bag[1].Color = Gear.ColorOf(item, 0.6)
+        this.bag[1].Color = Gear.ColorOf(item, 0.5)
     }
 
     // Nach der Anzeige: die Karte, der Hinweis für F, Schnellleiste bzw. Fenster.
@@ -278,6 +278,52 @@ class Gear {
         this.screen.Draw(hud, width, height)
     }
 
+    // --inventory-test 1: eine Probe mit künstlichen Ereignissen wie vom Fenster (Tasten, Maus) - druckt, was geschah.
+    undefined Rehearse(Raser.Walker walker, defined int width, defined int height) {
+        var scratch = new Framebuffer(width, height)
+        var sr = new Renderer(scratch)
+        this.inv.east = walker.east
+        this.inv.north = walker.north
+        int before = this.drops.all.Count
+        bool opened = this.Handle([EventType.KeyDown!int, 105, 0, 0, 0], true, walker) && this.screen.open
+        this.screen.Draw(sr, width, height)
+        // links auf den ersten Platz der Hosentaschen (der Schlüssel), dann neben das Fenster: weggeworfen
+        SlotSpot first = undefined
+        foreach (s in this.screen.spots) { if (s.container == this.inv.pockets && s.slot == 0) { first = s } }
+        this.Handle([EventType.MouseMove!int, first.x + 10, first.y + 10, 0], true, walker)
+        this.Handle([EventType.MouseDown!int, 1, first.x + 10, first.y + 10], true, walker)
+        bool held = this.inv.Cursor().Item(0) == Raser.Items.Schluessel
+        this.Handle([EventType.MouseDown!int, 1, 4, 4], true, walker)
+        bool thrown = this.drops.all.Count == before + 1 && this.inv.Cursor().Empty(0)
+        // Escape schließt; F hebt den Schlüssel wieder auf
+        this.Handle([EventType.KeyDown!int, 27, 0, 0, 0], true, walker)
+        bool closed = !this.screen.open
+        this.Handle([EventType.KeyDown!int, 102, 0, 0, 0], true, walker)
+        bool back = this.inv.Pockets().CountOf(Raser.Items.Schluessel) == 1 && this.drops.all.Count == before
+        // B setzt den Rucksack ab, F nimmt ihn wieder auf den Rücken (mit Inhalt)
+        int inside = this.inv.Backpack().Used()
+        this.Handle([EventType.KeyDown!int, 98, 0, 0, 0], true, walker)
+        bool down = this.inv.BackpackItem() == 0 && this.drops.all.Count == before + 1
+        this.Handle([EventType.KeyDown!int, 102, 0, 0, 0], true, walker)
+        bool up = this.inv.BackpackItem() == Raser.Items.Rucksack && this.inv.Backpack().Used() == inside
+        // Umschalt+Klick auf das Wasser im Rucksack: in die Hände
+        this.Handle([EventType.KeyDown!int, 105, 0, 0, 0], true, walker)
+        this.screen.Draw(sr, width, height)
+        var bp = this.inv.Backpack()
+        foreach (s in this.screen.spots) {
+            if (s.container == bp.id && s.slot == 0) {
+                this.Handle([EventType.KeyDown!int, 1073742049, 0, 0, 0], true, walker)
+                this.Handle([EventType.MouseDown!int, 1, s.x + 5, s.y + 5], true, walker)
+                this.Handle([EventType.KeyUp!int, 1073742049, 0, 0, 0], true, walker)
+            }
+        }
+        bool quick = this.inv.Hands().CountOf(Raser.Items.Wasser) == 2
+        this.Handle([EventType.KeyDown!int, 9, 0, 0, 0], true, walker)
+        print("Probe: offen " + opened + ", Schluessel an der Maus " + held + ", weggeworfen " + thrown + ", zu " + closed + ", wieder aufgehoben " + back + ", Rucksack abgesetzt " + down + ", wieder auf dem Ruecken " + up + ", Umschalt+Klick " + quick + ", Tab zu " + !this.screen.open + "; " + this.screen.done.Count + " Operationen")
+        // zurück wie vorher: das Wasser wieder in den Rucksack
+        this.inv.Click(this.inv.hands, 0, 1, true)
+    }
+
     // Ohne Fenster (--shot): mit --minimap 1 Karte und Schnellleiste ins Bild (--minimap north: genordet, --map-zoom 0|1|2); --inventory-shot bild.png: dazu ein zweites Bild mit offenem
     // Inventar - neben dem Turnbeutel am Boden (geöffnet), drei Brötchen an der Maus über dem Rucksack.
     undefined Shot(Options options, Renderer hud, Framebuffer fb, defined int width, defined int height, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, List<Raser.Vehicle> vehicles) {
@@ -299,6 +345,7 @@ class Gear {
             print("Karte: " + (this.map.spentTicks / 10000.0) + " ms")
             return
         }
+        if (options.Get("inventory-test", "") != "") { this.Rehearse(walker, width, height) }
         // der Kanister: daneben stellen und aufheben (in die Hände: das Tempo sinkt); der Turnbeutel: daneben stellen und öffnen; die Brötchen an
         // die Maus
         var all = new List<int>()
@@ -318,6 +365,8 @@ class Gear {
             this.inv.Open(d.id)
         }
         this.screen.Show()
+        // --phone 1: dazu das Handy
+        if (options.Get("phone", "") != "") { this.screen.phoneOpen = true }
         // (einmal zur Probe, für die Lage der Plätze)
         var scratch = new Framebuffer(width, height)
         var sr = new Renderer(scratch)

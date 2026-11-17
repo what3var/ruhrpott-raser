@@ -123,6 +123,15 @@ Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt,
 Konto, Ablauf). Spielerlagen werden noch nicht gespeichert. Später: Konten und Inventar in einer gemeinsamen Datenbank der globalen Dienste,
 Deltas der Welt im Key-Value-Store (Konzept, Abschnitt 8).
 
+## Inventar (geplant)
+
+Das Inventar (`Raser.Inventory` in Raser.Core, siehe [INVENTAR.md](INVENTAR.md)) ist schon so gebaut, dass der Server es führen kann: alle Behälter
+hängen an IDs und lassen sich als Bytes schreiben, jede Änderung ist eine `Raser.InvOp` (Move, Swap, Drop, PickUp), die `Inventory.Apply` vollständig
+prüft. Geplant: der Server schickt nach dem Welcome die Behälter des Spielers (`Inventory`), der Client führt Operationen vorhergesagt aus und
+schickt sie mit Folgenummer (`InvOp`), der Server prüft mit demselben Code (Reichweite aus seinem State des Spielers) und bestätigt (`InvAck`) oder
+schickt die echten Behälter zurück (`InvSet`). Gegenstände am Boden laufen mit dem Interesse je Kachel im Snapshot; den Inhalt eines Rucksacks am
+Boden bekommt nur, wer ihn öffnet. Gegenstände erzeugt nur der Server.
+
 ## Jetzt gebaut - und später
 
 | Jetzt | Später |
