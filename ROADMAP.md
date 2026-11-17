@@ -79,7 +79,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Pfützen ab Regen: dunkle, glatte Flecken auf den Belägen (dritte Textur mit flachem Relief) - `docs/images/viewer-pfuetzen.png`
 - [ ] Pfützen in Senken statt nach Rauschen, mit stärkerer Spiegelung; Gewitter, Schnee, Wind; Wetter, das sich mit der Zeit ändert; Spiegelungen auch auf der GPU
 - [ ] Ingame-Uhr in Echtzeit (deutsche Ortszeit, echter Sonnenstand), Zeitfaktor als Server-Einstellung
-- [ ] Mondphase/-stand astronomisch korrekt, Wolken mit orangem Stadtlicht-Himmel
+- [x] Mondphase/-stand astronomisch korrekt (Meeus, gekürzt: etwa ein Grad), Wolken mit orangem Stadtlicht-Himmel
+- [x] Himmel (Raser.SkyLook, Sky): Verlauf nach Sonnenstand, Dämmerung und blaue Stunde, Sonne mit Schein, Mond in seiner Phase, wenige Sterne, Wolkenschicht nach Bedeckung (zieht langsam), Nebel in der Farbe des Horizonts
+- [ ] Himmel: Wolken mit Volumen bzw. Schichten in mehreren Höhen, Regen vor dem Himmel (die Striche fallen dort heute weg), Mond und Sonne am Horizont abgeflacht
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos
 - [ ] Referenzszene: Zechensiedlung in nebliger Nacht
 - [ ] Mood-Akzente pro Viertel, Render-Profile pro Gebiet
