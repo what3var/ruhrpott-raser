@@ -16,6 +16,7 @@ namespace Raser {
         defined bool sliding            // die Reifen halten den Bogen nicht (oder Aquaplaning)
         defined float grip              // der Grip des letzten Schritts
         defined float health            // der Zustand: 1 heil, 0 kaputt (fährt nicht mehr)
+        defined float fuel              // der Tank: 1 voll, 0 leer (fährt nicht mehr)
         defined float lean              // Grad, nach links positiv: so weit legt sich ein Zweirad in die Kurve (Autos: 0)
         // das Fahrzeug
         defined float wheelbase
@@ -23,6 +24,7 @@ namespace Raser {
         defined float power             // Beschleunigung aus dem Stand (m/s²)
         defined float brakes            // Verzögerung bei vollem Bremsen und Grip 1 (m/s²)
         defined float maxSteer          // Grad im Stand
+        defined float tank              // so viel Antrieb fasst ein voller Tank (Gas x power x s, also m/s); 0: braucht keinen (Fahrrad)
         // die Klasse und die Maße (für Modell und Aufprall: zwei Kreise mit radius, je spread m vor und hinter der Mitte)
         string kind                     // "auto", "transporter", "motorrad", "fahrrad"
         string name
@@ -39,6 +41,8 @@ namespace Raser {
             this.maxSteer = 32.0
             this.grip = 1.0
             this.health = 1.0
+            this.fuel = 1.0
+            this.tank = 3300.0         // 10 min Vollgas
             this.kind = "auto"
             this.name = "Auto"
             this.Size(4.2, 1.8)
@@ -62,6 +66,7 @@ namespace Raser {
                 v.power = 3.2
                 v.brakes = 7.5
                 v.maxSteer = 30.0
+                v.tank = 3200.0            // gut 16 min Vollgas
                 v.Size(5.6, 2.0)
             }
             if (kind == "motorrad") {
@@ -71,6 +76,7 @@ namespace Raser {
                 v.topSpeed = 62.0
                 v.power = 8.5
                 v.maxSteer = 28.0
+                v.tank = 2550.0            // 5 min Vollgas
                 v.Size(2.1, 0.7)
             }
             if (kind == "fahrrad") {
@@ -81,6 +87,7 @@ namespace Raser {
                 v.power = 2.0
                 v.brakes = 6.0
                 v.maxSteer = 40.0
+                v.tank = 0.0
                 v.Size(1.8, 0.5)
             }
             return v
@@ -106,8 +113,9 @@ namespace Raser {
             float v = this.speed
             // Antrieb (begrenzt durch den Grip), Bremse, Widerstände
             float drive = Math.Clamp(throttle, 0.0, 1.0) * this.power
-            // kaputt: kein Antrieb mehr
-            if (this.health <= 0.0) { drive = 0.0 }
+            // kaputt oder der Tank leer: kein Antrieb mehr; Gas verbraucht Sprit
+            if (this.health <= 0.0 || (this.tank > 0.0 && this.fuel <= 0.0)) { drive = 0.0 }
+            if (this.tank > 0.0) { this.fuel = Math.Max(0.0, this.fuel - drive * dt / this.tank) }
             if (reverse) {
                 drive = -drive * 0.6
                 if (v < -8.0) { drive = 0.0 }

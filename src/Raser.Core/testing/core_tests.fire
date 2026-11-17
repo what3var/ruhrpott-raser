@@ -485,6 +485,30 @@ class VehicleTests {
         Testing.Assert.IsTrue(car.speed == 0.0)
     }
 
+    [Test "Tank: Gas verbraucht Sprit, leer fährt nichts, das Fahrrad braucht keinen"]
+    undefined Fuel() {
+        // eine Minute Vollgas: ein Zehntel des Tanks
+        var car = new Raser.Vehicle()
+        for (int i = 0; i < 1200; i++) { car.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(car.fuel - 0.9) < 0.001)
+        // rollen kostet nichts
+        for (int i = 0; i < 100; i++) { car.Step(0.05, 0.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(car.fuel - 0.9) < 0.001)
+        // halbes Gas: halb so viel
+        var half = Raser.Vehicle.Of("motorrad")
+        for (int i = 0; i < 600; i++) { half.Step(0.05, 0.5, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(half.fuel - 0.95) < 0.001)
+        // leer: kein Antrieb
+        var empty = new Raser.Vehicle()
+        empty.fuel = 0.0
+        for (int i = 0; i < 20; i++) { empty.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(empty.speed == 0.0 && empty.fuel == 0.0)
+        // das Fahrrad
+        var bike = Raser.Vehicle.Of("fahrrad")
+        for (int i = 0; i < 1200; i++) { bike.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(bike.fuel == 1.0 && bike.speed > 5.0)
+    }
+
     static defined float BrakeDistance(defined float wetness) {
         var car = new Raser.Vehicle()
         car.speed = 30.0
