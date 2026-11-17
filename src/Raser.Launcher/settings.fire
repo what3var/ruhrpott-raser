@@ -1,0 +1,59 @@
+// Raser.Launcher: die gemerkten Einstellungen (Serveradresse, Benutzername, Installationsordner) in <Konfigurationsordner>/launcher.json.
+// Das Passwort und der Token werden nie gespeichert.
+#import "filesystem"
+#import "json"
+
+namespace Launcher {
+    class Settings {
+        string server
+        string user
+        string install
+
+        construct() {
+            this.server = "127.0.0.1:7480"
+            this.user = ""
+            this.install = ""
+        }
+
+        static string FileOf(string dir) { return IO.Path.Combine(dir, "launcher.json") }
+
+        // Liest die Einstellungen; was fehlt oder unlesbar ist, bleibt beim Standard.
+        static Launcher.Settings Load(string dir) {
+            var s = new Launcher.Settings()
+            try {
+                string file = Launcher.Settings.FileOf(dir)
+                if (!IO.File.Exists(file)) { return s }
+                s.Read(IO.File.ReadAllText(file))
+            } catch (Exception e) { }
+            return s
+        }
+
+        undefined Read(string text) {
+            any o = Json.Parse(text)
+            if (!(o is of JsonObject)) { return }
+            any server = o.Get("server")
+            any user = o.Get("user")
+            any install = o.Get("install")
+            if (server is of string) { this.server = server }
+            if (user is of string) { this.user = user }
+            if (install is of string) { this.install = install }
+        }
+
+        string ToJson() {
+            return "{\n  \"server\": " + Json.Serialize(this.server) + ",\n  \"user\": " + Json.Serialize(this.user) + ",\n  \"install\": " + Json.Serialize(this.install) + "\n}\n"
+        }
+
+        // Schreibt sie (über eine Zwischendatei); ein Fehler ist nur eine Meldung, kein Abbruch.
+        string Save(string dir) {
+            try {
+                if (!IO.Directory.Exists(dir)) { IO.Directory.CreateDirectory(dir) }
+                string file = Launcher.Settings.FileOf(dir)
+                IO.File.WriteAllText(file + ".neu", this.ToJson())
+                IO.File.Move(file + ".neu", file, true)
+                return ""
+            } catch (Exception e) {
+                return "Einstellungen nicht gespeichert: " + e.message
+            }
+        }
+    }
+}

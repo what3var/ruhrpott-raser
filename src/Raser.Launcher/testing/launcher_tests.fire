@@ -1,0 +1,223 @@
+// Die Tests von Raser.Launcher (forge test src/Raser.Launcher/Raser.Launcher.fireproj): Pfade, Antworten des Servers, der Vergleich der Dateilisten.
+// Der Ablauf mit Netz (Anmelden, Laden, kaputte Downloads) steht in testing/check_test.sh gegen testing/mock_server.py.
+#import "testing"
+#import "filesystem"
+#import "hash"
+
+class PathTests {
+    [Test "Pfade der Dateiliste: nur relative ohne .."]
+    undefined Safe() {
+        Testing.Assert.IsTrue(Launcher.Paths.IsSafe("bin/game"))
+        Testing.Assert.IsTrue(Launcher.Paths.IsSafe("world/tiles/1473_22292.rrc"))
+        Testing.Assert.IsTrue(Launcher.Paths.IsSafe("a..b/c"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("../evil"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("bin/../../evil"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe(".."))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("/etc/passwd"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("C:/Windows/x"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("c:evil"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("bin\\..\\evil"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("bin//game"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("bin/./game"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("bin/"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe(""))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("bin/game."))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe("bin/a\nb"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe(".raser-install.json"))
+        Testing.Assert.IsFalse(Launcher.Paths.IsSafe(".raser-tmp/x"))
+    }
+
+    [Test "Serveradresse, Rechner und Spielserver"]
+    undefined Server() {
+        Testing.Assert.AreEqual("http://raser.example.de:7480", Launcher.Paths.ServerUrl(" raser.example.de "))
+        Testing.Assert.AreEqual("http://127.0.0.1:7480", Launcher.Paths.ServerUrl("http://127.0.0.1:7480/"))
+        Testing.Assert.AreEqual("https://raser.example.de:7480", Launcher.Paths.ServerUrl("https://raser.example.de"))
+        Testing.Assert.AreEqual("http://host:9000", Launcher.Paths.ServerUrl("host:9000"))
+        Testing.Assert.AreEqual("http://[::1]:7480", Launcher.Paths.ServerUrl("[::1]"))
+        Testing.Assert.IsUndefined(Launcher.Paths.ServerUrl("  "))
+        Testing.Assert.AreEqual("127.0.0.1", Launcher.Paths.Host("http://127.0.0.1:7480"))
+        Testing.Assert.AreEqual("[::1]", Launcher.Paths.Host("http://[::1]:7480"))
+        Testing.Assert.AreEqual("raser.example.de:7481", Launcher.Paths.GameServer("https://raser.example.de:7480"))
+        Testing.Assert.AreEqual("http://h:7480/files/bin/Gro%C3%9F%20x.bin", Launcher.Paths.FileUrl("http://h:7480", "bin/Groß x.bin"))
+    }
+
+    [Test "Argumente des Spiels"]
+    undefined GameArguments() {
+        var session = new Launcher.Session("tok123", "anna", false, "")
+        var args = Launcher.Game.Arguments("http://10.0.0.5:7480", session, undefined)
+        Testing.Assert.AreEqual(6, args.length)
+        Testing.Assert.AreEqual("--server", args[0])
+        Testing.Assert.AreEqual("10.0.0.5:7481", args[1])
+        Testing.Assert.AreEqual("--token", args[2])
+        Testing.Assert.AreEqual("tok123", args[3])
+        Testing.Assert.AreEqual("--user", args[4])
+        Testing.Assert.AreEqual("anna", args[5])
+        Testing.Assert.AreEqual("--server 10.0.0.5:7481 --token tok1... --user anna", Launcher.Check.Masked(args))
+    }
+}
+
+class ApiTests {
+    [Test "Antwort der Anmeldung"]
+    undefined Session() {
+        var s = Launcher.Api.ParseSession("{\"token\": \"abc\", \"user\": \"anna\", \"admin\": true, \"expires\": \"2026-11-18T12:00:00Z\"}")
+        Testing.Assert.AreEqual("abc", s.token)
+        Testing.Assert.AreEqual("anna", s.user)
+        Testing.Assert.IsTrue(s.admin)
+        Testing.Assert.AreEqual("2026-11-18T12:00:00Z", s.expires)
+        Testing.Assert.Throws(() => Launcher.Api.ParseSession("{\"user\": \"anna\"}"))
+        Testing.Assert.Throws(() => Launcher.Api.ParseSession("kein json"))
+        Testing.Assert.Throws(() => Launcher.Api.ParseSession("[1, 2]"))
+    }
+
+    [Test "Fehlermeldungen des Servers"]
+    undefined Errors() {
+        Testing.Assert.AreEqual("Name vergeben", Launcher.Api.ErrorOf(409, "{\"error\": \"Name vergeben\"}", "/api/register"))
+        Testing.Assert.AreEqual("Benutzername oder Passwort falsch", Launcher.Api.ErrorOf(401, "", "/api/login"))
+        Testing.Assert.AreEqual("Der Server antwortet 500 auf /api/login", Launcher.Api.ErrorOf(500, "<html>", "/api/login"))
+        Testing.Assert.AreEqual("{\"user\": \"a\\\"b\", \"password\": \"p\\\\w\"}", Launcher.Api.AccountBody("a\"b", "p\\w"))
+    }
+
+    [Test "Version mit Dateiliste"]
+    undefined Release() {
+        string text = "{\"version\": \"0.1.3\", \"notes\": \"Neu\", \"files\": [{\"path\": \"bin/game\", \"size\": 12345, \"sha256\": \"" + Hash.Sha256.HexOf("x").ToUpper() + "\"}, {\"path\": \"world/a.rrc\", \"size\": 7, \"sha256\": \"" + Hash.Sha256.HexOf("y") + "\"}]}"
+        var r = Launcher.Api.ParseRelease(text)
+        Testing.Assert.AreEqual("0.1.3", r.version)
+        Testing.Assert.AreEqual("Neu", r.notes)
+        Testing.Assert.AreEqual(2, r.files.Count)
+        Testing.Assert.AreEqual("bin/game", r.files[0].path)
+        Testing.Assert.AreEqual(12345, r.files[0].size)
+        Testing.Assert.AreEqual(Hash.Sha256.HexOf("x"), r.files[0].sha256)
+        Testing.Assert.AreEqual(12352, r.TotalBytes())
+        Testing.Assert.AreEqual(0, Launcher.Api.ParseRelease("{\"version\": \"1\"}").files.Count)
+        Testing.Assert.Throws(() => Launcher.Api.ParseRelease("{\"version\": \"1\", \"files\": [{\"path\": \"a\"}]}"))
+        Testing.Assert.Throws(() => Launcher.Api.ParseRelease("{\"files\": []}"))
+    }
+
+    [Test "News und Status"]
+    undefined NewsStatus() {
+        var news = Launcher.Api.ParseNews("[{\"date\": \"2026-11-17\", \"title\": \"Neu\", \"text\": \"Äöü\"}, {\"title\": \"ohne Datum\"}]")
+        Testing.Assert.AreEqual(2, news.Count)
+        Testing.Assert.AreEqual("2026-11-17", news[0].date)
+        Testing.Assert.AreEqual("Äöü", news[0].text)
+        Testing.Assert.AreEqual("", news[1].date)
+        Testing.Assert.AreEqual(0, Launcher.Api.ParseNews("[]").Count)
+        Testing.Assert.Throws(() => Launcher.Api.ParseNews("{\"a\": 1}"))
+        var s = Launcher.Api.ParseStatus("{\"players\": 4, \"region\": \"Bochum\", \"uptime\": 123}")
+        Testing.Assert.AreEqual("Server erreichbar, 4 Spieler (Bochum)", s.Describe())
+        Testing.Assert.AreEqual("Server erreichbar, 0 Spieler", Launcher.Api.ParseStatus("{}").Describe())
+    }
+
+    [Test "SHA-256 in Hex erkennen"]
+    undefined Sha() {
+        Testing.Assert.IsTrue(Launcher.Api.IsSha256(Hash.Sha256.HexOf("abc")))
+        Testing.Assert.IsFalse(Launcher.Api.IsSha256("abc"))
+        Testing.Assert.IsFalse(Launcher.Api.IsSha256(Hash.Sha256.HexOf("abc").Substring(0, 63) + "g"))
+    }
+}
+
+class PlanTests {
+    static Launcher.Release Release(string path, string content) {
+        var r = new Launcher.Release("1", "")
+        r.files.Add(new Launcher.ReleaseFile(path, IO.Utf8.GetBytes(content).length, Hash.Sha256.HexOf(content)))
+        return r
+    }
+
+    static string Dir(string name) {
+        string dir = IO.Path.Combine(IO.Path.GetTempPath(), "raser-launcher-test-" + name)
+        if (IO.Directory.Exists(dir)) { IO.Directory.Delete(dir, true) }
+        IO.Directory.CreateDirectory(dir)
+        return dir
+    }
+
+    [Test "Unsichere oder doppelte Listen werden abgelehnt"]
+    undefined Rejected() {
+        Testing.Assert.AreEqual("", Launcher.Plan.Check(PlanTests.Release("bin/game", "x")))
+        Testing.Assert.Contains("unsicherer Pfad", Launcher.Plan.Check(PlanTests.Release("../evil", "x")))
+        Testing.Assert.Contains("unsicherer Pfad", Launcher.Plan.Check(PlanTests.Release("/abs", "x")))
+        var twice = PlanTests.Release("bin/game", "x")
+        twice.files.Add(new Launcher.ReleaseFile("BIN/game", 1, Hash.Sha256.HexOf("x")))
+        Testing.Assert.Contains("doppelter Pfad", Launcher.Plan.Check(twice))
+        var both = PlanTests.Release("bin", "x")
+        both.files.Add(new Launcher.ReleaseFile("bin/game", 1, Hash.Sha256.HexOf("x")))
+        Testing.Assert.Contains("Datei und Ordner", Launcher.Plan.Check(both))
+        var bad = new Launcher.Release("1", "")
+        bad.files.Add(new Launcher.ReleaseFile("a", 1, "zz"))
+        Testing.Assert.Contains("Prüfsumme", Launcher.Plan.Check(bad))
+        var plan = Launcher.Plan.Make(PlanTests.Release("../evil", "x"), PlanTests.Dir("rejected"), undefined)
+        Testing.Assert.IsFalse(plan.UpToDate)
+        Testing.Assert.AreEqual(0, plan.fetch.Count)
+    }
+
+    [Test "Vergleich: fehlt, anders, gleich, veraltet"]
+    undefined Compare() {
+        string dir = PlanTests.Dir("compare")
+        var r = PlanTests.Release("bin/game", "spiel v2")
+        r.files.Add(new Launcher.ReleaseFile("world/info.txt", 5, Hash.Sha256.HexOf("hallo")))
+        r.files.Add(new Launcher.ReleaseFile("same.txt", 4, Hash.Sha256.HexOf("same")))
+        IO.Directory.CreateDirectory(IO.Path.Combine(dir, "bin"))
+        IO.File.WriteAllText(IO.Path.Combine(dir, "bin", "game"), "spiel v1")
+        IO.File.WriteAllText(IO.Path.Combine(dir, "same.txt"), "same")
+        var state = new Launcher.LocalState()
+        state.Put("alt.txt", 1, Hash.Sha256.HexOf("a"), 1)
+        var plan = Launcher.Plan.Make(r, dir, state)
+        Testing.Assert.AreEqual("", plan.error)
+        Testing.Assert.AreEqual(2, plan.fetch.Count)
+        Testing.Assert.AreEqual("bin/game", plan.fetch[0].path)
+        Testing.Assert.AreEqual("world/info.txt", plan.fetch[1].path)
+        Testing.Assert.AreEqual(13, plan.fetchBytes)
+        Testing.Assert.AreEqual(1, plan.current)
+        Testing.Assert.AreEqual(1, plan.obsolete.Count)
+        Testing.Assert.AreEqual("alt.txt", plan.obsolete[0])
+        Testing.Assert.AreEqual("2 Dateien (13 B) zu laden", plan.Describe())
+        // der Stand hat sich die gehashten Dateien gemerkt; mit falscher Prüfsumme im Stand (gleiche Größe und Zeit) zählt der Stand
+        Testing.Assert.IsNotUndefined(state.Find("same.txt"))
+        state.Find("same.txt").sha256 = Hash.Sha256.HexOf("anders")
+        Testing.Assert.AreEqual(3, Launcher.Plan.Make(r, dir, state).fetch.Count)
+        // ohne Stand wird gehasht
+        Testing.Assert.AreEqual(2, Launcher.Plan.Make(r, dir, undefined).fetch.Count)
+        IO.Directory.Delete(dir, true)
+    }
+
+    [Test "Stand der Installation hin und zurück"]
+    undefined State() {
+        string dir = PlanTests.Dir("state")
+        var state = new Launcher.LocalState()
+        state.version = "0.1.3"
+        state.Put("bin/game", 12, Hash.Sha256.HexOf("g"), 1700000000)
+        state.Put("../evil", 1, Hash.Sha256.HexOf("e"), 1)
+        state.Save(dir)
+        var back = Launcher.LocalState.Load(dir)
+        Testing.Assert.AreEqual("0.1.3", back.version)
+        Testing.Assert.AreEqual(1, back.entries.Count)
+        Testing.Assert.AreEqual(1700000000, back.Find("bin/game").mtime)
+        IO.File.WriteAllText(Launcher.LocalState.FileOf(dir), "{kaputt")
+        Testing.Assert.AreEqual(0, Launcher.LocalState.Load(dir).entries.Count)
+        IO.Directory.Delete(dir, true)
+    }
+
+    [Test "Größen für Menschen"]
+    undefined Sizes() {
+        Testing.Assert.AreEqual("512 B", Launcher.Plan.Size(512))
+        Testing.Assert.AreEqual("1,5 KB", Launcher.Plan.Size(1536))
+        Testing.Assert.AreEqual("12,5 MB", Launcher.Plan.Size(13107200))
+    }
+}
+
+class SettingsTests {
+    [Test "Einstellungen ohne Passwort"]
+    undefined RoundTrip() {
+        string dir = PlanTests.Dir("settings")
+        var s = new Launcher.Settings()
+        s.server = "raser.example.de"
+        s.user = "Anna \"die Schnelle\""
+        s.install = "/opt/raser"
+        Testing.Assert.AreEqual("", s.Save(dir))
+        var back = Launcher.Settings.Load(dir)
+        Testing.Assert.AreEqual("raser.example.de", back.server)
+        Testing.Assert.AreEqual("Anna \"die Schnelle\"", back.user)
+        Testing.Assert.AreEqual("/opt/raser", back.install)
+        Testing.Assert.IsFalse(IO.File.ReadAllText(Launcher.Settings.FileOf(dir)).Contains("password"))
+        Testing.Assert.AreEqual("127.0.0.1:7480", Launcher.Settings.Load(IO.Path.Combine(dir, "fehlt")).server)
+        IO.Directory.Delete(dir, true)
+    }
+}

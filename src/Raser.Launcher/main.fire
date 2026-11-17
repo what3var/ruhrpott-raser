@@ -1,0 +1,19 @@
+// Raser.Launcher: der Launcher von Ruhrpott-Raser - anmelden oder registrieren, News, das Spiel aktuell halten und starten.
+//
+//   raser-launcher [--server host:7480] [--install ordner]                 das Fenster
+//   raser-launcher --check --server http://127.0.0.1:7480 --user x --password y [--register] --install ordner [--no-update] [--play] [--game bin/x]
+//                                                                          ohne Fenster: anmelden, News und Version zeigen, aktualisieren
+//   raser-launcher --shot bild.png [--demo 1]                              das Fenster ohne Bildschirm als PNG (zum Ansehen)
+//
+// Einstellungen (Server, Benutzer, Installation; nie das Passwort): siehe Launcher.Paths.ConfigDir, mit --config ordner ein anderer.
+#import "filesystem"
+
+class Main {
+    static int Run(string items[]) {
+        var args = new Launcher.Args(items)
+        if (args.Has("check")) { return Launcher.Check.Run(args) }
+        return 0
+    }
+}
+
+Environment.Exit(Main.Run(Environment.Args))

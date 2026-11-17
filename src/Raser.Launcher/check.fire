@@ -1,0 +1,188 @@
+// Raser.Launcher: der Modus ohne Fenster (--check) - anmelden oder registrieren, News und Version zeigen, die Installation aktualisieren, auf Wunsch
+// das Spiel starten; alles als Text auf der Konsole. Für Tests und Server ohne Bildschirm.
+#import "console"
+#import "process"
+
+namespace Launcher {
+    // Die Argumente: "--name wert" und "--schalter" (ohne Wert: "true").
+    class Args {
+        List<string> positional
+        Dictionary<string, string> options
+
+        construct(string items[]) {
+            this.positional = new List<string>()
+            this.options = new Dictionary<string, string>()
+            int i = 0
+            while (i < items.length) {
+                string a = items[i]
+                if (a.StartsWith("--")) {
+                    string name = a.Substring(2)
+                    if (i + 1 < items.length && !items[i + 1].StartsWith("--")) {
+                        this.options[name] = items[i + 1]
+                        i = i + 2
+                    } else {
+                        this.options[name] = "true"
+                        i = i + 1
+                    }
+                } else {
+                    this.positional.Add(a)
+                    i = i + 1
+                }
+            }
+        }
+
+        string Get(string name, string fallback = undefined) { return this.options.Get(name, fallback) }
+
+        bool Has(string name) { return this.options.ContainsKey(name) }
+    }
+
+    class Check {
+        static undefined Say(string text) {
+            print(text)
+            Console.Flush()
+        }
+
+        // Exit-Codes: 0 alles gut, 1 Update unvollständig oder abgelehnt, 2 Anmeldung fehlgeschlagen, 3 Server nicht erreichbar, 4 Spiel endete mit Fehler.
+        static int Run(Launcher.Args args) {
+            string configDir = args.Get("config", Launcher.Paths.ConfigDir())
+            var settings = Launcher.Settings.Load(configDir)
+            string url = Launcher.Paths.ServerUrl(args.Get("server", settings.server))
+            if (url == undefined) {
+                Launcher.Check.Say("FEHLER: keine Serveradresse (--server)")
+                return 3
+            }
+            string install = args.Get("install", settings.install)
+            if (install == undefined || install == "") { install = Launcher.Paths.DefaultInstall() }
+            install = IO.Path.GetFullPath(install)
+            Launcher.Check.Say("Server: " + url)
+            Launcher.Check.Say("Installation: " + install)
+            var api = new Launcher.Api(url)
+
+            try {
+                Launcher.Check.Say(api.Status().Describe())
+            } catch (Launcher.ApiException e) {
+                Launcher.Check.Say("FEHLER Status: " + e.message)
+                return 3
+            }
+
+            // anmelden (oder registrieren), wenn ein Name gegeben ist
+            Launcher.Session session = undefined
+            string user = args.Get("user", "")
+            if (user != "") {
+                string password = args.Get("password", "")
+                if (!args.Has("password") && Environment.Get("RASER_PASSWORD") != undefined) { password = Environment.Get("RASER_PASSWORD") }
+                bool register = args.Has("register")
+                try {
+                    if (register) { session = api.Register(user, password) } else { session = api.Login(user, password) }
+                } catch (Launcher.ApiException e) {
+                    string what = "Anmeldung"
+                    if (register) { what = "Registrierung" }
+                    Launcher.Check.Say("FEHLER " + what + ": " + e.message + " (HTTP " + e.status + ")")
+                    return 2
+                }
+                string role = ""
+                if (session.admin) { role = ", Admin" }
+                string verb = "Angemeldet"
+                if (register) { verb = "Registriert und angemeldet" }
+                Launcher.Check.Say(verb + " als " + session.user + role + " (Token bis " + session.expires + ")")
+                settings.server = args.Get("server", settings.server)
+                settings.user = session.user
+                settings.install = install
+                string saved = settings.Save(configDir)
+                if (saved != "") { Launcher.Check.Say(saved) }
+            }
+
+            try {
+                var news = api.News()
+                Launcher.Check.Say("News: " + news.Count)
+                foreach (n in news) { Launcher.Check.Say("  " + n.date + "  " + n.title + " - " + n.text) }
+            } catch (Launcher.ApiException e) {
+                Launcher.Check.Say("FEHLER News: " + e.message)
+            }
+
+            Launcher.Release release = undefined
+            try {
+                release = api.Version()
+            } catch (Launcher.ApiException e) {
+                Launcher.Check.Say("FEHLER Version: " + e.message)
+                return 1
+            }
+            Launcher.Check.Say("Version " + release.version + " (" + release.files.Count + " Dateien, " + Launcher.Plan.Size(release.TotalBytes()) + ")")
+            if (release.notes != "") { Launcher.Check.Say("Notizen: " + release.notes) }
+
+            int code = Launcher.Check.Update(url, install, release, args.Has("no-update"))
+            if (code != 0) { return code }
+
+            if (args.Has("play")) {
+                if (session == undefined) {
+                    Launcher.Check.Say("FEHLER: zum Spielen anmelden (--user, --password)")
+                    return 2
+                }
+                return Launcher.Check.Play(url, session, install, args.Get("game", ""))
+            }
+            return 0
+        }
+
+        static int Update(string url, string install, Launcher.Release release, bool planOnly) {
+            if (!IO.Directory.Exists(install)) { IO.Directory.CreateDirectory(install) }
+            var state = Launcher.LocalState.Load(install)
+            var plan = Launcher.Plan.Make(release, install, state)
+            Launcher.Check.Say("Vergleich: " + plan.Describe())
+            if (plan.error != "") { return 1 }
+            if (plan.UpToDate && plan.obsolete.Count == 0) {
+                // (der Stand merkt sich die eben gehashten Dateien)
+                state.version = release.version
+                state.Save(install)
+                Launcher.Check.Say("Aktuell: Version " + release.version)
+                return 0
+            }
+            if (planOnly) { return 0 }
+            var updater = new Launcher.Updater(url, install, release, plan, state)
+            while (updater.Step()) {
+                foreach (line in updater.TakeLog()) { Launcher.Check.Say("  " + line) }
+            }
+            foreach (line in updater.TakeLog()) { Launcher.Check.Say("  " + line) }
+            Launcher.Check.Say("Update: " + updater.installed + " geladen, " + updater.failed + " fehlgeschlagen")
+            if (!updater.Ok) { return 1 }
+            Launcher.Check.Say("Aktuell: Version " + release.version)
+            return 0
+        }
+
+        static int Play(string url, Launcher.Session session, string install, string own) {
+            string program = Launcher.Game.Find(install, own)
+            if (program == undefined) {
+                Launcher.Check.Say("FEHLER: kein Spiel in der Installation gefunden")
+                return 4
+            }
+            var args = Launcher.Game.Arguments(url, session, install)
+            Launcher.Check.Say("Starte " + program + " " + Launcher.Check.Masked(args))
+            try {
+                var p = Launcher.Game.Start(program, args, install)
+                p.OnOutput = (string line) => print("  spiel: " + line)
+                p.WaitForExit()
+                int code = p.ExitCode
+                p.Close()
+                Launcher.Check.Say("Spiel beendet mit Code " + code)
+                if (code != 0) { return 4 }
+                return 0
+            } catch (ProcessException e) {
+                Launcher.Check.Say("FEHLER: Spiel startet nicht: " + e.message)
+                return 4
+            }
+        }
+
+        // Die Argumente für das Log, der Token nur angedeutet.
+        static string Masked(string args[]) {
+            string s = ""
+            for (int i = 0; i < args.length; i++) {
+                string a = args[i]
+                if (i > 0 && args[i - 1] == "--token") {
+                    if (a.Length > 4) { a = a.Substring(0, 4) + "..." } else { a = "..." }
+                }
+                if (s != "") { s = s + " " }
+                s = s + a
+            }
+            return s
+        }
+    }
+}
