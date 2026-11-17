@@ -3,7 +3,8 @@
 // docs/INVENTAR.md).
 //
 // Ein Gegenstand ist eine Art (Raser.ItemType: Name, Stapelgröße, Gewicht, Größe, Symbol) - im Behälter steht je Platz nur die Art, die Anzahl
-// und eine Zahl data (bei Rucksäcken die ID ihres Behälters mit dem Inhalt; sonst 0). Alles hängt an IDs, nichts an Objekten: so wandert ein
+// und eine Zahl data: bei Rucksäcken die ID ihres Behälters mit dem Inhalt, sonst der Zustand (0 heil bzw. voll; Kanister: so viel Prozent sind
+// verbraucht, 100 leer; Handy und Taschenlampe: 1 kaputt). Gestapelt wird nur mit data 0. Alles hängt an IDs, nichts an Objekten: so wandert ein
 // Rucksack mit Inhalt vom Rücken auf den Boden und zu einem anderen Spieler, ohne dass ein Objekt umzieht, und alles lässt sich als Bytes schreiben.
 //
 // Größen: 1 klein (passt in die Hosentasche), 2 mittel (Rucksack oder Hände), 3 sperrig (nur in die Hände: Kanister, ein zweiter Rucksack).
@@ -24,6 +25,10 @@ namespace Raser {
         defined int capacity        // Rucksack: so viele Plätze hat er (sonst 0)
         defined int columns         // Rucksack: so viele Plätze je Reihe
         defined bool phone
+        defined int food            // benutzen: so viel Sättigung (Raser.Body, 0 bis 100)
+        defined int drink           // ... und so viel gegen den Durst
+        defined bool breakable      // kann kaputtgehen (data 1), bleibt dann ein Gegenstand
+        defined float fragility     // so leicht geht er beim Umhauen kaputt (0 nie, 1 bei voller Wucht sicher; Verbrauchbares je Stück)
 
         construct(defined int id, string key, string name, defined int maxStack, defined int weight, defined int size) {
             this.id = id
@@ -36,6 +41,10 @@ namespace Raser {
             this.capacity = 0
             this.columns = 0
             this.phone = false
+            this.food = 0
+            this.drink = 0
+            this.breakable = false
+            this.fragility = 0.0
         }
 
         defined bool IsBackpack { get { return this.capacity > 0 } }
@@ -82,19 +91,35 @@ namespace Raser {
             l.Add(new Raser.ItemType(0, "", "", 0, 0, 0))
             var handy = new Raser.ItemType(1, "handy", "Handy", 1, 180, 1)
             handy.phone = true
+            handy.breakable = true
+            handy.fragility = 0.7
             l.Add(take handy)
             l.Add(new Raser.ItemType(2, "schluessel", "Schluessel", 1, 30, 1))
-            l.Add(new Raser.ItemType(3, "geld", "Muenzen", 100, 5, 1))
-            l.Add(new Raser.ItemType(4, "broetchen", "Broetchen", 6, 60, 1))
-            l.Add(new Raser.ItemType(5, "pommes", "Pommes Schranke", 2, 250, 2))
-            l.Add(new Raser.ItemType(6, "wasser", "Flasche Wasser", 4, 550, 2))
+            // Geld: am Boden ein Betrag in Cent (count); aufgehoben wird es Bargeld (Inventory.cash), nie ein Stapel im Inventar
+            l.Add(new Raser.ItemType(3, "geld", "Geld", 100, 0, 1))
+            Raser.Items.AddFood(4, "broetchen", "Broetchen", 6, 60, 1, 30, 0, 0.3)
+            Raser.Items.AddFood(5, "pommes", "Pommes Schranke", 2, 250, 2, 45, -5, 0.6)
+            Raser.Items.AddFood(6, "wasser", "Flasche Wasser", 4, 550, 2, 0, 45, 0.4)
             l.Add(new Raser.ItemType(7, "werkzeug", "Schraubenschluessel", 1, 400, 2))
-            l.Add(new Raser.ItemType(8, "taschenlampe", "Taschenlampe", 1, 200, 1))
-            l.Add(new Raser.ItemType(9, "kanister", "Benzinkanister", 1, 5500, 3))
-            l.Add(new Raser.ItemType(10, "zigaretten", "Zigaretten", 10, 25, 1))
+            var lamp = new Raser.ItemType(8, "taschenlampe", "Taschenlampe", 1, 200, 1)
+            lamp.breakable = true
+            lamp.fragility = 0.4
+            l.Add(take lamp)
+            var can = new Raser.ItemType(9, "kanister", "Benzinkanister", 1, 5500, 3)
+            can.fragility = 0.15
+            l.Add(take can)
+            Raser.Items.AddFood(10, "zigaretten", "Zigaretten", 10, 25, 1, 0, 0, 0.2)
             Raser.Items.AddBackpack(11, "turnbeutel", "Turnbeutel", 250, 6, 6)
             Raser.Items.AddBackpack(12, "rucksack", "Rucksack", 700, 16, 8)
             Raser.Items.AddBackpack(13, "trekkingrucksack", "Trekkingrucksack", 1600, 27, 9)
+        }
+
+        static undefined AddFood(defined int id, string key, string name, defined int maxStack, defined int weight, defined int size, defined int food, defined int drink, defined float fragility) {
+            var t = new Raser.ItemType(id, key, name, maxStack, weight, size)
+            t.food = food
+            t.drink = drink
+            t.fragility = fragility
+            Raser.Items.all.Add(take t)
         }
 
         static undefined AddBackpack(defined int id, string key, string name, defined int weight, defined int capacity, defined int columns) {
@@ -408,12 +433,16 @@ namespace Raser {
     //   Move:   count Stück von (source, sourceSlot) nach (target, targetSlot) - das Ziel ist leer oder trägt dieselbe Art (gestapelt bis maxStack)
     //   Swap:   die beiden Plätze tauschen ihre Stapel
     //   Drop:   count Stück von (source, sourceSlot) auf den Boden, an die Lage des Spielers
-    //   PickUp: der Gegenstand drop vom Boden ins Inventar (Rucksack: auf den Rücken, wenn der frei ist)
+    //   PickUp: der Gegenstand drop vom Boden ins Inventar (Rucksack: auf den Rücken, wenn der frei ist; Geld: wird Bargeld)
+    //   Use:    den Gegenstand (source, sourceSlot) benutzen - essen, trinken, Lampe an/aus, rauchen, mit dem Kanister tanken, mit dem
+    //           Schraubenschlüssel reparieren (Inventory.Use; das Fahrzeug ist Inventory.vehicle, das der Server selbst setzt)
+    // Die Nummern der Arten bleiben fest; neue kommen hinten dazu.
     class InvOp {
         static readonly defined int Move = 1
         static readonly defined int Swap = 2
         static readonly defined int Drop = 3
         static readonly defined int PickUp = 4
+        static readonly defined int Use = 5
 
         defined int kind
         defined int source
@@ -456,9 +485,9 @@ namespace Raser {
         }
 
         string ToString() {
-            string names[] = ["?", "Move", "Swap", "Drop", "PickUp"]
+            string names[] = ["?", "Move", "Swap", "Drop", "PickUp", "Use"]
             string k = "?"
-            if (this.kind >= 1 && this.kind <= 4) { k = names[this.kind] }
+            if (this.kind >= 1 && this.kind <= 5) { k = names[this.kind] }
             return k + " " + this.source + ":" + this.sourceSlot + " -> " + this.target + ":" + this.targetSlot + " x" + this.count + " drop " + this.drop
         }
     }
@@ -476,7 +505,17 @@ namespace Raser {
         defined int opened              // ein geöffneter Rucksack auf dem Boden (Behälter-ID; 0: keiner)
         defined int openedDrop          // ... und der Gegenstand auf dem Boden, der er ist
         defined float handStep          // so viel bremst der k-te belegte Platz der Hände: k x handStep (summiert)
+        defined float handKg            // ... dazu je kg in den Händen
+        defined float pocketsFull       // ... und so viel, wenn alle Hosentaschen belegt sind (der Rucksack bremst nie)
         defined float reach             // so weit (m) reicht der Spieler zum Aufheben und Öffnen
+        defined float vehicleReach      // so weit (m, zur Mitte) darf ein Fahrzeug weg sein zum Tanken und Reparieren
+        defined float canFuel           // so viel Tank (0 bis 1) gibt ein voller Kanister
+        defined float repairStep        // so viel Zustand gibt der Schraubenschlüssel je Benutzen
+        defined int cash                // Bargeld in Cent (Geld am Boden wird beim Aufheben Bargeld)
+        defined bool lampOn             // die Taschenlampe ist an (leuchtet, solange eine heile in Händen oder Taschen ist)
+        Raser.Body body                 // für Essen, Trinken, Rauchen (undefined: kann nicht)
+        Raser.Vehicle vehicle           // das Fahrzeug für Kanister und Werkzeug (setzt der Aufrufer: das nächste, bzw. der Server)
+        string message                  // was das letzte Benutzen bewirkt hat (für die Anzeige)
         // die Lage des Spielers (für Ablegen und Aufheben)
         defined float east
         defined float north
@@ -488,17 +527,23 @@ namespace Raser {
             this.opened = 0
             this.openedDrop = 0
             this.handStep = 0.04
+            this.handKg = 0.02
+            this.pocketsFull = 0.06
             this.reach = 2.5
+            this.vehicleReach = 4.0
+            this.canFuel = 0.4
+            this.repairStep = 0.25
+            this.cash = 0
+            this.lampOn = false
+            this.body = undefined
+            this.vehicle = undefined
+            this.message = ""
             if (pocketSlots <= 0) { return }
             this.pockets = store.Create(Raser.ContainerKind.Pockets, pocketSlots)
             this.hands = store.Create(Raser.ContainerKind.Hands, handSlots)
             this.backpackSlot = store.Create(Raser.ContainerKind.BackpackSlot, 1)
             this.phoneSlot = store.Create(Raser.ContainerKind.PhoneSlot, 1)
             this.cursor = store.Create(Raser.ContainerKind.Cursor, 1)
-            this.opened = 0
-            this.openedDrop = 0
-            this.handStep = 0.04
-            this.reach = 2.5
         }
 
         Raser.Container Pockets() { return this.store.Find(this.pockets) }
@@ -530,11 +575,16 @@ namespace Raser {
             return d != undefined && d.data == this.opened && this.Near(d)
         }
 
-        // Das Tempo (Faktor für Gehen; Rennen: das Quadrat) aus den belegten Plätzen der Hände: der k-te belegte Platz kostet k x handStep,
-        // mit 0,04 also 96, 88, 76, 60 %.
+        // Das Tempo (Faktor für Gehen; Rennen: das Quadrat). Es bremst nur, was in den Händen ist, und volle Hosentaschen: der k-te belegte
+        // Platz der Hände kostet k x handStep (0,04: 4, 12, 24, 40 %), dazu handKg je kg in den Händen (0,02: der Kanister mit 5,5 kg 11 %), dazu
+        // pocketsFull (6 %), wenn alle Hosentaschen belegt sind. Der Rucksack bremst nicht. Höchstens bis 30 %.
         defined float SpeedFactor() {
-            int k = this.Hands().Used()
-            return Math.Max(0.2, 1.0 - this.handStep * k * (k + 1) / 2.0)
+            var hands = this.Hands()
+            int k = hands.Used()
+            float f = 1.0 - this.handStep * k * (k + 1) / 2.0 - this.handKg * this.WeightOf(hands) / 1000.0
+            var p = this.Pockets()
+            if (p.Used() == p.Size) { f = f - this.pocketsFull }
+            return Math.Max(0.3, f)
         }
 
         // Das Gewicht (g) von allem, was der Spieler trägt (mit dem Inhalt der Rucksäcke).
@@ -551,7 +601,7 @@ namespace Raser {
                 if (c.Empty(i)) { continue }
                 var t = Raser.Items.Get(c.Item(i))
                 g = g + t.weight * c.Amount(i)
-                if (c.Data(i) != 0 && c.kind != Raser.ContainerKind.Backpack) { g = g + this.WeightOf(this.store.Find(c.Data(i))) }
+                if (t.IsBackpack && c.Data(i) != 0 && c.kind != Raser.ContainerKind.Backpack) { g = g + this.WeightOf(this.store.Find(c.Data(i))) }
             }
             return g
         }
@@ -560,6 +610,10 @@ namespace Raser {
         defined int Give(defined int item, defined int count) {
             var t = Raser.Items.Get(item)
             if (t == undefined) { return count }
+            if (item == Raser.Items.Geld) {
+                this.cash = this.cash + count
+                return 0
+            }
             if (t.IsBackpack) {
                 int rest = count
                 while (rest > 0) {
@@ -659,6 +713,7 @@ namespace Raser {
         // Prüft eine Operation und führt sie aus; false: nicht erlaubt (nichts geändert). So prüft sie später der Server.
         defined bool Apply(Raser.InvOp op) {
             if (op.kind == Raser.InvOp.PickUp) { return this.PickUp(op.drop) }
+            if (op.kind == Raser.InvOp.Use) { return this.Use(op) }
             if (!this.Reaches(op.source)) { return false }
             var a = this.store.Find(op.source)
             if (a == undefined || !a.Valid(op.sourceSlot) || a.Empty(op.sourceSlot)) { return false }
@@ -667,7 +722,7 @@ namespace Raser {
                 int item = a.Item(op.sourceSlot)
                 int data = a.Data(op.sourceSlot)
                 int left = a.Amount(op.sourceSlot) - op.count
-                // den geöffneten Rucksack selbst kann man nicht in sich ablegen; ein Rucksack geht nur ganz
+                // ein Gegenstand mit data (Rucksack, Kanister mit Füllstand) geht nur ganz
                 if (data != 0 && left > 0) { return false }
                 a.Set(op.sourceSlot, item, left, data)
                 int dropped = this.drops.Add(this.east, this.north, item, op.count, data)
@@ -683,7 +738,7 @@ namespace Raser {
             if (op.kind == Raser.InvOp.Swap) {
                 int other = b.Item(op.targetSlot)
                 if (!Raser.ContainerKind.Accepts(b.kind, item) || !Raser.ContainerKind.Accepts(a.kind, other)) { return false }
-                if (this.Inside(a, data) || this.Inside(b, b.Data(op.targetSlot))) { return false }
+                if (this.Inside(b, item, data) || this.Inside(a, other, b.Data(op.targetSlot))) { return false }
                 int count = a.Amount(op.sourceSlot)
                 a.Set(op.sourceSlot, other, b.Amount(op.targetSlot), b.Data(op.targetSlot))
                 b.Set(op.targetSlot, item, count, data)
@@ -692,7 +747,7 @@ namespace Raser {
             if (op.kind != Raser.InvOp.Move) { return false }
             if (op.count <= 0 || op.count > a.Amount(op.sourceSlot)) { return false }
             if (!Raser.ContainerKind.Accepts(b.kind, item)) { return false }
-            if (this.Inside(b, data)) { return false }
+            if (this.Inside(b, item, data)) { return false }
             if (data != 0 && op.count != a.Amount(op.sourceSlot)) { return false }
             if (b.Empty(op.targetSlot)) {
                 b.Set(op.targetSlot, item, op.count, data)
@@ -708,7 +763,10 @@ namespace Raser {
 
         // Käme ein Rucksack (data: sein Behälter) in sich selbst? (Nur über einen geöffneten Behälter denkbar - die Regeln der Arten verhindern es
         // schon; die Prüfung hält auch fremde Daten auf.)
-        defined bool Inside(Raser.Container target, defined int data) { return data != 0 && target.id == data }
+        defined bool Inside(Raser.Container target, defined int item, defined int data) {
+            var t = Raser.Items.Get(item)
+            return t != undefined && t.IsBackpack && data != 0 && target.id == data
+        }
 
         // Liegt der geöffnete Rucksack nicht mehr auf dem Boden (aufgehoben), ist er zu.
         undefined Settle() {
@@ -744,6 +802,11 @@ namespace Raser {
         defined bool PickUp(defined int dropId) {
             var d = this.drops.Find(dropId)
             if (d == undefined || !this.Near(d)) { return false }
+            if (d.item == Raser.Items.Geld) {
+                this.cash = this.cash + d.count
+                this.drops.Remove(dropId)
+                return true
+            }
             int rest = this.Add(d.item, d.count, d.data)
             if (rest == d.count) { return false }
             if (rest == 0) {
@@ -754,6 +817,124 @@ namespace Raser {
                 this.drops.changes++
             }
             return true
+        }
+
+        // Ein Fahrzeug in Reichweite (zur Mitte)?
+        defined bool NearVehicle(Raser.Vehicle v) {
+            if (v == undefined) { return false }
+            float de = v.east - this.east
+            float dn = v.north - this.north
+            return de * de + dn * dn <= this.vehicleReach * this.vehicleReach
+        }
+
+        // Leuchtet die Taschenlampe? An, und eine heile in Händen oder Hosentaschen (im Rucksack leuchtet sie nicht).
+        defined bool LampShining() {
+            if (!this.lampOn) { return false }
+            foreach (c in [this.Hands(), this.Pockets()]) {
+                for (int i = 0; i < c.Size; i++) {
+                    if (c.Item(i) == Raser.Items.Taschenlampe && c.Data(i) == 0) { return true }
+                }
+            }
+            return false
+        }
+
+        // Benutzt den Gegenstand (op.source, op.sourceSlot); false: geht nicht (nichts geändert; message sagt meist, warum).
+        //   Brötchen, Pommes, Wasser: eins weniger, Sättigung bzw. Durst (Raser.Body.Eat)
+        //   Zigaretten: eine weniger, der Körper raucht ein paar Sekunden (nur fürs Bild)
+        //   Taschenlampe: an/aus (kaputt: nicht)
+        //   Kanister: tankt das Fahrzeug in Reichweite (ein voller gibt canFuel Tank); der leere Kanister bleibt (data 100)
+        //   Schraubenschlüssel: repariert das Fahrzeug in Reichweite um repairStep (bis heil); bleibt
+        defined bool Use(Raser.InvOp op) {
+            this.message = ""
+            if (!this.Reaches(op.source)) { return false }
+            var c = this.store.Find(op.source)
+            if (c == undefined || !c.Valid(op.sourceSlot) || c.Empty(op.sourceSlot)) { return false }
+            if (c.kind == Raser.ContainerKind.Cursor) { return false }
+            int item = c.Item(op.sourceSlot)
+            int count = c.Amount(op.sourceSlot)
+            int data = c.Data(op.sourceSlot)
+            var t = Raser.Items.Get(item)
+            if (t.food != 0 || t.drink != 0) {
+                if (this.body == undefined) { return false }
+                this.body.Eat(t.food, t.drink)
+                c.Set(op.sourceSlot, item, count - 1, data)
+                this.message = t.name + ": lecker"
+                if (t.food == 0) { this.message = t.name + ": erfrischend" }
+                return true
+            }
+            if (item == Raser.Items.Zigaretten) {
+                c.Set(op.sourceSlot, item, count - 1, data)
+                if (this.body != undefined) { this.body.smoke = 6.0 }
+                this.message = "Eine Zigarette"
+                return true
+            }
+            if (item == Raser.Items.Taschenlampe) {
+                if (data != 0) {
+                    this.message = "Die Taschenlampe ist kaputt"
+                    return false
+                }
+                this.lampOn = !this.lampOn
+                this.message = "Taschenlampe aus"
+                if (this.lampOn) { this.message = "Taschenlampe an" }
+                return true
+            }
+            if (item == Raser.Items.Kanister || item == Raser.Items.Werkzeug) {
+                var v = this.vehicle
+                if (!this.NearVehicle(v)) {
+                    this.message = "Kein Fahrzeug in der Naehe"
+                    return false
+                }
+                if (item == Raser.Items.Werkzeug) {
+                    if (v.health >= 1.0) {
+                        this.message = v.name + " ist heil"
+                        return false
+                    }
+                    v.health = Math.Min(1.0, v.health + this.repairStep)
+                    this.message = v.name + " repariert: " + Math.Round(v.health * 100.0) + " %"
+                    return true
+                }
+                if (v.tank <= 0.0) {
+                    this.message = v.name + " braucht keinen Sprit"
+                    return false
+                }
+                if (data >= 100) {
+                    this.message = "Der Kanister ist leer"
+                    return false
+                }
+                float have = (100 - data) / 100.0 * this.canFuel
+                float need = 1.0 - v.fuel
+                if (need < 0.005) {
+                    this.message = v.name + ": Tank ist voll"
+                    return false
+                }
+                float give = Math.Min(have, need)
+                v.fuel = Math.Min(1.0, v.fuel + give)
+                int used = data + Math.Ceiling(give / this.canFuel * 100.0 - 0.0001)!int
+                c.Set(op.sourceSlot, item, 1, Math.Min(100, used))
+                this.message = v.name + " getankt: " + Math.Round(v.fuel * 100.0) + " %"
+                return true
+            }
+            return false
+        }
+
+        // Ein Benutzen von (source, slot) als Operation (angewandt); undefined: ging nicht.
+        Raser.InvOp UseAt(defined int source, defined int slot) {
+            var op = new Raser.InvOp(Raser.InvOp.Use, source, slot, 0, 0, 1)
+            if (!this.Apply(op)) { return undefined }
+            return op
+        }
+
+        // Bargeld und Lampe als Bytes (die Behälter schreibt der ContainerStore, die IDs Write).
+        undefined WriteState(Raser.ByteWriter w) {
+            w.Varint(this.cash)
+            int flags = 0
+            if (this.lampOn) { flags = 1 }
+            w.Varint(flags)
+        }
+
+        undefined ReadState(Raser.ByteReader r) {
+            this.cash = r.Varint()
+            this.lampOn = (r.Varint() & 1) == 1
         }
 
         // Legt den Stapel (source, slot) ganz auf den Boden; undefined: nichts.
