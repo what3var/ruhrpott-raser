@@ -151,6 +151,7 @@ namespace Raser {
         float pathD[]
         float pathV[]
         defined int pathCount
+        List<NpcState> statePool      // die Zustände für States (wiederverwendet)
         List<int> carCandidates       // die Spuren, auf denen Autos erscheinen können, mit der Summe der Gewichte bis dahin
         List<float> carWeights
         List<int> walkCandidates
@@ -185,6 +186,7 @@ namespace Raser {
             this.pathDy = new float[48]
             this.pathD = new float[48]
             this.pathV = new float[48]
+            this.statePool = new List<NpcState>(Owns.Values)
             this.carCandidates = new List<int>()
             this.carWeights = new List<float>()
             this.walkCandidates = new List<int>()
@@ -231,6 +233,8 @@ namespace Raser {
                 this.Spawn(players, !this.populated)
                 this.populated = true
             }
+            // Stöße der fahrenden Spieler gegen die Autos
+            this.Impacts(players)
             // Autos: erst alle entscheiden (aus dem Stand aller), dann alle bewegen - die Reihenfolge zählt nicht
             for (int i = 0; i < this.cars.Count; i++) {
                 var c = this.cars[i]
@@ -654,7 +658,8 @@ namespace Raser {
             // beim Vorbeifahren zählt schon die Lage daneben (es lenkt hinüber, während es anrollt)
             float lat = c.offset
             float aside = -Math.Min(2.6, Math.Max(1.8, lane.width / 2.0))
-            if (c.pass > 0.0) { lat = aside }
+            // (erst wenn es fast daneben ist - sonst streift es das Hindernis)
+            if (c.pass > 0.0 && Math.Abs(c.offset - aside) < 0.6) { lat = aside }
             // andere Autos
             foreach (o in this.cars) {
                 if (o == c) { continue }
@@ -763,7 +768,7 @@ namespace Raser {
             if (c.pass > 0.0) { target = aside }
             c.gap = gap
             // quer höchstens 0,3 m/s plus ein Viertel des Tempos (es lenkt, rutscht nicht)
-            float shift = (0.3 + 0.25 * v) * dt
+            float shift = (0.5 + 0.25 * v) * dt
             c.offset = c.offset + Math.Clamp(target - c.offset, -shift, shift)
             c.accel = Raser.Traffic.Idm(v, v0, gap, lead)
         }
@@ -892,6 +897,114 @@ namespace Raser {
                     this.Pose(c)
                 } else if (c.stateTime > 20.0) { c.state = 2 }
             }
+        }
+
+        // Die Fahrzeuge der Spieler (Art 1) gegen die Autos: steckt ein Kreis des Spielers in einem Kreis eines Autos und fährt er mit mehr als
+        // 0,5 m/s hinein, bekommt das Auto den Stoß eines unelastischen Stoßes (wie Raser.Vehicle.Shove, der Spieler mit 1300 kg) und wird ein
+        // Unfallwagen. Den Abprall des Spielers rechnet sein Client (oder der Server mit seiner Fahrphysik) selbst - gegen die Zustände (States).
+        undefined Impacts(List<float> players) {
+            for (int i = 0; i + 6 < players.Count; i = i + 7) {
+                if (players[i + 6] != 1.0) { continue }
+                float h = players[i + 2] * Math.PI / 180.0
+                float fx = -Math.Sin(h)
+                float fy = Math.Cos(h)
+                float v = players[i + 3]
+                float radius = players[i + 4]
+                float spread = players[i + 5]
+                foreach (c in this.cars) {
+                    float de = c.east - players[i]
+                    float dn = c.north - players[i + 1]
+                    if (de * de + dn * dn > 144.0) { continue }
+                    var b = c.body
+                    float oh = c.heading * Math.PI / 180.0
+                    float ox = -Math.Sin(oh)
+                    float oy = Math.Cos(oh)
+                    bool hit = false
+                    for (float k = 1.0; k > -1.5 && !hit; k = k - 2.0) {
+                        float pe = players[i] + fx * spread * k
+                        float pn = players[i + 1] + fy * spread * k
+                        for (float q = 1.0; q > -1.5; q = q - 2.0) {
+                            float dx = c.east + ox * b.spread * q - pe
+                            float dy = c.north + oy * b.spread * q - pn
+                            float d = Math.Sqrt(dx * dx + dy * dy)
+                            if (d >= radius + b.radius || d < 0.0001) { continue }
+                            float nx = dx / d
+                            float ny = dy / d
+                            // nur was der Spieler hineinfährt (die Autos bremsen selbst vor ihm)
+                            float into = v * (fx * nx + fy * ny)
+                            if (into <= 0.5) { continue }
+                            float dv = into * 1300.0 / (1300.0 + b.mass)
+                            if (c.state == 0) {
+                                b.speed = c.speed
+                                this.Hit(c)
+                            } else {
+                                c.stateTime = 0.0
+                            }
+                            b.pushE = b.pushE + nx * dv
+                            b.pushN = b.pushN + ny * dv
+                            b.health = Math.Max(0.0, b.health - Raser.Vehicle.DamageOf(into))
+                            hit = true
+                            break
+                        }
+                    }
+                }
+            }
+        }
+
+        // Die Zustände der NPCs bis radius m um (e, n) nach out (für die Ansicht und die Snapshots des Servers). Die Objekte gehören der
+        // Simulation und werden beim nächsten Aufruf neu beschrieben: der Server schreibt sie je Spieler gleich in seinen Snapshot.
+        undefined States(List<NpcState> out, defined float e, defined float n, defined float radius) {
+            out.Clear()
+            int used = 0
+            float r2 = radius * radius
+            foreach (c in this.cars) {
+                if ((c.east - e) * (c.east - e) + (c.north - n) * (c.north - n) > r2) { continue }
+                var s = this.NextState(used)
+                used++
+                s.id = c.id
+                s.kind = Raser.NpcState.Car
+                if (c.kind == "transporter") { s.kind = Raser.NpcState.Van }
+                s.color = c.color
+                s.east = c.east
+                s.north = c.north
+                s.heading = c.heading
+                s.speed = c.speed
+                s.state = 0
+                if (c.state == 0 && c.speed < 0.3) { s.state = 1 }
+                if (c.state == 1) { s.state = 2 }
+                if (c.state == 2) { s.state = 3 }
+                s.honk = c.honk > 0.0
+                s.stride = 0.0
+                out.Add(s)
+            }
+            foreach (p in this.people) {
+                if ((p.east - e) * (p.east - e) + (p.north - n) * (p.north - n) > r2) { continue }
+                var s = this.NextState(used)
+                used++
+                s.id = p.id
+                s.kind = Raser.NpcState.Person
+                s.color = p.shirt
+                s.legs = p.legs
+                s.hair = p.hair
+                s.skin = p.skin
+                s.height = p.height
+                s.east = p.east
+                s.north = p.north
+                s.heading = p.heading
+                s.speed = p.speed
+                s.state = 0
+                if (p.state == 1 || p.speed < 0.1) { s.state = 1 }
+                if (p.state == 3) { s.state = 5 }
+                if (p.state == 4) { s.state = 4 }
+                s.honk = false
+                s.stride = p.stride
+                out.Add(s)
+            }
+        }
+
+        NpcState NextState(defined int i) {
+            while (this.statePool.Count <= i) { this.statePool.Add(new Raser.NpcState()) }
+            return this.statePool[i]
         }
 
         // Für die Ansicht und das Spiel: hat der Körper einen Stoß bekommen (Raser.Vehicle.Shove), wird das Auto ein Unfallwagen.

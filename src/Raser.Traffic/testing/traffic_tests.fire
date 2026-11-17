@@ -376,3 +376,84 @@ class SpawnTests {
         Testing.Assert.AreEqual(0, t.cars.Count)
     }
 }
+
+class StateTests {
+    [Test "Zustand: kodieren und lesen (cm, 1/100 Grad), Puffer gleitet zwischen zwei Snapshots"]
+    undefined Roundtrip() {
+        var a = new Raser.NpcState()
+        a.id = 4711
+        a.kind = Raser.NpcState.Person
+        a.color = 0x3C6E46
+        a.legs = 0x324664
+        a.hair = 0x463223
+        a.skin = 0xE1B496
+        a.height = 1.78
+        a.east = 376117.234
+        a.north = 5705005.678
+        a.heading = -90.5
+        a.speed = 1.37
+        a.state = 4
+        a.honk = true
+        var w = new Raser.ByteWriter(64)
+        a.Encode(w)
+        var r = new Raser.ByteReader(w.ToBytes())
+        var b = Raser.NpcState.Decode(r)
+        Testing.Assert.AreEqual(4711, b.id)
+        Testing.Assert.AreEqual(2, b.kind)
+        Testing.Assert.AreEqual(4, b.state)
+        Testing.Assert.IsTrue(b.honk)
+        Testing.Assert.AreEqual(0xE1B496, b.skin)
+        Testing.Assert.IsTrue(Math.Abs(b.east - 376117.23) < 0.006 && Math.Abs(b.north - 5705005.68) < 0.006)
+        Testing.Assert.IsTrue(Math.Abs(b.heading - 269.5) < 0.006 && Math.Abs(b.height - 1.78) < 0.006)
+        // der Puffer: zwei Snapshots, dazwischen halb
+        var buf = new Raser.NpcBuffer()
+        var one = new List<Raser.NpcState>()
+        var s1 = new Raser.NpcState()
+        s1.id = 1
+        s1.east = 100.0
+        s1.heading = 350.0
+        one.Add(s1)
+        buf.Push(1.0, one)
+        var s2 = new Raser.NpcState()
+        s2.id = 1
+        s2.east = 102.0
+        s2.heading = 10.0
+        var two = new List<Raser.NpcState>()
+        two.Add(s2)
+        buf.Push(1.1, two)
+        var out = new List<Raser.NpcState>()
+        buf.Sample(1.05, out)
+        Testing.Assert.AreEqual(1, out.Count)
+        Testing.Assert.IsTrue(Math.Abs(out[0].east - 101.0) < 0.001)
+        // über 0° hinweg auf dem kürzeren Weg
+        Testing.Assert.IsTrue(Math.Abs(out[0].heading - 360.0) < 0.001)
+    }
+
+    [Test "Aufprall: der Spieler fährt in ein Auto - es wird ein Unfallwagen und rutscht"]
+    undefined Impact() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        tile.data.roads.Add(Net.Road(1, "residential", [0.0, 100.0, 600.0, 100.0], 6.0))
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        var t = Scene.Of(g)
+        var c = Scene.Car(t, 150.0, 98.5, -90.0, 0.0)
+        c.wish = 0.0
+        // der Spieler kommt mit 10 m/s von Süden quer hinein (nach Norden)
+        var players = new List<float>()
+        foreach (x in [150.0, 95.0, 0.0, 10.0, 1.0, 1.1, 1.0]) { players.Add(x) }
+        for (int i = 0; i < 12; i++) {
+            players[1] = players[1] + 10.0 / 30.0
+            t.Step(1.0 / 30.0, players)
+        }
+        Testing.Assert.IsTrue(c.state >= 1)
+        Testing.Assert.AreEqual(1, t.crashes)
+        Testing.Assert.IsTrue(c.north > 98.6)
+        var states = new List<Raser.NpcState>()
+        t.States(states, 150.0, 100.0, 50.0)
+        Testing.Assert.AreEqual(1, states.Count)
+        Testing.Assert.IsTrue(states[0].state == 2 || states[0].state == 3)
+        t.States(states, 1000.0, 100.0, 50.0)
+        Testing.Assert.AreEqual(0, states.Count)
+    }
+}

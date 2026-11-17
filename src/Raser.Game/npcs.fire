@@ -1,11 +1,13 @@
 // Raser.Game: der Verkehr in der Szene - die Ansicht zur Simulation Raser.Traffic (Autos und Fußgänger).
 //
-// Die Simulation rechnet ohne Szene (später auf dem Server); hier bekommt sie die Straßen der Kacheln um den Spieler (aus Obstacles, die sie
+// Die Simulation rechnet ohne Szene (im Mehrspieler auf dem Server, offline hier mit demselben Code); hier bekommt sie die Straßen der Kacheln um den Spieler (aus Obstacles, die sie
 // ohnehin lädt), je Bild die Spieler (eigener Wagen oder zu Fuß, die abgestellten Fahrzeuge) und gibt Autos und Fußgänger zurück. Jedes Auto
 // bekommt ein CarModel aus einem Vorrat (Farbe neu gesetzt), jeder Fußgänger eine Figur aus 7 Quadern wie PersonModel (Farben und Größe je
 // Fußgänger). Fern (über 45 m) fehlen Räder und Lichter, Arme und Haare - jedes Objekt kostet den Software-Renderer. Stöße: der Wagen des
-// Spielers gegen die Autos (wie gegen geparkte: Raser.Vehicle.Collide und Shove), dann übernimmt die Physik der Simulation (Traffic.Hit);
-// Unfallwagen rutschen an Wänden entlang (Obstacles). Was geschieht (Hupen, Unfall, umgefahren), steht kurz oben in der Anzeige.
+// Spielers prallt an den Autos ab (Raser.Vehicle.Collide, wie an geparkten); den Stoß auf das andere Auto rechnet die Simulation selbst
+// (Traffic.Impacts). Gezeichnet wird nur aus den Zuständen (Raser.NpcState): offline aus Traffic.States, im Mehrspieler aus den Snapshots
+// des Servers (Raser.NpcBuffer, Remote). Unfallwagen rutschen offline an Wänden entlang (Obstacles). Was geschieht (Hupen, Unfall,
+// umgefahren), steht kurz oben in der Anzeige - erkannt am Wechsel der Zustände.
 //
 //   --traffic 24 --people 30     höchstens so viele Autos und Fußgänger (0: keine)
 //   --traffic-seed 1             der Zufall der Simulation
@@ -60,9 +62,9 @@ class NpcFigure {
     }
 
     // Farben und Größe eines Fußgängers.
-    undefined Dress(Raser.NpcPerson p) {
+    undefined Dress(Raser.NpcState p) {
         int legs = TrafficView.Rgb(p.legs)
-        int shirt = TrafficView.Rgb(p.shirt)
+        int shirt = TrafficView.Rgb(p.color)
         int skin = TrafficView.Rgb(p.skin)
         int hair = TrafficView.Rgb(p.hair)
         int colors[] = [legs, legs, shirt, skin, hair, shirt, shirt]
@@ -135,6 +137,8 @@ class TrafficView {
     List<NpcFigure> figures
     Dictionary<int, int> figureSlot
     List<float> players
+    List<Raser.NpcState> states  // was gezeichnet wird (Verweise: gehören der Simulation bzw. dem Puffer)
+    Dictionary<int, int> seenState   // je NPC sein Zustand im letzten Bild (für die Meldungen)
     List<string> fed            // die Kacheln, deren Straßen im Graphen sind
     string centre               // die Kachel des Spielers beim letzten Füttern
     defined int frame
@@ -162,6 +166,8 @@ class TrafficView {
         this.figures = new List<NpcFigure>(Owns.Values)
         this.figureSlot = new Dictionary<int, int>()
         this.players = new List<float>()
+        this.states = new List<Raser.NpcState>()
+        this.seenState = new Dictionary<int, int>()
         this.fed = new List<string>()
         this.centre = ""
         this.message = ""
@@ -228,11 +234,23 @@ class TrafficView {
         this.Feed(obstacles, e, n, this.traffic.graph.lanes.Count == 0)
         int t0 = DateTime.Now.Ticks
         if (dt > 0.0) { this.Simulate(dt, car, walker, onFoot, vehicles, obstacles, wetness) }
+        this.traffic.States(this.states, e, n, 320.0)
+        this.Contact(car, walker, onFoot)
         int t1 = DateTime.Now.Ticks
         this.Place(terrain, view, e, n)
         this.stepTicks = this.stepTicks + (t1 - t0)
         this.syncTicks = this.syncTicks + (DateTime.Now.Ticks - t1)
         this.steps++
+        if (this.messageTime > 0.0) { this.messageTime = this.messageTime - dt }
+    }
+
+    // Im Mehrspieler: die NPCs aus den Snapshots des Servers (states: schon für die Zeit des Bildes aus Raser.NpcBuffer.Sample) - nur
+    // abprallen und zeichnen, nichts simulieren.
+    undefined Remote(defined float dt, List<Raser.NpcState> states, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, Ground terrain, WorldView view) {
+        this.states.Clear()
+        foreach (st in states) { this.states.Add(st) }
+        this.Contact(car, walker, onFoot)
+        if (onFoot) { this.Place(terrain, view, walker.east, walker.north) } else { this.Place(terrain, view, car.east, car.north) }
         if (this.messageTime > 0.0) { this.messageTime = this.messageTime - dt }
     }
 
@@ -242,13 +260,6 @@ class TrafficView {
         if (onFoot) {
             e = walker.east
             n = walker.north
-        }
-        // Stöße mit dem Wagen des Spielers; zu Fuß hält ein Auto den Spieler auf
-        if (!onFoot) { this.Collide(car) } else {
-            foreach (c in this.traffic.cars) {
-                float h = c.heading * Math.PI / 180.0
-                for (float part = 1.0; part > -1.5; part = part - 1.0) { walker.Avoid(c.east - Math.Sin(h) * c.body.spread * part, c.north + Math.Cos(h) * c.body.spread * part, c.body.radius - 0.05) }
-            }
         }
         // die Spieler für die Simulation: Ost, Nord, Richtung, Tempo, Radius, spread, Art
         this.players.Clear()
@@ -279,12 +290,6 @@ class TrafficView {
             c.north = b.north
             c.heading = b.heading
         }
-        // Meldungen
-        foreach (ev in this.traffic.events) {
-            if (ev == "umgefahren") { this.Say("Fussgaenger angefahren! Er rappelt sich wieder auf - langsam fahren.", 4.0) }
-            if (ev == "unfall") { this.Say("Unfall! Der andere Wagen steht.", 3.0) }
-            if (ev == "hup" && this.messageTime <= 0.0) { this.Say("HUUUP!", 1.5) }
-        }
     }
 
     undefined Say(string text, defined float seconds) {
@@ -292,34 +297,46 @@ class TrafficView {
         this.messageTime = seconds
     }
 
-    // Der Wagen des Spielers gegen die Autos der Simulation (je zwei Kreise, wie Game.Advance gegen geparkte): er prallt ab, das andere Auto
-    // bekommt den Stoß und wird ein Unfallwagen. true: aufgeprallt.
-    defined bool Collide(Raser.Vehicle car) {
+    // Der Spieler gegen die Autos (aus den Zuständen, je zwei Kreise wie Raser.Vehicle): sein Wagen prallt ab (wie an geparkten), zu Fuß hält
+    // ein Auto ihn auf. Den Stoß auf das andere Auto rechnet die Simulation (Traffic.Impacts). true: aufgeprallt.
+    defined bool Contact(Raser.Vehicle car, Raser.Walker walker, defined bool onFoot) {
         bool hit = false
+        float px = car.east
+        float py = car.north
+        if (onFoot) {
+            px = walker.east
+            py = walker.north
+        }
         float h = car.heading * Math.PI / 180.0
-        foreach (c in this.traffic.cars) {
-            float de = c.east - car.east
-            float dn = c.north - car.north
-            if (de * de + dn * dn > 100.0) { continue }
-            var other = c.body
-            float oh = other.heading * Math.PI / 180.0
-            for (int k = 0; k < 2; k++) {
-                float offset = car.spread - 2.0 * car.spread * k
-                float ce = car.east - Math.Sin(h) * offset
-                float cn = car.north + Math.Cos(h) * offset
-                for (int oc = 0; oc < 2; oc++) {
-                    float oo = other.spread - 2.0 * other.spread * oc
-                    float dx = ce - (other.east - Math.Sin(oh) * oo)
-                    float dy = cn - (other.north + Math.Cos(oh) * oo)
+        foreach (st in this.states) {
+            if (st.IsPerson) { continue }
+            float de = st.east - px
+            float dn = st.north - py
+            if (de * de + dn * dn > 144.0) { continue }
+            // die Maße wie Raser.Vehicle.Of: Auto 4,2 x 1,8 m, Transporter 5,6 x 2,0 m
+            float radius = 1.0
+            float spread = 1.1
+            if (st.kind == Raser.NpcState.Van) {
+                radius = 1.1
+                spread = 1.7
+            }
+            float oh = st.heading * Math.PI / 180.0
+            for (float oc = 1.0; oc > -1.5; oc = oc - 1.0) {
+                float oe = st.east - Math.Sin(oh) * spread * oc
+                float on2 = st.north + Math.Cos(oh) * spread * oc
+                if (onFoot) {
+                    walker.Avoid(oe, on2, radius - 0.05)
+                    continue
+                }
+                if (oc == 0.0) { continue }
+                for (int k = 0; k < 2; k++) {
+                    float offset = car.spread - 2.0 * car.spread * k
+                    float dx = car.east - Math.Sin(h) * offset - oe
+                    float dy = car.north + Math.Cos(h) * offset - on2
                     float d = Math.Sqrt(dx * dx + dy * dy)
-                    float deep = car.radius + other.radius - d
+                    float deep = car.radius + radius - d
                     if (deep > 0.0 && d > 0.0001) {
-                        float into = car.Collide(offset, dx / d, dy / d, deep)
-                        car.Shove(other, dx / d, dy / d, into)
-                        if (into > 0.5) {
-                            hit = true
-                            this.traffic.Hit(c)
-                        }
+                        if (car.Collide(offset, dx / d, dy / d, deep) > 0.5) { hit = true }
                     }
                 }
             }
@@ -331,11 +348,23 @@ class TrafficView {
     // zweite Bild neu gesetzt.
     undefined Place(Ground terrain, WorldView view, defined float e, defined float n) {
         this.frame++
-        foreach (c in this.traffic.cars) {
-            float de = c.east - e
-            float dn = c.north - n
+        foreach (st in this.states) {
+            float de = st.east - e
+            float dn = st.north - n
             float d2 = de * de + dn * dn
-            int slot = this.CarSlot(c)
+            this.Notice(st, d2)
+            if (st.IsPerson) {
+                int fs = this.FigureSlot(st)
+                var f = this.figures[fs]
+                f.stamp = this.frame
+                f.Show(true, d2 < 45.0 * 45.0)
+                if (d2 > 80.0 * 80.0 && (this.frame + st.id) % 2 == 1) { continue }
+                if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
+                float fy = this.Height(f.ground, 0, terrain, view, st.east, st.north)
+                f.Place(st.east - view.originE, fy, -(st.north - view.originN), st.heading, st.stride, st.state == 4)
+                continue
+            }
+            int slot = this.CarSlot(st)
             this.carStamp[slot] = this.frame
             var m = this.cars[slot]
             bool near = d2 < 45.0 * 45.0
@@ -343,10 +372,10 @@ class TrafficView {
                 this.carDetail[slot] = near
                 for (int i = 0; i < m.parts.Count; i++) { m.parts[i].Visible = near || i < this.BodyParts(this.carKinds[slot]) }
             }
-            if (d2 > 80.0 * 80.0 && (this.frame + c.id) % 2 == 1) { continue }
-            if (d2 > 160.0 * 160.0 && (this.frame + c.id) % 4 != 0) { continue }
-            float y = this.Height(this.carGround, slot, terrain, view, c.east, c.north)
-            m.Place(c.east - view.originE, y, -(c.north - view.originN), c.heading, 0.0)
+            if (d2 > 80.0 * 80.0 && (this.frame + st.id) % 2 == 1) { continue }
+            if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
+            float y = this.Height(this.carGround, slot, terrain, view, st.east, st.north)
+            m.Place(st.east - view.originE, y, -(st.north - view.originN), st.heading, 0.0)
         }
         for (int i = 0; i < this.cars.Count; i++) {
             if (this.carOwner[i] >= 0 && this.carStamp[i] != this.frame) {
@@ -355,19 +384,6 @@ class TrafficView {
                 foreach (p in this.cars[i].parts) { p.Visible = false }
             }
         }
-        foreach (p in this.traffic.people) {
-            float de = p.east - e
-            float dn = p.north - n
-            float d2 = de * de + dn * dn
-            int slot = this.FigureSlot(p)
-            var f = this.figures[slot]
-            f.stamp = this.frame
-            f.Show(true, d2 < 45.0 * 45.0)
-            if (d2 > 80.0 * 80.0 && (this.frame + p.id) % 2 == 1) { continue }
-            if (d2 > 160.0 * 160.0 && (this.frame + p.id) % 4 != 0) { continue }
-            float y = this.Height(f.ground, 0, terrain, view, p.east, p.north)
-            f.Place(p.east - view.originE, y, -(p.north - view.originN), p.heading, p.stride, p.state == 4)
-        }
         foreach (f in this.figures) {
             if (f.owner >= 0 && f.stamp != this.frame) {
                 this.figureSlot.Remove(f.owner)
@@ -375,6 +391,18 @@ class TrafficView {
                 f.Show(false, false)
             }
         }
+        if (this.seenState.Count > this.states.Count * 2 + 64) { this.seenState.Clear() }
+    }
+
+    // Meldungen aus dem Wechsel der Zustände nahe dem Spieler: umgefahren (liegt, bis 15 m), Unfall (bis 15 m), Hupen (bis 40 m).
+    undefined Notice(Raser.NpcState st, defined float d2) {
+        int before = this.seenState.Get(st.id, -1)
+        this.seenState[st.id] = st.state
+        if (before >= 0 && before != st.state && d2 < 15.0 * 15.0) {
+            if (st.state == 4) { this.Say("Fussgaenger angefahren! Er rappelt sich wieder auf - langsam fahren.", 4.0) }
+            if (st.state == 2 && before < 2) { this.Say("Unfall! Der andere Wagen steht.", 3.0) }
+        }
+        if (st.honk && d2 < 40.0 * 40.0 && this.messageTime <= 0.0) { this.Say("HUUUP!", 1.5) }
     }
 
     // Die Höhe des Geländes in der Szene an (e, n), aus dem Merker cache[slot * 3 ..] (Ost, Nord, Höhe), neu gelesen erst nach 1 m.
@@ -400,21 +428,21 @@ class TrafficView {
     }
 
     // Das Modell eines Autos: sein bisheriges, sonst ein freies seiner Art (neu gefärbt), sonst ein neues.
-    defined int CarSlot(Raser.NpcCar c) {
+    defined int CarSlot(Raser.NpcState c) {
         if (this.carSlot.ContainsKey(c.id)) { return this.carSlot[c.id] }
         int slot = -1
         for (int i = 0; i < this.cars.Count; i++) {
-            if (this.carOwner[i] < 0 && this.carKinds[i] == c.kind) {
+            if (this.carOwner[i] < 0 && this.carKinds[i] == c.Model) {
                 slot = i
                 break
             }
         }
         int color = TrafficView.Rgb(c.color)
         if (slot < 0) {
-            var m = new CarModel(this.scene, c.kind, color)
+            var m = new CarModel(this.scene, c.Model, color)
             foreach (p in m.parts) { p.CastShadows = false }
             this.cars.Add(take m)
-            this.carKinds.Add(c.kind)
+            this.carKinds.Add(c.Model)
             this.carOwner.Add(-1)
             this.carStamp.Add(0)
             this.carDetail.Add(true)
@@ -423,7 +451,7 @@ class TrafficView {
         }
         var model = this.cars[slot]
         model.parts[0].Color = color
-        if (c.kind == "transporter") { model.parts[1].Color = color }
+        if (c.kind == Raser.NpcState.Van) { model.parts[1].Color = color }
         foreach (p in model.parts) { p.Visible = true }
         this.carDetail[slot] = true
         this.carOwner[slot] = c.id
@@ -431,7 +459,7 @@ class TrafficView {
         return slot
     }
 
-    defined int FigureSlot(Raser.NpcPerson p) {
+    defined int FigureSlot(Raser.NpcState p) {
         if (this.figureSlot.ContainsKey(p.id)) { return this.figureSlot[p.id] }
         int slot = -1
         for (int i = 0; i < this.figures.Count; i++) {
