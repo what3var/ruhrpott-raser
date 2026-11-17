@@ -79,7 +79,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Pfützen ab Regen: dunkle, glatte Flecken auf den Belägen (dritte Textur mit flachem Relief) - `docs/images/viewer-pfuetzen.png`
 - [ ] Pfützen in Senken statt nach Rauschen, mit stärkerer Spiegelung; Gewitter, Schnee, Wind; Wetter, das sich mit der Zeit ändert; Spiegelungen auch auf der GPU
 - [ ] Ingame-Uhr in Echtzeit (deutsche Ortszeit, echter Sonnenstand), Zeitfaktor als Server-Einstellung
-- [ ] Mondphase/-stand astronomisch korrekt, Wolken mit orangem Stadtlicht-Himmel
+- [x] Mondphase/-stand astronomisch korrekt (Meeus, gekürzt: etwa ein Grad), Wolken mit orangem Stadtlicht-Himmel
+- [x] Himmel (Raser.SkyLook, Sky): Verlauf nach Sonnenstand, Dämmerung und blaue Stunde, Sonne mit Schein, Mond in seiner Phase, wenige Sterne, Wolkenschicht nach Bedeckung (zieht langsam), Nebel in der Farbe des Horizonts
+- [ ] Himmel: Wolken mit Volumen bzw. Schichten in mehreren Höhen, Mond und Sonne am Horizont abgeflacht
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos
 - [ ] Referenzszene: Zechensiedlung in nebliger Nacht
 - [ ] Mood-Akzente pro Viertel, Render-Profile pro Gebiet
@@ -107,16 +109,27 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Die fernen Stufen baut ein eigener Worker (vorher das Hauptprogramm), Modelle entstehen Netz für Netz im Zeitbudget
 - [x] Ruckler beim Nachladen kleiner (fire a9d8598d: Natives sperren einander nicht mehr; Netze als Byte-Puffer durch den Kanal; Worker `dedicated`): 24 statt 15 Bilder je s, das längste Bild 0,25 bis 0,55 statt 0,8 bis 1,3 s
 - [x] Rest-Ruckler beim Nachladen: die alten Arrays der Netze hingen nach `Pack` weiter am Netz (ein auf `undefined` gesetztes Feld gibt fire absichtlich nicht frei) - mit `delete`: 28,8 Bilder je s, das längste Bild 0,29 s, Abholen höchstens 4 ms
-- [ ] Vorausladen gezielt in Fahrtrichtung (heute: Ringe um einen Punkt voraus); Kacheln in Obstacles/Ground bei langen Fahrten wieder freigeben
+- [x] Vorausladen in Fahrtrichtung: die nahe Stufe gilt um das Fahrzeug und entlang seines Wegs (Tempo x 4 s, höchstens 250 m), bestellt in der Reihenfolge der Fahrt (`WorldView.SetMotion`/`Want`); die Worker bauen auch die Modelle - Geisterfahrt (`--live 25 --ghost 1 --speed 100`): ohne nahe Stufe unter dem Wagen 0 statt 95 Bilder, 30 m voraus 2 statt 236
+- [x] Lange Fahrten: Hindernisse und Gelände geben Kacheln weiter als eine Kachel wieder frei (`Trim`), Fahrzeuge weiter als 400 m werden nicht nachgesetzt
+- [ ] Netze auf 6000 statt 16 000 Vierecke begrenzt (ein Worker hält die Sperre von scene3d beim Bauen eines Modells kürzer) - ob das Rendern davon etwas merkt, ist nicht gemessen: `--live` ohne `--render` rendert nicht ("Rendern" ist dort die Wartezeit bis zum nächsten Bild)
 - [ ] LOD für weite Sichtweiten
+- [x] GPU (`--gpu 1`, getestet mit lavapipe: `FIRE_S3D_GPU=cpu`): die Welt erscheint (undurchsichtige Netze mit `AlphaCutoff`), Nebel/Lichtkacheln/Spiegelungen kommen aus fire 74a2c16d
+- [x] Himmel nativ in scene3d (`Object.Background`, fire-Zweig `native-c`: zuerst gezeichnet, ohne Tiefe und Nebel): Regen und Glas vor dem Himmel, Himmel auf der GPU, keine Blits mehr
+
+### Detail und Abwechslung
+- [ ] Fahrzeuge detaillierter: echte Modelle statt Quadern (Karosserieformen, Scheiben, Räder mit Felgen, Spiegel, Kennzeichen, Lichter), mehrere Modelle je Klasse (Kleinwagen, Kombi, SUV, Taxi, Bus, Lieferwagen, Roller, Rennrad ...), Farben und Zustand sichtbar (Beulen, Schmutz)
+- [ ] Spieler und Fußgänger detaillierter: Figur mit Gelenken (Ober-/Unterarm, Knie), Gehen/Rennen/Sitzen als Animation, verschiedene Statur, Kleidung, Frisuren, Hautfarben
+- [ ] Grünstreifen detaillierter: Gräser, Stauden, Blühstreifen, Bodendecker, Rindenmulch, Laub, Baumschutzbügel, Poller; verschiedene Bepflanzung je Straßenart und Stadtteil
+- [ ] Mehr Abwechslung überall: Varianten statt Wiederholung (Bäume nach Art, Fassaden, Fenster, Türen, Straßenmöbel, Werbung, Mülltonnen, Fahrräder an Ständern), zufällig aber deterministisch je Ort
 
 ## M4: Multiplayer-Grundgerüst
-- [ ] Koordinator + ein Regionsserver auf einem Rechner, Protokoll schon für mehrere Regionen ausgelegt
-- [ ] Globale, eindeutige Objekt-IDs; globale Dienste (Konten, Inventar, Wirtschaft) getrennt von Regionen
-- [ ] Autoritativer Regionsserver, 2–8 Spieler
+- [x] Koordinator + ein Regionsserver auf einem Rechner, Protokoll schon für mehrere Regionen ausgelegt (`raser-server`, docs/SERVER.md: ein Prozess, getrennte Klassen, Nachrichten mit Region und Kachel)
+- [x] Konten und Sitzungen (SQLite, PBKDF2, Rollen Spieler/Admin), Launcher-API (HTTP 7480), Spielprotokoll v1 (TCP 7481), Chat, Admin-Befehle, Konsole im Spiel
+- [ ] Globale, eindeutige Objekt-IDs (Spieler: ja, `Raser.IdAllocator`); globale Dienste (Konten: ja; Inventar, Wirtschaft) getrennt von Regionen
+- [ ] Autoritativer Regionsserver, 2–8 Spieler (jetzt: der Server prüft nur Plausibilität der Lagen, die Clients rechnen)
 - [ ] Client-Prediction für Fahrzeuge
-- [ ] Interest-Management pro Kachel
-- [ ] Serverseitiges Wetter (simuliert per Seed, optional echtes DWD-Wetter)
+- [x] Interest-Management pro Kachel (eigene Kachel und die 8 Nachbarn)
+- [ ] Serverseitiges Wetter (jetzt: Uhr und Preset maßgeblich vom Server, `/time`, `/weather`; simuliert per Seed, optional echtes DWD-Wetter)
 - [ ] Zerstörungs-/Bau-Deltas (Key-Value-Store), Zerstörung als eigener Delta-Typ mit Ursache
 - [ ] Physik-Ereignisse (Aufprall, Explosion) liefern Energie und Trefferpunkt
 - [ ] Zwei Regionsserver mit Randzone und Übergabe (Fahrzeug fährt über die Grenze)

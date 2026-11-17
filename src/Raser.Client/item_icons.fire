@@ -1,0 +1,132 @@
+// Raser.Client: die Symbole der Gegenstände - Pixel-Art 16 x 16, im Code gezeichnet (keine Bilddateien). Je Symbol 16 Zeilen aus Zeichen und
+// eine Palette (Zeichen -> Farbe 0xRRGGBB); '.' ist durchsichtig. Die Nummer ist Raser.ItemType.icon (= die Nummer des Gegenstands).
+#import "graphics"
+#import "raser.core"
+
+class ItemIcons {
+    List<Framebuffer> images            // je Nummer das Bild (16 x 16, RGBA); Nummer 0: undefined
+    List<Framebuffer> ghosts            // dasselbe blass und grau (das Symbol im leeren Platz für Rucksack und Handy)
+    Framebuffer unknown
+
+    construct() {
+        this.images = new List<Framebuffer>()
+        this.ghosts = new List<Framebuffer>()
+        for (int i = 0; i < Raser.Items.Count; i++) {
+            var fb = ItemIcons.Make(i, false)
+            this.images.Add(take fb)
+            var gh = ItemIcons.Make(i, true)
+            this.ghosts.Add(take gh)
+        }
+        this.unknown = ItemIcons.Paint(["kkkkkkkkkkkkkkkk", "k..............k", "k.....kkkk.....k", "k....k....k....k", "k.........k....k", "k........k.....k", "k.......k......k", "k.......k......k", "k..............k", "k.......k......k", "k..............k", "k..............k", "k..............k", "k..............k", "k..............k", "kkkkkkkkkkkkkkkk"], "k", [0xFF60FF], false)
+    }
+
+    // Das Bild zur Nummer (16 x 16).
+    Framebuffer Of(defined int icon) {
+        if (icon > 0 && icon < this.images.Count) { return this.images[icon] }
+        return this.unknown
+    }
+
+    Framebuffer Ghost(defined int icon) {
+        if (icon > 0 && icon < this.ghosts.Count) { return this.ghosts[icon] }
+        return this.unknown
+    }
+
+    // Die Zeilen und die Palette eines Symbols als Bild.
+    // ghost: alle Farben als blasses Grau.
+    static Framebuffer Paint(string rows[], string keys, defined int colors[], defined bool ghost) {
+        byte px[] = new byte[16 * 16 * 4]
+        px.Fill(0)
+        for (int y = 0; y < 16 && y < rows.length; y++) {
+            string row = rows[y]
+            for (int x = 0; x < 16 && x < row.Length; x++) {
+                int k = keys.IndexOf(row[x])
+                if (k < 0) { continue }
+                int c = colors[k]
+                int at = (y * 16 + x) * 4
+                px[at] = (c >> 16) & 255
+                px[at + 1] = (c >> 8) & 255
+                px[at + 2] = c & 255
+                px[at + 3] = 255
+                if (ghost) {
+                    px[at] = 70
+                    px[at + 1] = 70
+                    px[at + 2] = 70
+                    px[at + 3] = 90
+                }
+            }
+        }
+        return Framebuffer.FromPixels(16, 16, px)
+    }
+
+    static Framebuffer Make(defined int icon, defined bool ghost) {
+        // Handy
+        if (icon == 1) {
+            string rows[] = ["................", "....kkkkkkkk....", "...kddddddddk...", "...kdkkkkkkdk...", "...kdkcbbbkdk...", "...kdkbcbbkdk...", "...kdkbbbbkdk...", "...kdkbbbbkdk...", "...kdkbbbbkdk...", "...kdkbbbbkdk...", "...kdkkkkkkdk...", "...kddddddddk...", "...kdddggdddk...", "...kddddddddk...", "....kkkkkkkk....", "................"]
+            return ItemIcons.Paint(rows, "kdbcgw", [0x18181C, 0x464852, 0x3278C8, 0x96C8FA, 0x8C8C96, 0xE6F0FF], ghost)
+        }
+        // Schluessel
+        if (icon == 2) {
+            string rows[] = ["................", "................", "................", "..kkkk..........", ".khyyyk.........", "khykkyyk........", "kyk..kykkkkkkkk.", "kyk..kyhhhhhhhyk", "kyykkyyoooooyoyk", ".kyyyok...kyykyk", "..kkkk....kooko.", "...........kk.k.", "................", "................", "................", "................"]
+            return ItemIcons.Paint(rows, "kyho", [0x18181C, 0xE1B93C, 0xFFF096, 0xA0781E], ghost)
+        }
+        // Geld
+        if (icon == 3) {
+            string rows[] = ["................", "................", "................", "..........kkkk..", ".........khyyyk.", "..kkkkkkkkhyoyyk", ".kyyhhyyykhyoyyk", "kooyyyyyookyoyyk", "kkooooooookyoyyk", "kyyhhyyyykhyoyyk", "kooyyyyyookyyyk.", "kkooooooook.kkk.", "kyyhhyyyyk......", "kooyyyyyook.....", ".kooooooook.....", "..kkkkkkkk......"]
+            return ItemIcons.Paint(rows, "kyohst", [0x18181C, 0xEBC346, 0xAF7D28, 0xFFF5AA, 0xBEBEC8, 0x787882], ghost)
+        }
+        // Broetchen
+        if (icon == 4) {
+            string rows[] = ["................", "................", "................", "................", "......kkkk......", "....kkllllkk....", "...klllwllllk...", "..klllwddlllbk..", "..kllldwwdllbk..", ".klllbddwdlbbbk.", ".kllbbbdddbbbbk.", ".kbbbbbbbbbbbdk.", "..kdbbbbbbbbddk.", "...kkddddddkk...", ".....kkkkkk.....", "................"]
+            return ItemIcons.Paint(rows, "kbldw", [0x46280F, 0xCD8C3C, 0xEBB964, 0xA05F23, 0xFAEBC8], ghost)
+        }
+        // Pommes
+        if (icon == 5) {
+            string rows[] = ["................", "....k..k.k......", "...khkkhkhk.k...", "...khkyhkhkkhk..", "..kyhyyhyhykhk..", "..kyhyyhyykhyk..", "..kmmmwmmmwmmk..", "..kwwwwwwwwwwk..", "...kwwwwwwwwk...", "...krrrrrrrrk...", "...kwwwwwwwwk...", "...kwwmmmmwwk...", "....kwwwwwwk....", "....kkkkkkkk....", "................", "................"]
+            return ItemIcons.Paint(rows, "kyhorwm", [0x18181C, 0xFAD750, 0xFFF5AA, 0xDCAA32, 0xC82828, 0xF5F5F5, 0xF0F0E6], ghost)
+        }
+        // Wasser
+        if (icon == 6) {
+            string rows[] = ["......kkkk......", "......klllk.....", "......kkkkk.....", ".......kwck.....", "......kwcbbk....", ".....kwcbbbbk...", ".....kccbbbbk...", ".....klllllllk..", ".....krrrrrrrk..", ".....klllllllk..", ".....kcbbbbbbk..", ".....kcbbbbbbk..", ".....kwcbbbbbk..", ".....kccbbbbbk..", ".....kkkkkkkkk..", "................"]
+            return ItemIcons.Paint(rows, "kbcwlr", [0x1E3250, 0x78B4E6, 0xBEE1FA, 0xEBF5FF, 0x286EC8, 0xDC3C3C], ghost)
+        }
+        // Werkzeug
+        if (icon == 7) {
+            string rows[] = ["................", "..........kkk...", ".........khhk...", "........khsk.kk.", "........khsk.khk", "........kssskssk", ".......kssdsssk.", "......kssdkkkk..", ".....kssdk......", "....kssdk.......", "...kssdk........", "..kssdk.........", ".khsdk..........", ".kdsk...........", "..kk............", "................"]
+            return ItemIcons.Paint(rows, "kshd", [0x18181C, 0xB9BEC8, 0xF0F0FA, 0x6E737D], ghost)
+        }
+        // Taschenlampe
+        if (icon == 8) {
+            string rows[] = ["................", "................", "................", "................", "...........kkk..", "..kkkkkkkkksyyk.", ".khhhhhhhhhsywyk", "krrrrrrrrrrsyyyk", "krrkkrrrrrrsyyyk", "krrrrrrrrrrsyyyk", "kddddddddddsyyyk", ".kkkkkkkkkksyyk.", "...........kkk..", "................", "................", "................"]
+            return ItemIcons.Paint(rows, "krhdsyw", [0x18181C, 0xC83228, 0xF06E5A, 0x821E19, 0xBEBEC8, 0xFFF5B4, 0xFFFFFF], ghost)
+        }
+        // Kanister
+        if (icon == 9) {
+            string rows[] = ["................", "....kkkkk.kk....", "...ksssssk.sk...", "...kskkksk.sk...", "..kkkkkkkkkkkk..", "..khhhhhhhhhhk..", "..khrrrrrrrrdk..", "..khrkrrrrkrdk..", "..khrrkrrkrrdk..", "..khrrrkkrrrdk..", "..khrrkrrkrrdk..", "..khrkrrrrkrdk..", "..khrrrrrrrrdk..", "..kddddddddddk..", "..kkkkkkkkkkkk..", "................"]
+            return ItemIcons.Paint(rows, "krhdsy", [0x18181C, 0xC3231E, 0xEB5A46, 0x821414, 0xAAAAAF, 0xF0C828], ghost)
+        }
+        // Zigaretten
+        if (icon == 10) {
+            string rows[] = ["................", "................", "....k.k.k.......", "...kokokok......", "...kwkwkwk......", "..kkkkkkkkkk....", "..kwwwwwwwwk....", "..kwwwwwwwwk....", "..krrrrrrrrk....", "..krhhrrrrrk....", "..krrrwwrrrk....", "..krrwrrwrrk....", "..krrrwwrrrk....", "..krrrrrrrrk....", "..kkkkkkkkkk....", "................"]
+            return ItemIcons.Paint(rows, "kwgroh", [0x18181C, 0xF5F5F0, 0xD2D2CD, 0xC81E23, 0xE6963C, 0xF05050], ghost)
+        }
+        // Turnbeutel
+        if (icon == 11) {
+            string rows[] = ["....w......w....", "....w......w....", "...kwkkkkkkwk...", "...kbbwwwwbbk...", "..kbhbbbbbbbbk..", "..khbbbbbbbbbk..", "..khbbbwwbbbbk..", ".kwhbbwbbwbbbwk.", ".kwhbbbwwbbbbwk.", ".kwhbbbbbbbbbwk.", ".kwhbbbbbbbbbwk.", ".kwbbbbbbbbbdwk.", ".kwdbbbbbbbddwk.", ".kkddddddddddkk.", "..kkkkkkkkkkkk..", "................"]
+            return ItemIcons.Paint(rows, "kbhdws", [0x18181C, 0x3C6EBE, 0x6EA0E6, 0x234682, 0xF0F0F0, 0xDCDCDC], ghost)
+        }
+        // Rucksack
+        if (icon == 12) {
+            string rows[] = ["......kkkk......", ".....kdkkdk.....", "...kkkkkkkkkk...", "..kghhhhhhhhgk..", "..khgggggggggk..", "..kdddddddddgk..", "..khggyggyggdk..", ".kkhggggggggdkk.", ".khkkkkkkkkkkhk.", ".khkghhhhhhgkhk.", ".khkhggggggkdhk.", ".kdkhggggggkddk.", ".kdkkkkkkkkkddk.", "..kddddddddddk..", "..kkkkkkkkkkkk..", "................"]
+            return ItemIcons.Paint(rows, "kghdsy", [0x18181C, 0x46783C, 0x6EA55A, 0x2D5028, 0x282828, 0xC8AA3C], ghost)
+        }
+        // Trekkingrucksack
+        if (icon == 13) {
+            string rows[] = [".....kkkkkk.....", "....khhhhhhk....", "....khooooddk...", "...kkkkkkkkkk...", "...khoooooodk...", "..kkkkkkkkkkkk..", "..khhooyyoooodk.", "..khoooooooodk..", ".kskhooooooodks.", ".kskhoossssodks.", ".kskhoossssodks.", ".kskhooooooodks.", ".kskkkkkkkkkkks.", "..kbbbbbbbbbbk..", "..kkkkkkkkkkkk..", "................"]
+            return ItemIcons.Paint(rows, "kohdsby", [0x18181C, 0xDC6E1E, 0xFAA046, 0x964114, 0x3C3C41, 0x5A8CBE, 0xFADC50], ghost)
+        }
+        // 0 und unbekannte: durchsichtig
+        string none[] = []
+        defined int nothing[] = [0]
+        return ItemIcons.Paint(none, "", nothing, ghost)
+    }
+}

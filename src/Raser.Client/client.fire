@@ -66,6 +66,11 @@ class LodSet {
     defined int triangles
     defined float spacing           // ferne Stufe: das Geländeraster, mit dem sie gebaut ist
     defined bool shown
+    // aus einem Worker (WorldView.Work): der Block und die Zeit im Worker
+    defined int bx
+    defined int by
+    defined bool far
+    defined int ticks
 
     construct() {
         this.models = new List<Model>()
@@ -125,6 +130,13 @@ class Ground {
         var r = this.rasters[name]
         if (r == undefined) { return undefined }
         return r.At(e - key.East, n - key.North)
+    }
+
+    // Lange Fahrten: die Höhenraster der Kacheln weg, die mehr als eine Kachel von (e, n) entfernt sind. Gibt zurück, wie viele.
+    defined int Trim(defined float e, defined float n) {
+        var gone = Obstacles.FarTiles(this.rasters.Keys, e, n)
+        foreach (name in gone) { this.rasters.Remove(name) }
+        return gone.Count
     }
 }
 
@@ -281,6 +293,42 @@ class Obstacles {
 
     static defined int Cell(defined int ce, defined int cn) { return ce * 73856093 + cn * 19349663 }
 
+    // Die Namen der Kacheln ("x_y") unter names, die mehr als eine Kachel von der Kachel bei (e, n) entfernt sind.
+    static List<string> FarTiles(List<string> names, defined float e, defined float n) {
+        var here = Raser.TileKey.Of(e, n)
+        var gone = new List<string>()
+        foreach (name in names) {
+            var key = Raser.TileKey.Parse(name)
+            if (key == undefined) { continue }
+            if (Math.Max(Math.Abs(key.x - here.x), Math.Abs(key.y - here.y)) > 1) { gone.Add(name) }
+        }
+        return gone
+    }
+
+    // Lange Fahrten: alles von Kacheln weg, die mehr als eine Kachel von (e, n) entfernt sind - Grundrisse, Rechtecke, Pfosten und die
+    // Durchfahrten (die werden bei Bedarf neu berechnet). Gibt zurück, wie viele Kacheln.
+    defined int Trim(defined float e, defined float n) {
+        var gone = Obstacles.FarTiles(this.tiles.Keys, e, n)
+        if (gone.Count == 0) { return 0 }
+        foreach (name in gone) {
+            this.tiles.Remove(name)
+            this.boxes.Remove(name)
+        }
+        this.passages.Clear()
+        // die Pfosten liegen je Zelle (8 m, nie über eine Kachelgrenze); zu welcher Kachel eine Zelle gehört, sagt ihr erster Pfosten
+        var dropped = new HashSet<string>()
+        foreach (name in gone) { dropped.Add(name) }
+        var cells = new List<int>()
+        foreach (pair in this.posts) {
+            var ps = pair.Value
+            if (ps.Count < 3) { continue }
+            if (dropped.Contains(Raser.TileKey.Of(ps[0], ps[1]) + "")) { cells.Add(pair.Key) }
+        }
+        foreach (c in cells) { this.posts.Remove(c) }
+        // (eine nachgeladene Kachel bringt ihre Pfosten wieder mit)
+        return gone.Count
+    }
+
     // Der nächste Baum zu (e, n) in dessen Kachel: Ost, Nord; undefined: keiner. (Zum Prüfen.)
     float[] NearestTree(defined float e, defined float n) {
         var key = Raser.TileKey.Of(e, n)
@@ -342,8 +390,9 @@ class Obstacles {
     }
 }
 
-// Licht und Wetter (Raser.Weather): Sonne (gerichtet, mit Schatten, wenn sie scheint) oder Mond, Himmel als Hintergrund, Umgebungslicht, Dunst
-// bzw. Nebel, Regen als Striche um die Kamera. Nachts leuchten alle Laternen in der Nähe als Punktlichter mit Ende.
+// Licht und Wetter (Raser.Weather): Sonne (gerichtet, mit Schatten, wenn sie scheint) oder Mond, der Himmel dahinter (Sky), Umgebungslicht, Dunst
+// bzw. Nebel in der Farbe des Horizonts, Regen als Striche um die Kamera. Nachts leuchten alle Laternen in der Nähe als Punktlichter mit Ende.
+// Gerendert wird mit Render (statt cam.Render): die Welt, dann der Himmel hinter ihr.
 class Atmosphere {
     Raser.Weather weather
     Scene scene
@@ -352,6 +401,8 @@ class Atmosphere {
     Raser.FileTileStore store
     Light sun
     Light moon
+    Sky sky
+    defined bool drawSky                    // false: nur die Welt (zum Messen)
     Dictionary<string, List<Light>> tileLights   // je Kachel die Punktlichter ihrer Laternen
     defined bool lit                        // die Laternen sind an
     Emitter rain
@@ -386,6 +437,8 @@ class Atmosphere {
         this.lastE = 1.0e30
         this.lastN = 1.0e30
         scene.ShadowResolution = 2048
+        this.sky = new Sky(weather, scene, cam)
+        this.drawSky = true
     }
 
     static defined int Rgb(defined int c) { return S3D.Rgb((c >> 16) & 255, (c >> 8) & 255, c & 255) }
@@ -395,8 +448,13 @@ class Atmosphere {
         var w = this.weather
         this.scene.AmbientColor = Atmosphere.Rgb(w.ambientColor)
         this.scene.AmbientIntensity = w.ambientIntensity
+        // der Hintergrund: der Himmel (Sky, Hintergrund-Objekte der Szene); die Farbe nur, wo er nicht deckt. Der Nebel in der Farbe des
+        // Horizonts (Sky.Follow)
         this.cam.Background = Atmosphere.Rgb(w.skyColor)
         this.scene.Fog(Atmosphere.Rgb(w.skyColor), w.hazeStart * 1m, w.hazeEnd * 1m)
+        this.sky.Apply()
+        this.sky.fogColor = -1
+        this.sky.Follow()
         // Szene: x = Ost, y = oben, z = -Nord; das Licht läuft von der Sonne weg
         this.sun.Direction(-w.sunX, -w.sunZ, w.sunY)
         this.sun.Color = Atmosphere.Rgb(w.sunColor)
@@ -405,6 +463,14 @@ class Atmosphere {
         this.scene.Shadows = w.shadows
         // nachts der Mond (schwach, bläulich), in der Dämmerung ausgeblendet
         this.moon.Intensity = Math.Clamp((-w.elevation - 2.0) / 8.0, 0.0, 1.0) * 0.12 * (1.0 - 0.7 * w.clouds)
+        // steht er am Himmel, kommt sein Licht von dort, nach seiner Phase (sonst bleibt das schwache Licht der Nacht von schräg oben)
+        if (w.moonElevation > 5.0) {
+            this.moon.Direction(-w.moonX, -w.moonZ, w.moonY)
+            this.moon.Intensity = this.moon.Intensity * (0.5 + 0.7 * w.moonLit)
+        } else {
+            this.moon.Direction(0.3, -1.0, 0.5)
+            this.moon.Intensity = this.moon.Intensity * 0.5
+        }
         this.moon.Enabled = this.moon.Intensity > 0.005
         this.rain.Running = w.rain > 0.0
         this.rain.Rate = 2000.0 + 10000.0 * w.rain
@@ -419,6 +485,7 @@ class Atmosphere {
     // rechnet nur die Lichter, die es erreichen - hunderte sind so bezahlbar). Neu verteilt, wenn die Kamera ein Stück weiter ist.
     undefined Update(defined float e, defined float n, defined float dt) {
         this.rain.SetPosition(this.cam.X, this.cam.Y + 7m, this.cam.Z)
+        this.sky.Advance(dt)
         bool burning = this.weather.lampsOn
         if (burning == this.lit && (e - this.lastE) * (e - this.lastE) + (n - this.lastN) * (n - this.lastN) < 400.0) { return }
         this.lit = burning
@@ -452,6 +519,13 @@ class Atmosphere {
         }
     }
 
+    // Ein Bild: der Nebel in der Farbe des Horizonts in Blickrichtung, die Welt, dahinter der Himmel.
+    undefined Render() {
+        if (this.drawSky) { this.sky.Follow() }
+        this.cam.Render()
+        if (this.drawSky) { this.sky.Draw() }
+    }
+
     // Die Laternenköpfe einer Kachel (Ost, Nord, Höhe in der Welt): der Mast 4,9 m hoch, der Kopf 0,7 m zur Straße (wie Raser.Props.Lamp).
     List<float> LampsOf(Raser.TileKey key) {
         string name = key + ""
@@ -482,7 +556,7 @@ class WorldView {
     Raser.NearBuilder local                       // die fernen Blöcke, und ohne Worker auch die nahen
     Channel<Raser.NearJob> jobs
     Channel<Raser.NearJob> farJobs          // die fernen Stufen: ein eigener Worker (nur er hält die Kacheln dafür)
-    Channel<Raser.NearResult> results
+    Channel<LodSet> results                 // fertige Stufen aus den Workern, schon mit ihren Modellen
     HashSet<string> inWork                  // nahe Blöcke bei den Workern
     MemoryWatch memory
     defined int workers
@@ -521,11 +595,17 @@ class WorldView {
     defined int lastBy
     defined int stillSince
     defined bool filling            // in Fill: vorausladen auch ohne Stillstand
+    // Fahrt (SetMotion): die nahe Stufe gilt um das Fahrzeug und entlang seines Wegs voraus, nicht um den Ladepunkt
+    defined bool moving
+    defined float carE
+    defined float carN
+    defined float dirE
+    defined float dirN
+    defined float ahead             // so weit voraus (m) entlang des Wegs die nahe Stufe
+    HashSet<int> wanted             // die Blöcke, die die nahe Stufe zeigen sollen (Schlüssel: WorldView.Key)
+    List<int> wantedList            // dieselben, in der Reihenfolge, in der sie gebraucht werden: bx, by
     List<int> spent                 // Messung: Zeit je Abschnitt von Update (Summe), dahinter der längste
     // ein Ergebnis der Worker wird über mehrere Bilder zu Modellen (je Bild, solange das Budget reicht)
-    List<Raser.NearResult> making            // höchstens eins (eine Liste gibt es beim Entfernen frei)
-    LodSet makingSet
-    defined int makingAt
     defined int nearOut             // nahe bzw. ferne Stufen bei den Workern
     defined int farOut
 
@@ -534,27 +614,28 @@ class WorldView {
         this.local = new Raser.NearBuilder(root, e, n, z, opaqueOnly)
         this.local.useCache = useCache
         this.inWork = new HashSet<string>()
-        this.making = new List<Raser.NearResult>()
         this.spent = new List<int>()
+        this.wanted = new HashSet<int>()
+        this.wantedList = new List<int>()
         for (int i = 0; i < 14; i++) { this.spent.Add(0) }
         this.memory = new MemoryWatch()
         this.workers = workers
         if (workers > 0) {
             this.jobs = new Channel<Raser.NearJob>(1024)
-            this.results = new Channel<Raser.NearResult>(1024)
+            this.results = new Channel<LodSet>(1024)
             var jobs = this.jobs
             var results = this.results
             for (int i = 0; i < workers; i++) {
                 // eigene System-Threads: im Pool übernähme sonst der Thread des Hauptprogramms einen Worker, sobald es schläft (Sleep), und es
                 // käme erst zurück, wenn der Worker nachgibt (docs/FIRE.md)
                 fire dedicated taking root taking e taking n taking z taking opaqueOnly taking useCache with jobs, results {
-                    Raser.NearBuilder.Work(jobs, results, root, e, n, z, opaqueOnly, useCache)
+                    WorldView.Work(jobs, results, root, e, n, z, opaqueOnly, useCache)
                 }
             }
             this.farJobs = new Channel<Raser.NearJob>(1024)
             var farJobs = this.farJobs
             fire dedicated taking root taking e taking n taking z taking opaqueOnly taking useCache with farJobs, results {
-                Raser.NearBuilder.Work(farJobs, results, root, e, n, z, opaqueOnly, useCache)
+                WorldView.Work(farJobs, results, root, e, n, z, opaqueOnly, useCache)
             }
         }
         this.blocks = new Dictionary<string, BlockState>()
@@ -674,9 +755,8 @@ class WorldView {
         return this.blocks[key]
     }
 
-    // Das Modell eines Netzes (gepackt aus einem Worker oder als Zahlen-Arrays).
+    // Das Modell eines Netzes.
     static Model ModelOf(Raser.MeshBatch batch) {
-        if (batch.packedPositions != undefined) { return Model.FromArrays(batch.packedPositions, batch.packedUvs, batch.packedIndices) }
         return Model.FromArrays(batch.positions, batch.uvs, batch.indices)
     }
 
@@ -701,7 +781,11 @@ class WorldView {
                 var obj = new Object(set.models[i])
                 obj.KeepMeshCoordinates = true          // die Koordinaten des Netzes sind Welt-Koordinaten (Ursprung des Netzes an der Position 0, 0, 0)
                 obj.Texture = this.palette
-                if (set.opacities[i] < 1.0) { obj.Opacity = set.opacities[i] }
+                if (set.opacities[i] < 1.0) { obj.Opacity = set.opacities[i] } else {
+                    // undurchsichtig: der Atlas hat durchsichtige Texel (Glas), ohne Schwelle gälte darum jedes Objekt mit ihm als gemischt -
+                    // auf der GPU schriebe es dann keine Tiefe und verschwände ganz im Nebel (und gemischt kostet Sortieren)
+                    obj.AlphaCutoff = 0.5
+                }
                 if (this.night || this.wet) { this.Look(obj, set.opacities[i]) }
                 set.objects.Add(obj)
                 this.scene.Add(take obj)
@@ -752,11 +836,80 @@ class WorldView {
 
     // Was zu sehen ist: nah die nahe Stufe (wenn da, sonst die ferne), bis zum Fernradius die ferne, darüber nichts.
     undefined Arrange(BlockState b, defined int ring) {
-        bool nearShown = ring <= this.near && b.nearSet != undefined
+        bool nearShown = this.wanted.Contains(WorldView.Key(b.bx, b.by)) && b.nearSet != undefined
         bool farShown = !nearShown && ring <= this.far && b.farSet != undefined
         if (nearShown && b.nearSet != undefined && !b.nearSet.shown) { this.fromCache++ }
         this.Show(b.nearSet, nearShown)
         this.Show(b.farSet, farShown)
+    }
+
+    static defined int Key(defined int bx, defined int by) { return bx * 1000003 + by }
+
+    // In Fahrt: das Fahrzeug bei (east, north) mit heading (Grad, vorwärts ist (-sin, cos)) und speed (m/s). Die nahe Stufe gilt dann um das
+    // Fahrzeug (Radius near) und entlang seines Wegs bis Tempo x 4 s voraus (höchstens 250 m), und zwar in dieser Reihenfolge bestellt.
+    undefined SetMotion(defined float east, defined float north, defined float heading, defined float speed) {
+        this.moving = true
+        this.carE = east
+        this.carN = north
+        float h = heading * Math.PI / 180.0
+        this.dirE = -Math.Sin(h)
+        this.dirN = Math.Cos(h)
+        if (speed < 0.0) {
+            this.dirE = -this.dirE
+            this.dirN = -this.dirN
+        }
+        this.ahead = Math.Min(Math.Abs(speed) * 4.0, 250.0)
+    }
+
+    // Welche Blöcke die nahe Stufe zeigen sollen (wanted) und in welcher Reihenfolge sie gebraucht werden (wantedList): ohne Fahrt der Radius near
+    // um (e, n); in Fahrt der Radius um das Fahrzeug und die Blöcke auf seinem Weg voraus - je näher am Fahrzeug, desto früher; was hinter ihm
+    // liegt, zuletzt.
+    undefined Want(defined float e, defined float n) {
+        this.wanted.Clear()
+        this.wantedList.Clear()
+        if (this.near < 0) { return }
+        float ce = e
+        float cn = n
+        if (this.moving) {
+            ce = this.carE
+            cn = this.carN
+        }
+        int cbx = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(ce), 256)
+        int cby = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(cn), 256)
+        var scored = new List<int>()            // Rang (dm) * 4096 + Index in cells
+        var cells = new List<int>()
+        for (int dy = -this.near; dy <= this.near; dy++) {
+            for (int dx = -this.near; dx <= this.near; dx++) {
+                this.Candidate(cbx + dx, cby + dy, ce, cn, scored, cells)
+            }
+        }
+        if (this.moving) {
+            for (float t = 12.8; t <= this.ahead; t = t + 12.8) {
+                float pe = ce + this.dirE * t
+                float pn = cn + this.dirN * t
+                this.Candidate(Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(pe), 256), Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(pn), 256), ce, cn, scored, cells)
+            }
+        }
+        scored.Sort()
+        foreach (k in scored) {
+            int i = k % 4096
+            this.wantedList.Add(cells[i * 2])
+            this.wantedList.Add(cells[i * 2 + 1])
+        }
+    }
+
+    // Ein Block für die nahe Stufe (einmal): sein Rang ist der Abstand seiner Mitte vom Fahrzeug, hinter dem Fahrzeug 100 m mehr.
+    undefined Candidate(defined int bx, defined int by, defined float ce, defined float cn, List<int> scored, List<int> cells) {
+        int key = WorldView.Key(bx, by)
+        if (this.wanted.Contains(key)) { return }
+        this.wanted.Add(key)
+        float me = (bx + 0.5) * 51.2 - ce
+        float mn = (by + 0.5) * 51.2 - cn
+        float rank = Math.Sqrt(me * me + mn * mn)
+        if (this.moving && me * this.dirE + mn * this.dirN < -30.0) { rank = rank + 100.0 }
+        scored.Add(Math.Round(rank * 10.0)!int * 4096 + cells.Count / 2)
+        cells.Add(bx)
+        cells.Add(by)
     }
 
     // Die Blöcke eines Rings um (cx, cy), vom Ring r.
@@ -777,6 +930,7 @@ class WorldView {
         int deadline = DateTime.Now.Ticks + Math.Round(budgetMs * 10000.0)!int
         int fbx = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(e), 256)
         int fby = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(n), 256)
+        this.Want(e, n)
         int m0 = DateTime.Now.Ticks
         this.memory.Check()
         if (this.memory.Tight) { this.Evict(fbx, fby) }
@@ -817,93 +971,68 @@ class WorldView {
             }
         }
         m0 = this.Mark(2, m0)
-        // dann die Ergebnisse der Worker übernehmen (auch die vorausgeladenen, versteckt): Netz für Netz zu Modellen, solange das Budget reicht
+        // dann die fertigen Stufen der Worker einsetzen (auch die vorausgeladenen, versteckt) - ihre Modelle haben die Worker schon gebaut
         if (this.workers > 0) {
             while (DateTime.Now.Ticks <= deadline) {
-                if (this.making.Count == 0) {
-                    int r0 = DateTime.Now.Ticks
-                    var res = this.results.TryReceive()
-                    this.spent[12] = Math.Max(this.spent[12], DateTime.Now.Ticks - r0)
-                    if (res == undefined) { break }
-                    if (res.spacing > 0.0) {
-                        this.inWork.Remove("f" + res.bx + "_" + res.by)
-                        this.farOut--
-                        this.farTicks = this.farTicks + res.ticks
-                    } else {
-                        this.inWork.Remove(res.bx + "_" + res.by)
-                        this.nearOut--
-                        this.nearTicks = this.nearTicks + res.ticks
-                    }
-                    if (!this.blocks.ContainsKey(res.bx + "_" + res.by)) {
-                        this.late++
-                        continue
-                    }
-                    this.making.Add(take res)
-                    this.makingSet = new LodSet()
-                    this.makingAt = 0
+                int r0 = DateTime.Now.Ticks
+                var set = this.results.TryReceive()
+                this.spent[12] = Math.Max(this.spent[12], DateTime.Now.Ticks - r0)
+                if (set == undefined) { break }
+                bool wasNear = !set.far
+                if (set.far) {
+                    this.inWork.Remove("f" + set.bx + "_" + set.by)
+                    this.farOut--
+                    this.farTicks = this.farTicks + set.ticks
+                } else {
+                    this.inWork.Remove(set.bx + "_" + set.by)
+                    this.nearOut--
+                    this.nearTicks = this.nearTicks + set.ticks
                 }
-                int t0 = DateTime.Now.Ticks
-                var res = this.making[0]
-                if (this.makingAt < res.batches.Count) {
-                    var batch = res.batches[this.makingAt]
-                    int r1 = DateTime.Now.Ticks
-                    var model = WorldView.ModelOf(batch)
-                    this.spent[13] = Math.Max(this.spent[13], DateTime.Now.Ticks - r1)
-                    this.makingSet.models.Add(take model)
-                    this.makingSet.opacities.Add(batch.opacity)
-                    this.makingSet.triangles = this.makingSet.triangles + batch.quads * 2
-                    this.makingAt++
-                    this.nearShowTicks = this.nearShowTicks + (DateTime.Now.Ticks - t0)
-                    if (this.makingAt < res.batches.Count) { continue }
-                }
-                // fertig: einsetzen
-                string key = res.bx + "_" + res.by
-                bool wasNear = res.spacing <= 0.0
-                var set = this.makingSet
-                this.makingSet = undefined
+                string key = set.bx + "_" + set.by
                 if (!this.blocks.ContainsKey(key)) {
                     this.late++
-                } else {
-                    var b = this.blocks[key]
-                    this.cachedTriangles = this.cachedTriangles + set.triangles
-                    if (wasNear) {
-                        this.Drop(b.nearSet)
-                        b.nearSet = take set
-                        this.nearBuilt++
-                    } else {
-                        set.spacing = res.spacing
-                        this.Drop(b.farSet)
-                        b.farSet = take set
-                        this.farBuilt++
-                    }
-                    this.Arrange(b, Math.Max(Math.Abs(res.bx - fbx), Math.Abs(res.by - fby)))
+                    continue
                 }
-                this.making.Clear()
+                int t0 = DateTime.Now.Ticks
+                var b = this.blocks[key]
+                int sbx = set.bx
+                int sby = set.by
+                this.cachedTriangles = this.cachedTriangles + set.triangles
+                if (wasNear) {
+                    this.Drop(b.nearSet)
+                    b.nearSet = take set
+                    this.nearBuilt++
+                } else {
+                    this.Drop(b.farSet)
+                    b.farSet = take set
+                    this.farBuilt++
+                }
+                this.Arrange(b, Math.Max(Math.Abs(sbx - fbx), Math.Abs(sby - fby)))
                 this.nearShowTicks = this.nearShowTicks + (DateTime.Now.Ticks - t0)
+                this.spent[13] = Math.Max(this.spent[13], DateTime.Now.Ticks - t0)
                 // in Fahrt höchstens eine nahe Stufe je Bild einsetzen (ihre Objekte in die Szene kosten auch)
                 if (wasNear && !this.filling) { break }
             }
         }
         m0 = this.Mark(3, m0)
         // ... und die fehlenden vom Blickpunkt nach außen bestellen (ohne Worker: selbst bauen)
-        for (int r = 0; r <= this.near; r++) {
-            var cells = WorldView.Ring(fbx, fby, r)
-            for (int i = 0; i < cells.Count; i = i + 2) {
-                var b = this.BlockAt(cells[i], cells[i + 1])
-                if (b.nearSet != undefined) { continue }
-                pending++
-                if (this.workers == 0) {
-                    if (DateTime.Now.Ticks > deadline) { continue }
-                    var res = this.local.Build(b.bx, b.by)
-                    this.nearTicks = this.nearTicks + res.ticks
-                    b.nearSet = this.Make(res.batches)
-                    this.Arrange(b, r)
-                    this.nearBuilt++
-                    pending--
-                    continue
-                }
-                this.Order(b)
+        // (in der Reihenfolge, in der die Fahrt sie braucht)
+        for (int i = 0; i + 1 < this.wantedList.Count; i = i + 2) {
+            var b = this.BlockAt(this.wantedList[i], this.wantedList[i + 1])
+            if (b.nearSet != undefined) { continue }
+            int r = Math.Max(Math.Abs(b.bx - fbx), Math.Abs(b.by - fby))
+            pending++
+            if (this.workers == 0) {
+                if (DateTime.Now.Ticks > deadline) { continue }
+                var res = this.local.Build(b.bx, b.by)
+                this.nearTicks = this.nearTicks + res.ticks
+                b.nearSet = this.Make(res.batches)
+                this.Arrange(b, r)
+                this.nearBuilt++
+                pending--
+                continue
             }
+            this.Order(b)
         }
         m0 = this.Mark(4, m0)
         // Stillstand (der Ladepunkt seit einer halben Sekunde im selben Block) oder der Anfang, alles da und Speicher reichlich: über die Radien hinaus
@@ -940,6 +1069,33 @@ class WorldView {
         return now
     }
 
+    // Der Worker-Thread: Aufträge, bis der Kanal zu ist - baut die Stufe (Raser.NearBuilder) und gleich ihre Modelle (scene3d sperrt seine Aufrufe
+    // über Threads hinweg; so bleibt dem Hauptprogramm nur noch das Einsetzen).
+    static undefined Work(Channel<Raser.NearJob> jobs, Channel<LodSet> results, string root, defined float e, defined float n, defined float z, defined bool opaqueOnly, defined bool useCache) {
+        var builder = new Raser.NearBuilder(root, e, n, z, opaqueOnly)
+        builder.useCache = useCache
+        foreach (job in jobs) {
+            int t0 = DateTime.Now.Ticks
+            Raser.NearResult res = undefined
+            if (job.spacing > 0.0) { res = builder.BuildFar(job.bx, job.by, job.spacing, job.windows) } else { res = builder.Build(job.bx, job.by) }
+            var set = new LodSet()
+            set.bx = job.bx
+            set.by = job.by
+            set.far = job.spacing > 0.0
+            set.spacing = job.spacing
+            foreach (batch in res.batches) {
+                var model = Model.FromArrays(batch.positions, batch.uvs, batch.indices)
+                set.models.Add(take model)
+                set.opacities.Add(batch.opacity)
+                set.triangles = set.triangles + batch.quads * 2
+            }
+            set.ticks = DateTime.Now.Ticks - t0
+            results.Send(take set)
+            // bei langen Fahrten nicht ohne Ende zwischenspeichern (ein Chunk sind bis 0,5 MB)
+            if (builder.columns.Cached > 600 || builder.farMeshers.Count > 16) { builder.Forget() }
+        }
+    }
+
     // Einen nahen Block bei den Workern bestellen (höchstens zwei je Worker unterwegs).
     undefined Order(BlockState b) {
         string key = b.bx + "_" + b.by
@@ -969,7 +1125,7 @@ class WorldView {
         foreach (pair in this.blocks) {
             var b = pair.Value
             int ring = Math.Max(Math.Abs(b.bx - fbx), Math.Abs(b.by - fby))
-            if (b.nearSet != undefined && ring > this.near) {
+            if (b.nearSet != undefined && ring > this.near && !this.wanted.Contains(WorldView.Key(b.bx, b.by))) {
                 order.Add((ring * 2) * 1000000 + keys.Count)
                 keys.Add(pair.Key)
             }

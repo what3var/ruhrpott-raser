@@ -19,6 +19,14 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 | Nebel auch auf der GPU (laut Doku nur Fast und Software). | Hardware-Renderer | offen |
 | Kacheln (`Scene.LightCulling`) und Spiegelungen (`Object.Reflectivity`) auch auf der GPU. | Hardware-Renderer | offen |
 
+## scene3d: gemischt oder nicht
+
+- Eine Textur mit auch nur einem durchsichtigen Texel macht jedes Objekt mit ihr zu einem gemischten (`blended`, `s3d_engine.h`: `tex->hasAlpha`),
+  auch bei `Opacity = 1`. Auf der GPU schreiben gemischte Objekte keine Tiefe - der Nebel (aus der Tiefe gerechnet) deckt sie dann ganz zu: im Spiel
+  war mit `--gpu 1` die ganze Welt verschwunden (der Atlas hat Glas-Texel), nur die Fahrzeuge aus Quadern waren zu sehen. Software zeichnet sie
+  richtig. Umweg in Raser: `AlphaCutoff = 0.5` für die undurchsichtigen Netze. Wunsch: Software und GPU gleich (gemischte Objekte im Nebel wie in
+  Software), oder `hasAlpha` nur, wenn das Objekt durchsichtige Texel wirklich benutzt.
+
 ## Threads
 
 - **Zahlen-Arrays kosten beim Abholen aus einem Kanal Zeit je Wert, Byte-Puffer nicht - auch mit `take`** (ein Worker schickt ein Objekt mit

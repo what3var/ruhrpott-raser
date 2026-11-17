@@ -1,0 +1,151 @@
+// Raser.Server: Konten und Sitzungen (globaler Dienst) in SQLite - registrieren, anmelden, Token prüfen, Admin-Recht vergeben.
+// Jeder Thread hat seine eigene Verbindung zur selben Datei (Launcher-API und Spiel); SQLite sperrt selbst.
+#import "data.sqlite"
+#import "hash"
+#import "net"
+#import "time"
+#import "raser.net"
+
+// Ein angemeldetes Konto.
+class Account {
+    defined int id
+    string name
+    defined bool admin
+
+    construct(defined int id, string name, defined bool admin) {
+        this.id = id
+        this.name = name
+        this.admin = admin
+    }
+}
+
+// Das Ergebnis von Register und Login: HTTP-Status (200, 400, 401, 409), bei 200 Token, Name, Admin und Ablauf (s seit 1970), sonst der Fehler.
+class AuthResult {
+    defined int status
+    string error
+    string token
+    string user
+    defined bool admin
+    defined int expires
+
+    construct(defined int status, string error) {
+        this.status = status
+        this.error = error
+        this.token = ""
+        this.user = ""
+        this.admin = false
+        this.expires = 0
+    }
+}
+
+class Accounts {
+    static readonly defined int SessionSeconds = 86400     // 24 h
+
+    Data.Connection db
+    string adminName                // --admin: dieses Konto ist Admin ("" keins: dann das erste)
+    defined int rounds
+
+    construct(string path, string adminName, defined int rounds = 20000) {
+        this.db = new Data.Connection("sqlite:" + path + "?timeout=5000")
+        this.adminName = adminName
+        this.rounds = rounds
+        this.db.Execute("PRAGMA journal_mode=WAL")
+        this.db.Execute("CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, salt TEXT NOT NULL, hash TEXT NOT NULL, rounds INTEGER NOT NULL, admin INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL)")
+        this.db.Execute("CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, account INTEGER NOT NULL, expires INTEGER NOT NULL, created INTEGER NOT NULL)")
+        this.db.Execute("CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account)")
+    }
+
+    static defined int Now() { return (DateTime.UtcNow.Ticks - TimeSpan.UnixEpoch) / 10000000 }
+
+    // Den Admin aus --admin eintragen (beim Start; das Konto kann auch erst später kommen: dann bei Register).
+    undefined PromoteConfigured() {
+        if (this.adminName == "") { return }
+        this.db.Execute("UPDATE accounts SET admin = 1 WHERE name = ?", [this.adminName])
+    }
+
+    AuthResult Register(string user, string password) {
+        if (!Raser.Commands.ValidName(user)) { return new AuthResult(400, "Der Name braucht 3 bis 16 Zeichen aus A-Z, a-z, 0-9, _ und -.") }
+        if (!Raser.Passwords.Valid(password)) { return new AuthResult(400, "Das Passwort braucht 6 bis 128 Zeichen.") }
+        if (this.Find(user) != undefined) { return new AuthResult(409, "Der Name ist schon vergeben.") }
+        string salt = Net.SecureRandom.Hex(16)
+        string hash = Raser.Passwords.Derive(password, salt, this.rounds)
+        bool admin = false
+        if (this.adminName != "") { admin = user.ToLower() == this.adminName.ToLower() } else {
+            any count = this.db.Scalar("SELECT COUNT(*) FROM accounts")
+            admin = count == 0
+        }
+        try {
+            this.db.Execute("INSERT INTO accounts (name, salt, hash, rounds, admin, created) VALUES (?, ?, ?, ?, ?, ?)", [user, salt, hash, this.rounds, Raser.Wire.Flag(admin), Accounts.Now()])
+        } catch (Data.ConstraintException e) {
+            return new AuthResult(409, "Der Name ist schon vergeben.")
+        }
+        var account = this.Find(user)
+        return this.Issue(account)
+    }
+
+    AuthResult Login(string user, string password) {
+        if (user == undefined || password == undefined || user.Length > 64 || password.Length > Raser.Passwords.MaxLength) { return new AuthResult(401, "Name oder Passwort falsch.") }
+        var rows = this.db.Rows("SELECT id, name, salt, hash, rounds, admin FROM accounts WHERE name = ?", [user])
+        if (rows.Count == 0) {
+            // (gleich viel Arbeit wie bei einem echten Konto: die Antwortzeit verrät nicht, ob es den Namen gibt)
+            Raser.Passwords.Derive(password, "00000000000000000000000000000000", this.rounds)
+            return new AuthResult(401, "Name oder Passwort falsch.")
+        }
+        var row = rows[0]
+        if (!Raser.Passwords.Verify(password, row.Text("salt"), row.Int("rounds"), row.Text("hash"))) { return new AuthResult(401, "Name oder Passwort falsch.") }
+        var account = new Account(row.Int("id"), row.Text("name"), row.Int("admin") != 0)
+        return this.Issue(account)
+    }
+
+    // Eine neue Sitzung für das Konto; in der Datenbank steht nur der SHA-256 des Tokens.
+    AuthResult Issue(Account account) {
+        int now = Accounts.Now()
+        this.db.Execute("DELETE FROM sessions WHERE expires < ?", [now])
+        string token = Net.SecureRandom.Hex(32)
+        int expires = now + Accounts.SessionSeconds
+        this.db.Execute("INSERT INTO sessions (token, account, expires, created) VALUES (?, ?, ?, ?)", [Hash.Sha256.HexOf(token), account.id, expires, now])
+        var r = new AuthResult(200, "")
+        r.token = token
+        r.user = account.name
+        r.admin = account.admin
+        r.expires = expires
+        return r
+    }
+
+    // Das Konto zu einem Token, undefined, wenn es keins gibt oder es abgelaufen ist.
+    Account Validate(string token) {
+        if (token == undefined || token.Length != 64) { return undefined }
+        var rows = this.db.Rows("SELECT a.id, a.name, a.admin FROM sessions s JOIN accounts a ON a.id = s.account WHERE s.token = ? AND s.expires >= ?", [Hash.Sha256.HexOf(token), Accounts.Now()])
+        if (rows.Count == 0) { return undefined }
+        var row = rows[0]
+        return new Account(row.Int("id"), row.Text("name"), row.Int("admin") != 0)
+    }
+
+    Account Find(string name) {
+        var rows = this.db.Rows("SELECT id, name, admin FROM accounts WHERE name = ?", [name])
+        if (rows.Count == 0) { return undefined }
+        var row = rows[0]
+        return new Account(row.Int("id"), row.Text("name"), row.Int("admin") != 0)
+    }
+
+    // Macht ein Konto zum Admin; false, wenn es das Konto nicht gibt.
+    defined bool Grant(string name) {
+        return this.db.Execute("UPDATE accounts SET admin = 1 WHERE name = ?", [name]) > 0
+    }
+
+    defined int Count() {
+        any n = this.db.Scalar("SELECT COUNT(*) FROM accounts")
+        return n
+    }
+
+    // Zeitpunkt (s seit 1970) als "2026-11-18T12:00:00Z".
+    static string Iso(defined int seconds) {
+        var d = DateTime.FromUnixSeconds(seconds)
+        return d.Year + "-" + Accounts.Two(d.Month) + "-" + Accounts.Two(d.Day) + "T" + Accounts.Two(d.Hour) + ":" + Accounts.Two(d.Minute) + ":" + Accounts.Two(d.Second) + "Z"
+    }
+
+    static string Two(defined int v) {
+        if (v < 10) { return "0" + v }
+        return "" + v
+    }
+}

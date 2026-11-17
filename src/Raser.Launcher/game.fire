@@ -1,0 +1,67 @@
+// Raser.Launcher: das Spiel als eigenen Prozess starten - mit --server <host>:7481 --token <token> --user <name> (und --world, wenn die Installation
+// eine Welt mitbringt). Der Prozess läuft im Installationsordner.
+#import "filesystem"
+#import "process"
+
+namespace Launcher {
+    class Game {
+        // Wo das Spiel in der Installation liegt: der erste dieser Pfade, den es gibt (unter Windows mit .exe).
+        static List<string> Candidates() {
+            var list = new List<string>()
+            list.Add("bin/Raser.Game")
+            list.Add("bin/raser-game")
+            list.Add("bin/game")
+            list.Add("Raser.Game")
+            return list
+        }
+
+        // Das Programm des Spiels in `install` (undefined, wenn keines da ist). `own`: ein Pfad relativ zur Installation, der vorgeht (--game).
+        static string Find(string install, string own = undefined) {
+            var list = Launcher.Game.Candidates()
+            if (own != undefined && own != "") { list.Insert(0, own) }
+            foreach (rel in list) {
+                if (!Launcher.Paths.IsSafe(rel)) { continue }
+                string file = Launcher.Paths.Local(install, rel)
+                if (Environment.Platform == "windows" && !file.ToLower().EndsWith(".exe")) {
+                    if (IO.File.Exists(file + ".exe")) { return file + ".exe" }
+                }
+                if (IO.File.Exists(file)) { return file }
+            }
+            return undefined
+        }
+
+        // Die Argumente für das Spiel (die Reihenfolge ist Teil des Vertrags mit dem Spiel).
+        static string[] Arguments(string serverUrl, Launcher.Session session, string install) {
+            var list = new List<string>()
+            list.Add("--server")
+            list.Add(Launcher.Paths.GameServer(serverUrl))
+            list.Add("--token")
+            list.Add(session.token)
+            list.Add("--user")
+            list.Add(session.user)
+            if (install != undefined) {
+                string world = IO.Path.Combine(install, "world")
+                if (IO.Directory.Exists(world)) {
+                    list.Add("--world")
+                    list.Add(world)
+                }
+            }
+            string result[] = new string[list.Count]
+            for (int i = 0; i < list.Count; i++) { result[i] = list[i] }
+            return result
+        }
+
+        // Startet das Spiel; seine Ausgabe geht in <install>/.raser-spiel.log (die letzten Zeilen zeigt der Launcher, wenn es mit Fehler endet).
+        // Eine ProcessException, wenn es nicht startet.
+        static Process Start(string program, string args[], string install) {
+            // (ein frisch geladenes Programm hat noch kein Ausführungsrecht: HTTP überträgt keine Dateirechte)
+            if (Environment.Platform != "windows") {
+                try { Process.Run("chmod", ["+x", program]) } catch (Exception e) { }
+            }
+            var options = new ProcessOptions()
+            options.WorkingDirectory = install
+            options.MergeError = true
+            return Process.Start(program, args, options)
+        }
+    }
+}

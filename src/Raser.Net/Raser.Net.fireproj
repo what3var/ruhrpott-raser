@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "name": "Raser.Net",
+  "type": "library",
+  "import": "raser.net",
+  "references": [ { "project": "../Raser.Core/Raser.Core.fireproj" } ],
+  "settings": {
+    "version": "0.1.0",
+    "description": "Ruhrpott-Raser: das Spielprotokoll (Nachrichten, Rahmen, Verbindung), Befehle mit Rechten, Passwörter - für Server und Client."
+  }
+}

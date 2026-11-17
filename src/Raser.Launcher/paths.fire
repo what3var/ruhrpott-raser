@@ -1,0 +1,122 @@
+// Raser.Launcher: Pfade der Installation und Adressen des Servers - reine Funktionen, ohne Netz und ohne Dateien (getestet in testing/).
+#import "filesystem"
+
+namespace Launcher {
+    class Paths {
+        // Ist der Pfad aus der Dateiliste des Servers harmlos? Relativ, mit `/` getrennt, ohne `..`, `.` und leere Teile, ohne Laufwerk,
+        // ohne `\` und Steuerzeichen - so kann keine Datei außerhalb der Installation landen. Unsere eigenen Dateien (`.raser-...`) sind tabu.
+        static bool IsSafe(string path) {
+            if (path == undefined || path.Length == 0 || path.Length > 400) { return false }
+            if (path.StartsWith("/") || path.IndexOf("\\") >= 0 || path.IndexOf(":") >= 0) { return false }
+            for (int i = 0; i < path.Length; i++) {
+                if (path[i].ToInt() < 32 || path[i].ToInt() == 127) { return false }
+            }
+            var parts = path.Split("/")
+            foreach (part in parts) {
+                if (part.Length == 0 || part == "." || part == "..") { return false }
+                // (Windows: "datei." und "datei " wären dieselbe Datei wie "datei")
+                if (part.EndsWith(".") || part.EndsWith(" ")) { return false }
+            }
+            if (parts[0].StartsWith(".raser-")) { return false }
+            return true
+        }
+
+        // Der Ort einer Datei der Liste in der Installation (der Pfad muss IsSafe sein).
+        static string Local(string install, string path) {
+            string result = install
+            foreach (part in path.Split("/")) { result = IO.Path.Combine(result, part) }
+            return result
+        }
+
+        // Die Adresse des Servers, wie sie eingegeben wurde, als Basis-URL: "raser.example.de" wird "http://raser.example.de:7480",
+        // ein Schrägstrich am Ende fällt weg. undefined, wenn sie leer ist.
+        static string ServerUrl(string text) {
+            if (text == undefined) { return undefined }
+            string t = text.Trim()
+            while (t.EndsWith("/")) { t = t.Substring(0, t.Length - 1) }
+            if (t.Length == 0) { return undefined }
+            if (t.IndexOf("://") < 0) { t = "http://" + t }
+            int sep = t.IndexOf("://")
+            string rest = t.Substring(sep + 3)
+            if (rest.IndexOf("/") >= 0) { return t }
+            // ohne Port: der Standard des Launchers (nicht der von http), außer bei IPv6 in Klammern mit Port
+            bool hasPort = false
+            if (rest.StartsWith("[")) { hasPort = rest.IndexOf("]:") >= 0 } else { hasPort = rest.IndexOf(":") >= 0 }
+            if (!hasPort) { t = t + ":7480" }
+            return t
+        }
+
+        // Der Rechner aus der Basis-URL ("http://host:7480" -> "host"; IPv6 bleibt in Klammern).
+        static string Host(string url) {
+            string rest = url
+            int sep = rest.IndexOf("://")
+            if (sep >= 0) { rest = rest.Substring(sep + 3) }
+            int slash = rest.IndexOf("/")
+            if (slash >= 0) { rest = rest.Substring(0, slash) }
+            int at = rest.IndexOf("@")
+            if (at >= 0) { rest = rest.Substring(at + 1) }
+            if (rest.StartsWith("[")) {
+                int close = rest.IndexOf("]")
+                if (close > 0) { return rest.Substring(0, close + 1) }
+                return rest
+            }
+            int colon = rest.LastIndexOf(":")
+            if (colon >= 0) { rest = rest.Substring(0, colon) }
+            return rest
+        }
+
+        // Wo das Spiel den Server findet: derselbe Rechner, Port 7481.
+        static string GameServer(string url) { return Launcher.Paths.Host(url) + ":7481" }
+
+        // Die URL einer Datei des Release: jeder Teil des Pfades prozentkodiert.
+        static string FileUrl(string url, string path) {
+            string encoded = ""
+            foreach (part in path.Split("/")) {
+                if (encoded.Length > 0) { encoded = encoded + "/" }
+                encoded = encoded + Launcher.Paths.Encode(part)
+            }
+            return url + "/files/" + encoded
+        }
+
+        // Prozentkodierung eines Pfadteils (Buchstaben, Ziffern und -._~ bleiben, der Rest als UTF-8 in %XX).
+        static string Encode(string text) {
+            string hex = "0123456789ABCDEF"
+            string result = ""
+            byte bytes[] = IO.Utf8.GetBytes(text)
+            for (int i = 0; i < bytes.length; i++) {
+                int b = bytes[i]
+                bool plain = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 45 || b == 46 || b == 95 || b == 126
+                if (plain) { result = result + IO.Utf8.GetString(bytes, i, 1) } else { result = result + "%" + hex[b >> 4] + hex[b & 15] }
+            }
+            return result
+        }
+
+        // Der Ordner für die Einstellungen des Launchers: RASER_LAUNCHER_CONFIG, sonst %APPDATA%\RuhrpottRaser (Windows),
+        // ~/Library/Application Support/RuhrpottRaser (macOS), $XDG_CONFIG_HOME/ruhrpott-raser bzw. ~/.config/ruhrpott-raser.
+        static string ConfigDir() {
+            string own = Environment.Get("RASER_LAUNCHER_CONFIG")
+            if (own != undefined && own != "") { return own }
+            string home = IO.Directory.GetHomeDirectory()
+            if (Environment.Platform == "windows") {
+                string appData = Environment.Get("APPDATA")
+                if (appData != undefined && appData != "") { return IO.Path.Combine(appData, "RuhrpottRaser") }
+                return IO.Path.Combine(home, "AppData", "Roaming", "RuhrpottRaser")
+            }
+            if (Environment.Platform == "macos") { return IO.Path.Combine(home, "Library", "Application Support", "RuhrpottRaser") }
+            string xdg = Environment.Get("XDG_CONFIG_HOME")
+            if (xdg != undefined && xdg != "") { return IO.Path.Combine(xdg, "ruhrpott-raser") }
+            return IO.Path.Combine(home, ".config", "ruhrpott-raser")
+        }
+
+        // Der Standardort der Installation: neben den Einstellungen ein Ordner "spiel" (unter Linux ~/.local/share/ruhrpott-raser).
+        static string DefaultInstall() {
+            string home = IO.Directory.GetHomeDirectory()
+            if (Environment.Platform == "linux") {
+                string data = Environment.Get("XDG_DATA_HOME")
+                if (data != undefined && data != "") { return IO.Path.Combine(data, "ruhrpott-raser") }
+                return IO.Path.Combine(home, ".local", "share", "ruhrpott-raser")
+            }
+            return IO.Path.Combine(Launcher.Paths.ConfigDir(), "spiel")
+        }
+    }
+}

@@ -1,0 +1,437 @@
+// Raser.Core: der Himmel (Roadmap: Atmosphäre) - seine Farbe je Blickrichtung aus Sonnenstand und Wetter, dazu die Bilder für den Renderer
+// (RGBA-Bytes für scene3d-Texturen): die Himmelskuppel, die Wolkenschicht, die Sonne mit Schein, der Mond in seiner Phase, die Sterne.
+//
+// Physikalisch angelehnt, nicht simuliert: Rayleigh (zum Zenit blauer und dunkler, am Horizont heller und dunstiger), Mie (Schein um die Sonne,
+// stärker im Dunst), Dämmerung (Glühen am Horizont zur Sonne hin, blaue Stunde), Nacht (orange Lichtglocke der Städte am Horizont, Wolken von
+// unten angestrahlt), bedeckt (fast gleichmäßig grau). Die Farben stammen aus Tabellen über der Sonnenhöhe (nach Fotos geschätzt).
+// Deterministisch, ohne Zufall. Richtungen: x Ost, y Nord, z oben. Farben als 0xRRGGBB.
+namespace Raser {
+    class SkyLook {
+        // Die Kuppel und die Wolkenschicht teilen die Aufteilung der Texturzeilen: v = 0 .. Below unter dem Horizont (-20° .. 0°), darüber
+        // bis 1 der Himmel bis zum Zenit, zum Horizont hin feiner (Höhe = 90° * t^1,5).
+        static readonly defined float Below = 0.08
+        static readonly defined float CloudBase = 1.6       // Höhe der Wolkenschicht (km)
+
+        Raser.Weather weather
+        defined float e                 // Sonnenhöhe (Grad)
+        defined float sx                // Richtung zur Sonne
+        defined float sy
+        defined float sz
+        defined float hx                // waagrecht zur Sonne (Einheitsvektor)
+        defined float hy
+        // die Farben dieses Augenblicks (0 .. 255)
+        float zenith[]
+        float horizon[]
+        float glow[]                    // der Horizont zur Sonne hin
+        float disc[]                    // die Sonnenscheibe
+        float city[]                    // die Lichtglocke der Stadt
+        float overcastTop[]
+        float overcastLow[]
+        float fogColor[]
+        defined float glowWidth         // wie weit das Glühen um die Sonne herum reicht (Exponent: groß = schmal)
+        defined float glowHeight        // wie hoch es reicht (Anteil von z)
+        defined float glowStrength
+        defined float mie               // Stärke des Scheins um die Sonne
+        defined float sunUp             // die Sonne ist da (0 .. 1: unter dem Horizont 0)
+        defined float night             // 0 Tag .. 1 Nacht
+        defined float daylight          // 0 Nacht .. 1 Tag
+        defined float overcast          // die Kuppel unter der Wolkendecke: 0 blau .. 1 grau
+        defined float haze              // Dunst bzw. Nebel über allem (0 .. 1)
+
+        construct(Raser.Weather w) {
+            this.weather = w
+            this.e = w.elevation
+            this.sx = w.sunX
+            this.sy = w.sunY
+            this.sz = w.sunZ
+            float level = Math.Sqrt(w.sunX * w.sunX + w.sunY * w.sunY)
+            if (level < 0.0001) { level = 0.0001 }
+            this.hx = w.sunX / level
+            this.hy = w.sunY / level
+            float keys[] = [-18.0, -12.0, -8.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0, 20.0, 40.0, 90.0]
+            int zen[] = [0x05070E, 0x0A0E1E, 0x141E42, 0x23356E, 0x36508E, 0x40609C, 0x4668A6, 0x4A6EB2, 0x4870BC, 0x4472C2, 0x3C6EC6, 0x386CC6]
+            int hor[] = [0x0A0C14, 0x141826, 0x2A3152, 0x4A4E72, 0x8A7C90, 0xAE9A9E, 0xC0AEAA, 0xC6C2C6, 0xC2CEDC, 0xBCD0E6, 0xB6CEE8, 0xB4CCE8]
+            int glo[] = [0x0A0C14, 0x1A1822, 0x5A3836, 0xB05E3A, 0xF08640, 0xFF9446, 0xFFAA5C, 0xFFC484, 0xF6DABA, 0xEAE4DE, 0xDEE6EE, 0xDCE6EE]
+            int dis[] = [0xFF5020, 0xFF5020, 0xFF5020, 0xFF5020, 0xFF6428, 0xFF7838, 0xFF9650, 0xFFB878, 0xFFDCB0, 0xFFF0DC, 0xFFFAF0, 0xFFFCF6]
+            int otop[] = [0x3C2E26, 0x3C2E26, 0x3A3032, 0x4A4448, 0x6A6266, 0x7E7676, 0x8E8A8C, 0xA0A2A6, 0xB0B4BA, 0xB8BCC2, 0xBEC2C8, 0xC0C4CA]
+            int olow[] = [0x54402E, 0x54402E, 0x4A3C36, 0x4E4644, 0x665C5C, 0x76706E, 0x86848A, 0x989CA2, 0xA6AAB0, 0xACB0B6, 0xB0B4BA, 0xB2B6BC]
+            this.zenith = Raser.SkyLook.Table(keys, zen, this.e)
+            this.horizon = Raser.SkyLook.Table(keys, hor, this.e)
+            this.glow = Raser.SkyLook.Table(keys, glo, this.e)
+            this.disc = Raser.SkyLook.Table(keys, dis, this.e)
+            this.overcastTop = Raser.SkyLook.Table(keys, otop, this.e)
+            this.overcastLow = Raser.SkyLook.Table(keys, olow, this.e)
+            // Regen: dunkler und kühler
+            float r = Math.Clamp(w.rain, 0.0, 1.0)
+            for (int k = 0; k < 3; k++) {
+                float wet = 0.62 + 0.04 * k
+                this.overcastTop[k] = this.overcastTop[k] * (1.0 - r * (1.0 - wet))
+                this.overcastLow[k] = this.overcastLow[k] * (1.0 - r * (1.0 - wet))
+            }
+            // tief stehende Sonne: das Glühen breit und hoch, mittags nur ein heller Saum
+            float low = Math.Clamp(1.0 - (this.e - 2.0) / 16.0, 0.0, 1.0)
+            this.glowWidth = 1.5 + 6.0 * (1.0 - low)
+            this.glowHeight = 0.08 + 0.10 * low
+            this.glowStrength = 0.35 + 0.65 * low
+            if (this.e < -6.0) { this.glowStrength = this.glowStrength * Math.Clamp((this.e + 14.0) / 8.0, 0.0, 1.0) }
+            this.sunUp = Math.Clamp((this.e + 1.0) / 3.0, 0.0, 1.0)
+            this.night = Math.Clamp((-this.e - 3.0) / 9.0, 0.0, 1.0)
+            this.daylight = Math.Clamp((this.e + 6.0) / 16.0, 0.0, 1.0)
+            this.overcast = Raser.SkyLook.Smooth(0.5, 0.95, w.clouds)
+            this.haze = Math.Clamp(w.fog * 1.6, 0.0, 1.0)
+            this.mie = (0.8 + 1.4 * Math.Clamp(w.fog, 0.0, 1.0)) * this.sunUp * (1.0 - 0.85 * this.overcast)
+            // die Lichtglocke über dem Ruhrgebiet: orange (Natriumdampf, heute gemischt mit LED); unter Wolken heller
+            this.city = [72.0, 52.0, 36.0]
+            int fog = Raser.Weather.Mix(Raser.Weather.Mix(0x37332F, 0x2A2E38, this.daylight), 0xB6BABE, Math.Clamp((this.e + 3.0) / 10.0, 0.0, 1.0))
+            this.fogColor = Raser.SkyLook.Floats(fog)
+        }
+
+        // Zum Testen: die Farbe in Richtung Höhe/Azimut (Grad).
+        defined int At(defined float elevation, defined float azimuth) {
+            float rad = Math.PI / 180.0
+            return this.Color(Math.Sin(azimuth * rad) * Math.Cos(elevation * rad), Math.Cos(azimuth * rad) * Math.Cos(elevation * rad), Math.Sin(elevation * rad))
+        }
+
+        // Die Farbe des Himmels (ohne Wolkenschicht und Sonnenscheibe) in Richtung (x, y, z) - eine Einheitsrichtung.
+        defined int Color(defined float x, defined float y, defined float z) {
+            float c[] = this.Rgb(x, y, z)
+            return Raser.SkyLook.Pack(c[0], c[1], c[2])
+        }
+
+        float[] Rgb(defined float x, defined float y, defined float z) {
+            float up = Math.Max(z, 0.0)
+            // Rayleigh: zum Horizont hin heller und weißer (der Weg durch die Luft wird länger)
+            float t = (1.0 - up) ^ 4.0
+            float r = this.zenith[0] + (this.horizon[0] - this.zenith[0]) * t
+            float g = this.zenith[1] + (this.horizon[1] - this.zenith[1]) * t
+            float b = this.zenith[2] + (this.horizon[2] - this.zenith[2]) * t
+            // das Glühen am Horizont zur Sonne hin (Dämmerung: orange; mittags ein heller Saum)
+            float level = Math.Sqrt(x * x + y * y)
+            float toward = 0.5
+            if (level > 0.0001) { toward = 0.5 + 0.5 * (x * this.hx + y * this.hy) / level }
+            float gw = (toward ^ this.glowWidth) * Math.Exp(-up / this.glowHeight) * this.glowStrength * (1.0 - 0.9 * this.overcast)
+            r = r + (this.glow[0] - r) * gw
+            g = g + (this.glow[1] - g) * gw
+            b = b + (this.glow[2] - b) * gw
+            // Mie: der Schein um die Sonne (breit und eng)
+            float cs = x * this.sx + y * this.sy + z * this.sz
+            if (cs > 0.0 && this.mie > 0.0) {
+                float m = (0.15 * (cs ^ 8.0) + 0.4 * (cs ^ 80.0) + 0.7 * (cs ^ 1200.0)) * this.mie
+                r = r + (this.disc[0] * 1.1 - r) * Math.Min(m, 1.0)
+                g = g + (this.disc[1] * 1.1 - g) * Math.Min(m, 1.0)
+                b = b + (this.disc[2] * 1.1 - b) * Math.Min(m, 1.0)
+            }
+            // bedeckt: grau, oben etwas heller als am Horizont
+            if (this.overcast > 0.0) {
+                float o = 1.0 - up
+                float cr = this.overcastTop[0] + (this.overcastLow[0] - this.overcastTop[0]) * o
+                float cg = this.overcastTop[1] + (this.overcastLow[1] - this.overcastTop[1]) * o
+                float cb = this.overcastTop[2] + (this.overcastLow[2] - this.overcastTop[2]) * o
+                r = r + (cr - r) * this.overcast
+                g = g + (cg - g) * this.overcast
+                b = b + (cb - b) * this.overcast
+            }
+            // nachts die Lichtglocke der Stadt, zum Horizont hin stark
+            if (this.night > 0.0) {
+                float l = this.night * (0.2 + 0.8 * Math.Exp(-up / 0.16)) * (1.0 - 0.6 * this.overcast)
+                r = r + this.city[0] * l
+                g = g + this.city[1] * l
+                b = b + this.city[2] * l
+            }
+            // Dunst und Nebel: zum Horizont hin dichter
+            if (this.haze > 0.0) {
+                float h = Math.Clamp(this.haze * (0.62 + 0.38 * ((1.0 - up) ^ 3.0)), 0.0, 1.0)
+                r = r + (this.fogColor[0] - r) * h
+                g = g + (this.fogColor[1] - g) * h
+                b = b + (this.fogColor[2] - b) * h
+            }
+            // unter dem Horizont (wo die Welt endet): dunkler Dunst
+            if (z < 0.0) {
+                float d = Math.Clamp(-z * 4.0, 0.0, 1.0) * 0.35
+                r = r * (1.0 - d)
+                g = g * (1.0 - d)
+                b = b * (1.0 - d)
+            }
+            return [r, g, b]
+        }
+
+        // Der Horizont in Richtung azimuth (Grad): die Farbe, in der ferne Gebäude im Dunst verschwinden (knapp über dem Horizont).
+        defined int Horizon(defined float azimuth) { return this.At(0.5, azimuth) }
+
+        // ---- die Bilder ----
+
+        // Die Höhe (Grad) einer Texturzeile v (0 .. 1) der Kuppel und der Wolken.
+        static defined float ElevationOf(defined float v) {
+            if (v < Raser.SkyLook.Below) { return -20.0 + 20.0 * v / Raser.SkyLook.Below }
+            return 90.0 * (((v - Raser.SkyLook.Below) / (1.0 - Raser.SkyLook.Below)) ^ 1.5)
+        }
+
+        // Die Kuppel: width x height Texel, u = Azimut (0 Nord, 0,5 Süd, im Uhrzeigersinn), v nach ElevationOf; Zeile 0 ist v = 0.
+        byte[] DomeRgba(defined int width, defined int height) {
+            byte data[] = new byte[width * height * 4]
+            float rad = Math.PI / 180.0
+            for (int j = 0; j < height; j++) {
+                float el = Raser.SkyLook.ElevationOf((j + 0.5) / height) * rad
+                float ce = Math.Cos(el)
+                float z = Math.Sin(el)
+                for (int i = 0; i < width; i++) {
+                    float az = (i + 0.5) / width * 2.0 * Math.PI
+                    float c[] = this.Rgb(Math.Sin(az) * ce, Math.Cos(az) * ce, z)
+                    int at = (j * width + i) * 4
+                    data[at] = Raser.SkyLook.Byte(c[0])
+                    data[at + 1] = Raser.SkyLook.Byte(c[1])
+                    data[at + 2] = Raser.SkyLook.Byte(c[2])
+                    data[at + 3] = 255
+                }
+            }
+            return data
+        }
+
+        // Die Wolkenschicht in CloudBase km Höhe, wie sie von unten aussieht (gleiche Aufteilung wie die Kuppel): je Texel der Punkt, an dem
+        // der Blick die Schicht trifft - so werden die Wolken zum Horizont hin flach und dicht wie echte. Weiches Rauschen in fünf Oktaven
+        // (Wertrauschen, die feinen Oktaven fallen weg, wo ein Texel zu groß für sie ist); Bedeckung nach weather.clouds, dicke Wolken unten
+        // dunkler, dünne Ränder vor der Sonne hell, abends von der Sonne orange, nachts von der Stadt angestrahlt. Alpha: Deckkraft.
+        byte[] CloudRgba(defined int width, defined int height) {
+            byte data[] = new byte[width * height * 4]
+            var w = this.weather
+            float rad = Math.PI / 180.0
+            float cover = Math.Clamp(w.clouds, 0.0, 1.0)
+            // Schwelle des Rauschens (Mittel 0,5): wenige Wolken bei 0,1, etwa halb bei 0,5, fast zu bei 0,9
+            float cl = Math.Clamp(cover, 0.03, 0.97)
+            float thr = 0.45 + 0.1 * Math.Log((1.0 - cl) / cl)
+            float deck = Raser.SkyLook.Smooth(0.7, 1.0, cover)       // geschlossene Decke
+            float fade = 1.0 - Math.Clamp(w.fog * 1.5, 0.0, 1.0)      // im Nebel sieht man keine Wolken
+            float rain = Math.Clamp(w.rain, 0.0, 1.0)
+            // das Licht auf den Wolken: von der Sonne (abends wie das Glühen), im Schatten vom Himmel; nachts von der Stadt
+            float sunW = Math.Clamp((this.e + 7.0) / 5.0, 0.0, 1.0) * (1.0 - 0.75 * deck)
+            float warm = Math.Clamp(1.0 - (this.e - 3.0) / 14.0, 0.0, 1.0)
+            float lit[] = [255.0 + (this.glow[0] * 1.08 - 255.0) * warm, 252.0 + (this.glow[1] * 1.08 - 252.0) * warm, 248.0 + (this.glow[2] * 1.08 - 248.0) * warm]
+            float bright = Math.Clamp((this.e + 9.0) / 8.0, 0.0, 1.0)
+            float shade[] = [this.overcastLow[0] * 0.86, this.overcastLow[1] * 0.88, this.overcastLow[2] * 0.92]
+            float nightGlow[] = [92.0, 70.0, 54.0]
+            for (int j = 0; j < height; j++) {
+                float v = (j + 0.5) / height
+                float eld = Raser.SkyLook.ElevationOf(v)
+                if (eld < 0.4) { continue }
+                float el = eld * rad
+                float ce = Math.Cos(el)
+                float z = Math.Sin(el)
+                float dist = Math.Min(Raser.SkyLook.CloudBase / Math.Tan(el), 80.0)
+                // die Größe eines Texels auf der Schicht (km): quer und längs
+                float step = (Raser.SkyLook.ElevationOf(v + 1.0 / height) - eld) * rad
+                float foot = Math.Max(dist * 2.0 * Math.PI / width, Raser.SkyLook.CloudBase / (z * z) * step)
+                float far = Raser.SkyLook.Smooth(12.0, 70.0, dist)
+                float low = Raser.SkyLook.Smooth(0.4, 3.0, eld)
+                for (int i = 0; i < width; i++) {
+                    float az = (i + 0.5) / width * 2.0 * Math.PI
+                    float dx = Math.Sin(az)
+                    float dy = Math.Cos(az)
+                    float n = Raser.SkyLook.Fbm(dx * dist, dy * dist, foot)
+                    float dens = Raser.SkyLook.Smooth(thr - 0.04, thr + 0.04, n)
+                    float thick = Math.Clamp((n - thr) / 0.15, 0.0, 1.0)
+                    float a = dens + (1.0 - dens) * deck
+                    a = a * low * fade * (1.0 - 0.55 * far * (1.0 - deck))
+                    int at = (j * width + i) * 4
+                    if (a <= 0.004) { continue }
+                    // dick ist unten dunkel; die Decke wird mit dem Rauschen fleckig
+                    float s = Math.Clamp(0.2 + 0.75 * thick * (1.0 - 0.5 * deck) + 0.6 * deck * (0.5 - n) + 0.35 * rain, 0.0, 1.0)
+                    float sl = (1.0 - s) * sunW
+                    float r = (shade[0] + (lit[0] - shade[0]) * sl) * (0.35 + 0.65 * bright)
+                    float g = (shade[1] + (lit[1] - shade[1]) * sl) * (0.35 + 0.65 * bright)
+                    float b = (shade[2] + (lit[2] - shade[2]) * sl) * (0.35 + 0.65 * bright)
+                    // vor der Sonne leuchten dünne Ränder (Vorwärtsstreuung); bedeckt ein heller Fleck, wo sie steht
+                    float cs = dx * ce * this.sx + dy * ce * this.sy + z * this.sz
+                    if (cs > 0.0) {
+                        float f = ((cs ^ 8.0) * 0.9 * (1.0 - thick) + (cs ^ 3.0) * 0.25 * deck) * this.sunUp
+                        r = r + (this.disc[0] - r) * Math.Min(f, 1.0)
+                        g = g + (this.disc[1] - g) * Math.Min(f, 1.0)
+                        b = b + (this.disc[2] - b) * Math.Min(f, 1.0)
+                    }
+                    // nachts: von unten orange von der Stadt
+                    if (this.night > 0.0) {
+                        float k = this.night * (0.75 + 0.25 * (1.0 - thick))
+                        r = r + (nightGlow[0] * (0.8 + 0.3 * n) - r) * k
+                        g = g + (nightGlow[1] * (0.8 + 0.3 * n) - g) * k
+                        b = b + (nightGlow[2] * (0.8 + 0.3 * n) - b) * k
+                    }
+                    // in der Ferne gehen sie in den Dunst über
+                    float hz[] = this.Rgb(dx * ce, dy * ce, z)
+                    float m = far * 0.7 + this.haze * 0.5
+                    data[at] = Raser.SkyLook.Byte(r + (hz[0] - r) * m)
+                    data[at + 1] = Raser.SkyLook.Byte(g + (hz[1] - g) * m)
+                    data[at + 2] = Raser.SkyLook.Byte(b + (hz[2] - b) * m)
+                    data[at + 3] = Raser.SkyLook.Byte(a * 255.0)
+                }
+            }
+            return data
+        }
+
+        // Die Sonne: size x size, die Scheibe (Radius disc, Anteil der halben Breite) mit weichem Rand und Schein; Farbe nach der Höhe
+        // (am Horizont tief orange), Deckkraft nach visible.
+        byte[] SunRgba(defined int size, defined float disc, defined float visible) {
+            byte data[] = new byte[size * size * 4]
+            float half = size / 2.0
+            for (int j = 0; j < size; j++) {
+                for (int i = 0; i < size; i++) {
+                    float dx = (i + 0.5 - half) / half
+                    float dy = (j + 0.5 - half) / half
+                    float d = Math.Sqrt(dx * dx + dy * dy)
+                    float core = Math.Clamp((disc - d) / (1.5 / half) + 0.5, 0.0, 1.0)
+                    float glow = 0.85 * Math.Exp(-(d - disc) / 0.05) + 0.35 * Math.Exp(-(d - disc) / 0.2)
+                    if (d < disc) { glow = 0.8 }
+                    glow = glow * Math.Clamp((1.0 - d) / 0.25, 0.0, 1.0)
+                    float a = Math.Clamp(core + glow * (1.0 - core), 0.0, 1.0) * visible
+                    // die Scheibe heller als ihr Schein
+                    float k = 0.75 + 0.25 * core
+                    int at = (j * size + i) * 4
+                    data[at] = Raser.SkyLook.Byte(Math.Min(this.disc[0] * k + 60.0 * core, 255.0))
+                    data[at + 1] = Raser.SkyLook.Byte(Math.Min(this.disc[1] * k + 60.0 * core, 255.0))
+                    data[at + 2] = Raser.SkyLook.Byte(Math.Min(this.disc[2] * k + 60.0 * core, 255.0))
+                    data[at + 3] = Raser.SkyLook.Byte(a * 255.0)
+                }
+            }
+            return data
+        }
+
+        // Der Mond: size x size, die Scheibe (Radius disc) als beleuchtete Kugel - die Sonne kommt aus (right, up, toward) im Bild des Betrachters
+        // (rechts, oben, zu ihm hin); so ergeben sich Sichel, Halbmond und Vollmond von selbst. Mit Flecken (Maria) und schwachem Schein.
+        byte[] MoonRgba(defined int size, defined float disc, defined float right, defined float up, defined float toward, defined float visible) {
+            byte data[] = new byte[size * size * 4]
+            float half = size / 2.0
+            float earth = 0.06                       // Erdschein auf der dunklen Seite
+            for (int j = 0; j < size; j++) {
+                for (int i = 0; i < size; i++) {
+                    float px = (i + 0.5 - half) / half / disc
+                    float py = -(j + 0.5 - half) / half / disc      // Zeile 0 oben
+                    float d2 = px * px + py * py
+                    int at = (j * size + i) * 4
+                    float a = 0.0
+                    float l = 0.0
+                    if (d2 < 1.0) {
+                        float pz = Math.Sqrt(1.0 - d2)
+                        float lam = px * right + py * up + pz * toward
+                        l = Raser.SkyLook.Smooth(-0.04, 0.10, lam) * (0.75 + 0.25 * pz)
+                        float maria = Raser.SkyLook.Fbm(px * 3.0 + 7.0, py * 3.0 + 3.0, 0.0)
+                        l = l * (0.82 + 0.3 * Math.Clamp((maria - 0.42) * 3.0, -0.6, 0.6))
+                        l = Math.Max(l, earth)
+                        a = Math.Clamp((1.0 - Math.Sqrt(d2)) * half * disc, 0.0, 1.0)
+                    }
+                    float dd = Math.Sqrt(d2) * disc
+                    float halo = 0.12 * Math.Exp(-(dd - disc) / 0.08) * Math.Clamp((1.0 - dd) / 0.3, 0.0, 1.0)
+                    if (d2 < 1.0) { halo = 0.0 }
+                    float c = 250.0 * l
+                    // der Mond deckt mit seiner Helligkeit (die dunkle Seite lässt den Himmel fast durch), sein Schein ist schwach
+                    float cover = Math.Clamp(a * l / 0.45, 0.0, 1.0)
+                    if (d2 >= 1.0) {
+                        c = 235.0
+                        cover = halo
+                    }
+                    data[at] = Raser.SkyLook.Byte(c * 0.98)
+                    data[at + 1] = Raser.SkyLook.Byte(c * 0.98)
+                    data[at + 2] = Raser.SkyLook.Byte(c * 0.94 + 8.0)
+                    data[at + 3] = Raser.SkyLook.Byte(cover * visible * 255.0)
+                }
+            }
+            return data
+        }
+
+        // Die Sterne: count Richtungen (x, y, z je Stern) und Helligkeiten (0 .. 1), fest verteilt; nur über 6° (darunter schluckt der Dunst).
+        // In der Stadt sieht man nur die hellsten - etwa 120 am ganzen Himmel.
+        static float[] Stars(defined int count) {
+            float list[] = new float[count * 4]
+            int found = 0
+            int k = 0
+            while (found < count) {
+                float u = Raser.SkyLook.Hash(k, 1, 77)
+                float v = Raser.SkyLook.Hash(k, 2, 77)
+                float m = Raser.SkyLook.Hash(k, 3, 77)
+                k++
+                float z = 0.1 + 0.9 * v
+                float az = u * 2.0 * Math.PI
+                float c = Math.Sqrt(1.0 - z * z)
+                list[found * 4] = Math.Sin(az) * c
+                list[found * 4 + 1] = Math.Cos(az) * c
+                list[found * 4 + 2] = z
+                list[found * 4 + 3] = 0.25 + 0.75 * (m ^ 3.0)
+                found++
+            }
+            return list
+        }
+
+        // ---- Hilfen ----
+
+        // Weiches Wertrauschen in fünf Oktaven an (x, y) km, Mittel 0,5 (etwa 0,2 .. 0,8): Zellen von 2,5 km bis 0,16 km. Oktaven, deren Zellen
+        // kleiner als foot (km) sind, gehen in ihr Mittel über (kein Flimmern am Horizont).
+        static defined float Fbm(defined float x, defined float y, defined float foot) {
+            float sum = 0.0
+            float cell = 2.5
+            float weight = 0.5
+            float total = 0.0
+            for (int o = 0; o < 5; o++) {
+                float keep = Math.Clamp(2.0 - 2.0 * foot / cell, 0.0, 1.0)
+                float nv = 0.5
+                if (keep > 0.0) { nv = 0.5 + (Raser.SkyLook.Noise(x / cell + o * 17.3, y / cell - o * 9.1, o) - 0.5) * keep }
+                sum = sum + nv * weight
+                total = total + weight
+                cell = cell * 0.5
+                weight = weight * 0.55
+            }
+            return sum / total
+        }
+
+        // Wertrauschen (0 .. 1) mit weicher Interpolation zwischen ganzzahligen Gitterpunkten.
+        static defined float Noise(defined float x, defined float y, defined int salt) {
+            float fx = Math.Floor(x)
+            float fy = Math.Floor(y)
+            int ix = fx!int
+            int iy = fy!int
+            float tx = x - fx
+            float ty = y - fy
+            tx = tx * tx * (3.0 - 2.0 * tx)
+            ty = ty * ty * (3.0 - 2.0 * ty)
+            float a = Raser.SkyLook.Hash(ix, iy, salt)
+            float b = Raser.SkyLook.Hash(ix + 1, iy, salt)
+            float c = Raser.SkyLook.Hash(ix, iy + 1, salt)
+            float d = Raser.SkyLook.Hash(ix + 1, iy + 1, salt)
+            float top = a + (b - a) * tx
+            float bottom = c + (d - c) * tx
+            return top + (bottom - top) * ty
+        }
+
+        // Ein fester Zufallswert (0 .. 1) je Gitterpunkt.
+        static defined float Hash(defined int x, defined int y, defined int salt) {
+            int h = ((x & 0xFFFF) * 0x8DA6B343 + (y & 0xFFFF) * 0xD8163841 + salt * 0xCB1AB31F) & 0xFFFFFFFF
+            h = ((h # (h >> 15)) * 0x2C1B3C6D) & 0xFFFFFFFF
+            h = ((h # (h >> 12)) * 0x297A2D39) & 0xFFFFFFFF
+            h = h # (h >> 15)
+            return (h & 0xFFFFFF) / 16777216.0
+        }
+
+        // e zwischen den Stützstellen keys: die Farbe (r, g, b 0 .. 255) aus colors.
+        static float[] Table(float keys[], int colors[], defined float e) {
+            int n = keys.length
+            if (e <= keys[0]) { return Raser.SkyLook.Floats(colors[0]) }
+            for (int k = 1; k < n; k++) {
+                if (e <= keys[k]) {
+                    float t = (e - keys[k - 1]) / (keys[k] - keys[k - 1])
+                    return Raser.SkyLook.Floats(Raser.Weather.Mix(colors[k - 1], colors[k], t))
+                }
+            }
+            return Raser.SkyLook.Floats(colors[n - 1])
+        }
+
+        static float[] Floats(defined int c) { return [((c >> 16) & 255) * 1.0, ((c >> 8) & 255) * 1.0, (c & 255) * 1.0] }
+
+        static defined int Pack(defined float r, defined float g, defined float b) {
+            return (Raser.SkyLook.Byte(r) << 16) | (Raser.SkyLook.Byte(g) << 8) | Raser.SkyLook.Byte(b)
+        }
+
+        static defined int Byte(defined float v) { return Math.Clamp(Math.Round(v)!int, 0, 255) }
+
+        // 0 unter a, 1 über b, dazwischen weich
+        static defined float Smooth(defined float a, defined float b, defined float x) {
+            float t = Math.Clamp((x - a) / (b - a), 0.0, 1.0)
+            return t * t * (3.0 - 2.0 * t)
+        }
+    }
+}

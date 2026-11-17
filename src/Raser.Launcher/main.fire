@@ -1,0 +1,36 @@
+// Raser.Launcher: der Launcher von Ruhrpott-Raser - anmelden oder registrieren, News, das Spiel aktuell halten und starten.
+//
+//   raser-launcher [--server host:7480] [--install ordner]                 das Fenster
+//   raser-launcher --check --server http://127.0.0.1:7480 --user x --password y [--register] --install ordner [--no-update] [--play] [--game bin/x]
+//                                                                          ohne Fenster: anmelden, News und Version zeigen, aktualisieren
+//   raser-launcher --shot bild.png [--wait 3] [--user x --password y] [--update] [--play]
+//                                                                          ohne Bildschirm: das Fenster so viele Sekunden laufen lassen
+//                                                                          (anmelden, aktualisieren, spielen), dann als PNG (zum Ansehen)
+//
+// Einstellungen (Server, Benutzer, Installation; nie das Passwort): siehe Launcher.Paths.ConfigDir, mit --config ordner ein anderer.
+#import "filesystem"
+
+class Main {
+    static int Run(string items[]) {
+        var args = new Launcher.Args(items)
+        if (args.Has("check")) { return Launcher.Check.Run(args) }
+        string configDir = args.Get("config", Launcher.Paths.ConfigDir())
+        var settings = Launcher.Settings.Load(configDir)
+        if (args.Has("server")) { settings.server = args.Get("server") }
+        if (args.Has("user")) { settings.user = args.Get("user") }
+        if (args.Has("install")) { settings.install = args.Get("install") }
+        if (settings.install == "") { settings.install = Launcher.Paths.DefaultInstall() }
+        var app = new Launcher.App(configDir, settings)
+        app.gameOwn = args.Get("game", "")
+        if (args.Has("shot")) {
+            app.Start(args.Get("password", ""))
+            app.Shot(args.Get("shot"), args.Get("wait", "3").ToFloat(), args.Has("password"), args.Has("update"), args.Has("play"))
+            print("Bild: " + args.Get("shot"))
+            return 0
+        }
+        app.Run()
+        return 0
+    }
+}
+
+Environment.Exit(Main.Run(Environment.Args))

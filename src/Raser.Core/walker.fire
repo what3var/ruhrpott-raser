@@ -12,18 +12,20 @@ namespace Raser {
         defined float walkSpeed
         defined float sprintSpeed
         defined float turnRate          // Grad/s
+        defined float load              // was er trägt, bremst: Faktor fürs Gehen (Rennen: das Quadrat), aus Raser.Inventory.SpeedFactor
 
         construct() {
             this.walkSpeed = 2.2
             this.sprintSpeed = 5.5
             this.turnRate = 150.0
+            this.load = 1.0
         }
 
         // Ein Schritt: forward -1 (rückwärts) .. 1, turn -1 (rechts) .. 1 (links), sprint: rennen (nur vorwärts).
         undefined Step(defined float dt, defined float forward, defined float turn, defined bool sprint) {
             float f = Math.Clamp(forward, -1.0, 1.0)
-            float want = f * this.walkSpeed
-            if (f > 0.0 && sprint) { want = f * this.sprintSpeed }
+            float want = f * this.walkSpeed * this.load
+            if (f > 0.0 && sprint) { want = f * this.sprintSpeed * this.load * this.load }
             if (f < 0.0) { want = want * 0.6 }
             float change = 12.0 * dt
             this.speed = this.speed + Math.Clamp(want - this.speed, -change, change)

@@ -1,0 +1,388 @@
+// Raser.Net: das Spielprotokoll (docs/SERVER.md) - Nachrichten, ihre Kodierung und die Rahmen auf der TCP-Verbindung.
+//
+// Ein Rahmen: 2 Byte Länge (Little Endian), dann die Nachricht: 1 Byte Art, dann die Felder (Varints, ZigZag für Vorzeichen, Texte als Länge +
+// UTF-8). Lage in cm (UTM 32), Richtung in 1/100 Grad, Tempo in cm/s. Jede Nachricht trägt, was später mehrere Regionsserver brauchen: Region
+// bzw. Kachel.
+#import "io"
+#import "raser.core"
+
+namespace Raser {
+    // Die Nummern des Protokolls.
+    class Protocol {
+        static readonly defined int Version = 1
+        static readonly defined int MaxClientFrame = 1024        // Bytes je Rahmen vom Client
+        static readonly defined int MaxServerFrame = 65535       // Bytes je Rahmen vom Server
+        static readonly defined int MaxText = 200                // Zeichen je Chatzeile oder Befehl
+        static readonly defined int MaxField = 512               // Bytes je Textfeld (UTF-8)
+        static readonly defined int MaxPlayers = 256             // Spieler je Snapshot
+
+        // Client -> Server
+        static readonly defined int Hello = 1
+        static readonly defined int State = 2
+        static readonly defined int Chat = 3
+        static readonly defined int Command = 4
+        static readonly defined int Bye = 5
+        // Server -> Client
+        static readonly defined int Welcome = 10
+        static readonly defined int Reject = 11
+        static readonly defined int Snapshot = 12
+        static readonly defined int Join = 13
+        static readonly defined int Leave = 14
+        static readonly defined int Said = 15
+        static readonly defined int Weather = 16
+        static readonly defined int Teleport = 17
+        static readonly defined int Kick = 18
+
+        // Arten einer Chatzeile (Said)
+        static readonly defined int FromPlayer = 0
+        static readonly defined int FromSystem = 1
+        static readonly defined int Answer = 2
+        static readonly defined int Error = 3
+
+        // Fahrzeugarten im State: 0 zu Fuß, dann wie Raser.Vehicle.kind.
+        static defined int KindOf(string vehicle, defined bool onFoot) {
+            if (onFoot) { return 0 }
+            if (vehicle == "auto") { return 1 }
+            if (vehicle == "transporter") { return 2 }
+            if (vehicle == "motorrad") { return 3 }
+            if (vehicle == "fahrrad") { return 4 }
+            return 1
+        }
+
+        // Der Name der Fahrzeugart ("" zu Fuß).
+        static string VehicleOf(defined int kind) {
+            if (kind == 1) { return "auto" }
+            if (kind == 2) { return "transporter" }
+            if (kind == 3) { return "motorrad" }
+            if (kind == 4) { return "fahrrad" }
+            return ""
+        }
+    }
+
+    // Eine Nachricht, die nicht zum Protokoll passt (der Server wirft den Client dann hinaus).
+    class ProtocolException : Exception {
+        construct(string message) : base(message) { }
+    }
+
+    // Eine Nachricht des Protokolls. Welche Felder gelten, hängt von der Art ab (Raser.Wire).
+    class Packet {
+        defined int type
+        defined int id                  // Spieler-ID (global, Raser.IdAllocator)
+        defined int seq                 // Folgenummer (State)
+        defined int version             // Protokollversion (Hello)
+        defined int region              // Region (Welcome, Snapshot)
+        defined int tileX               // Kachel (Raser.TileKey)
+        defined int tileY
+        defined float east              // m, UTM 32
+        defined float north
+        defined float heading           // Grad
+        defined float speed             // m/s
+        defined int kind                // Fahrzeugart (State, Snapshot) bzw. Art der Chatzeile (Said)
+        defined int time                // Serverzeit (ms seit 1970)
+        defined bool admin
+        string text                     // Token, Chat, Befehl, Grund, Wetter
+        string name                     // Name, Absender, Client-Version
+        defined int year
+        defined int day                 // Tag im Jahr (1 .. 365)
+        defined int seconds             // Uhrzeit (s am Tag)
+        defined float scale             // Zeitraffer (Spielsekunden je Sekunde)
+        List<Raser.Packet> players      // Snapshot: die Spieler in der Nähe (je id, Kachel, Lage, Richtung, Tempo, kind)
+
+        construct(defined int type) {
+            this.type = type
+            this.id = 0
+            this.seq = 0
+            this.version = 0
+            this.region = 0
+            this.tileX = 0
+            this.tileY = 0
+            this.east = 0.0
+            this.north = 0.0
+            this.heading = 0.0
+            this.speed = 0.0
+            this.kind = 0
+            this.time = 0
+            this.admin = false
+            this.text = ""
+            this.name = ""
+            this.year = 0
+            this.day = 0
+            this.seconds = 0
+            this.scale = 1.0
+            this.players = new List<Raser.Packet>()
+        }
+
+        // Die Anmeldung: Token, Name und Client-Version (im Feld name als "name|version").
+        static Raser.Packet Hello(string token, string user, string client) {
+            var p = new Raser.Packet(Raser.Protocol.Hello)
+            p.version = Raser.Protocol.Version
+            p.text = token
+            p.name = user
+            if (client != undefined && client != "") { p.name = user + "|" + client }
+            return p
+        }
+
+        // Eine Lage (State; für Snapshots je Spieler dasselbe mit id).
+        static Raser.Packet Moved(defined int seq, defined float east, defined float north, defined float heading, defined float speed, defined int kind) {
+            var p = new Raser.Packet(Raser.Protocol.State)
+            p.seq = seq
+            p.east = east
+            p.north = north
+            p.heading = heading
+            p.speed = speed
+            p.kind = kind
+            var tile = Raser.TileKey.Of(east, north)
+            p.tileX = tile.x
+            p.tileY = tile.y
+            return p
+        }
+
+        static Raser.Packet Line(defined int type, string text) {
+            var p = new Raser.Packet(type)
+            p.text = text
+            return p
+        }
+
+        // Eine Chatzeile vom Server (Said): Absender, Text, Art.
+        static Raser.Packet Said(string sender, string text, defined int kind) {
+            var p = new Raser.Packet(Raser.Protocol.Said)
+            p.name = sender
+            p.text = text
+            p.kind = kind
+            return p
+        }
+    }
+
+    // Kodieren und Dekodieren der Nachrichten.
+    class Wire {
+        // Die Nachricht ohne Rahmen.
+        static byte[] Encode(Raser.Packet p) {
+            var w = new Raser.ByteWriter(64)
+            w.Byte(p.type)
+            int t = p.type
+            if (t == Raser.Protocol.Hello) {
+                w.Varint(p.version)
+                Raser.Wire.Text(w, p.text)
+                Raser.Wire.Text(w, p.name)
+            } else if (t == Raser.Protocol.State) {
+                w.Varint(p.seq)
+                Raser.Wire.Place(w, p)
+            } else if (t == Raser.Protocol.Chat || t == Raser.Protocol.Command || t == Raser.Protocol.Reject || t == Raser.Protocol.Kick) {
+                Raser.Wire.Text(w, p.text)
+            } else if (t == Raser.Protocol.Bye) {
+            } else if (t == Raser.Protocol.Welcome) {
+                w.Varint(p.id)
+                w.Varint(p.region)
+                w.Varint(p.time)
+                w.Byte(Raser.Wire.Flag(p.admin))
+                Raser.Wire.Text(w, p.name)
+            } else if (t == Raser.Protocol.Snapshot) {
+                w.Varint(p.time)
+                w.Varint(p.region)
+                w.Varint(p.players.Count)
+                foreach (q in p.players) {
+                    w.Varint(q.id)
+                    Raser.Wire.Place(w, q)
+                }
+            } else if (t == Raser.Protocol.Join) {
+                w.Varint(p.id)
+                w.Byte(Raser.Wire.Flag(p.admin))
+                Raser.Wire.Text(w, p.name)
+            } else if (t == Raser.Protocol.Leave) {
+                w.Varint(p.id)
+            } else if (t == Raser.Protocol.Said) {
+                w.Byte(p.kind)
+                Raser.Wire.Text(w, p.name)
+                Raser.Wire.Text(w, p.text)
+            } else if (t == Raser.Protocol.Weather) {
+                w.Varint(p.year)
+                w.Varint(p.day)
+                w.Varint(p.seconds)
+                w.Varint(Math.Round(p.scale * 100.0)!int)
+                Raser.Wire.Text(w, p.text)
+            } else if (t == Raser.Protocol.Teleport) {
+                w.SignedVarint(Raser.Wire.Cm(p.east))
+                w.SignedVarint(Raser.Wire.Cm(p.north))
+                w.Varint(Raser.Wire.Angle(p.heading))
+            } else {
+                throw new Raser.ProtocolException("Unbekannte Art " + t + ".")
+            }
+            return w.ToBytes()
+        }
+
+        // Die Nachricht mit Rahmen (2 Byte Länge), so wie sie auf die Leitung geht.
+        static byte[] Frame(Raser.Packet p) {
+            byte body[] = Raser.Wire.Encode(p)
+            if (body.length > Raser.Protocol.MaxServerFrame) { throw new Raser.ProtocolException("Die Nachricht ist zu lang (" + body.length + " Bytes).") }
+            byte frame[] = new byte[body.length + 2]
+            frame[0] = body.length & 255
+            frame[1] = (body.length >> 8) & 255
+            body.CopyTo(frame, 2)
+            return frame
+        }
+
+        // Die Nachricht aus ihren Bytes (ohne Rahmen); Raser.ProtocolException, wenn sie nicht passt (unbekannte Art, zu kurz, zu lang, Unsinn in
+        // den Feldern).
+        static Raser.Packet Decode(byte data[]) {
+            if (data.length == 0) { throw new Raser.ProtocolException("Eine leere Nachricht.") }
+            var r = new Raser.ByteReader(data)
+            Raser.Packet p = undefined
+            try {
+                int t = r.Byte()
+                p = new Raser.Packet(t)
+                if (t == Raser.Protocol.Hello) {
+                    p.version = r.Varint()
+                    p.text = Raser.Wire.ReadText(r)
+                    p.name = Raser.Wire.ReadText(r)
+                } else if (t == Raser.Protocol.State) {
+                    p.seq = r.Varint()
+                    Raser.Wire.ReadPlace(r, p)
+                } else if (t == Raser.Protocol.Chat || t == Raser.Protocol.Command || t == Raser.Protocol.Reject || t == Raser.Protocol.Kick) {
+                    p.text = Raser.Wire.ReadText(r)
+                } else if (t == Raser.Protocol.Bye) {
+                } else if (t == Raser.Protocol.Welcome) {
+                    p.id = r.Varint()
+                    p.region = r.Varint()
+                    p.time = r.Varint()
+                    p.admin = r.Byte() != 0
+                    p.name = Raser.Wire.ReadText(r)
+                } else if (t == Raser.Protocol.Snapshot) {
+                    p.time = r.Varint()
+                    p.region = r.Varint()
+                    int n = r.Varint()
+                    if (n > Raser.Protocol.MaxPlayers) { throw new Raser.ProtocolException("Zu viele Spieler im Snapshot (" + n + ").") }
+                    for (int i = 0; i < n; i++) {
+                        var q = new Raser.Packet(Raser.Protocol.State)
+                        q.id = r.Varint()
+                        Raser.Wire.ReadPlace(r, q)
+                        p.players.Add(take q)
+                    }
+                } else if (t == Raser.Protocol.Join) {
+                    p.id = r.Varint()
+                    p.admin = r.Byte() != 0
+                    p.name = Raser.Wire.ReadText(r)
+                } else if (t == Raser.Protocol.Leave) {
+                    p.id = r.Varint()
+                } else if (t == Raser.Protocol.Said) {
+                    p.kind = r.Byte()
+                    p.name = Raser.Wire.ReadText(r)
+                    p.text = Raser.Wire.ReadText(r)
+                } else if (t == Raser.Protocol.Weather) {
+                    p.year = r.Varint()
+                    p.day = r.Varint()
+                    p.seconds = r.Varint()
+                    p.scale = r.Varint() / 100.0
+                    p.text = Raser.Wire.ReadText(r)
+                    if (p.day < 1 || p.day > 366 || p.seconds >= 86400) { throw new Raser.ProtocolException("Ein Datum außerhalb des Kalenders.") }
+                } else if (t == Raser.Protocol.Teleport) {
+                    p.east = r.SignedVarint() / 100.0
+                    p.north = r.SignedVarint() / 100.0
+                    p.heading = Raser.Wire.Degrees(r.Varint())
+                } else {
+                    throw new Raser.ProtocolException("Unbekannte Art " + t + ".")
+                }
+            } catch (Raser.DataException e) {
+                throw new Raser.ProtocolException("Die Nachricht ist zu kurz: " + e.message)
+            }
+            if (!r.AtEnd) { throw new Raser.ProtocolException("Nach der Nachricht stehen noch " + (data.length - r.position) + " Bytes.") }
+            return p
+        }
+
+        static defined int Flag(defined bool b) {
+            if (b) { return 1 }
+            return 0
+        }
+
+        static defined int Cm(defined float meters) { return Math.Round(meters * 100.0)!int }
+
+        // Grad als 1/100 Grad in 0 .. 35999.
+        static defined int Angle(defined float degrees) {
+            int a = Math.Round(degrees * 100.0)!int % 36000
+            if (a < 0) { a = a + 36000 }
+            return a
+        }
+
+        static defined float Degrees(defined int angle) {
+            if (angle >= 36000) { throw new Raser.ProtocolException("Eine Richtung außerhalb des Kreises (" + angle + ").") }
+            float d = angle / 100.0
+            if (d > 180.0) { d = d - 360.0 }
+            return d
+        }
+
+        // Kachel, Lage, Richtung, Tempo, Fahrzeugart.
+        static undefined Place(Raser.ByteWriter w, Raser.Packet p) {
+            w.SignedVarint(p.tileX)
+            w.SignedVarint(p.tileY)
+            w.SignedVarint(Raser.Wire.Cm(p.east))
+            w.SignedVarint(Raser.Wire.Cm(p.north))
+            w.Varint(Raser.Wire.Angle(p.heading))
+            w.SignedVarint(Raser.Wire.Cm(p.speed))
+            w.Byte(p.kind)
+        }
+
+        static undefined ReadPlace(Raser.ByteReader r, Raser.Packet p) {
+            p.tileX = r.SignedVarint()
+            p.tileY = r.SignedVarint()
+            p.east = r.SignedVarint() / 100.0
+            p.north = r.SignedVarint() / 100.0
+            p.heading = Raser.Wire.Degrees(r.Varint())
+            p.speed = r.SignedVarint() / 100.0
+            p.kind = r.Byte()
+            if (p.kind > 4) { throw new Raser.ProtocolException("Unbekannte Fahrzeugart " + p.kind + ".") }
+        }
+
+        // Ein Text als Länge + UTF-8.
+        static undefined Text(Raser.ByteWriter w, string s) {
+            if (s == undefined) { s = "" }
+            byte b[] = IO.Utf8.GetBytes(s)
+            if (b.length > Raser.Protocol.MaxField) { throw new Raser.ProtocolException("Ein Text ist zu lang (" + b.length + " Bytes).") }
+            w.Varint(b.length)
+            w.Bytes(b)
+        }
+
+        static string ReadText(Raser.ByteReader r) {
+            int n = r.Varint()
+            if (n > Raser.Protocol.MaxField) { throw new Raser.ProtocolException("Ein Text ist zu lang (" + n + " Bytes).") }
+            r.Need(n)
+            string s = IO.Utf8.GetString(r.data, r.position, n)
+            r.position = r.position + n
+            return s
+        }
+    }
+
+    // Schneidet die Rahmen aus dem, was von der Leitung kommt.
+    class FrameReader {
+        byte data[]
+        defined int count
+        defined int max
+
+        // max: so viele Bytes darf eine Nachricht haben (sonst Raser.ProtocolException).
+        construct(defined int max) {
+            this.max = max
+            this.data = new byte[max + 2]
+            this.count = 0
+        }
+
+        // So viele Bytes passen noch hinein.
+        defined int Room { get { return this.data.length - this.count } }
+
+        undefined Feed(byte buffer[], defined int offset, defined int n) {
+            if (n > this.Room) { throw new Raser.ProtocolException("Zu viele Bytes auf einmal.") }
+            buffer.CopyTo(this.data, this.count, offset, n)
+            this.count = this.count + n
+        }
+
+        // Die nächste ganze Nachricht (ohne Rahmen), undefined, solange keine vollständig ist.
+        byte[] Next() {
+            if (this.count < 2) { return undefined }
+            int n = this.data[0] | (this.data[1] << 8)
+            if (n == 0 || n > this.max) { throw new Raser.ProtocolException("Ein Rahmen mit " + n + " Bytes (erlaubt: 1 bis " + this.max + ").") }
+            if (this.count < n + 2) { return undefined }
+            byte body[] = this.data.Slice(2, n)
+            int rest = this.count - n - 2
+            if (rest > 0) { this.data.CopyTo(this.data, 0, n + 2, rest) }
+            this.count = rest
+            return body
+        }
+    }
+}

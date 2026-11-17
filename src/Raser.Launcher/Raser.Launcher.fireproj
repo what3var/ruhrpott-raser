@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "name": "Raser.Launcher",
+  "type": "exe",
+  "entry": "main.fire",
+  "settings": {
+    "version": "0.1.0",
+    "subsystem": "gui",
+    "description": "Ruhrpott-Raser: der Launcher - Anmeldung, News, Updates der Installation (SHA-256) und Start des Spiels; --check ohne Fenster."
+  }
+}

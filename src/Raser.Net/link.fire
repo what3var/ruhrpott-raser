@@ -1,0 +1,121 @@
+// Raser.Net: eine Verbindung des Spielprotokolls über TCP - schickt Nachrichten in Rahmen und liest, ohne zu warten, was angekommen ist.
+// Server und Client fragen sie in ihrer Schleife ab (kein eigener Thread: das Spiel und der Regionsserver laufen im Takt).
+#import "net"
+#import "time"
+#import "raser.core"
+
+namespace Raser {
+    class Link {
+        Net.TcpClient tcp
+        Raser.FrameReader frames
+        byte buffer[]
+        defined bool closed
+        string reason                   // warum sie zu ist ("" offen)
+        defined int sentBytes
+        defined int receivedBytes
+
+        // tcp: eine verbundene Leitung; maxIn: so lang darf eine ankommende Nachricht sein.
+        construct(Net.TcpClient tcp, defined int maxIn) {
+            this.tcp = try take tcp
+            this.frames = new Raser.FrameReader(maxIn)
+            this.buffer = new byte[4096]
+            this.closed = false
+            this.reason = ""
+            this.sentBytes = 0
+            this.receivedBytes = 0
+            try {
+                this.tcp.NoDelay = true
+                this.tcp.WriteTimeout = 2000
+            } catch (Net.NetException e) { this.Fail("Die Leitung ist zu: " + e.message) }
+        }
+
+        // Verbindet zu host:port (Client; Net.NetException, wenn niemand antwortet).
+        static Raser.Link Connect(string host, defined int port, any timeout = 5000) {
+            var tcp = new Net.TcpClient(host, port, timeout)
+            return new Raser.Link(take tcp, Raser.Protocol.MaxServerFrame)
+        }
+
+        defined bool IsOpen { get { return !this.closed } }
+
+        string Peer {
+            get {
+                if (this.closed) { return "?" }
+                try { return this.tcp.RemoteHost + ":" + this.tcp.RemotePort } catch (Net.NetException e) { return "?" }
+            }
+        }
+
+        // Schickt eine Nachricht; false, wenn die Leitung zu ist (oder dabei zugeht).
+        defined bool Send(Raser.Packet p) {
+            if (this.closed) { return false }
+            byte frame[] = Raser.Wire.Frame(p)
+            return this.SendFrame(frame)
+        }
+
+        // Schickt einen fertigen Rahmen (Raser.Wire.Frame - z. B. dieselbe Nachricht an viele).
+        defined bool SendFrame(byte frame[]) {
+            if (this.closed) { return false }
+            try {
+                this.tcp.Write(frame, 0, frame.length)
+                this.sentBytes = this.sentBytes + frame.length
+                return true
+            } catch (Net.NetException e) {
+                this.Fail("Senden: " + e.message)
+            }
+            return false
+        }
+
+        // Die nächste angekommene Nachricht, undefined, wenn (noch) keine da ist; wartet nicht. Liest höchstens 16 KiB je Aufruf von der Leitung.
+        // Raser.ProtocolException bei Unsinn (der Aufrufer schließt dann).
+        Raser.Packet Receive() {
+            byte body[] = this.frames.Next()
+            if (body != undefined) { return Raser.Wire.Decode(body) }
+            if (this.closed) { return undefined }
+            int got = 0
+            try {
+                while (got < 16384 && this.frames.Room > 0 && this.tcp.WaitReadable(0)) {
+                    int want = Math.Min(this.buffer.length, this.frames.Room)
+                    int n = this.tcp.Read(this.buffer, 0, want)
+                    if (n <= 0) {
+                        this.Fail("Die Gegenseite hat geschlossen.")
+                        break
+                    }
+                    this.frames.Feed(this.buffer, 0, n)
+                    got = got + n
+                    this.receivedBytes = this.receivedBytes + n
+                    body = this.frames.Next()
+                    if (body != undefined) { return Raser.Wire.Decode(body) }
+                }
+            } catch (Net.NetException e) {
+                this.Fail("Empfangen: " + e.message)
+            }
+            body = this.frames.Next()
+            if (body != undefined) { return Raser.Wire.Decode(body) }
+            return undefined
+        }
+
+        // Wartet höchstens ms auf die nächste Nachricht (Client beim Anmelden, Tests); undefined, wenn keine kam.
+        Raser.Packet Wait(defined int ms) {
+            int until = DateTime.UtcNow.Ticks + ms * 10000
+            while (true) {
+                var p = this.Receive()
+                if (p != undefined) { return p }
+                if (this.closed || DateTime.UtcNow.Ticks >= until) { return undefined }
+                try { this.tcp.WaitReadable(Math.Max(1, Math.Min(50, (until - DateTime.UtcNow.Ticks) / 10000))) } catch (Net.NetException e) { this.Fail(e.message) }
+            }
+            return undefined
+        }
+
+        undefined Fail(string why) {
+            if (this.closed) { return }
+            this.reason = why
+            this.Close()
+        }
+
+        undefined Close() {
+            if (this.reason == "") { this.reason = "geschlossen" }
+            if (this.closed) { return }
+            this.closed = true
+            try { this.tcp.Close() } catch (Net.NetException e) { }
+        }
+    }
+}
