@@ -1,0 +1,377 @@
+// Raser.Launcher: die lokale Installation mit der Dateiliste des Servers vergleichen (Plan) und die fehlenden oder geänderten Dateien laden (Updater).
+//
+// Sicherheit: jeder Pfad der Liste muss Launcher.Paths.IsSafe sein (sonst wird das ganze Update abgelehnt), eine Datei wird zuerst in
+// <install>/.raser-tmp geladen, nach dem Laden gegen Größe und SHA-256 geprüft und erst dann an ihren Platz umbenannt - eine halbe oder falsche Datei
+// liegt nie an ihrem Platz. Gelöscht werden nur Dateien, die dieser Launcher selbst installiert hat (sie stehen in .raser-install.json) und die das neue
+// Release nicht mehr hat.
+#import "filesystem"
+#import "hash"
+#import "json"
+#import "http"
+#import "time"
+
+namespace Launcher {
+    // Was der Launcher von einer installierten Datei weiß: so muss sie beim nächsten Start nicht neu gehasht werden, solange Größe und Zeit stimmen.
+    class LocalEntry {
+        string path
+        defined int size
+        string sha256
+        defined int mtime
+
+        construct(string path, defined int size, string sha256, defined int mtime) {
+            this.path = path
+            this.size = size
+            this.sha256 = sha256
+            this.mtime = mtime
+        }
+    }
+
+    // Der Stand der Installation (<install>/.raser-install.json): die Version und die Dateien, die der Launcher geschrieben oder geprüft hat.
+    class LocalState {
+        string version
+        List<Launcher.LocalEntry> entries
+
+        construct() {
+            this.version = ""
+            this.entries = new List<Launcher.LocalEntry>()
+        }
+
+        static string FileOf(string install) { return IO.Path.Combine(install, ".raser-install.json") }
+
+        Launcher.LocalEntry Find(string path) {
+            foreach (e in this.entries) {
+                if (e.path == path) { return e }
+            }
+            return undefined
+        }
+
+        undefined Put(string path, defined int size, string sha256, defined int mtime) {
+            var e = this.Find(path)
+            if (e != undefined) {
+                e.size = size
+                e.sha256 = sha256
+                e.mtime = mtime
+                return
+            }
+            this.entries.Add(new Launcher.LocalEntry(path, size, sha256, mtime))
+        }
+
+        undefined Drop(string path) {
+            for (int i = 0; i < this.entries.Count; i++) {
+                if (this.entries[i].path == path) {
+                    this.entries.RemoveAt(i)
+                    return
+                }
+            }
+        }
+
+        // Liest den Stand; ein fehlender oder kaputter ist leer (dann wird eben alles gehasht).
+        static Launcher.LocalState Load(string install) {
+            var state = new Launcher.LocalState()
+            string file = Launcher.LocalState.FileOf(install)
+            try {
+                if (!IO.File.Exists(file)) { return state }
+                any o = Json.Parse(IO.File.ReadAllText(file))
+                if (!(o is of JsonObject)) { return state }
+                any v = o.Get("version")
+                if (v is of string) { state.version = v }
+                any files = o.Get("files")
+                if (files == undefined || files is of JsonObject || files is of string) { return state }
+                for (int i = 0; i < files.length; i++) {
+                    any f = files[i]
+                    if (!(f is of JsonObject)) { continue }
+                    any p = f.Get("path")
+                    any s = f.Get("sha256")
+                    if (!(p is of string) || !(s is of string) || !Launcher.Paths.IsSafe(p)) { continue }
+                    state.entries.Add(new Launcher.LocalEntry(p, Launcher.Api.Number(f, "size", 0), s, Launcher.Api.Number(f, "mtime", 0)))
+                }
+            } catch (Exception e) { }
+            return state
+        }
+
+        // Schreibt den Stand (über eine Zwischendatei, damit er nie halb ist).
+        undefined Save(string install) {
+            string text = "{\"version\": " + Json.Serialize(this.version) + ", \"files\": ["
+            for (int i = 0; i < this.entries.Count; i++) {
+                var e = this.entries[i]
+                if (i > 0) { text = text + "," }
+                text = text + "\n  {\"path\": " + Json.Serialize(e.path) + ", \"size\": " + e.size + ", \"sha256\": " + Json.Serialize(e.sha256) + ", \"mtime\": " + e.mtime + "}"
+            }
+            text = text + "\n]}\n"
+            string file = Launcher.LocalState.FileOf(install)
+            IO.File.WriteAllText(file + ".neu", text)
+            IO.File.Move(file + ".neu", file, true)
+        }
+    }
+
+    // Was zu tun ist, damit die Installation dem Release entspricht.
+    class Plan {
+        // die Dateien, die geladen werden müssen (fehlen oder sind anders)
+        List<Launcher.ReleaseFile> fetch
+        defined int fetchBytes
+        // so viele Dateien sind schon richtig da
+        defined int current
+        // Dateien, die der Launcher früher installiert hat und die das Release nicht mehr hat (relativ, IsSafe)
+        List<string> obsolete
+        // warum das Release abgelehnt wird ("" wenn nicht): unsichere Pfade, doppelte Pfade, kaputte Prüfsummen
+        string error
+
+        construct() {
+            this.fetch = new List<Launcher.ReleaseFile>()
+            this.fetchBytes = 0
+            this.current = 0
+            this.obsolete = new List<string>()
+            this.error = ""
+        }
+
+        bool UpToDate { get { return this.error == "" && this.fetch.Count == 0 } }
+
+        // "3 Dateien (12,5 MB) zu laden" / "aktuell"
+        string Describe() {
+            if (this.error != "") { return this.error }
+            if (this.fetch.Count == 0) { return "Installation ist aktuell (" + this.current + " Dateien)" }
+            string files = "Dateien"
+            if (this.fetch.Count == 1) { files = "Datei" }
+            return this.fetch.Count + " " + files + " (" + Launcher.Plan.Size(this.fetchBytes) + ") zu laden"
+        }
+
+        static string Size(defined int bytes) {
+            if (bytes < 1024) { return bytes + " B" }
+            if (bytes < 1048576) { return Launcher.Plan.Decimal(bytes / 1024.0) + " KB" }
+            if (bytes < 1073741824) { return Launcher.Plan.Decimal(bytes / 1048576.0) + " MB" }
+            return Launcher.Plan.Decimal(bytes / 1073741824.0) + " GB"
+        }
+
+        // eine Nachkommastelle, mit Komma
+        static string Decimal(defined float v) {
+            int tenths = Math.Round(v * 10.0)!int
+            return (tenths / 10) + "," + (tenths % 10)
+        }
+
+        // Prüft die Dateiliste (ohne Dateien anzufassen): "" wenn sie in Ordnung ist, sonst der Grund.
+        static string Check(Launcher.Release release) {
+            var seen = new Dictionary<string, bool>()
+            foreach (f in release.files) {
+                if (!Launcher.Paths.IsSafe(f.path)) { return "Update abgelehnt: unsicherer Pfad in der Dateiliste: \"" + f.path + "\"" }
+                string key = f.path.ToLower()
+                if (seen.ContainsKey(key)) { return "Update abgelehnt: doppelter Pfad in der Dateiliste: \"" + f.path + "\"" }
+                seen[key] = true
+                if (!Launcher.Api.IsSha256(f.sha256)) { return "Update abgelehnt: ungültige Prüfsumme für \"" + f.path + "\"" }
+                if (f.size < 0) { return "Update abgelehnt: ungültige Größe für \"" + f.path + "\"" }
+            }
+            // eine Datei darf nicht zugleich ein Ordner einer anderen sein ("bin" und "bin/spiel")
+            foreach (f in release.files) {
+                if (seen.ContainsKey(f.path.ToLower() + "/")) { return "Update abgelehnt: \"" + f.path + "\" ist Datei und Ordner" }
+                string prefix = ""
+                var parts = f.path.Split("/")
+                for (int i = 0; i < parts.length - 1; i++) {
+                    if (i > 0) { prefix = prefix + "/" }
+                    prefix = prefix + parts[i].ToLower()
+                    if (seen.ContainsKey(prefix)) { return "Update abgelehnt: \"" + prefix + "\" ist Datei und Ordner" }
+                }
+            }
+            return ""
+        }
+
+        // Vergleicht die Liste mit dem, was in `install` liegt. `known` ist die Zeit-Abkürzung: eine Datei, deren Größe und Zeit zum Stand passen,
+        // wird nicht neu gehasht. Ohne Stand (undefined) wird jede Datei mit passender Größe gehasht.
+        static Launcher.Plan Make(Launcher.Release release, string install, Launcher.LocalState known) {
+            var plan = new Launcher.Plan()
+            plan.error = Launcher.Plan.Check(release)
+            if (plan.error != "") { return plan }
+            foreach (f in release.files) {
+                string local = Launcher.Paths.Local(install, f.path)
+                if (Launcher.Plan.Matches(f, local, known)) {
+                    plan.current = plan.current + 1
+                } else {
+                    plan.fetch.Add(f)
+                    plan.fetchBytes = plan.fetchBytes + f.size
+                }
+            }
+            if (known != undefined) {
+                foreach (e in known.entries) {
+                    bool still = false
+                    foreach (f in release.files) {
+                        if (f.path == e.path) { still = true }
+                    }
+                    if (!still && Launcher.Paths.IsSafe(e.path)) { plan.obsolete.Add(e.path) }
+                }
+            }
+            return plan
+        }
+
+        // Liegt die Datei richtig da? (gleiche Größe und gleicher SHA-256)
+        static bool Matches(Launcher.ReleaseFile f, string local, Launcher.LocalState known) {
+            if (!IO.File.Exists(local)) { return false }
+            defined int size = IO.File.Size(local)
+            if (size != f.size) { return false }
+            defined int mtime = Launcher.Plan.MTime(local)
+            if (known != undefined) {
+                var e = known.Find(f.path)
+                if (e != undefined && e.size == size && e.mtime == mtime && e.mtime != 0) { return e.sha256 == f.sha256 }
+            }
+            string sha = Launcher.Plan.HashFile(local)
+            if (known != undefined) { known.Put(f.path, size, sha, mtime) }
+            return sha == f.sha256
+        }
+
+        static defined int MTime(string file) {
+            try { return IO.File.GetLastWriteTimeUtc(file).ToUnixSeconds() } catch (Exception e) { return 0 }
+        }
+
+        // SHA-256 einer Datei, Stück für Stück gelesen (auch große Dateien brauchen keinen Speicher).
+        static string HashFile(string file) {
+            var stream = IO.File.OpenRead(file)
+            try {
+                var hasher = new Hash.Sha256()
+                hasher.UpdateStream(stream)
+                stream.Close()
+                return hasher.FinishHex()
+            } catch (Exception e) {
+                stream.Close()
+                throw e
+            }
+        }
+    }
+
+    // Lädt die Dateien eines Plans, eine nach der anderen, in Schritten (Step): ein Fenster ruft Step in seinem Arbeits-Thread auf, der Modus ohne Fenster
+    // in einer Schleife. Fortschritt: doneBytes / totalBytes, current (die Datei, die gerade lädt); was geschah, steht in `log` (TakeLog holt es ab).
+    class Updater {
+        string url
+        string install
+        Launcher.Release release
+        Launcher.Plan plan
+        Launcher.LocalState state
+        defined int index = 0
+        defined int doneBytes = 0
+        defined int totalBytes = 0
+        defined int fileBytes = 0
+        string current = ""
+        Http.Download download = undefined
+        string temp = ""
+        bool Done = false
+        // die Dateien, die nicht geladen werden konnten (die Installation ist dann nicht aktuell)
+        defined int failed = 0
+        defined int installed = 0
+        List<string> log
+
+        construct(string url, string install, Launcher.Release release, Launcher.Plan plan, Launcher.LocalState state) {
+            this.url = url
+            this.install = install
+            this.release = release
+            this.plan = plan
+            this.state = state
+            this.totalBytes = plan.fetchBytes
+            this.log = new List<string>()
+        }
+
+        destruct() {
+            if (this.download != undefined) { this.download.Close() }
+        }
+
+        bool Ok { get { return this.Done && this.failed == 0 && this.plan.error == "" } }
+
+        string TempDir() { return IO.Path.Combine(this.install, ".raser-tmp") }
+
+        undefined Say(string text) { this.log.Add(text) }
+
+        List<string> TakeLog() {
+            var taken = this.log
+            this.log = new List<string>()
+            return taken
+        }
+
+        // Ein Schritt: höchstens etwa `maxBytes` laden (oder eine Datei prüfen und an ihren Platz legen). false, wenn alles erledigt ist.
+        bool Step(defined int maxBytes = 262144) {
+            if (this.Done) { return false }
+            if (this.plan.error != "") {
+                this.Say(this.plan.error)
+                this.Done = true
+                return false
+            }
+            if (this.index >= this.plan.fetch.Count) {
+                this.Finish()
+                return false
+            }
+            var f = this.plan.fetch[this.index]
+            if (this.download == undefined) {
+                this.Begin(f)
+                return true
+            }
+            this.download.Step(maxBytes)
+            this.fileBytes = this.download.Received
+            if (this.download.Done) { this.Complete(f) }
+            return true
+        }
+
+        undefined Begin(Launcher.ReleaseFile f) {
+            this.current = f.path
+            this.fileBytes = 0
+            IO.Directory.CreateDirectory(this.TempDir())
+            this.temp = IO.Path.Combine(this.TempDir(), "datei-" + this.index + ".laden")
+            // (ein Rest eines früheren Versuchs würde sonst fortgesetzt oder für fertig gehalten)
+            IO.File.Delete(this.temp)
+            IO.File.Delete(this.temp + ".part")
+            this.download = new Http.Download(Launcher.Paths.FileUrl(this.url, f.path), this.temp)
+            this.download.userAgent = "raser-launcher/0.1"
+            this.download.timeout = 30000
+            this.download.Start()
+        }
+
+        // Die Datei ist da (oder das Laden ging schief): prüfen, an ihren Platz legen, zur nächsten.
+        undefined Complete(Launcher.ReleaseFile f) {
+            string error = this.download.Error
+            this.download.Close()
+            delete this.download
+            this.download = undefined
+            if (error == "") { error = this.Place(f) }
+            if (error != "") {
+                IO.File.Delete(this.temp)
+                IO.File.Delete(this.temp + ".part")
+                this.failed = this.failed + 1
+                this.Say("FEHLER " + f.path + ": " + error)
+            } else {
+                this.installed = this.installed + 1
+                this.Say("geladen " + f.path + " (" + Launcher.Plan.Size(f.size) + ")")
+            }
+            this.doneBytes = this.doneBytes + f.size
+            this.fileBytes = 0
+            this.index = this.index + 1
+        }
+
+        // Prüft die geladene Datei und benennt sie an ihren Platz um; "" wenn es klappte, sonst der Grund (die Datei ist dann nicht installiert).
+        string Place(Launcher.ReleaseFile f) {
+            if (!IO.File.Exists(this.temp)) { return "Datei fehlt nach dem Laden" }
+            defined int size = IO.File.Size(this.temp)
+            if (size != f.size) { return "falsche Größe (" + size + " statt " + f.size + " Bytes)" }
+            string sha = Launcher.Plan.HashFile(this.temp)
+            if (sha != f.sha256) { return "Prüfsumme falsch (SHA-256 " + sha.Substring(0, 12) + "... statt " + f.sha256.Substring(0, 12) + "...) - nicht installiert" }
+            string target = Launcher.Paths.Local(this.install, f.path)
+            string dir = IO.Path.GetDirectoryName(target)
+            if (dir != "" && !IO.Directory.Exists(dir)) { IO.Directory.CreateDirectory(dir) }
+            if (IO.Directory.Exists(target)) { return "am Ziel liegt ein Ordner" }
+            IO.File.Move(this.temp, target, true)
+            this.state.Put(f.path, f.size, f.sha256, Launcher.Plan.MTime(target))
+            return ""
+        }
+
+        // Alles geladen: veraltete eigene Dateien weg, Stand schreiben, Zwischenordner weg.
+        undefined Finish() {
+            if (this.failed == 0) {
+                foreach (path in this.plan.obsolete) {
+                    if (!Launcher.Paths.IsSafe(path)) { continue }
+                    string local = Launcher.Paths.Local(this.install, path)
+                    if (IO.File.Exists(local)) {
+                        IO.File.Delete(local)
+                        this.Say("entfernt " + path)
+                    }
+                    this.state.Drop(path)
+                }
+                this.state.version = this.release.version
+            }
+            this.state.Save(this.install)
+            try { IO.Directory.Delete(this.TempDir(), true) } catch (Exception e) { }
+            this.Done = true
+        }
+    }
+}

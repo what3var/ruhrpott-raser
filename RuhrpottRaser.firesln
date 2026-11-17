@@ -12,7 +12,8 @@
     "src/Raser.Tool/Raser.Tool.fireproj",
     "src/Raser.Viewer/Raser.Viewer.fireproj",
     "src/Raser.Game/Raser.Game.fireproj",
-    "src/Raser.Server/Raser.Server.fireproj"
+    "src/Raser.Server/Raser.Server.fireproj",
+    "src/Raser.Launcher/Raser.Launcher.fireproj"
   ],
   "startup": "Raser.Tool",
   "settings": {

@@ -1,0 +1,650 @@
+// Raser.Launcher: das Fenster (Paket ui). Links Anmeldung und Installation, rechts Version mit Notizen und die News, unten Fortschritt, Status und
+// die Knöpfe Aktualisieren / Spielen. Alles, was im Netz wartet (Anmelden, Status/News/Version holen, Laden), läuft in einem eigenen System-Thread
+// (`fire dedicated`, Launcher.Worker) und meldet sich über einen Kanal als Textzeilen ("art\tfeld\tfeld..."); der Takt des Fensters (OnTick) holt sie ab.
+#import "ui"
+#import "filesystem"
+#import "process"
+#import "time"
+
+namespace Launcher {
+    // Ein Textfeld für Passwörter: es zeigt nur Sternchen, der echte Text steht in `secret`. Kopieren, Ausschneiden in die Zwischenablage, Ziehen
+    // und Rückgängig gibt es hier nicht (sonst käme das Passwort - oder die Sternchen - woanders hin).
+    class PasswordBox : UI.TextBox {
+        string secret = ""
+
+        construct(defined int width = 160) : base("", 0, 0, width, 26) {
+            this.UndoLimit = 0
+            this.AllowDrop = false
+        }
+
+        static string Stars(defined int n) {
+            string s = ""
+            for (int i = 0; i < n; i++) { s = s + "*" }
+            return s
+        }
+
+        // Jede Änderung des Textes geht hier durch (Tippen, Löschen, Einfügen): das Geheimnis ändert sich mit, gezeigt werden Sternchen.
+        override undefined EditText(defined int start, defined int count, string value, defined int kind) {
+            if (start > this.secret.Length) { start = this.secret.Length }
+            if (start + count > this.secret.Length) { count = this.secret.Length - start }
+            this.secret = this.secret.Substring(0, start) + value + this.secret.Substring(start + count)
+            base.EditText(start, count, Launcher.PasswordBox.Stars(value.Length), kind)
+        }
+
+        override undefined Copy() { }
+
+        override undefined Cut() { if (this.HasSelection()) { this.ReplaceSelection("") } }
+
+        override UI.DragData DragStart(UI.Root root, defined int px, defined int py) { return undefined }
+
+        undefined Clear() {
+            this.secret = ""
+            this.SetText("")
+        }
+    }
+
+    // Ein Fortschrittsbalken: Value von 0 bis 1, Text darüber (zum Beispiel "40 % - bin/spiel").
+    class ProgressBar : UI.Element {
+        defined float Value = 0.0
+        string Text = ""
+
+        construct() : base(0, 0, -1, 24) { }
+
+        override undefined MeasureCore(UI.Root root, defined int aw, defined int ah) {
+            this.cw = 120
+            this.ch = 24
+        }
+
+        override undefined Draw(UI.Root root, defined int ax, defined int ay) {
+            if (!this.NeedsDraw(root, ax, ay)) { return }
+            var theme = root.theme
+            root.Box(ax, ay, this.actualWidth, this.actualHeight, theme.inputBack, theme.border)
+            defined float v = this.Value
+            if (v < 0.0) { v = 0.0 }
+            if (v > 1.0) { v = 1.0 }
+            int filled = Math.Round((this.actualWidth - 4) * v)!int
+            if (filled > 0) { root.renderer.FillRect(ax + 2, ay + 2, filled, this.actualHeight - 4, theme.accent) }
+            if (this.Text != "") {
+                string t = this.Text
+                while (t.Length > 3 && this.TextWidth(root, t) > this.actualWidth - 12) { t = t.Substring(0, t.Length - 2) }
+                int tx = ax + (this.actualWidth - this.TextWidth(root, t)) / 2
+                int ty = ay + (this.actualHeight - this.TextHeight(root)) / 2
+                // (der Text über dem Balken in Weiß, sonst in der Textfarbe)
+                Brush brush = theme.text
+                if (filled > this.actualWidth / 2) { brush = theme.selectionText }
+                this.DrawString(root, tx, ty, t, brush)
+            }
+        }
+    }
+
+    // Die Arbeit im Hintergrund: jede Methode läuft in einem eigenen Thread und schickt ihre Ergebnisse als Zeilen in den Kanal.
+    class Worker {
+        // (Tabs und Zeilenenden trennen die Felder einer Meldung)
+        static string Field(string text) { return text.Replace("\t", " ").Replace("\r", "") }
+
+        static undefined Account(Channel<string> ch, string url, string user, string password, bool register) {
+            try {
+                var api = new Launcher.Api(url)
+                Launcher.Session s = undefined
+                if (register) { s = api.Register(user, password) } else { s = api.Login(user, password) }
+                string admin = "0"
+                if (s.admin) { admin = "1" }
+                ch.Send("session\t" + Launcher.Worker.Field(s.token) + "\t" + Launcher.Worker.Field(s.user) + "\t" + admin + "\t" + Launcher.Worker.Field(s.expires))
+            } catch (Launcher.ApiException e) {
+                ch.Send("loginerror\t" + Launcher.Worker.Field(e.message))
+            } catch (Exception e) {
+                ch.Send("loginerror\t" + Launcher.Worker.Field(e.message))
+            }
+        }
+
+        // Status, News und Version holen und die Installation vergleichen.
+        static undefined Refresh(Channel<string> ch, string url, string install) {
+            var api = new Launcher.Api(url)
+            try {
+                ch.Send("status\t" + Launcher.Worker.Field(api.Status().Describe()))
+            } catch (Exception e) {
+                ch.Send("statuserror\t" + Launcher.Worker.Field(e.message))
+                ch.Send("refreshed")
+                return
+            }
+            try {
+                string text = ""
+                foreach (n in api.News()) {
+                    if (text != "") { text = text + "\n\n" }
+                    text = text + n.date + "  " + n.title + "\n" + n.text
+                }
+                if (text == "") { text = "Keine News." }
+                ch.Send("news\t" + Launcher.Worker.Field(text))
+            } catch (Exception e) {
+                ch.Send("news\tNews nicht geladen: " + Launcher.Worker.Field(e.message))
+            }
+            try {
+                var release = api.Version()
+                ch.Send("version\t" + Launcher.Worker.Field(release.version) + "\t" + Launcher.Worker.Field(release.notes))
+                Launcher.Worker.Compare(ch, release, install)
+            } catch (Exception e) {
+                ch.Send("plan\t0\tVersion nicht geladen: " + Launcher.Worker.Field(e.message))
+            }
+            ch.Send("refreshed")
+        }
+
+        static undefined Compare(Channel<string> ch, Launcher.Release release, string install) {
+            if (!IO.Directory.Exists(install)) { IO.Directory.CreateDirectory(install) }
+            var state = Launcher.LocalState.Load(install)
+            var plan = Launcher.Plan.Make(release, install, state)
+            bool current = plan.UpToDate && plan.obsolete.Count == 0
+            if (current) {
+                state.version = release.version
+                state.Save(install)
+            }
+            string flag = "0"
+            if (current) { flag = "1" }
+            ch.Send("plan\t" + flag + "\t" + Launcher.Worker.Field(plan.Describe()))
+        }
+
+        // Die Installation auf den Stand des Servers bringen (die Liste wird dafür neu geholt).
+        static undefined Update(Channel<string> ch, string url, string install) {
+            try {
+                var release = new Launcher.Api(url).Version()
+                if (!IO.Directory.Exists(install)) { IO.Directory.CreateDirectory(install) }
+                var state = Launcher.LocalState.Load(install)
+                var plan = Launcher.Plan.Make(release, install, state)
+                if (plan.error != "") {
+                    ch.Send("updated\t0\t" + Launcher.Worker.Field(plan.error))
+                    return
+                }
+                var updater = new Launcher.Updater(url, install, release, plan, state)
+                defined int last = -1
+                while (updater.Step()) {
+                    foreach (line in updater.TakeLog()) { ch.Send("log\t" + Launcher.Worker.Field(line)) }
+                    defined int at = updater.doneBytes + updater.fileBytes
+                    if (at != last) {
+                        last = at
+                        ch.Send("progress\t" + at + "\t" + updater.totalBytes + "\t" + Launcher.Worker.Field(updater.current))
+                    }
+                }
+                foreach (line in updater.TakeLog()) { ch.Send("log\t" + Launcher.Worker.Field(line)) }
+                string ok = "0"
+                if (updater.Ok) { ok = "1" }
+                ch.Send("updated\t" + ok + "\t" + updater.installed + " geladen, " + updater.failed + " fehlgeschlagen")
+            } catch (Exception e) {
+                ch.Send("updated\t0\tUpdate abgebrochen: " + Launcher.Worker.Field(e.message))
+            }
+        }
+    }
+
+    class App {
+        Framebuffer fb
+        Window win
+        UI.Root ui
+        Channel<string> events
+        string configDir
+        Launcher.Settings settings
+        Launcher.Session session = undefined
+        string gameOwn = ""
+        // was gerade im Hintergrund läuft ("" nichts, "login", "refresh", "update")
+        string busy = ""
+        bool upToDate = false
+        string version = ""
+        Process game = undefined
+        // der Exit-Code des Spiels, sobald es endete (-1: läuft noch); ausgewertet im Takt nach Pump
+        defined int gameExit = -1
+        List<string> gameLines
+
+        UI.DockPanel dock
+        UI.Label title
+        UI.Label serverState
+        UI.TextBox serverBox
+        UI.TextBox userBox
+        Launcher.PasswordBox passwordBox
+        UI.Button loginButton
+        UI.Button registerButton
+        UI.Button logoutButton
+        UI.Label loginState
+        UI.Label loginError
+        UI.TextBox installBox
+        UI.CheckBox closeOnStart
+        UI.Label versionLabel
+        UI.TextArea notes
+        UI.TextArea news
+        Launcher.ProgressBar progress
+        UI.Label statusLine
+        UI.Button updateButton
+        UI.Button playButton
+
+        construct(string configDir, Launcher.Settings settings, defined int width = 880, defined int height = 580) {
+            this.configDir = configDir
+            this.settings = settings
+            this.events = new Channel<string>(256)
+            this.gameLines = new List<string>()
+            this.fb = new Framebuffer(width, height)
+            this.win = new Window(this.fb, "Ruhrpott-Raser")
+            this.ui = new UI.Root(this.fb, this.win)
+            // ohne Schrift des Systems (kein Desktop): eine verbreitete TrueType-Schrift statt der Konsolenschrift
+            if (this.ui.theme.font == "") {
+                foreach (name in ["Noto Sans", "DejaVu Sans", "Liberation Sans", "FreeSans"]) {
+                    if (Fonts.Has(name)) {
+                        this.ui.theme.font = name
+                        this.ui.theme.fontSize = 14
+                        break
+                    }
+                }
+            }
+            this.Build(width, height)
+            this.ui.onTick = func () on this => { this.Tick() }
+            this.ui.onResize = func (int w, int h) on this => {
+                this.dock.Width = w
+                this.dock.Height = h
+            }
+        }
+
+        // ---- der Aufbau ----
+
+        static UI.Label Caption(string text) {
+            var l = new UI.Label(text)
+            l.Margin = new UI.Thickness(0, 6, 0, 2)
+            return l
+        }
+
+        undefined Build(defined int width, defined int height) {
+            this.dock = new UI.DockPanel(0, 0, width, height)
+
+            // oben: der Name und der Zustand des Servers
+            var head = new UI.Border()
+            head.Thickness = 0
+            head.Padding = new UI.Thickness(16, 10, 16, 10)
+            head.Background = new SolidBrush(UI.Color.Rgb(28, 22, 48))
+            head.Dock = UI.Dock.Top
+            var headRow = new UI.DockPanel()
+            this.title = new UI.Label("RUHRPOTT-RASER")
+            this.title.FontSize = 24
+            this.title.Color = new SolidBrush(UI.Color.Rgb(255, 196, 0))
+            this.title.Dock = UI.Dock.Left
+            this.serverState = new UI.Label("Server: noch nicht gefragt")
+            this.serverState.Color = new SolidBrush(UI.Color.Rgb(200, 200, 220))
+            this.serverState.Dock = UI.Dock.Right
+            this.serverState.VerticalAlign = UI.VAlign.Center
+            headRow.Add(this.title)
+            headRow.Add(this.serverState)
+            headRow.Add(new UI.Label(""))
+            head.SetChild(headRow)
+            this.dock.Add(head)
+
+            // unten: Fortschritt, Statuszeile, Knöpfe
+            var foot = new UI.StackPanel()
+            foot.Dock = UI.Dock.Bottom
+            foot.Margin = new UI.Thickness(16, 6, 16, 14)
+            foot.Spacing = 6
+            this.progress = new Launcher.ProgressBar()
+            foot.Add(this.progress)
+            var buttons = new UI.DockPanel()
+            this.playButton = new UI.Button("Spielen", 0, 0, 140, 34)
+            this.playButton.Dock = UI.Dock.Right
+            this.playButton.FontSize = 18
+            this.playButton.Enabled = false
+            this.playButton.OnClick = func () on this => { this.Play() }
+            this.updateButton = new UI.Button("Aktualisieren", 0, 0, 130, 34)
+            this.updateButton.Dock = UI.Dock.Right
+            this.updateButton.Margin = new UI.Thickness(0, 0, 8, 0)
+            this.updateButton.Enabled = false
+            this.updateButton.OnClick = func () on this => { this.Update() }
+            this.statusLine = new UI.Label("Bereit.")
+            this.statusLine.VerticalAlign = UI.VAlign.Center
+            buttons.Add(this.playButton)
+            buttons.Add(this.updateButton)
+            buttons.Add(this.statusLine)
+            foot.Add(buttons)
+            this.dock.Add(foot)
+
+            // links: Anmeldung und Installation
+            var left = new UI.StackPanel()
+            left.Dock = UI.Dock.Left
+            left.Width = 270
+            left.Margin = new UI.Thickness(16, 10, 8, 4)
+            var account = new UI.Label("Anmeldung")
+            account.FontSize = 18
+            left.Add(account)
+            left.Add(Launcher.App.Caption("Server"))
+            this.serverBox = new UI.TextBox(this.settings.server, 0, 0, -1, 26)
+            this.serverBox.Hint = "raser.example.de:7480"
+            this.serverBox.OnEnter = func () on this => { this.Refresh() }
+            left.Add(this.serverBox)
+            left.Add(Launcher.App.Caption("Benutzername"))
+            this.userBox = new UI.TextBox(this.settings.user, 0, 0, -1, 26)
+            this.userBox.MaxLength = 64
+            left.Add(this.userBox)
+            left.Add(Launcher.App.Caption("Passwort"))
+            this.passwordBox = new Launcher.PasswordBox(-1)
+            this.passwordBox.MaxLength = 128
+            this.passwordBox.OnEnter = func () on this => { this.Login(false) }
+            left.Add(this.passwordBox)
+            var row = new UI.StackPanel()
+            row.Horizontal = true
+            row.Spacing = 8
+            row.Margin = new UI.Thickness(0, 10, 0, 0)
+            this.loginButton = new UI.Button("Anmelden", 0, 0, 110, 28)
+            this.loginButton.OnClick = func () on this => { this.Login(false) }
+            this.registerButton = new UI.Button("Registrieren", 0, 0, 110, 28)
+            this.registerButton.OnClick = func () on this => { this.Login(true) }
+            this.logoutButton = new UI.Button("Abmelden", 0, 0, 110, 28)
+            this.logoutButton.Visible = false
+            this.logoutButton.OnClick = func () on this => { this.Logout() }
+            row.Add(this.loginButton)
+            row.Add(this.registerButton)
+            row.Add(this.logoutButton)
+            left.Add(row)
+            this.loginState = new UI.Label("Nicht angemeldet.")
+            this.loginState.Margin = new UI.Thickness(0, 8, 0, 0)
+            left.Add(this.loginState)
+            this.loginError = new UI.Label("")
+            this.loginError.Color = new SolidBrush(UI.Color.Rgb(200, 30, 30))
+            left.Add(this.loginError)
+            left.Add(Launcher.App.Caption("Installation"))
+            this.installBox = new UI.TextBox(this.settings.install, 0, 0, -1, 26)
+            this.installBox.OnEnter = func () on this => { this.Refresh() }
+            left.Add(this.installBox)
+            this.closeOnStart = new UI.CheckBox("Launcher beim Spielstart schließen", 0, 0, false)
+            this.closeOnStart.Margin = new UI.Thickness(0, 10, 0, 0)
+            left.Add(this.closeOnStart)
+            this.dock.Add(left)
+
+            // rechts (der Rest): Version und Notizen, News
+            var right = new UI.Grid()
+            right.Margin = new UI.Thickness(8, 10, 16, 4)
+            right.SetRows("auto, 110, auto, *")
+            this.versionLabel = new UI.Label("Version: -")
+            this.versionLabel.FontSize = 18
+            right.AddAt(this.versionLabel, 0, 0)
+            this.notes = new UI.TextArea("", 0, 0, -1, -1)
+            this.notes.ReadOnly = true
+            this.notes.WordWrap = true
+            this.notes.Margin = new UI.Thickness(0, 4, 0, 8)
+            right.AddAt(this.notes, 1, 0)
+            var newsTitle = new UI.Label("News")
+            newsTitle.FontSize = 18
+            right.AddAt(newsTitle, 2, 0)
+            this.news = new UI.TextArea("", 0, 0, -1, -1)
+            this.news.ReadOnly = true
+            this.news.WordWrap = true
+            this.news.Margin = new UI.Thickness(0, 4, 0, 0)
+            right.AddAt(this.news, 3, 0)
+            this.dock.Add(right)
+
+            this.ui.Add(this.dock)
+        }
+
+        // ---- was die Knöpfe tun ----
+
+        string Url() { return Launcher.Paths.ServerUrl(this.serverBox.Text) }
+
+        string Install() {
+            string t = this.installBox.Text.Trim()
+            if (t == "") {
+                t = Launcher.Paths.DefaultInstall()
+                this.installBox.SetText(t)
+            }
+            return IO.Path.GetFullPath(t)
+        }
+
+        // Die Statuszeile (gekürzt: sie teilt sich die Zeile mit den Knöpfen; der Token erscheint nie).
+        undefined Status(string text) {
+            string t = text.Replace("\n", " ")
+            if (this.session != undefined && this.session.token.Length > 0) { t = t.Replace(this.session.token, "...") }
+            if (t.Length > 72) { t = t.Substring(0, 70) + " ..." }
+            this.statusLine.Text = t
+        }
+
+        // Server, Name und Installation merken (nie das Passwort).
+        undefined Remember() {
+            this.settings.server = this.serverBox.Text.Trim()
+            this.settings.user = this.userBox.Text.Trim()
+            this.settings.install = this.installBox.Text.Trim()
+            string error = this.settings.Save(this.configDir)
+            if (error != "") { this.Status(error) }
+        }
+
+        undefined Login(bool register) {
+            if (this.busy != "") { return }
+            string url = this.Url()
+            string user = this.userBox.Text.Trim()
+            string password = this.passwordBox.secret
+            this.loginError.Text = ""
+            if (url == undefined) { this.loginError.Text = "Bitte eine Serveradresse eingeben."; return }
+            if (user == "" || password == "") { this.loginError.Text = "Bitte Name und Passwort eingeben."; return }
+            this.busy = "login"
+            this.Buttons()
+            if (register) { this.Status("Registriere " + user + " ...") } else { this.Status("Melde " + user + " an ...") }
+            var ch = this.events
+            fire dedicated with ch taking url taking user taking password taking register {
+                Launcher.Worker.Account(ch, url, user, password, register)
+            }
+        }
+
+        undefined Logout() {
+            this.session = undefined
+            this.loginState.Text = "Nicht angemeldet."
+            this.passwordBox.Clear()
+            this.Buttons()
+        }
+
+        undefined Refresh() {
+            if (this.busy != "") { return }
+            string url = this.Url()
+            if (url == undefined) {
+                this.serverState.Text = "Keine Serveradresse"
+                return
+            }
+            string install = this.Install()
+            this.busy = "refresh"
+            this.upToDate = false
+            this.Buttons()
+            this.Status("Frage den Server " + url + " ...")
+            var ch = this.events
+            fire dedicated with ch taking url taking install {
+                Launcher.Worker.Refresh(ch, url, install)
+            }
+        }
+
+        undefined Update() {
+            if (this.busy != "") { return }
+            string url = this.Url()
+            if (url == undefined) { return }
+            string install = this.Install()
+            this.Remember()
+            this.busy = "update"
+            this.Buttons()
+            this.progress.Value = 0.0
+            this.progress.Text = "Starte Update ..."
+            this.Status("Aktualisiere " + install + " ...")
+            var ch = this.events
+            fire dedicated with ch taking url taking install {
+                Launcher.Worker.Update(ch, url, install)
+            }
+        }
+
+        undefined Play() {
+            if (this.session == undefined || !this.upToDate || this.game != undefined) { return }
+            string install = this.Install()
+            string program = Launcher.Game.Find(install, this.gameOwn)
+            if (program == undefined) {
+                this.Status("Kein Spiel in der Installation gefunden.")
+                return
+            }
+            var args = Launcher.Game.Arguments(this.Url(), this.session, install)
+            this.gameLines.Clear()
+            try {
+                this.game = Launcher.Game.Start(program, args, install)
+            } catch (Exception e) {
+                this.game = undefined
+                this.Status("Spiel startet nicht: " + e.message)
+                return
+            }
+            this.game.OnOutput = func (string line) on this => { this.GameLine(line) }
+            this.gameExit = -1
+            this.game.OnExit = func (int code) on this => { this.gameExit = code }
+            this.Status("Spiel läuft ...")
+            this.Buttons()
+            if (this.closeOnStart.IsChecked) {
+                // (das Spiel läuft als eigener Prozess weiter)
+                this.game.Close()
+                this.game = undefined
+                this.win.Close()
+            }
+        }
+
+        undefined GameLine(string line) {
+            this.gameLines.Add(line)
+            if (this.gameLines.Count > 20) { this.gameLines.RemoveAt(0) }
+        }
+
+        undefined GameExited(defined int code) {
+            if (code == 0) {
+                this.Status("Spiel beendet.")
+            } else {
+                string last = ""
+                if (this.gameLines.Count > 0) { last = ": " + this.gameLines[this.gameLines.Count - 1] }
+                this.Status("Spiel endete mit Fehler (Code " + code + ")" + last)
+            }
+            this.game.Close()
+            this.game = undefined
+            this.Buttons()
+        }
+
+        // Die Knöpfe passend zum Zustand: Spielen nur angemeldet, aktuell und wenn nichts läuft.
+        undefined Buttons() {
+            bool idle = this.busy == ""
+            bool loggedIn = this.session != undefined
+            this.loginButton.Enabled = idle
+            this.registerButton.Enabled = idle
+            this.loginButton.Visible = !loggedIn
+            this.registerButton.Visible = !loggedIn
+            this.logoutButton.Visible = loggedIn
+            this.logoutButton.Enabled = idle && this.game == undefined
+            this.serverBox.ReadOnly = !idle || loggedIn
+            this.updateButton.Enabled = idle && this.version != "" && !this.upToDate
+            this.playButton.Enabled = idle && loggedIn && this.upToDate && this.game == undefined
+            if (this.upToDate && this.version != "") { this.updateButton.Text = "Aktuell" } else { this.updateButton.Text = "Aktualisieren" }
+        }
+
+        // ---- der Takt: Meldungen der Threads abholen, das Spiel beobachten ----
+
+        undefined Tick() {
+            this.Poll()
+            if (this.game != undefined) {
+                this.game.Pump()
+                if (this.gameExit >= 0) { this.GameExited(this.gameExit) }
+            }
+        }
+
+        undefined Poll() {
+            for (int n = 0; n < 200; n++) {
+                any m = this.events.TryReceive()
+                if (m == undefined) { return }
+                this.Handle(m)
+            }
+        }
+
+        undefined Handle(string message) {
+            var f = message.Split("\t")
+            string kind = f[0]
+            if (kind == "session") {
+                this.busy = ""
+                this.session = new Launcher.Session(f[1], f[2], f[3] == "1", f[4])
+                string role = ""
+                if (this.session.admin) { role = " (Admin)" }
+                this.loginState.Text = "Angemeldet als " + this.session.user + role
+                this.loginError.Text = ""
+                this.passwordBox.Clear()
+                this.Remember()
+                this.Status("Angemeldet.")
+                this.Buttons()
+                if (this.version == "") { this.Refresh() }
+            } else if (kind == "loginerror") {
+                this.busy = ""
+                this.loginError.Text = f[1]
+                this.Status("Anmeldung fehlgeschlagen: " + f[1])
+                this.Buttons()
+            } else if (kind == "status") {
+                this.serverState.Text = f[1]
+            } else if (kind == "statuserror") {
+                this.serverState.Text = "Server nicht erreichbar"
+                this.Status(f[1])
+            } else if (kind == "news") {
+                this.news.SetText(f[1])
+            } else if (kind == "version") {
+                this.version = f[1]
+                this.versionLabel.Text = "Version " + f[1]
+                string notes = "(keine Notizen)"
+                if (f.length > 2 && f[2] != "") { notes = f[2] }
+                this.notes.SetText(notes)
+            } else if (kind == "plan") {
+                this.upToDate = f[1] == "1"
+                this.progress.Value = 0.0
+                if (this.upToDate) { this.progress.Value = 1.0 }
+                this.progress.Text = f[2]
+                this.Status(f[2])
+            } else if (kind == "refreshed") {
+                this.busy = ""
+                this.Buttons()
+            } else if (kind == "progress") {
+                defined float done = f[1].ToFloat()
+                defined float total = f[2].ToFloat()
+                defined float v = 1.0
+                if (total > 0.0) { v = done / total }
+                this.progress.Value = v
+                this.progress.Text = Math.Round(v * 100.0)!int + " % - " + f[3]
+            } else if (kind == "log") {
+                this.Status(f[1])
+            } else if (kind == "updated") {
+                this.busy = ""
+                this.Status("Update: " + f[2])
+                this.Buttons()
+                // (danach neu vergleichen: so steht "aktuell" erst da, wenn die Dateien wirklich stimmen)
+                this.Refresh()
+            }
+        }
+
+        // ---- laufen lassen ----
+
+        undefined Start(string password) {
+            if (password != undefined && password != "") {
+                // (nur für --shot und Tests: anmelden, ohne zu tippen)
+                this.passwordBox.secret = password
+                this.passwordBox.SetText(Launcher.PasswordBox.Stars(password.Length))
+            }
+            this.Buttons()
+            this.Refresh()
+        }
+
+        undefined Run() {
+            this.Start(undefined)
+            this.ui.Run()
+            this.Remember()
+        }
+
+        // Ohne Bildschirm: `seconds` lang die Meldungen der Threads verarbeiten (auf Wunsch anmelden, aktualisieren, spielen), dann das Fenster als PNG schreiben.
+        undefined Shot(string file, defined float seconds, bool login, bool update, bool play) {
+            defined int end = DateTime.Now.Ticks + (seconds * 10000000.0)!int
+            bool asked = !login
+            bool updating = !update
+            while (DateTime.Now.Ticks < end) {
+                this.Tick()
+                if (!asked && this.busy == "") {
+                    asked = true
+                    this.Login(false)
+                }
+                if (asked && !updating && this.busy == "" && this.session != undefined && this.version != "" && !this.upToDate) {
+                    updating = true
+                    this.Update()
+                }
+                if (play && this.playButton.Enabled) {
+                    play = false
+                    this.Play()
+                }
+                Sleep(10ms)
+            }
+            this.ui.Draw()
+            IO.File.WriteAllBytes(file, this.fb.ToPng())
+        }
+    }
+}

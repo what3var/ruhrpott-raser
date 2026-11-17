@@ -1,0 +1,240 @@
+// Raser.Launcher: die Schnittstelle zum Spielserver (HTTP/JSON auf Port 7480) - Anmelden, Registrieren, Version mit Dateiliste, News, Status.
+// Das Lesen der Antworten (Parse...) sind reine Funktionen und in testing/ getestet.
+#import "http"
+#import "json"
+
+namespace Launcher {
+    // Ein Fehler beim Gespräch mit dem Server: `status` ist der HTTP-Status (0: keine Verbindung oder keine lesbare Antwort), `message` ist für den Spieler.
+    class ApiException : Exception {
+        defined int status
+
+        construct(string message, defined int status = 0) {
+            this.message = message
+            this.status = status
+        }
+    }
+
+    // Die Anmeldung: der Token bleibt nur im Speicher (er wird nie gespeichert) und geht beim Start an das Spiel.
+    class Session {
+        string token
+        string user
+        bool admin
+        string expires
+
+        construct(string token, string user, bool admin, string expires) {
+            this.token = token
+            this.user = user
+            this.admin = admin
+            this.expires = expires
+        }
+    }
+
+    // Eine Datei des Release: Pfad relativ zur Installation (mit `/`), Größe in Bytes, SHA-256 in kleinen Hex-Ziffern.
+    class ReleaseFile {
+        string path
+        defined int size
+        string sha256
+
+        construct(string path, defined int size, string sha256) {
+            this.path = path
+            this.size = size
+            this.sha256 = sha256
+        }
+    }
+
+    // Was der Server als aktuelle Version anbietet.
+    class Release {
+        string version
+        string notes
+        List<Launcher.ReleaseFile> files
+
+        construct(string version, string notes) {
+            this.version = version
+            this.notes = notes
+            this.files = new List<Launcher.ReleaseFile>()
+        }
+
+        defined int TotalBytes() {
+            int sum = 0
+            foreach (f in this.files) { sum = sum + f.size }
+            return sum
+        }
+    }
+
+    class NewsItem {
+        string date
+        string title
+        string text
+
+        construct(string date, string title, string text) {
+            this.date = date
+            this.title = title
+            this.text = text
+        }
+    }
+
+    class ServerStatus {
+        defined int players
+        string region
+        defined int uptime
+
+        construct(defined int players, string region, defined int uptime) {
+            this.players = players
+            this.region = region
+            this.uptime = uptime
+        }
+
+        // "Server erreichbar, 3 Spieler" (mit der Region, wenn der Server eine nennt).
+        string Describe() {
+            string s = "Server erreichbar, " + this.players + " Spieler"
+            if (this.region != "") { s = s + " (" + this.region + ")" }
+            return s
+        }
+    }
+
+    class Api {
+        string url
+        Http.Client client
+
+        // `url`: die Basis-URL des Servers ("http://host:7480", siehe Launcher.Paths.ServerUrl).
+        construct(string url) {
+            this.url = url
+            this.client = new Http.Client()
+            this.client.timeout = 15000
+            this.client.userAgent = "raser-launcher/0.1"
+        }
+
+        Launcher.Session Login(string user, string password) { return this.Account("/api/login", user, password) }
+
+        Launcher.Session Register(string user, string password) { return this.Account("/api/register", user, password) }
+
+        Launcher.Session Account(string path, string user, string password) {
+            var response = this.Send("POST", path, Launcher.Api.AccountBody(user, password))
+            if (response.status != 200) { throw new Launcher.ApiException(Launcher.Api.ErrorOf(response.status, response.Text(), path), response.status) }
+            return Launcher.Api.ParseSession(response.Text())
+        }
+
+        Launcher.Release Version() { return Launcher.Api.ParseRelease(this.GetText("/api/version")) }
+
+        List<Launcher.NewsItem> News() { return Launcher.Api.ParseNews(this.GetText("/api/news")) }
+
+        Launcher.ServerStatus Status() { return Launcher.Api.ParseStatus(this.GetText("/api/status")) }
+
+        // Der Text einer GET-Antwort mit Status 200 (sonst eine ApiException).
+        string GetText(string path) {
+            var response = this.Send("GET", path, undefined)
+            if (response.status != 200) { throw new Launcher.ApiException(Launcher.Api.ErrorOf(response.status, response.Text(), path), response.status) }
+            return response.Text()
+        }
+
+        Http.Response Send(string method, string path, string body) {
+            try {
+                if (method == "POST") { return this.client.Post(this.url + path, body, "application/json; charset=utf-8") }
+                return this.client.Get(this.url + path)
+            } catch (Http.HttpException e) {
+                throw new Launcher.ApiException("Keine Antwort vom Server (" + e.message + ")", 0)
+            } catch (Exception e) {
+                throw new Launcher.ApiException("Server nicht erreichbar: " + e.message, 0)
+            }
+        }
+
+        // {"user": "...", "password": "..."} - Json.Serialize eines Textes setzt ihn in Anführungszeichen und maskiert, was nötig ist.
+        static string AccountBody(string user, string password) {
+            return "{\"user\": " + Json.Serialize(user) + ", \"password\": " + Json.Serialize(password) + "}"
+        }
+
+        // Die Fehlermeldung für den Spieler: das "error" der Antwort, sonst eine nach dem Status.
+        static string ErrorOf(defined int status, string text, string path) {
+            string error = undefined
+            try {
+                any parsed = Json.Parse(text)
+                if (parsed is of JsonObject) {
+                    any e = parsed.Get("error")
+                    if (e is of string && e != "") { error = e }
+                }
+            } catch (Exception e) { }
+            if (error != undefined) { return error }
+            if (status == 401) { return "Benutzername oder Passwort falsch" }
+            if (status == 409) { return "Den Namen gibt es schon" }
+            if (status == 400) { return "Ungültige Eingabe" }
+            if (status == 404) { return "Nicht gefunden: " + path }
+            return "Der Server antwortet " + status + " auf " + path
+        }
+
+        // ---- die Antworten lesen (eine ApiException, wenn die Antwort nicht dem Vertrag entspricht) ----
+
+        static JsonObject ObjectOf(string text, string what) {
+            any parsed = undefined
+            try { parsed = Json.Parse(text) } catch (Exception e) { throw new Launcher.ApiException("Unlesbare Antwort des Servers (" + what + ")") }
+            if (!(parsed is of JsonObject)) { throw new Launcher.ApiException("Unerwartete Antwort des Servers (" + what + ")") }
+            return parsed
+        }
+
+        static string Text(JsonObject o, string key, string fallback = undefined) {
+            any v = o.Get(key)
+            if (v is of string) { return v }
+            if (fallback != undefined) { return fallback }
+            throw new Launcher.ApiException("Antwort des Servers ohne \"" + key + "\"")
+        }
+
+        static defined int Number(JsonObject o, string key, defined int fallback = -1) {
+            any v = o.Get(key)
+            if (v is of int) { return v }
+            if (v is of float) { return Math.Floor(v)!int }
+            if (fallback >= 0) { return fallback }
+            throw new Launcher.ApiException("Antwort des Servers ohne Zahl \"" + key + "\"")
+        }
+
+        static Launcher.Session ParseSession(string text) {
+            var o = Launcher.Api.ObjectOf(text, "Anmeldung")
+            string token = Launcher.Api.Text(o, "token")
+            if (token == "") { throw new Launcher.ApiException("Der Server gab keinen Token") }
+            any admin = o.Get("admin")
+            return new Launcher.Session(token, Launcher.Api.Text(o, "user"), admin is of bool && admin, Launcher.Api.Text(o, "expires", ""))
+        }
+
+        static Launcher.Release ParseRelease(string text) {
+            var o = Launcher.Api.ObjectOf(text, "Version")
+            var release = new Launcher.Release(Launcher.Api.Text(o, "version"), Launcher.Api.Text(o, "notes", ""))
+            any files = o.Get("files")
+            if (files == undefined) { files = [] }
+            if (files is of JsonObject || files is of string) { throw new Launcher.ApiException("Antwort des Servers: \"files\" ist keine Liste") }
+            for (int i = 0; i < files.length; i++) {
+                any f = files[i]
+                if (!(f is of JsonObject)) { throw new Launcher.ApiException("Antwort des Servers: ein Eintrag der Dateiliste ist kein Objekt") }
+                string sha = Launcher.Api.Text(f, "sha256").ToLower()
+                release.files.Add(new Launcher.ReleaseFile(Launcher.Api.Text(f, "path"), Launcher.Api.Number(f, "size"), sha))
+            }
+            return release
+        }
+
+        static List<Launcher.NewsItem> ParseNews(string text) {
+            any parsed = undefined
+            try { parsed = Json.Parse(text) } catch (Exception e) { throw new Launcher.ApiException("Unlesbare Antwort des Servers (News)") }
+            if (parsed == undefined || parsed is of JsonObject || parsed is of string) { throw new Launcher.ApiException("Unerwartete Antwort des Servers (News)") }
+            var news = new List<Launcher.NewsItem>()
+            for (int i = 0; i < parsed.length; i++) {
+                any n = parsed[i]
+                if (n is of JsonObject) {
+                    news.Add(new Launcher.NewsItem(Launcher.Api.Text(n, "date", ""), Launcher.Api.Text(n, "title", ""), Launcher.Api.Text(n, "text", "")))
+                }
+            }
+            return news
+        }
+
+        static Launcher.ServerStatus ParseStatus(string text) {
+            var o = Launcher.Api.ObjectOf(text, "Status")
+            return new Launcher.ServerStatus(Launcher.Api.Number(o, "players", 0), Launcher.Api.Text(o, "region", ""), Launcher.Api.Number(o, "uptime", 0))
+        }
+
+        // Ist das ein SHA-256 in Hex (64 Ziffern)?
+        static bool IsSha256(string hex) {
+            if (hex.Length != 64) { return false }
+            for (int i = 0; i < 64; i++) {
+                var c = hex[i]
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) { return false }
+            }
+            return true
+        }
+    }
+}
