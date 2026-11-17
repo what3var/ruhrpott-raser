@@ -111,19 +111,24 @@ class CarModel {
         scene.Add(take o)
     }
 
-    // (x, y, z): die Lage in der Szene (y: der Boden unter dem Wagen), heading in Grad (vorwärts ist (-sin, -cos) in x, z).
-    undefined Place(defined float x, defined float y, defined float z, defined float heading) {
+    // (x, y, z): die Lage in der Szene (y: der Boden unter dem Wagen), heading in Grad (vorwärts ist (-sin, -cos) in x, z); lean: die
+    // Schräglage in Grad (nach links positiv), um die Linie, auf der die Räder stehen.
+    undefined Place(defined float x, defined float y, defined float z, defined float heading, defined float lean) {
         float h = heading * Math.PI / 180.0
         float fx = -Math.Sin(h)
         float fz = -Math.Cos(h)
         float rx = Math.Cos(h)
         float rz = -Math.Sin(h)
+        float c = Math.Cos(lean * Math.PI / 180.0)
+        float sn = Math.Sin(lean * Math.PI / 180.0)
         for (int i = 0; i < this.parts.Count; i++) {
-            float r = this.offsets[i * 3]
-            float u = this.offsets[i * 3 + 1]
+            float r0 = this.offsets[i * 3]
+            float u0 = this.offsets[i * 3 + 1]
             float f = this.offsets[i * 3 + 2]
+            float r = r0 * c - u0 * sn
+            float u = r0 * sn + u0 * c
             this.parts[i].SetPosition((x + rx * r + fx * f) * 1m, (y + u) * 1m, (z + rz * r + fz * f) * 1m)
-            this.parts[i].RotationY = heading * 1deg
+            this.parts[i].SetRotation(0deg, heading * 1deg, lean * 1deg)
         }
         // das Licht 7 m voraus, 1,2 m über der Straße
         this.beam.X = (x + fx * 7.0) * 1m
@@ -132,41 +137,88 @@ class CarModel {
     }
 }
 
-// Der Spieler in der Szene: Beine, Rumpf, Kopf, Arme aus Quadern; Beine und Arme schwingen mit dem gelaufenen Weg.
+// Der Spieler in der Szene: Beine, Rumpf, Kopf, Arme aus Quadern; Beine und Arme schwingen mit dem gelaufenen Weg. Zum Sitzen (auf einem
+// Zweirad) hat er eigene Teile: Oberschenkel nach vorn, Unterschenkel hinab, die Arme vorn am Lenker - je Teil gilt eine der Haltungen.
 class PersonModel {
     List<Object> parts
-    List<float> offsets         // je Teil: rechts, hoch, vorn (m)
+    List<float> offsets         // je Teil: rechts, hoch, vorn (m; sitzend: ab der Sitzfläche)
     List<float> swing           // je Teil: so weit schwingt es vor und zurück (m, Vorzeichen: die Seite)
+    List<bool> seated           // je Teil: gehört zur Sitzhaltung (sonst zum Stehen und Gehen)
+    defined bool sitting        // die Haltung des letzten Place / Sit
+    defined bool visible
 
     construct(Scene scene) {
         this.parts = new List<Object>()
         this.offsets = new List<float>()
         this.swing = new List<float>()
+        this.seated = new List<bool>()
         int jeans = S3D.Rgb(50, 70, 110)
         int jacket = S3D.Rgb(60, 110, 70)
         int skin = S3D.Rgb(225, 180, 150)
-        this.Add(scene, -0.11, 0.42, 0.0, 0.17, 0.84, 0.2, jeans, 0.2)
-        this.Add(scene, 0.11, 0.42, 0.0, 0.17, 0.84, 0.2, jeans, -0.2)
-        this.Add(scene, 0.0, 1.14, 0.0, 0.44, 0.6, 0.24, jacket, 0.0)
-        this.Add(scene, 0.0, 1.6, 0.0, 0.24, 0.26, 0.24, skin, 0.0)
-        this.Add(scene, 0.0, 1.76, -0.01, 0.26, 0.08, 0.26, S3D.Rgb(70, 50, 35), 0.0)
-        this.Add(scene, -0.29, 1.12, 0.0, 0.12, 0.6, 0.14, jacket, -0.14)
-        this.Add(scene, 0.29, 1.12, 0.0, 0.12, 0.6, 0.14, jacket, 0.14)
+        int hair = S3D.Rgb(70, 50, 35)
+        // stehend
+        this.Add(scene, -0.11, 0.42, 0.0, 0.17, 0.84, 0.2, jeans, 0.2, false)
+        this.Add(scene, 0.11, 0.42, 0.0, 0.17, 0.84, 0.2, jeans, -0.2, false)
+        this.Add(scene, 0.0, 1.14, 0.0, 0.44, 0.6, 0.24, jacket, 0.0, false)
+        this.Add(scene, 0.0, 1.6, 0.0, 0.24, 0.26, 0.24, skin, 0.0, false)
+        this.Add(scene, 0.0, 1.76, -0.01, 0.26, 0.08, 0.26, hair, 0.0, false)
+        this.Add(scene, -0.29, 1.12, 0.0, 0.12, 0.6, 0.14, jacket, -0.14, false)
+        this.Add(scene, 0.29, 1.12, 0.0, 0.12, 0.6, 0.14, jacket, 0.14, false)
+        // sitzend: Oberschenkel waagerecht nach vorn, Unterschenkel vom Knie hinab, Rumpf und Kopf aufrecht, Oberarme hinab, Unterarme zum Lenker
+        foreach (side in [-1.0, 1.0]) {
+            this.Add(scene, side * 0.11, 0.06, 0.17, 0.17, 0.17, 0.5, jeans, 0.0, true)
+            this.Add(scene, side * 0.13, -0.27, 0.38, 0.15, 0.55, 0.17, jeans, 0.0, true)
+            this.Add(scene, side * 0.29, 0.42, 0.08, 0.12, 0.4, 0.14, jacket, 0.0, true)
+            this.Add(scene, side * 0.27, 0.18, 0.47, 0.11, 0.11, 0.75, jacket, 0.0, true)
+        }
+        this.Add(scene, 0.0, 0.35, 0.0, 0.44, 0.6, 0.24, jacket, 0.0, true)
+        this.Add(scene, 0.0, 0.81, 0.02, 0.24, 0.26, 0.24, skin, 0.0, true)
+        this.Add(scene, 0.0, 0.97, 0.01, 0.26, 0.08, 0.26, hair, 0.0, true)
     }
 
-    undefined Add(Scene scene, defined float right, defined float up, defined float front, defined float w, defined float h, defined float d, defined int color, defined float swing) {
+    undefined Add(Scene scene, defined float right, defined float up, defined float front, defined float w, defined float h, defined float d, defined int color, defined float swing, defined bool seated) {
         var o = new Object(Template.Box, 0m, 0m, 0m, w * 1m, h * 1m, d * 1m)
         o.Color = color
+        o.Visible = false
         this.parts.Add(o)
         this.offsets.Add(right)
         this.offsets.Add(up)
         this.offsets.Add(front)
         this.swing.Add(swing)
+        this.seated.Add(seated)
         scene.Add(take o)
     }
 
+    // Zeigt (oder versteckt) die Teile der aktuellen Haltung; die der anderen sind immer versteckt.
     undefined Show(defined bool visible) {
-        for (int i = 0; i < this.parts.Count; i++) { this.parts[i].Visible = visible }
+        this.visible = visible
+        for (int i = 0; i < this.parts.Count; i++) { this.parts[i].Visible = visible && this.seated[i] == this.sitting }
+    }
+
+    // Sitzend auf einem Zweirad: (x, y, z) die Mitte der Sitzfläche über dem Boden (seat m hoch), heading in Grad; lean: die Schräglage des
+    // Zweirads (Grad, nach links positiv) - er neigt sich mit, um die Linie, auf der die Räder stehen.
+    undefined Sit(defined float x, defined float y, defined float z, defined float heading, defined float seat, defined float lean) {
+        float h = heading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float rx = Math.Cos(h)
+        float rz = -Math.Sin(h)
+        float c = Math.Cos(lean * Math.PI / 180.0)
+        float sn = Math.Sin(lean * Math.PI / 180.0)
+        if (!this.sitting) {
+            this.sitting = true
+            this.Show(this.visible)
+        }
+        for (int i = 0; i < this.parts.Count; i++) {
+            if (!this.seated[i]) { continue }
+            float r0 = this.offsets[i * 3]
+            float u0 = this.offsets[i * 3 + 1] + seat
+            float f = this.offsets[i * 3 + 2]
+            float r = r0 * c - u0 * sn
+            float u = r0 * sn + u0 * c
+            this.parts[i].SetPosition((x + rx * r + fx * f) * 1m, (y + u) * 1m, (z + rz * r + fz * f) * 1m)
+            this.parts[i].SetRotation(0deg, heading * 1deg, lean * 1deg)
+        }
     }
 
     // (x, y, z): die Lage in der Szene (y: der Boden), heading in Grad; stride: der gelaufene Weg (ein Doppelschritt je 1,5 m).
@@ -177,7 +229,12 @@ class PersonModel {
         float rx = Math.Cos(h)
         float rz = -Math.Sin(h)
         float phase = Math.Sin(stride * 2.0 * Math.PI / 1.5)
+        if (this.sitting) {
+            this.sitting = false
+            this.Show(this.visible)
+        }
         for (int i = 0; i < this.parts.Count; i++) {
+            if (this.seated[i]) { continue }
             float r = this.offsets[i * 3]
             float u = this.offsets[i * 3 + 1]
             float f = this.offsets[i * 3 + 2] + this.swing[i] * phase
@@ -671,7 +728,7 @@ class Game {
         float y = 0.0
         any g = terrain.At(car.east, car.north)
         if (g != undefined) { y = g - view.originZ }
-        model.Place(car.east - view.originE, y, -(car.north - view.originN), car.heading)
+        model.Place(car.east - view.originE, y, -(car.north - view.originN), car.heading, car.lean)
     }
 
     // Die Kamera zu einem Punkt (Wagen oder Spieler, Richtung heading): reach m dahinter und up m hoch, Blick voraus; first: aus seinen Augen
@@ -735,7 +792,7 @@ class Game {
         for (int i = 0; i < vehicles.Count; i++) { Game.PlaceCar(vehicles[i], models[i], terrain, view) }
     }
 
-    // Auf einem Zweirad sitzt der Spieler sichtbar obenauf (nicht aus seinen Augen).
+    // Auf einem Zweirad sitzt der Spieler sichtbar obenauf (nicht aus seinen Augen), 0,3 m hinter der Mitte, und legt sich mit in die Kurve.
     static undefined Ride(Raser.Vehicle car, PersonModel person, Ground terrain, WorldView view, defined bool first) {
         if (!car.IsBike() || first) {
             person.Show(false)
@@ -745,7 +802,10 @@ class Game {
         any g = terrain.At(car.east, car.north)
         if (g != undefined) { y = g - view.originZ }
         float h = car.heading * Math.PI / 180.0
-        person.Place(car.east - Math.Sin(h) * -0.25 - view.originE, y + 0.35, 0.0 - (car.north + Math.Cos(h) * -0.25 - view.originN), car.heading, 0.0)
+        // die Sitzbank (Motorrad) bzw. der Sattel (Fahrrad)
+        float seat = 0.94
+        if (car.kind == "fahrrad") { seat = 1.0 }
+        person.Sit(car.east + Math.Sin(h) * 0.3 - view.originE, y, 0.0 - (car.north - Math.Cos(h) * 0.3 - view.originN), car.heading, seat, car.lean)
         person.Show(true)
     }
 

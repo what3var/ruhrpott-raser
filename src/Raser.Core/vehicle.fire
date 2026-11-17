@@ -15,6 +15,7 @@ namespace Raser {
         defined float steerAngle        // der Lenkeinschlag (Grad), folgt der Eingabe mit Verzögerung
         defined bool sliding            // die Reifen halten den Bogen nicht (oder Aquaplaning)
         defined float grip              // der Grip des letzten Schritts
+        defined float lean              // Grad, nach links positiv: so weit legt sich ein Zweirad in die Kurve (Autos: 0)
         // das Fahrzeug
         defined float wheelbase
         defined float topSpeed          // m/s
@@ -133,6 +134,12 @@ namespace Raser {
                 this.speed = this.speed * (1.0 - Math.Min(1.0, 0.6 * dt))
             }
             if (g < 0.3) { this.sliding = true }
+            // Schräglage: Fliehkraft und Gewicht im Gleichgewicht, atan(v · Gierrate / g), höchstens 40°; sie folgt mit 150°/s
+            if (this.IsBike()) {
+                float upright = Math.Clamp(Math.Atan(v * yawRate / 9.81) * 180.0 / Math.PI, -40.0, 40.0)
+                float tilt = 150.0 * dt
+                this.lean = this.lean + Math.Clamp(upright - this.lean, -tilt, tilt)
+            }
             this.heading = this.heading + yawRate * 180.0 / Math.PI * dt
             float h = this.heading * Math.PI / 180.0
             this.east = this.east - Math.Sin(h) * this.speed * dt

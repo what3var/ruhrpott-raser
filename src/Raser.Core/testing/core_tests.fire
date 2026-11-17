@@ -435,6 +435,28 @@ class VehicleTests {
         Testing.Assert.AreEqual("auto", Raser.Vehicle.Of("panzer").kind)
     }
 
+    [Test "Zweiräder legen sich in die Kurve: atan(v · Gierrate / g), höchstens 40°, Autos nicht"]
+    undefined Lean() {
+        // Motorrad mit 15 m/s, links gelenkt: es legt sich nach links, so weit wie Fliehkraft und Gewicht es verlangen
+        var bike = Raser.Vehicle.Of("motorrad")
+        bike.speed = 15.0
+        for (int i = 0; i < 40; i++) { bike.Step(0.02, 0.0, 0.0, 0.15, false, 0.0) }
+        float yawRate = bike.speed / bike.wheelbase * Math.Tan(bike.steerAngle * Math.PI / 180.0)
+        float expect = Math.Atan(bike.speed * yawRate / 9.81) * 180.0 / Math.PI
+        Testing.Assert.IsTrue(bike.lean > 15.0 && Math.Abs(bike.lean - expect) < 1.0)
+        // voll rechts: höchstens 40° nach rechts
+        for (int i = 0; i < 60; i++) { bike.Step(0.02, 0.3, 0.0, -1.0, false, 0.0) }
+        Testing.Assert.IsTrue(bike.lean < -35.0 && bike.lean >= -40.0)
+        // geradeaus: es richtet sich wieder auf
+        for (int i = 0; i < 100; i++) { bike.Step(0.02, 0.3, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(bike.lean) < 0.5)
+        // ein Auto bleibt gerade
+        var car = new Raser.Vehicle()
+        car.speed = 15.0
+        for (int i = 0; i < 40; i++) { car.Step(0.02, 0.3, 0.0, 1.0, false, 0.0) }
+        Testing.Assert.IsTrue(car.lean == 0.0)
+    }
+
     static defined float BrakeDistance(defined float wetness) {
         var car = new Raser.Vehicle()
         car.speed = 30.0
