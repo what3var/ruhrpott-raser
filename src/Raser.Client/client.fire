@@ -536,7 +536,7 @@ class WorldView {
         this.inWork = new HashSet<string>()
         this.making = new List<Raser.NearResult>()
         this.spent = new List<int>()
-        for (int i = 0; i < 12; i++) { this.spent.Add(0) }
+        for (int i = 0; i < 14; i++) { this.spent.Add(0) }
         this.memory = new MemoryWatch()
         this.workers = workers
         if (workers > 0) {
@@ -545,13 +545,15 @@ class WorldView {
             var jobs = this.jobs
             var results = this.results
             for (int i = 0; i < workers; i++) {
-                fire taking root taking e taking n taking z taking opaqueOnly taking useCache with jobs, results {
+                // eigene System-Threads: im Pool übernähme sonst der Thread des Hauptprogramms einen Worker, sobald es schläft (Sleep), und es
+                // käme erst zurück, wenn der Worker nachgibt (docs/FIRE.md)
+                fire dedicated taking root taking e taking n taking z taking opaqueOnly taking useCache with jobs, results {
                     Raser.NearBuilder.Work(jobs, results, root, e, n, z, opaqueOnly, useCache)
                 }
             }
             this.farJobs = new Channel<Raser.NearJob>(1024)
             var farJobs = this.farJobs
-            fire taking root taking e taking n taking z taking opaqueOnly taking useCache with farJobs, results {
+            fire dedicated taking root taking e taking n taking z taking opaqueOnly taking useCache with farJobs, results {
                 Raser.NearBuilder.Work(farJobs, results, root, e, n, z, opaqueOnly, useCache)
             }
         }
@@ -672,11 +674,17 @@ class WorldView {
         return this.blocks[key]
     }
 
+    // Das Modell eines Netzes (gepackt aus einem Worker oder als Zahlen-Arrays).
+    static Model ModelOf(Raser.MeshBatch batch) {
+        if (batch.packedPositions != undefined) { return Model.FromArrays(batch.packedPositions, batch.packedUvs, batch.packedIndices) }
+        return Model.FromArrays(batch.positions, batch.uvs, batch.indices)
+    }
+
     // Die Netze einer Stufe (noch nicht in der Szene).
     LodSet Make(List<Raser.MeshBatch> batches) {
         var set = new LodSet()
         foreach (batch in batches) {
-            var model = Model.FromArrays(batch.positions, batch.uvs, batch.indices)
+            var model = WorldView.ModelOf(batch)
             set.models.Add(take model)
             set.opacities.Add(batch.opacity)
             set.triangles = set.triangles + batch.quads * 2
@@ -813,7 +821,9 @@ class WorldView {
         if (this.workers > 0) {
             while (DateTime.Now.Ticks <= deadline) {
                 if (this.making.Count == 0) {
+                    int r0 = DateTime.Now.Ticks
                     var res = this.results.TryReceive()
+                    this.spent[12] = Math.Max(this.spent[12], DateTime.Now.Ticks - r0)
                     if (res == undefined) { break }
                     if (res.spacing > 0.0) {
                         this.inWork.Remove("f" + res.bx + "_" + res.by)
@@ -836,7 +846,9 @@ class WorldView {
                 var res = this.making[0]
                 if (this.makingAt < res.batches.Count) {
                     var batch = res.batches[this.makingAt]
-                    var model = Model.FromArrays(batch.positions, batch.uvs, batch.indices)
+                    int r1 = DateTime.Now.Ticks
+                    var model = WorldView.ModelOf(batch)
+                    this.spent[13] = Math.Max(this.spent[13], DateTime.Now.Ticks - r1)
                     this.makingSet.models.Add(take model)
                     this.makingSet.opacities.Add(batch.opacity)
                     this.makingSet.triangles = this.makingSet.triangles + batch.quads * 2

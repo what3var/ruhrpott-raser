@@ -99,7 +99,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Fahrzeuge: Tank/Akku, Zustand; Zweiräder legen sich in die Kurve, der Fahrer sitzt; angefahrene Fahrzeuge bewegen sich; Fahrzeuge in der Welt verteilt (Parkplätze)
 - [x] Streaming gemessen (`raser --live 60 [--speed 50]`: Autopilot, 30 Bilder je s): über Kachelgrenzen hinweg fehlt unter dem Wagen und 60 m voraus nie eine Stufe (50 km/h, nah 1, fern 5)
 - [x] Die fernen Stufen baut ein eigener Worker (vorher das Hauptprogramm), Modelle entstehen Netz für Netz im Zeitbudget
-- [ ] Ruckler beim Nachladen (einzelne Bilder 0,3 bis 1,3 s): Natives sperren einander über Threads hinweg - Befund in docs/FIRE.md, liegt bei fire
+- [x] Ruckler beim Nachladen kleiner (fire a9d8598d: Natives sperren einander nicht mehr; Netze als Byte-Puffer durch den Kanal; Worker `dedicated`): 24 statt 15 Bilder je s, das längste Bild 0,25 bis 0,55 statt 0,8 bis 1,3 s
+- [ ] Rest-Ruckler: das Abholen eines Ergebnisses der Worker dauert im Spiel oft 40 bis 175 ms, ohne Nachbau (docs/FIRE.md)
 - [ ] Vorausladen gezielt in Fahrtrichtung (heute: Ringe um einen Punkt voraus); Kacheln in Obstacles/Ground bei langen Fahrten wieder freigeben
 - [ ] LOD für weite Sichtweiten
 

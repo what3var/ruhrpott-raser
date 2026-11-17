@@ -301,9 +301,34 @@ namespace Raser {
         float positions[]
         float uvs[]
         int indices[]
+        // gepackt (Pack): dieselben Zahlen als float32- bzw. uint32-Bytes, little endian - so geht ein Netz ohne Kopie durch einen Kanal
+        // (Zahlen-Arrays kopiert fire dabei, rund 30 ns je Wert: ein Block der nahen Stufe kostete das Hauptprogramm bis 220 ms)
+        byte packedPositions[]
+        byte packedUvs[]
+        byte packedIndices[]
         defined float opacity
         defined int quads
         construct() { }
+
+        // Die Arrays in Bytes umpacken (im Worker), die Zahlen-Arrays sind danach weg.
+        undefined Pack() {
+            if (this.positions == undefined) { return }
+            defined float pos[] = this.positions
+            defined float uv[] = this.uvs
+            defined int idx[] = this.indices
+            byte bp[] = new byte[pos.length * 4]
+            for (int i = 0; i < pos.length; i++) { bp.WriteFloat32(i * 4, pos[i]) }
+            byte bu[] = new byte[uv.length * 4]
+            for (int i = 0; i < uv.length; i++) { bu.WriteFloat32(i * 4, uv[i]) }
+            byte bi[] = new byte[idx.length * 4]
+            for (int i = 0; i < idx.length; i++) { bi.WriteInt32(i * 4, idx[i]) }
+            this.packedPositions = take bp
+            this.packedUvs = take bu
+            this.packedIndices = take bi
+            this.positions = undefined
+            this.uvs = undefined
+            this.indices = undefined
+        }
     }
 
     // Ein Auftrag an die Worker: die Stufe 0 eines Blocks - oder (spacing > 0) seine ferne Stufe mit diesem Geländeraster.
@@ -503,7 +528,10 @@ namespace Raser {
             var builder = new NearBuilder(root, e, n, z, opaqueOnly)
             builder.useCache = useCache
             foreach (job in jobs) {
-                if (job.spacing > 0.0) { results.Send(builder.BuildFar(job.bx, job.by, job.spacing, job.windows)) } else { results.Send(builder.Build(job.bx, job.by)) }
+                NearResult res = undefined
+                if (job.spacing > 0.0) { res = builder.BuildFar(job.bx, job.by, job.spacing, job.windows) } else { res = builder.Build(job.bx, job.by) }
+                foreach (batch in res.batches) { batch.Pack() }
+                results.Send(take res)
                 // bei langen Fahrten nicht ohne Ende zwischenspeichern (ein Chunk sind bis 0,5 MB)
                 if (builder.columns.Cached > 600 || builder.farMeshers.Count > 16) { builder.Forget() }
             }
