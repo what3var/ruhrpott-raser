@@ -151,8 +151,16 @@ namespace Raser {
         float pathD[]
         float pathV[]
         defined int pathCount
-        List<int> candidates
-        List<float> weights
+        List<int> carCandidates       // die Spuren, auf denen Autos erscheinen können, mit der Summe der Gewichte bis dahin
+        List<float> carWeights
+        List<int> walkCandidates
+        List<float> walkWeights
+        defined float carTotal
+        defined float walkTotal
+        defined float candE           // wo und wann die Kandidaten gesucht wurden (neu nach 25 m, 3 s oder einem neuen Graphen)
+        defined float candN
+        defined float candTime
+        defined int candVersion
 
         construct(defined int maxCars, defined int maxPeople, defined int seed) {
             this.graph = new Raser.RoadGraph()
@@ -177,8 +185,12 @@ namespace Raser {
             this.pathDy = new float[48]
             this.pathD = new float[48]
             this.pathV = new float[48]
-            this.candidates = new List<int>()
-            this.weights = new List<float>()
+            this.carCandidates = new List<int>()
+            this.carWeights = new List<float>()
+            this.walkCandidates = new List<int>()
+            this.walkWeights = new List<float>()
+            this.candTime = -1.0e9
+            this.candVersion = -1
         }
 
         // Nach einem Neubau des Graphen: jedes Auto und jeder Fußgänger sucht seine Spur wieder (nach Lage und Richtung); wer keine findet, geht.
@@ -306,9 +318,26 @@ namespace Raser {
             }
             if (!any) { return }
             var rnd = new Raser.TrafficRandom(this.seed * 7919 + this.frame)
+            // die Kandidaten: neu, wenn der erste Spieler 25 m weiter ist, nach 3 s oder mit einem neuen Graphen (die Suche kostet: alle Spuren)
+            float pe = 0.0
+            float pn = 0.0
+            for (int i = players.Count - 7; i >= 0; i = i - 7) {
+                if (players[i + 6] < 1.5) {
+                    pe = players[i]
+                    pn = players[i + 1]
+                }
+            }
+            if (first || this.candVersion != this.graph.version || this.time - this.candTime > 3.0 || (pe - this.candE) * (pe - this.candE) + (pn - this.candN) * (pn - this.candN) > 625.0) {
+                this.carTotal = this.Candidates(players, true, this.carFar, this.carCandidates, this.carWeights)
+                this.walkTotal = this.Candidates(players, false, this.walkFar, this.walkCandidates, this.walkWeights)
+                this.candE = pe
+                this.candN = pn
+                this.candTime = this.time
+                this.candVersion = this.graph.version
+            }
             // Autos
             if (this.maxCars > 0) {
-                float total = this.Candidates(players, true, this.carFar)
+                float total = this.carTotal
                 int want = Math.Min(this.maxCars, Math.Round(total)!int)
                 int near = 0
                 foreach (c in this.cars) {
@@ -319,7 +348,7 @@ namespace Raser {
                 int tries = 4
                 if (first) { tries = want * 8 }
                 for (int t = 0; t < tries && near < want; t++) {
-                    int li = this.Pick(rnd)
+                    int li = this.Pick(rnd, this.carCandidates, this.carWeights)
                     if (li < 0) { break }
                     var lane = this.graph.lanes[li]
                     float s = rnd.Next() * lane.length
@@ -335,7 +364,7 @@ namespace Raser {
             }
             // Fußgänger
             if (this.maxPeople > 0) {
-                float total = this.Candidates(players, false, this.walkFar)
+                float total = this.walkTotal
                 int want = Math.Min(this.maxPeople, Math.Round(total)!int)
                 int near = 0
                 foreach (p in this.people) {
@@ -346,7 +375,7 @@ namespace Raser {
                 int tries = 6
                 if (first) { tries = want * 8 }
                 for (int t = 0; t < tries && near < want; t++) {
-                    int li = this.Pick(rnd)
+                    int li = this.Pick(rnd, this.walkCandidates, this.walkWeights)
                     if (li < 0) { break }
                     var lane = this.graph.lanes[li]
                     float s = rnd.Next() * lane.length
@@ -362,9 +391,9 @@ namespace Raser {
 
         // Die Spuren, auf denen etwas erscheinen kann (Fahrspuren bzw. Geh- und Fußwege mit der Mitte bis far m von einem Spieler), mit ihrem
         // Gewicht (Dichte x Länge). Gibt die Summe: so viele sollten es sein.
-        defined float Candidates(List<float> players, defined bool car, defined float far) {
-            this.candidates.Clear()
-            this.weights.Clear()
+        defined float Candidates(List<float> players, defined bool car, defined float far, List<int> candidates, List<float> weights) {
+            candidates.Clear()
+            weights.Clear()
             float total = 0.0
             for (int li = 0; li < this.graph.lanes.Count; li++) {
                 var l = this.graph.lanes[li]
@@ -380,24 +409,24 @@ namespace Raser {
                 float w = l.density * inside
                 if (w <= 0.0) { continue }
                 total = total + w
-                this.candidates.Add(li)
-                this.weights.Add(total)
+                candidates.Add(li)
+                weights.Add(total)
             }
             return total
         }
 
         // Eine Spur aus den Kandidaten, nach Gewicht.
-        defined int Pick(TrafficRandom rnd) {
-            if (this.candidates.Count == 0) { return -1 }
-            float total = this.weights[this.weights.Count - 1]
+        defined int Pick(TrafficRandom rnd, List<int> candidates, List<float> weights) {
+            if (candidates.Count == 0) { return -1 }
+            float total = weights[weights.Count - 1]
             float x = rnd.Next() * total
             int lo = 0
-            int hi = this.weights.Count - 1
+            int hi = weights.Count - 1
             while (lo < hi) {
                 int mid = (lo + hi) / 2
-                if (this.weights[mid] < x) { lo = mid + 1 } else { hi = mid }
+                if (weights[mid] < x) { lo = mid + 1 } else { hi = mid }
             }
-            return this.candidates[lo]
+            return candidates[lo]
         }
 
         // Steht dort (im Umkreis r m) schon ein Auto?
@@ -637,7 +666,7 @@ namespace Raser {
                 float oy = Math.Cos(h)
                 float spread = Math.Max(0.0, o.length / 2.0 - o.width / 2.0)
                 float radius = o.width / 2.0 + 0.1
-                foreach (k in [1.0, -1.0]) {
+                for (float k = 1.0; k > -1.5; k = k - 2.0) {
                     this.Project(o.east + ox * spread * k, o.north + oy * spread * k)
                     if (this.projAlong <= 0.0) { continue }
                     float facing = ox * this.projDx + oy * this.projDy
@@ -679,7 +708,7 @@ namespace Raser {
                 float oy = Math.Cos(h)
                 float radius = players[i + 4]
                 float spread = players[i + 5]
-                foreach (k in [1.0, 0.0, -1.0]) {
+                for (float k = 1.0; k > -1.5; k = k - 1.0) {
                     if (spread <= 0.0 && k != 0.0) { continue }
                     this.Project(players[i] + ox * spread * k, players[i + 1] + oy * spread * k)
                     if (this.projAlong <= 0.0) { continue }
@@ -922,7 +951,7 @@ namespace Raser {
                     continue
                 }
                 // getroffen: ein Kreis des Fahrzeugs berührt ihn
-                foreach (k in [1.0, 0.0, -1.0]) {
+                for (float k = 1.0; k > -1.5; k = k - 1.0) {
                     float cx = players[i] + fx * spread * k
                     float cy = players[i + 1] + fy * spread * k
                     float d = Math.Sqrt((p.east - cx) * (p.east - cx) + (p.north - cy) * (p.north - cy))
@@ -1098,6 +1127,50 @@ namespace Raser {
                 if (towards > 0.3 && d / Math.Abs(players[i + 3]) < 5.0) { return false }
             }
             return true
+        }
+
+        // Zur Prüfung: wie viele Autos auf einer Fahrspur rechts der Mittellinie ihrer Straße fahren (Einbahnstraßen: zählen mit), und wie
+        // viele Fußgänger außerhalb eines Überwegs auf einer Fahrbahn stehen. Gibt "rechts/Autos, auf der Fahrbahn/Fußgänger".
+        string Check() {
+            int right = 0
+            int driving = 0
+            foreach (c in this.cars) {
+                var l = this.graph.lanes[c.lane]
+                if (c.state != 0 || l.kind != Raser.LaneKind.Road || !this.graph.roads.ContainsKey(l.road)) { continue }
+                driving++
+                var r = this.graph.roads[l.road]
+                if (r.oneway) {
+                    right++
+                    continue
+                }
+                // die Seite: rechts von der Fahrtrichtung, bezogen auf die nächste Stelle der Mittellinie
+                Raser.Strips.Probe(r.line, c.east, c.north, this.graph.stripProbe)
+                float h = c.heading * Math.PI / 180.0
+                float side = this.graph.stripProbe.off
+                // off ist links der Linie positiv; fährt das Auto gegen die Linie, kehrt sich das um
+                float s0 = this.graph.stripProbe.s
+                Raser.LaneMath.PointOn(r.line, s0 + 0.5, this.at)
+                float lx = this.at.e
+                float ly = this.at.n
+                Raser.LaneMath.PointOn(r.line, Math.Max(0.0, s0 - 0.5), this.at)
+                lx = lx - this.at.e
+                ly = ly - this.at.n
+                if (-Math.Sin(h) * lx + Math.Cos(h) * ly < 0.0) { side = -side }
+                if (side < -0.3) { right++ }
+            }
+            int onRoad = 0
+            foreach (p in this.people) {
+                var l = this.graph.lanes[p.lane]
+                if (l.kind == Raser.LaneKind.Crossing || p.state == 3) { continue }
+                foreach (r in this.graph.sorted) {
+                    if (!r.car) { continue }
+                    if (Raser.Geo.DistanceToLine(r.line, p.east, p.north) < r.width / 2.0) {
+                        onRoad++
+                        break
+                    }
+                }
+            }
+            return right + "/" + driving + " rechts, " + onRoad + "/" + this.people.Count + " auf einer Fahrbahn"
         }
 
         defined int CarCount { get { return this.cars.Count } }

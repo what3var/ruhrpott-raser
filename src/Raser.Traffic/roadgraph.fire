@@ -186,8 +186,9 @@ namespace Raser {
         List<List<int>> nodeRoads     // je Knoten die Indizes (in sorted) der Fahrstraßen daran
         List<int> carDegree           // je Knoten: so viele Fahrbahn-Abschnitte enden dort
         List<float> nodeHalf          // je Knoten: die halbe Breite der breitesten Fahrbahn
+        List<List<float>> nodeSegs    // je Knoten: die Stücke der Mittellinien bis 40 m um ihn (ax, ay, bx, by, halbe Breite)
         List<RoadInfo> sorted
-        Dictionary<int, List<int>> grid   // Zellen (16 m) mit den Spuren darin
+        Dictionary<int, List<int>> grid   // Zellen (32 m) mit den Spuren darin
         Dictionary<int, bool> conflicts
         defined int version           // zählt jeden Neubau
         defined bool dirty
@@ -206,6 +207,7 @@ namespace Raser {
             this.nodeRoads = new List<List<int>>(Owns.Values)
             this.carDegree = new List<int>()
             this.nodeHalf = new List<float>()
+            this.nodeSegs = new List<List<float>>(Owns.Values)
             this.sorted = new List<RoadInfo>()
             this.grid = new Dictionary<int, List<int>>(Owns.Values)
             this.conflicts = new Dictionary<int, bool>()
@@ -341,6 +343,7 @@ namespace Raser {
             this.nodeRoads.Add(new List<int>())
             this.carDegree.Add(0)
             this.nodeHalf.Add(0.0)
+            this.nodeSegs.Add(new List<float>())
             return id
         }
 
@@ -356,6 +359,7 @@ namespace Raser {
             this.nodeRoads.Clear()
             this.carDegree.Clear()
             this.nodeHalf.Clear()
+            this.nodeSegs.Clear()
             this.grid.Clear()
             this.conflicts.Clear()
             this.sorted.Clear()
@@ -391,6 +395,19 @@ namespace Raser {
                 this.nodeHalf[p.end] = Math.Max(this.nodeHalf[p.end], p.road.width / 2.0)
             }
             foreach (p in carPieces) { this.CarLanes(p) }
+            // je Knoten die nahen Stücke der Fahrbahnen (für OnCarriageway)
+            for (int node = 0; node < this.nodeRoads.Count; node++) {
+                var segs = this.nodeSegs[node]
+                float ne = this.NodeE(node)
+                float nn = this.NodeN(node)
+                foreach (ri in this.nodeRoads[node]) {
+                    var r = this.sorted[ri]
+                    for (int i = 0; i + 3 < r.line.length; i = i + 2) {
+                        if (Raser.Geo.DistanceToSegment(ne, nn, r.line[i], r.line[i + 1], r.line[i + 2], r.line[i + 3]) > 40.0) { continue }
+                        foreach (v in [r.line[i], r.line[i + 1], r.line[i + 2], r.line[i + 3], r.width / 2.0]) { segs.Add(v) }
+                    }
+                }
+            }
             // Abbiegespuren an den Knoten
             int roadLanes = this.lanes.Count
             var ins = new Dictionary<int, List<int>>(Owns.Values)
@@ -640,9 +657,9 @@ namespace Raser {
 
         // Liegt (x, y) auf der Fahrbahn einer Straße am Knoten (mit margin m Rand)?
         defined bool OnCarriageway(defined int node, defined float x, defined float y, defined float margin) {
-            foreach (ri in this.nodeRoads[node]) {
-                var r = this.sorted[ri]
-                if (Raser.Geo.DistanceToLine(r.line, x, y) < r.width / 2.0 + margin) { return true }
+            var segs = this.nodeSegs[node]
+            for (int i = 0; i + 4 < segs.Count; i = i + 5) {
+                if (Raser.Geo.DistanceToSegment(x, y, segs[i], segs[i + 1], segs[i + 2], segs[i + 3]) < segs[i + 4] + margin) { return true }
             }
             return false
         }
@@ -741,7 +758,7 @@ namespace Raser {
             float d = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay))
             if (d > 25.0) { return }
             bool crossing = false
-            int steps = Math.Max(1, Math.Ceiling(d / 0.5)!int)
+            int steps = Math.Max(1, Math.Ceiling(d / 0.8)!int)
             for (int i = 1; i < steps; i++) {
                 float f = i * 1.0 / steps
                 if (this.OnCarriageway(node, ax + (bx - ax) * f, ay + (by - ay) * f, 0.0)) {
@@ -776,16 +793,16 @@ namespace Raser {
 
         static defined int Cell(defined int cx, defined int cy) { return cx * 1000003 + cy }
 
-        // Das Raster der Spuren (Zellen von 16 m) für die Suche nach der nächsten.
+        // Das Raster der Spuren (Zellen von 32 m) für die Suche nach der nächsten.
         undefined Index() {
             for (int li = 0; li < this.lanes.Count; li++) {
                 var l = this.lanes[li]
                 int n = l.pts.length / 2
                 for (int i = 0; i + 1 < n; i++) {
-                    int x0 = Math.Floor(Math.Min(l.pts[i * 2], l.pts[i * 2 + 2]) / 16.0)!int
-                    int x1 = Math.Floor(Math.Max(l.pts[i * 2], l.pts[i * 2 + 2]) / 16.0)!int
-                    int y0 = Math.Floor(Math.Min(l.pts[i * 2 + 1], l.pts[i * 2 + 3]) / 16.0)!int
-                    int y1 = Math.Floor(Math.Max(l.pts[i * 2 + 1], l.pts[i * 2 + 3]) / 16.0)!int
+                    int x0 = Math.Floor(Math.Min(l.pts[i * 2], l.pts[i * 2 + 2]) / 32.0)!int
+                    int x1 = Math.Floor(Math.Max(l.pts[i * 2], l.pts[i * 2 + 2]) / 32.0)!int
+                    int y0 = Math.Floor(Math.Min(l.pts[i * 2 + 1], l.pts[i * 2 + 3]) / 32.0)!int
+                    int y1 = Math.Floor(Math.Max(l.pts[i * 2 + 1], l.pts[i * 2 + 3]) / 32.0)!int
                     for (int cx = x0; cx <= x1; cx++) {
                         for (int cy = y0; cy <= y1; cy++) {
                             int key = Raser.RoadGraph.Cell(cx, cy)
@@ -810,10 +827,10 @@ namespace Raser {
                 hx = -Math.Sin(h)
                 hy = Math.Cos(h)
             }
-            int cx0 = Math.Floor((e - maxDist) / 16.0)!int
-            int cx1 = Math.Floor((e + maxDist) / 16.0)!int
-            int cy0 = Math.Floor((n - maxDist) / 16.0)!int
-            int cy1 = Math.Floor((n + maxDist) / 16.0)!int
+            int cx0 = Math.Floor((e - maxDist) / 32.0)!int
+            int cx1 = Math.Floor((e + maxDist) / 32.0)!int
+            int cy0 = Math.Floor((n - maxDist) / 32.0)!int
+            int cy1 = Math.Floor((n + maxDist) / 32.0)!int
             for (int cx = cx0; cx <= cx1; cx++) {
                 for (int cy = cy0; cy <= cy1; cy++) {
                     int key = Raser.RoadGraph.Cell(cx, cy)

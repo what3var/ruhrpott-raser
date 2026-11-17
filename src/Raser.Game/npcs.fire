@@ -30,6 +30,7 @@ class NpcFigure {
     defined int pose            // 0 steht, 1 liegt, -1: noch nichts
     defined bool shown
     defined bool detail         // Arme und Haare sichtbar
+    List<float> ground          // Ost, Nord, Höhe des letzten Geländes (TrafficView.Height)
 
     construct(Scene scene) {
         this.parts = new List<Object>()
@@ -38,6 +39,8 @@ class NpcFigure {
         this.pose = -1
         this.scale = 1.0
         this.detail = true
+        this.ground = new List<float>()
+        foreach (v in [0.0, 0.0, 0.0]) { this.ground.Add(v) }
         this.Add(scene, -0.11, 0.42, 0.0, 0.17, 0.84, 0.2, 0.2)
         this.Add(scene, 0.11, 0.42, 0.0, 0.17, 0.84, 0.2, -0.2)
         this.Add(scene, 0.0, 1.14, 0.0, 0.44, 0.6, 0.24, 0.0)
@@ -127,6 +130,7 @@ class TrafficView {
     List<int> carOwner          // je Modell: die ID des Autos (-1: frei)
     List<int> carStamp
     List<bool> carDetail
+    List<float> carGround       // je Modell: Ost, Nord, Höhe des letzten Geländes (nur neu gelesen nach 1 m)
     Dictionary<int, int> carSlot
     List<NpcFigure> figures
     Dictionary<int, int> figureSlot
@@ -153,6 +157,7 @@ class TrafficView {
         this.carOwner = new List<int>()
         this.carStamp = new List<int>()
         this.carDetail = new List<bool>()
+        this.carGround = new List<float>()
         this.carSlot = new Dictionary<int, int>()
         this.figures = new List<NpcFigure>(Owns.Values)
         this.figureSlot = new Dictionary<int, int>()
@@ -193,7 +198,8 @@ class TrafficView {
                 loaded++
             }
         }
-        if (this.traffic.graph.dirty) {
+        // gebaut wird erst, wenn alle neun Kacheln da sind (ein Neubau je Kachelwechsel, nicht drei)
+        if (this.traffic.graph.dirty && this.fed.Count >= 9) {
             int t0 = DateTime.Now.Ticks
             this.traffic.graph.Build()
             this.buildTicks = DateTime.Now.Ticks - t0
@@ -241,7 +247,7 @@ class TrafficView {
         if (!onFoot) { this.Collide(car) } else {
             foreach (c in this.traffic.cars) {
                 float h = c.heading * Math.PI / 180.0
-                foreach (part in [1.0, 0.0, -1.0]) { walker.Avoid(c.east - Math.Sin(h) * c.body.spread * part, c.north + Math.Cos(h) * c.body.spread * part, c.body.radius - 0.05) }
+                for (float part = 1.0; part > -1.5; part = part - 1.0) { walker.Avoid(c.east - Math.Sin(h) * c.body.spread * part, c.north + Math.Cos(h) * c.body.spread * part, c.body.radius - 0.05) }
             }
         }
         // die Spieler für die Simulation: Ost, Nord, Richtung, Tempo, Radius, spread, Art
@@ -337,10 +343,9 @@ class TrafficView {
                 this.carDetail[slot] = near
                 for (int i = 0; i < m.parts.Count; i++) { m.parts[i].Visible = near || i < this.BodyParts(this.carKinds[slot]) }
             }
-            if (d2 > 150.0 * 150.0 && (this.frame + c.id) % 2 == 1) { continue }
-            float y = 0.0
-            any g = terrain.At(c.east, c.north)
-            if (g != undefined) { y = g - view.originZ }
+            if (d2 > 80.0 * 80.0 && (this.frame + c.id) % 2 == 1) { continue }
+            if (d2 > 160.0 * 160.0 && (this.frame + c.id) % 4 != 0) { continue }
+            float y = this.Height(this.carGround, slot, terrain, view, c.east, c.north)
             m.Place(c.east - view.originE, y, -(c.north - view.originN), c.heading, 0.0)
         }
         for (int i = 0; i < this.cars.Count; i++) {
@@ -358,10 +363,9 @@ class TrafficView {
             var f = this.figures[slot]
             f.stamp = this.frame
             f.Show(true, d2 < 45.0 * 45.0)
-            if (d2 > 150.0 * 150.0 && (this.frame + p.id) % 2 == 1) { continue }
-            float y = 0.0
-            any g = terrain.At(p.east, p.north)
-            if (g != undefined) { y = g - view.originZ }
+            if (d2 > 80.0 * 80.0 && (this.frame + p.id) % 2 == 1) { continue }
+            if (d2 > 160.0 * 160.0 && (this.frame + p.id) % 4 != 0) { continue }
+            float y = this.Height(f.ground, 0, terrain, view, p.east, p.north)
             f.Place(p.east - view.originE, y, -(p.north - view.originN), p.heading, p.stride, p.state == 4)
         }
         foreach (f in this.figures) {
@@ -371,6 +375,22 @@ class TrafficView {
                 f.Show(false, false)
             }
         }
+    }
+
+    // Die Höhe des Geländes in der Szene an (e, n), aus dem Merker cache[slot * 3 ..] (Ost, Nord, Höhe), neu gelesen erst nach 1 m.
+    defined float Height(List<float> cache, defined int slot, Ground terrain, WorldView view, defined float e, defined float n) {
+        int i = slot * 3
+        float de = cache[i] - e
+        float dn = cache[i + 1] - n
+        if (de * de + dn * dn > 1.0) {
+            float y = 0.0
+            any g = terrain.At(e, n)
+            if (g != undefined) { y = g }
+            cache[i] = e
+            cache[i + 1] = n
+            cache[i + 2] = y
+        }
+        return cache[i + 2] - view.originZ
     }
 
     // Wie viele Teile eines CarModel immer zu sehen sind (Karosserie, Kabine; der Rest: Räder und Lichter).
@@ -398,6 +418,7 @@ class TrafficView {
             this.carOwner.Add(-1)
             this.carStamp.Add(0)
             this.carDetail.Add(true)
+            foreach (v in [0.0, 0.0, 0.0]) { this.carGround.Add(v) }
             slot = this.cars.Count - 1
         }
         var model = this.cars[slot]
@@ -453,6 +474,6 @@ class TrafficView {
     string Report() {
         if (!this.enabled) { return "Verkehr aus" }
         int n = Math.Max(1, this.steps)
-        return "Verkehr: " + this.traffic.cars.Count + " Autos, " + this.traffic.people.Count + " Fussgaenger (Modelle " + this.cars.Count + " + " + this.figures.Count + "), Graph " + this.traffic.graph.lanes.Count + " Spuren / " + this.traffic.graph.NodeCount + " Knoten, gebaut " + this.builds + "x (zuletzt " + (this.buildTicks / 10000) + " ms); je Bild Simulation " + (this.stepTicks / n / 10000.0) + " ms, Modelle " + (this.syncTicks / n / 10000.0) + " ms; Unfaelle " + this.traffic.crashes + ", umgefahren " + this.traffic.knocked
+        return "Verkehr: " + this.traffic.cars.Count + " Autos, " + this.traffic.people.Count + " Fussgaenger (Modelle " + this.cars.Count + " + " + this.figures.Count + "), Graph " + this.traffic.graph.lanes.Count + " Spuren / " + this.traffic.graph.NodeCount + " Knoten, gebaut " + this.builds + "x (zuletzt " + (this.buildTicks / 10000) + " ms); je Bild Simulation " + (this.stepTicks / n / 10000.0) + " ms, Modelle " + (this.syncTicks / n / 10000.0) + " ms; Unfaelle " + this.traffic.crashes + ", umgefahren " + this.traffic.knocked + "; Probe: " + this.traffic.Check()
     }
 }
