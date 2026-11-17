@@ -107,7 +107,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Die fernen Stufen baut ein eigener Worker (vorher das Hauptprogramm), Modelle entstehen Netz für Netz im Zeitbudget
 - [x] Ruckler beim Nachladen kleiner (fire a9d8598d: Natives sperren einander nicht mehr; Netze als Byte-Puffer durch den Kanal; Worker `dedicated`): 24 statt 15 Bilder je s, das längste Bild 0,25 bis 0,55 statt 0,8 bis 1,3 s
 - [x] Rest-Ruckler beim Nachladen: die alten Arrays der Netze hingen nach `Pack` weiter am Netz (ein auf `undefined` gesetztes Feld gibt fire absichtlich nicht frei) - mit `delete`: 28,8 Bilder je s, das längste Bild 0,29 s, Abholen höchstens 4 ms
-- [ ] Vorausladen gezielt in Fahrtrichtung (heute: Ringe um einen Punkt voraus); Kacheln in Obstacles/Ground bei langen Fahrten wieder freigeben
+- [x] Vorausladen in Fahrtrichtung: die nahe Stufe gilt um das Fahrzeug und entlang seines Wegs (Tempo x 4 s, höchstens 250 m), bestellt in der Reihenfolge der Fahrt (`WorldView.SetMotion`/`Want`); die Worker bauen auch die Modelle - Geisterfahrt (`--live 25 --ghost 1 --speed 100`): ohne nahe Stufe unter dem Wagen 0 statt 95 Bilder, 30 m voraus 2 statt 236
+- [x] Lange Fahrten: Hindernisse und Gelände geben Kacheln weiter als eine Kachel wieder frei (`Trim`), Fahrzeuge weiter als 400 m werden nicht nachgesetzt
+- [ ] Rendern wartet auf die Sperre von scene3d, während ein Worker ein Modell baut (Netze dafür auf 6000 Vierecke begrenzt); beim Messen lief parallel ein Build - neu messen auf ruhiger Maschine
 - [ ] LOD für weite Sichtweiten
 
 ### Detail und Abwechslung

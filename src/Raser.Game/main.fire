@@ -483,7 +483,7 @@ class Game {
             return 0
         }
 
-        // --live s [--speed 50]: ohne Fenster in Echtzeit fahren (der Autopilot weicht Wänden aus), je Bild nachladen und rendern - misst das
+        // --live s [--speed 50] [--ghost 1 --heading deg]: ohne Fenster in Echtzeit fahren (der Autopilot weicht Wänden aus), je Bild nachladen und rendern - misst das
         // Nachladen: wie oft unter dem Wagen bzw. 60 m voraus die nahe bzw. irgendeine Stufe fehlte.
         float live = options.Get("live", "0").ToFloat()
         if (live > 0.0) {
@@ -494,12 +494,20 @@ class Game {
             int frames = 0
             int noNear = 0
             int noAhead = 0
+            int noFar = 0
+            int trimmed = 0
+            int noNearAhead = 0
             int worst = 0
             int hits = 0
             float way = 0.0
             float clock = 0.0
             int pilotTicks = 0
             bool renderAll = options.Get("render", "") != ""
+            bool ghost = options.Get("ghost", "") != ""
+            if (options.Get("heading", "") != "") {
+                car.heading = options.Get("heading", "0").ToFloat()
+                camHeading = car.heading
+            }
             int updateTicks = 0
             int renderTicks = 0
             int otherTicks = 0
@@ -511,21 +519,30 @@ class Game {
                 last = now
                 clock = clock + dt
                 int t1 = DateTime.Now.Ticks
-                float pilot[] = Game.Pilot(car, obstacles, want)
-                pilotTicks = pilotTicks + (DateTime.Now.Ticks - t1)
                 float e0 = car.east
                 float n0 = car.north
-                if (Game.Advance(car, vehicles, obstacles, dt, pilot[0], pilot[1], pilot[2], false, weather.wetness)) { hits++ }
-                Game.Parked(car, vehicles, obstacles, dt, weather.wetness)
+                if (ghost) {
+                    // --ghost: geradeaus mit festem Tempo, durch alles hindurch (misst nur das Nachladen)
+                    car.speed = want
+                    float gh = car.heading * Math.PI / 180.0
+                    car.east = car.east - Math.Sin(gh) * want * dt
+                    car.north = car.north + Math.Cos(gh) * want * dt
+                } else {
+                    float pilot[] = Game.Pilot(car, obstacles, want)
+                    pilotTicks = pilotTicks + (DateTime.Now.Ticks - t1)
+                    if (Game.Advance(car, vehicles, obstacles, dt, pilot[0], pilot[1], pilot[2], false, weather.wetness)) { hits++ }
+                    Game.Parked(car, vehicles, obstacles, dt, weather.wetness)
+                }
                 way = way + Math.Sqrt((car.east - e0) * (car.east - e0) + (car.north - n0) * (car.north - n0))
                 float diff = car.heading - camHeading
                 camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
-                Game.PlaceAll(vehicles, models, terrain, view)
+                Game.PlaceAll(vehicles, models, terrain, view, car.east, car.north)
                 Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
                 view.lead = Math.Abs(car.speed) * 2.5
                 if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
                 float h = car.heading * Math.PI / 180.0
                 int t2 = DateTime.Now.Ticks
+                view.SetMotion(car.east, car.north, car.heading, car.speed)
                 view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
                 int t3 = DateTime.Now.Ticks
                 atmosphere.Update(car.east, car.north, dt)
@@ -540,14 +557,17 @@ class Game {
                 otherTicks = otherTicks + (t4 - t3) + (t2 - t1)
                 renderTicks = renderTicks + (DateTime.Now.Ticks - t4)
                 frames++
+                if (frames % 60 == 0) { trimmed = trimmed + obstacles.Trim(car.east, car.north) + terrain.Trim(car.east, car.north) }
                 if (view.near >= 0 && view.StageAt(car.east, car.north) < 2) { noNear++ }
                 if (view.StageAt(car.east - Math.Sin(h) * 60.0, car.north + Math.Cos(h) * 60.0) < 1) { noAhead++ }
+                if (view.StageAt(car.east - Math.Sin(h) * 150.0, car.north + Math.Cos(h) * 150.0) < 1) { noFar++ }
+                if (view.StageAt(car.east - Math.Sin(h) * 30.0, car.north + Math.Cos(h) * 30.0) < 2 && view.near >= 0) { noNearAhead++ }
             }
             cam.Render()
             Game.Hud(hud, ink, shade, car, weather, height, false, "")
             float seconds = (DateTime.Now.Ticks - began) / 10000000.0
             print("Fahrt " + Math.Round(seconds) + " s, " + Math.Round(way) + " m, " + frames + " Bilder (" + (Math.Round(frames / seconds * 10.0) / 10.0) + " je s, längstes " + (worst / 10000) + " ms), " + hits + " Aufpralle")
-            print("ohne nahe Stufe unter dem Wagen: " + noNear + " Bilder, ohne jede Stufe 60 m voraus: " + noAhead + " Bilder; gebaut " + view.nearBuilt + " nah, " + view.farBuilt + " fern, verworfen " + view.dropped + ", zu spät " + view.late)
+            print("ohne nahe Stufe unter dem Wagen: " + noNear + " Bilder, ohne jede Stufe 60 m voraus: " + noAhead + ", 150 m voraus: " + noFar + ", ohne nahe Stufe 30 m voraus: " + noNearAhead + " Bilder; gebaut " + view.nearBuilt + " nah, " + view.farBuilt + " fern, verworfen " + view.dropped + ", zu spät " + view.late + ", Kacheln freigegeben " + trimmed + ", geladen " + obstacles.tiles.Count + "; ein naher Block im Worker im Mittel " + (view.nearTicks / Math.Max(1, view.nearBuilt) / 10000) + " ms (mit Modellen), ein ferner " + (view.farTicks / Math.Max(1, view.farBuilt) / 10000) + " ms")
             print("je Bild: Autopilot " + (pilotTicks / frames / 10000) + " ms, Nachladen " + (updateTicks / frames / 10000) + " ms, Rendern " + (renderTicks / frames / 10000) + " ms, Rest mit Autopilot " + (otherTicks / frames / 10000) + " ms")
             string parts = ""
             for (int i = 0; i < 6; i++) { parts = parts + " " + (view.spent[i] / frames / 10000.0) + "/" + (view.spent[i + 6] / 10000) }
@@ -575,7 +595,7 @@ class Game {
                 top = Math.Max(top, car.speed)
             }
             camHeading = car.heading + options.Get("look", "0").ToFloat()
-            Game.PlaceAll(vehicles, models, terrain, view)
+            Game.PlaceAll(vehicles, models, terrain, view, car.east, car.north)
             Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
             Game.Ride(car, person, terrain, view, hood)
             // --foot s: anhalten, aussteigen und so viele Sekunden gehen (--turn: drehen dabei, --sprint 1)
@@ -633,6 +653,7 @@ class Game {
         string presets[] = ["klar", "wolkig", "bedeckt", "niesel", "regen", "starkregen", "dunst", "nebel", "dichter-nebel"]
         int presetIndex = 0
         int last = DateTime.Now.Ticks
+        float tidy = 0.0
         while (win.Tick()) {
             any ev = win.NextEvent()
             while (ev != undefined) {
@@ -711,6 +732,7 @@ class Game {
                 Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
                 view.lead = 0.0
                 view.near = near
+                view.SetMotion(walker.east, walker.north, walker.heading, walker.speed)
                 view.Update(walker.east, walker.north, 12.0)
                 atmosphere.Update(walker.east, walker.north, dt)
             } else {
@@ -723,6 +745,7 @@ class Game {
                 view.lead = Math.Abs(car.speed) * 2.5
                 if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
                 float h = car.heading * Math.PI / 180.0
+                view.SetMotion(car.east, car.north, car.heading, car.speed)
                 view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
                 atmosphere.Update(car.east, car.north, dt)
             }
@@ -733,7 +756,14 @@ class Game {
             for (int i = 0; i < vehicles.Count; i++) {
                 models[i].beam.Enabled = weather.lampsOn && !onFoot && vehicles[i] == car
             }
-            Game.PlaceAll(vehicles, models, terrain, view)
+            if (onFoot) { Game.PlaceAll(vehicles, models, terrain, view, walker.east, walker.north) } else { Game.PlaceAll(vehicles, models, terrain, view, car.east, car.north) }
+            // lange Fahrten: weit entfernte Kacheln aus Hindernissen und Gelände freigeben (alle 2 s)
+            tidy = tidy + dt
+            if (tidy > 2.0) {
+                tidy = 0.0
+                obstacles.Trim(car.east, car.north)
+                terrain.Trim(car.east, car.north)
+            }
             scene.Advance(dt * 1s)
             cam.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
@@ -916,8 +946,14 @@ class Game {
         Game.Look(cam, terrain, view, obstacles, chase, car.east, car.north, car.heading, camHeading, hood, dt, reach, up, eye)
     }
 
-    static undefined PlaceAll(List<Raser.Vehicle> vehicles, List<CarModel> models, Ground terrain, WorldView view) {
-        for (int i = 0; i < vehicles.Count; i++) { Game.PlaceCar(vehicles[i], models[i], terrain, view) }
+    // Die Fahrzeuge in die Szene - nur die im Umkreis von 400 m um (e, n) neu (die anderen bleiben, wo sie sind: so lädt keines das Gelände
+    // einer Kachel nach, die schon freigegeben ist).
+    static undefined PlaceAll(List<Raser.Vehicle> vehicles, List<CarModel> models, Ground terrain, WorldView view, defined float e, defined float n) {
+        for (int i = 0; i < vehicles.Count; i++) {
+            float de = vehicles[i].east - e
+            float dn = vehicles[i].north - n
+            if (de * de + dn * dn < 400.0 * 400.0) { Game.PlaceCar(vehicles[i], models[i], terrain, view) }
+        }
     }
 
     // Auf einem Zweirad sitzt der Spieler sichtbar obenauf (nicht aus seinen Augen), 0,3 m hinter der Mitte, und legt sich mit in die Kurve.
