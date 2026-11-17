@@ -1,0 +1,403 @@
+// Die Tests von Raser.Mesh (forge test src/Raser.Mesh/Raser.Mesh.fireproj).
+#import "testing"
+#import "raser.core"
+
+class MeshTests {
+    static Raser.Chunk Empty() { return new Raser.Chunk(new Raser.ChunkKey(0, 0, 0)) }
+
+    [Test "Ein Voxel: sechs Flächen"]
+    undefined One() {
+        var c = MeshTests.Empty()
+        c.Set(5, 5, 5, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(6, mesh.opaque.Count)
+        Testing.Assert.AreEqual(0, mesh.transparent.Count)
+    }
+
+    [Test "Greedy: ein Quader aus gleichen Voxeln hat sechs Flächen"]
+    undefined Box() {
+        var c = MeshTests.Empty()
+        c.Fill(2, 3, 4, 9, 6, 8, Raser.Material.Concrete!int, Raser.Palette.Concrete)
+        var mesh = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(6, mesh.opaque.Count)
+        // Oberseite bei z = 9 * 0,2, über 8 x 4 Voxel
+        var p = mesh.opaque.positions
+        bool top = false
+        for (int q = 0; q < mesh.opaque.Count; q++) {
+            if (mesh.opaque.normals[q * 3 + 2] > 0.5) {
+                top = Math.Abs(p[q * 12 + 2] - 1.8) < 0.0001
+            }
+        }
+        Testing.Assert.IsTrue(top)
+    }
+
+    [Test "Zwei Farben bleiben getrennt"]
+    undefined Colors() {
+        var c = MeshTests.Empty()
+        c.Set(0, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.Set(1, 0, 0, Raser.Material.Brick!int, Raser.Palette.BrickDark)
+        var mesh = new Raser.Mesher(c).Build()
+        // je Voxel 5 sichtbare Flächen (die gemeinsame Seite ist verdeckt)
+        Testing.Assert.AreEqual(10, mesh.opaque.Count)
+    }
+
+    [Test "Höhen-Schnitt: schräge Oberseite, Trapez-Seiten"]
+    undefined Sloped() {
+        var c = MeshTests.Empty()
+        c.Set(5, 5, 5, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 3, 4))
+        var mesh = new Raser.Mesher(c).Build()
+        // Unterseite + schräge Oberseite + 4 Seiten
+        Testing.Assert.AreEqual(6, mesh.opaque.Count)
+        int slopes = 0
+        for (int q = 0; q < mesh.opaque.Count; q++) {
+            float nz = mesh.opaque.normals[q * 3 + 2]
+            if (nz > 0.1 && nz < 0.999) { slopes++ }
+        }
+        Testing.Assert.AreEqual(1, slopes)
+        // Ein volles Voxel darunter zeigt keine Oberseite: die Unterseite des Schnitts verdeckt sie.
+        c.Set(5, 5, 4, Raser.Material.Soil!int, Raser.Palette.Soil)
+        var lower = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(6 + 4, lower.opaque.Count)
+        c.Set(5, 5, 4, 0, 0)
+        // Ein Voxel darüber verdeckt die schräge Fläche nicht.
+        c.Set(5, 5, 6, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var again = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(6 + 6, again.opaque.Count)       // auch der Ziegel zeigt seine Unterseite: der Schnitt darunter verdeckt sie nicht
+    }
+
+    [Test "Gleiche Schnitte werden zu einer Fläche, verdeckte Seiten fallen weg"]
+    undefined MergedSlopes() {
+        var c = MeshTests.Empty()
+        c.Fill(0, 0, 0, 9, 9, 4, Raser.Material.Soil!int, Raser.Palette.Soil)
+        // eine flach geschnittene Schicht (alle Ecken auf 2/4) über 10 x 10 Voxeln
+        for (int y = 0; y < 10; y++) {
+            for (int x = 0; x < 10; x++) { c.Set(x, y, 5, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(2, 2, 2, 2)) }
+        }
+        var mesh = new Raser.Mesher(c).Build()
+        // Erde: Unterseite + 4 Seiten (die Oberseite verdeckt der Schnitt); Gras: 1 Oberseite + 40 Außenseiten (innen verdeckt)
+        Testing.Assert.AreEqual(1 + 4 + 1 + 40, mesh.opaque.Count)
+        // eine Rampe, die in x steigt (1/4 -> 2/4) und in y gleich bleibt: je Spalte eine Fläche entlang y
+        var r = MeshTests.Empty()
+        for (int y = 0; y < 10; y++) {
+            for (int x = 0; x < 10; x++) { r.Set(x, y, 5, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 2, 1)) }
+        }
+        var rm = new Raser.Mesher(r).Build()
+        int tops = 0
+        for (int q = 0; q < rm.opaque.Count; q++) {
+            if (rm.opaque.normals[q * 3 + 2] > 0.5) { tops++ }
+        }
+        Testing.Assert.AreEqual(10, tops)              // 10 schräge Streifen, je einer pro Spalte
+    }
+
+    [Test "Ohne Gelände: nur was darauf steht, im Boden verdeckt"]
+    undefined SkipTerrain() {
+        var c = MeshTests.Empty()
+        c.Fill(0, 0, 0, 9, 9, 4, Raser.Material.Soil!int, Raser.Palette.Soil)
+        c.Set(0, 0, 5, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 2, 1))
+        c.Fill(3, 3, 2, 4, 4, 8, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var m = new Raser.Mesher(c)
+        m.skipTerrain = true
+        var mesh = m.Build()
+        // die Säule aus Ziegel (2 x 2 x 7): oben 1, Seiten über dem Boden (z 5..8) je 1 = 5; im Boden verdeckt die Erde
+        Testing.Assert.AreEqual(5, mesh.opaque.Count)
+    }
+
+    [Test "Bit-Zeilen in 64, 32 und 16 Bit: dasselbe Netz"]
+    undefined WordWidths() {
+        var c = MeshTests.Empty()
+        // gemischt: Gelände mit Schnitten, eine Wand mit Glas, Wasser, Lücken über die Wortgrenzen (x 15/16, 31/32, 47/48) und den Rand
+        c.Fill(0, 0, 0, 63, 63, 3, Raser.Material.Soil!int, Raser.Palette.Soil)
+        for (int x = 0; x < 64; x = x + 3) { c.Set(x, (x * 7) % 64, 4, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 3, 4)) }
+        c.Fill(10, 20, 4, 50, 21, 20, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.Fill(14, 20, 8, 17, 21, 12, Raser.Material.Glass!int, Raser.Palette.Glass)
+        c.Fill(30, 20, 8, 33, 21, 12, Raser.Material.Glass!int, Raser.Palette.Glass)
+        c.Fill(46, 20, 8, 49, 21, 12, 0, 0)
+        c.Fill(0, 40, 4, 63, 45, 5, Raser.Material.Water!int, Raser.Palette.Water)
+        c.Fill(60, 0, 4, 63, 63, 63, Raser.Material.Concrete!int, Raser.Palette.Concrete)
+        var a = new Raser.Mesher(c).Build()
+        foreach (bits in [32, 16]) {
+            var m = new Raser.Mesher(c)
+            m.wordBits = bits
+            var b = m.Build()
+            Testing.Assert.AreEqual(a.opaque.Count, b.opaque.Count)
+            Testing.Assert.AreEqual(a.transparent.Count, b.transparent.Count)
+            for (int i = 0; i < a.opaque.Count * 12; i++) { Testing.Assert.AreEqual(a.opaque.positions[i], b.opaque.positions[i]) }
+        }
+        Testing.Assert.IsTrue(a.opaque.Count > 20)
+        Testing.Assert.IsTrue(a.transparent.Count > 4)
+    }
+
+    [Test "Grundriss-Form: ein diagonales Voxel hat oben, unten, zwei Seiten und die Schräge"]
+    undefined PlanVoxel() {
+        var c = MeshTests.Empty()
+        c.Set(10, 10, 10, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(10, 10, 10, Raser.Plan.Diagonal(1, 0, 0))       // das Dreieck unter der Diagonale (0,0) - (1,1)
+        var mesh = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(5, mesh.opaque.Count)
+        // die Schräge zeigt nach links oben (-x, +y)
+        bool slanted = false
+        for (int q = 0; q < mesh.opaque.Count; q++) {
+            float nx = mesh.opaque.normals[q * 3]
+            float ny = mesh.opaque.normals[q * 3 + 1]
+            if (nx < -0.7 && ny > 0.7) { slanted = true }
+        }
+        Testing.Assert.IsTrue(slanted)
+        // ein volles Nachbar-Voxel rechts verdeckt die Seite bei x = 1; die Seite des Nachbarn zum Dreieck bleibt (es verdeckt sie nicht ganz)
+        c.Set(11, 10, 10, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh2 = new Raser.Mesher(c).Build()
+        // Dreieck: oben, unten, Seite y = 0, Schräge = 4; der Würfel: 5 Seiten (die zum Dreieck mit) + 1 = 6 - oben/unten des Würfels zählen mit
+        Testing.Assert.AreEqual(4 + 6, mesh2.opaque.Count)
+    }
+
+    [Test "Schnitt in der Ansicht (Bogen): zwei Stirnflächen, die Schräge und die Ränder; gleiche Nachbarn entlang der Achse verdecken die Stirn"]
+    undefined ElevationVoxel() {
+        var c = MeshTests.Empty()
+        c.Set(10, 10, 10, Raser.Material.Brick!int, Raser.Palette.Brick)
+        // Achse 0 (durchgezogen entlang y): gefüllt über der Linie von (u 0, z 0,5) nach (u 1, z 1) - ein Dreieck in x und z
+        int p = Raser.Plan.Elevation(0, Raser.Plan.RimOf(0.0, 0.5), Raser.Plan.RimOf(1.0, 1.0))
+        c.SetPlan(10, 10, 10, p)
+        var mesh = new Raser.Mesher(c).Build()
+        // zwei Stirnflächen (y = 0 und y = 1) + Schräge + oben + links = 5
+        Testing.Assert.AreEqual(5, mesh.opaque.Count)
+        bool slope = false
+        for (int q = 0; q < mesh.opaque.Count; q++) {
+            float nx = mesh.opaque.normals[q * 3]
+            float nz = mesh.opaque.normals[q * 3 + 2]
+            if (nx > 0.3 && nz < -0.3) { slope = true }            // die Schräge zeigt nach rechts unten (die Unterseite eines Bogens)
+        }
+        Testing.Assert.IsTrue(slope)
+        // ein gleiches Voxel dahinter (y + 1): zwischen den beiden keine Stirnflächen
+        c.Set(10, 11, 10, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(10, 11, 10, p)
+        var mesh2 = new Raser.Mesher(c).Build()
+        Testing.Assert.AreEqual(2 * 5 - 2, mesh2.opaque.Count)
+        Testing.Assert.IsTrue(Raser.Plan.IsElevation(p))
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(p) - 1.0) < 0.0001)        // im Grundriss voll
+    }
+
+    [Test "Glas: eigener Teil, keine Flächen zwischen Glas"]
+    undefined Glass() {
+        var c = MeshTests.Empty()
+        c.Set(0, 0, 0, Raser.Material.Glass!int, Raser.Palette.Glass)
+        c.Set(1, 0, 0, Raser.Material.Glass!int, Raser.Palette.Glass)
+        c.Set(2, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh = new Raser.Mesher(c).Build()
+        // Glas: ein 2 x 1 Quader ohne die Seite zum Ziegel = 5 Flächen; Ziegel: 6 (Glas verdeckt nichts)
+        Testing.Assert.AreEqual(5, mesh.transparent.Count)
+        Testing.Assert.AreEqual(6, mesh.opaque.Count)
+    }
+
+    [Test "Nachbar-Chunks verdecken den Rand"]
+    undefined Neighbours() {
+        var c = MeshTests.Empty()
+        c.Set(63, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var east = new Raser.Chunk(new Raser.ChunkKey(1, 0, 0))
+        east.Set(0, 0, 0, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh = Raser.Mesher.Around(c, undefined, east, undefined, undefined, undefined, undefined).Build()
+        Testing.Assert.AreEqual(5, mesh.opaque.Count)
+    }
+
+    [Test "Randschichten statt ganzer Nachbarn: dasselbe Netz"]
+    undefined Faces() {
+        var c = MeshTests.Empty()
+        c.Fill(0, 0, 0, 63, 63, 10, Raser.Material.Soil!int, Raser.Palette.Soil)
+        c.Set(63, 5, 11, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 3, 2, 4))
+        var east = new Raser.Chunk(new Raser.ChunkKey(1, 0, 0))
+        east.Fill(0, 0, 0, 63, 63, 12, Raser.Material.Rock!int, Raser.Palette.Rock)
+        east.Set(0, 5, 13, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(2, 2, 3, 1))
+        var a = Raser.Mesher.Around(c, undefined, east, undefined, undefined, undefined, undefined).Build()
+        // dieselbe Randschicht über die gespeicherte Form (.rrb)
+        var bytes = Raser.ChunkFace.EncodeAll(east)
+        var b = new Raser.Mesher(c, undefined, Raser.ChunkFace.Decode(bytes, 0)).Build()
+        Testing.Assert.AreEqual(a.opaque.Count, b.opaque.Count)
+        for (int i = 0; i < a.opaque.Count * 12; i++) { Testing.Assert.AreEqual(a.opaque.positions[i], b.opaque.positions[i]) }
+        Testing.Assert.IsFalse(Raser.ChunkFace.Of(east, 0).solid)
+        Testing.Assert.IsTrue(Raser.ChunkFace.Of(east, 4).solid)
+    }
+
+    [Test "Flächen zeigen nach außen"]
+    undefined Winding() {
+        var c = MeshTests.Empty()
+        c.Set(5, 5, 5, Raser.Material.Brick!int, Raser.Palette.Brick)
+        var mesh = new Raser.Mesher(c).Build()
+        var p = mesh.opaque.positions
+        for (int q = 0; q < 6; q++) {
+            int o = q * 12
+            float ux = p[o + 3] - p[o]
+            float uy = p[o + 4] - p[o + 1]
+            float uz = p[o + 5] - p[o + 2]
+            float vx = p[o + 6] - p[o]
+            float vy = p[o + 7] - p[o + 1]
+            float vz = p[o + 8] - p[o + 2]
+            float cx = uy * vz - uz * vy
+            float cy = uz * vx - ux * vz
+            float cz = ux * vy - uy * vx
+            float dot = cx * mesh.opaque.normals[q * 3] + cy * mesh.opaque.normals[q * 3 + 1] + cz * mesh.opaque.normals[q * 3 + 2]
+            Testing.Assert.IsTrue(dot > 0.0)
+        }
+    }
+}
+
+class FarTests {
+    static Raser.Tile Sample() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var raster = new Raser.HeightRaster(-0.5, -0.5, 1.0, 258, 258, 50.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:haus"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [10.0, 10.0, 20.0, 10.0, 20.0, 18.0, 10.0, 18.0]
+        b.ground = 50.0
+        b.eaves = 56.0
+        b.ridge = 59.0
+        b.roofType = Raser.RoofType.Gable
+        tile.data.buildings.Add(take b)
+        return tile
+    }
+
+    [Test "Ferne Stufe: Gelände als Raster, Gebäude aus Grundriss und Dach"]
+    undefined Block() {
+        var far = new Raser.FarMesher(FarTests.Sample(), 1)
+        var part = far.Block(0.0, 0.0, 51.2, 3.2)
+        // 16 x 16 Geländezellen; Wände: 2 x 10 m (je 5 Stücke) + 2 x 8 m (je 4 Stücke) = 18; Dach: der Grundriss (2 Dreiecke); Überstand: je Kante
+        // oben, unten, außen (4 x 3)
+        Testing.Assert.AreEqual(256 + 18 + 2 + 12, part.Count)
+        // Giebel: die Wand an der Schmalseite (x = 10) reicht in der Mitte (y = 14) bis fast zum First
+        float top = 0.0
+        for (int q = 256; q < 256 + 18; q++) {
+            for (int c = 0; c < 4; c++) {
+                float x = part.positions[q * 12 + c * 3]
+                float z = part.positions[q * 12 + c * 3 + 2]
+                if (Math.Abs(x - 10.0) < 0.001 && z > top) { top = z }
+            }
+        }
+        Testing.Assert.IsTrue(top > 58.0)
+        // ein Block ohne die Mitte des Gebäudes hat nur Gelände
+        Testing.Assert.AreEqual(256, far.Block(51.2, 0.0, 51.2, 3.2).Count)
+    }
+
+    [Test "Straßenraum: Bordstein, Grünstreifen mit Kantensteinen, Gullis, Baumscheibe"]
+    undefined StreetSpace() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var raster = new Raser.HeightRaster(-0.5, -0.5, 1.0, 258, 258, 50.0)
+        tile.heights = take raster
+        var road = new Raser.Road()
+        road.source = "test:allee"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 25.0, 51.2, 25.0]
+        road.width = 7.0
+        road.surface = Raser.Material.Asphalt
+        road.color = Raser.Palette.Asphalt
+        tile.data.roads.Add(take road)
+        // drei Bäume links in einer Reihe (Grünstreifen), einer allein auf einem Platz weit weg von der Straße
+        float xs[] = [15.0, 23.0, 31.0, 40.0]
+        float ys[] = [29.5, 29.5, 29.5, 45.0]
+        for (int k = 0; k < 4; k++) {
+            var p = new Raser.Prop()
+            p.source = "test:baum" + k
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = "tree"
+            p.x = xs[k]
+            p.y = ys[k]
+            tile.data.props.Add(take p)
+        }
+        Raser.Strips.Build(tile)
+        Testing.Assert.AreEqual(1, tile.strips.Count)
+        var far = new Raser.FarMesher(tile, 1)
+        var part = far.Block(0.0, 0.0, 51.2, 0.8, false)
+        int soil = 0
+        int metal = 0
+        int grass = 0
+        int kerb = 0
+        for (int q = 0; q < part.Count; q++) {
+            float y = (part.positions[q * 12 + 1] + part.positions[q * 12 + 7]) / 2.0
+            if (part.materials[q] == Raser.Material.Soil!int) { soil++ }
+            if (part.materials[q] == Raser.Material.Metal!int) { metal++ }
+            if (part.materials[q] == Raser.Material.Grass!int && y > 40.0 && part.positions[q * 12 + 2] > 50.005) { grass++ }
+            if (part.materials[q] == Raser.Material.Concrete!int) { kerb++ }
+        }
+        Testing.Assert.IsTrue(soil > 10)        // das Beet
+        Testing.Assert.IsTrue(metal >= 8)       // Gullis (je 1 Rost + 7 Stäbe) auf beiden Seiten
+        Testing.Assert.IsTrue(grass >= 1)       // die Baumscheibe auf dem Platz
+        Testing.Assert.IsTrue(kerb > 20)        // Bordstein, Kantensteine
+    }
+
+    [Test "Bogenstück: Zwickel vorn und hinten, Laibung darunter, nirgends unter dem Kämpfer oder über der Oberkante"]
+    undefined SpandrelPiece() {
+        var part = new Raser.MeshPart()
+        // eine Öffnung von (2, 5) nach (4, 5), 40 cm nach Norden in die Wand; Kämpfer 3 m, Stich 1 m, Oberkante 4 m
+        Raser.FarMesher.Spandrel(part, 2.0, 5.0, 4.0, 5.0, 0.0, 0.4, 3.0, 1.0, 4.0, false, Raser.Palette.Brick, Raser.Material.Brick!int)
+        Testing.Assert.AreEqual(36, part.Count)
+        int down = 0
+        for (int q = 0; q < part.Count; q++) {
+            for (int c = 0; c < 4; c++) {
+                float x = part.positions[q * 12 + c * 3]
+                float y = part.positions[q * 12 + c * 3 + 1]
+                float z = part.positions[q * 12 + c * 3 + 2]
+                Testing.Assert.IsTrue(x >= 1.999 && x <= 4.001 && y >= 4.999 && y <= 5.401 && z >= 2.999 && z <= 4.001)
+            }
+            if (part.normals[q * 3 + 2] < -0.1) { down++ }
+        }
+        Testing.Assert.AreEqual(12, down)
+        // der Spitzbogen endet in der Mitte am Scheitel
+        var sharp = new Raser.MeshPart()
+        Raser.FarMesher.Spandrel(sharp, 2.0, 5.0, 4.0, 5.0, 0.0, 0.4, 3.0, 1.0, 4.0, true, Raser.Palette.Brick, Raser.Material.Brick!int)
+        Testing.Assert.AreEqual(36, sharp.Count)
+    }
+
+    [Test "Hartes Gelände: wo etwas in den Boden greift oder gegraben ist"]
+    undefined GroundCut() {
+        var far = new Raser.FarMesher(FarTests.Sample(), 1)
+        // ein Chunk bei 38,4..51,2 m: Gelände bis 50 m (Voxel 249 = z 57), ein Fundament bei 4 m / 4 m, eine Grube bei 8 m / 8 m
+        var c = new Raser.Chunk(new Raser.ChunkKey(0, 0, 3))
+        c.Fill(0, 0, 0, 63, 63, 57, Raser.Material.Soil!int, Raser.Palette.Soil)
+        c.Fill(20, 20, 57, 21, 21, 57, Raser.Material.Concrete!int, Raser.Palette.Concrete)
+        c.Fill(40, 40, 50, 41, 41, 57, 0, 0)
+        var cut = new Raser.GroundCut()
+        cut.Add(c)
+        var hard = cut.Hard(far, 0.0, 0.0)
+        // das Fundament: nur seine eigenen 2 x 2 Säulen (1); die Grube: die ganze Zelle von 4 x 4 Säulen (2)
+        Testing.Assert.AreEqual(1, hard[20 + 20 * 64])
+        Testing.Assert.AreEqual(1, hard[21 + 21 * 64])
+        Testing.Assert.AreEqual(0, hard[23 + 23 * 64])
+        Testing.Assert.AreEqual(2, hard[40 + 43 * 64])
+        Testing.Assert.AreEqual(0, hard[24 + 20 * 64])
+        Testing.Assert.AreEqual(0, hard[5 + 5 * 64])
+        int count = 0
+        for (int k = 0; k < 4096; k++) { count = count + hard[k] }
+        Testing.Assert.AreEqual(4 * 1 + 16 * 2, count)
+        // das glatte Gelände spart die beiden Zellen aus ...
+        byte skip[] = new byte[256]
+        for (int k = 0; k < 4096; k++) {
+            if (hard[k] != 0) { skip[(k & 63) / 4 + ((k >> 6) / 4) * 16] = 1 }
+        }
+        Testing.Assert.AreEqual(254, far.Block(0.0, 0.0, 12.8, 0.8, false, skip).Count)
+    }
+
+    [Test "Netz-Cache: Bytes und zurück, verschoben in Szenen-Koordinaten"]
+    undefined CacheBytes() {
+        var part = new Raser.MeshPart()
+        part.Quad(0.0, 0.0, 1.0, 0.2, 0.0, 1.0, 0.2, 0.2, 1.0, 0.0, 0.2, 1.0, 0.0, 0.0, 1.0, 7, Raser.Material.Brick!int)
+        part.Quad(1.0, 0.0, 0.0, 1.0, 0.4, 0.0, 1.0, 0.4, 0.6, 1.0, 0.0, 0.6, 1.0, 0.0, 0.0, 200, Raser.Material.Brick!int)
+        var mesh = new Raser.BlockMesh()
+        mesh.Add(take part, 10.0, 20.0, 100.0)
+        byte data[] = new byte[mesh.quads * 49]
+        mesh.EncodeTo(data, 0)
+        var batches = new List<Raser.MeshBatch>()
+        Raser.BlockMesh.BatchesFrom(data, 0, mesh.quads, 1.0, -5.0, -6.0, -50.0, batches)
+        Testing.Assert.AreEqual(1, batches.Count)
+        var b = batches[0]
+        Testing.Assert.AreEqual(2, b.quads)
+        // erste Ecke: (0, 0, 1) + (10, 20, 100) + (-5, -6, -50) = Ost 5, Nord 14, oben 51 -> Szene (5, 51, -14)
+        Testing.Assert.AreEqual(5.0, b.positions[0])
+        Testing.Assert.AreEqual(51.0, b.positions[1])
+        Testing.Assert.AreEqual(-14.0, b.positions[2])
+        // Farbe 7 (Asphalt) hat eine Kachel: die Ecke liegt blocklokal bei x 10 m = Voxel 50 im Chunk
+        Testing.Assert.AreEqual(Raser.Atlas.TileU(7, 50.0), b.uvs[0])
+        // Farbe 200 hat keine: die Palette
+        Testing.Assert.AreEqual(Raser.Atlas.PaletteU(200), b.uvs[8])
+        Testing.Assert.AreEqual(Raser.Atlas.PaletteV(), b.uvs[9])
+        Testing.Assert.AreEqual(4, b.indices[6])
+    }
+}

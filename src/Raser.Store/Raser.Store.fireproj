@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "name": "Raser.Store",
+  "type": "library",
+  "import": "raser.store",
+  "references": [
+    { "project": "../Raser.Core/Raser.Core.fireproj" },
+    { "project": "../Raser.World/Raser.World.fireproj" }
+  ],
+  "settings": {
+    "version": "0.1.0",
+    "description": "Ruhrpott-Raser: der Zwischenlayer in PostGIS (data.postgres) - Merkmale global mit Geometrie, eine Kachel ist eine räumliche Abfrage."
+  }
+}

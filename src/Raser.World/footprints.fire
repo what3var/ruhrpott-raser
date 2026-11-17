@@ -1,0 +1,180 @@
+// Raser.World: Grundrisse bereinigen, bevor daraus Voxel und Netze werden.
+//
+// Die Daten (LoD2, OSM) haben kleine Versätze, die niemand gewollt hat: Nachbarhäuser, deren gemeinsame Wand um ein paar Zentimeter
+// auseinanderliegt (ein Schlitz zwischen Reihenhäusern), Ecken knapp neben der Wand des Nachbarn, Knicke von wenigen Zentimetern in einer
+// geraden Fassade. Mit den Schnitten auf 6 mm (Raser.Plan.Cut) würde jeder davon sichtbar. Deshalb rasten die Punkte ein:
+// - Ecken, die näher als 15 cm beieinander liegen (auch verschiedener Gebäude), werden ein Punkt (der zuerst gesehene, deterministisch);
+// - Ecken knapp (unter 15 cm) neben der Wand eines anderen Gebäudes rücken auf diese Wand;
+// - Ecken, die weniger als 5 cm aus der Geraden ihrer Nachbarn stehen, fallen weg (außer sie sind mit einem anderen Gebäude geteilt).
+// Ziel ist, dass es stimmig aussieht, nicht die Außenmaße auf den Zentimeter.
+namespace Raser {
+    class Footprints {
+        static readonly defined float Snap = 0.15          // so nah rasten Punkte ein (m)
+        static readonly defined float Kink = 0.05          // so wenig Knick fällt weg (m)
+
+        static undefined Clean(Tile tile) {
+            if (tile == undefined || tile.data == undefined || tile.data.buildings == undefined) { return }
+            // die Gebäude mit Grundriss (geschrieben wird direkt in ihre Ringe)
+            var bs = tile.data.buildings
+            var idx = new List<int>()
+            for (int i = 0; i < bs.Count; i++) {
+                if (bs[i].footprint != undefined && bs[i].footprint.length >= 6) { idx.Add(i) }
+            }
+            if (idx.Count == 0) { return }
+            // alle Ecken der Reihe nach; geteilt: mit einem anderen Gebäude eingerastet
+            int total = 0
+            foreach (i in idx) { total = total + bs[i].footprint.length / 2 }
+            defined bool shared[total]
+            // 1. Ecken einrasten (Raster mit Zellen von Snap: die Nachbarn liegen in den 3 x 3 Zellen drumherum)
+            var head = new Dictionary<int, int>()
+            defined int next[total]
+            defined int owner[total]
+            defined float rx[total]
+            defined float ry[total]
+            int reps = 0
+            int at = 0
+            for (int bi = 0; bi < idx.Count; bi++) {
+                var b = bs[idx[bi]]
+                for (int k = 0; k < b.footprint.length / 2; k++) {
+                    float x = b.footprint[k * 2]
+                    float y = b.footprint[k * 2 + 1]
+                    int gx = Math.Floor(x / Raser.Footprints.Snap)!int
+                    int gy = Math.Floor(y / Raser.Footprints.Snap)!int
+                    int found = -1
+                    float best = Raser.Footprints.Snap * Raser.Footprints.Snap
+                    for (int dy = -1; dy <= 1; dy++) {
+                        for (int dx = -1; dx <= 1; dx++) {
+                            int c = Raser.Footprints.Cell(gx + dx, gy + dy)
+                            int q = head.Get(c, -1)
+                            while (q >= 0) {
+                                float d2 = (rx[q] - x) * (rx[q] - x) + (ry[q] - y) * (ry[q] - y)
+                                if (d2 < best) {
+                                    best = d2
+                                    found = q
+                                }
+                                q = next[q]
+                            }
+                        }
+                    }
+                    if (found >= 0) {
+                        b.footprint[k * 2] = rx[found]
+                        b.footprint[k * 2 + 1] = ry[found]
+                        if (owner[found] != bi) { shared[at] = true }
+                    } else {
+                        int c = Raser.Footprints.Cell(gx, gy)
+                        rx[reps] = x
+                        ry[reps] = y
+                        owner[reps] = bi
+                        next[reps] = head.Get(c, -1)
+                        head[c] = reps
+                        reps++
+                    }
+                    at++
+                }
+            }
+            // 2. Ecken knapp neben der Wand eines anderen Gebäudes auf die Wand
+            var boxes = new List<Box2>()
+            foreach (i in idx) {
+                var box = Raser.Box2.Of(bs[i].footprint)
+                box.Grow(Raser.Footprints.Snap)
+                boxes.Add(take box)
+            }
+            at = 0
+            for (int bi = 0; bi < idx.Count; bi++) {
+                var b = bs[idx[bi]]
+                for (int k = 0; k < b.footprint.length / 2; k++) {
+                    float x = b.footprint[k * 2]
+                    float y = b.footprint[k * 2 + 1]
+                    for (int oi = 0; oi < idx.Count; oi++) {
+                        if (oi == bi || !boxes[oi].Contains(x, y)) { continue }
+                        float other[] = bs[idx[oi]].footprint
+                        int count = other.length / 2
+                        for (int e = 0; e < count; e++) {
+                            float ax = other[e * 2]
+                            float ay = other[e * 2 + 1]
+                            float ex = other[((e + 1) % count) * 2] - ax
+                            float ey = other[((e + 1) % count) * 2 + 1] - ay
+                            float len2 = ex * ex + ey * ey
+                            if (len2 <= 0.0) { continue }
+                            float t = ((x - ax) * ex + (y - ay) * ey) / len2
+                            if (t <= 0.0 || t >= 1.0) { continue }
+                            float px = ax + ex * t
+                            float py = ay + ey * t
+                            float d2 = (px - x) * (px - x) + (py - y) * (py - y)
+                            if (d2 > 0.0 && d2 < Raser.Footprints.Snap * Raser.Footprints.Snap) {
+                                x = px
+                                y = py
+                                shared[at] = true
+                            }
+                        }
+                    }
+                    b.footprint[k * 2] = x
+                    b.footprint[k * 2 + 1] = y
+                    at++
+                }
+            }
+            // 3. je Ring: doppelte Punkte und kleine Knicke weg
+            at = 0
+            foreach (i in idx) {
+                var b = bs[i]
+                int n = b.footprint.length / 2
+                var simple = Raser.Footprints.Simplify(b.footprint, shared, at)
+                if (simple != undefined) { b.footprint = take simple }
+                at = at + n
+            }
+        }
+
+        static defined int Cell(defined int gx, defined int gy) { return gx * 73856093 + gy * 19349663 }
+
+        // Doppelte Punkte und Knicke unter Kink weg (nie unter drei Punkte, nie geteilte Ecken); flags ab first: geteilt. undefined: nichts weg.
+        static float[] Simplify(float ring[], defined bool flags[], defined int first) {
+            int n = ring.length / 2
+            defined bool keep[n]
+            for (int k = 0; k < n; k++) { keep[k] = true }
+            int alive = n
+            bool changed = true
+            while (changed && alive > 3) {
+                changed = false
+                for (int k = 0; k < n && alive > 3; k++) {
+                    if (!keep[k] || flags[first + k]) { continue }
+                    // die lebenden Nachbarn
+                    int a = (k + n - 1) % n
+                    while (!keep[a]) { a = (a + n - 1) % n }
+                    int c = (k + 1) % n
+                    while (!keep[c]) { c = (c + 1) % n }
+                    float ax = ring[a * 2]
+                    float ay = ring[a * 2 + 1]
+                    float cx = ring[c * 2]
+                    float cy = ring[c * 2 + 1]
+                    float x = ring[k * 2]
+                    float y = ring[k * 2 + 1]
+                    float ex = cx - ax
+                    float ey = cy - ay
+                    float len = Math.Sqrt(ex * ex + ey * ey)
+                    float d = 0.0
+                    if (len < 0.000001) {
+                        d = Math.Sqrt((x - ax) * (x - ax) + (y - ay) * (y - ay))
+                    } else {
+                        d = Math.Abs((x - ax) * ey - (y - ay) * ex) / len
+                    }
+                    bool dup = (x - ax) * (x - ax) + (y - ay) * (y - ay) < 0.0004
+                    if (dup || d < Raser.Footprints.Kink) {
+                        keep[k] = false
+                        alive--
+                        changed = true
+                    }
+                }
+            }
+            if (alive == n) { return undefined }
+            float out[] = new float[alive * 2]
+            int m = 0
+            for (int k = 0; k < n; k++) {
+                if (!keep[k]) { continue }
+                out[m * 2] = ring[k * 2]
+                out[m * 2 + 1] = ring[k * 2 + 1]
+                m++
+            }
+            return out
+        }
+    }
+}

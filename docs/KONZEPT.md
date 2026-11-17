@@ -11,6 +11,34 @@
   - Straßen, Rampen, Böschungen und Dächer sind damit direkt im Voxelmodell abbildbar.
   - Speicher: 4 × 2 Bit = 1 Byte zusätzlich pro geschnittenem Voxel (nur Oberflächen-Voxel, Rest bleibt voller Würfel).
   - Später möglich: diagonale Schnitte im Grundriss (Viertelkeile) für schräge Fassaden und Bordsteine.
+- **Natürliche Kanten, gerade Fronten** (Vorschlag, noch offen):
+  - *Straßenkanten* treppen nicht im 20-cm-Raster. Fahrbahn, Gehweg und Bordstein gehören zum glatten Untergrund: Ihre Ränder sind Kurven aus der
+    Mittellinie und der Breite (geglättet, mit Radien an Einmündungen und Kreuzungen). Das Geländenetz wird an diesen Linien geschnitten, der Bordstein
+    ist ein Profil (12–15 cm hoch, abgesenkt an Einfahrten) entlang der Kurve. Voxel werden sie erst, wo hineingegriffen wird (hart, wie beim Gelände).
+  - **Entschieden: Bauelemente** (statt freier Schnittlinien oder gedrehter Gitter). Neben den Eckhöhen oben hat ein Voxel eine
+    **Grundriss-Form aus einem Katalog**: Diagonalen über 1×1 bis 6×1 Voxel (die Kante steigt auf n Voxel um einen; jedes Voxel trägt seinen
+    Teil k von n, 8 Ausrichtungen - 168 Formen), Rundungen (Viertelkreise mit Radius 1–32 Voxel um eine Rasterecke, innen oder außen gefüllt -
+    für Eckkneipen, runde Türme, Innenecken; jedes Voxel trägt seine Zelle im Viertel; gespeichert als Varint), später Torbögen (eine Form in
+    der Ansicht) und Türen (Objekte, die zwischen zwei Wand-Voxeln definiert und automatisch passend eingehängt werden). Der Voxelizer nähert die
+    Kanten der Gebäude damit an (Steigung 1:1 bis 1:6 oder achsparallel - wenige Grad Abweichung), der Baumodus bietet dieselben Elemente als
+    Fertigteile aus dem Baumarkt an.
+  - **Nachtrag: Schnitte mit Versatz** für die Grundrisse aus den Daten. Diagonalen setzen an ganzen Rasterpunkten an und erzeugten so
+    Stufen bis fast ein Voxel (auch nach innen); flacher als 1:6 blieb es eine Treppe. Jetzt bekommt jedes Randvoxel eine Kante zwischen zwei Punkten
+    auf seinem Rand (auf 1/32 gerastert), Ecken einen Punkt im Voxel; Nachbarn teilen sich die Punkte, die Kante läuft ohne Stufen durch. Ziel ist
+    nicht die exakte Außenkante, sondern dass es stimmig aussieht - vereinfachen ist erlaubt (fast achsparallele Wände gerade ziehen, Rundungen als
+    Sehnen). Diagonalen und Rundungen bleiben die Fertigteile des Baumodus. Dazu 3D-Dachziegel: ein Relief in Pixel-Art auf den Dach-Voxeln.
+  - *Gerade Fronten in jedem Winkel* (ursprünglicher Vorschlag, aufgegangen in den Bauelementen): Die Voxel bekommen neben den Eckhöhen oben auch einen **senkrechten Schnitt im Grundriss** – eine Linie durch
+    den Voxel, angegeben über zwei Randpunkte in Vierteln (wie die Eckhöhen; benachbarte Voxel teilen die Punkte). Eine Fassade, die schräg zum
+    Weltgitter steht, wird so eine glatte Ebene statt einer Treppe; Fenster und Geschosse werden entlang der Wand gemessen. Die Grundstücksgrenze ist
+    dann eine Linie wie jede andere – dort wird schräg abgeschnitten.
+  - *Eckbauten mit Winkeln ungleich 90°*: Im Eckvoxel treffen zwei Schnittlinien aufeinander. Erst einmal reicht dort eine Linie (Fehler höchstens
+    ein Voxel, 20 cm); wo es auffällt, im Einzelfall lösen – etwa ein Eckvoxel mit zwei Linien oder die im Ruhrgebiet typische abgeschrägte Ecke
+    (oft mit Eingang, Eckkneipe), die den spitzen Winkel ohnehin aufnimmt.
+  - *Ausrichten zur Straße*: Die Front eines Grundstücks (ALKIS-Flurstück, sonst die Kante des Grundrisses zur Straße) wird leicht gedreht (wenige
+    Grad), bis sie parallel zur Straßenkante liegt; Häuser einer Zeile bekommen dieselbe Fluchtlinie. Größere Abweichungen bleiben, wie sie sind.
+  - *Alternative*, falls Fenster in schrägen Wänden mit Schnitten nicht gut aussehen: ein eigenes, zur Straße gedrehtes Voxelgitter je Grundstück
+    (eigene Chunks mit Drehung), das an der Grundstücksgrenze per Schnitt im Grundriss ans Weltgitter anschließt. Mehr Aufwand bei Physik, Baumodus
+    und Zerstörung – daher erst die Schnitte.
 - **Fahrphysik auf derselben Geometrie:** Das Kollisionsmesh für Fahrzeuge entsteht aus denselben geschnittenen Voxeln wie die Optik. Was man sieht, ist auch das, worauf man fährt. Wo Fahrzeuge ganz glatte Flächen brauchen (Autobahn, enge Kurven), darf ein Override-Mesh aus dem Zwischenlayer einspringen (siehe Abschnitt 9).
 
 ## 2. Weltpipeline
@@ -26,7 +54,7 @@ Rohdaten ──► Zwischenlayer (semantisch, vektorbasiert) ──► Voxel-Chu
 |---|---|
 | NRW Open Data: DGM1 | Geländemodell mit 1-m-Raster |
 | NRW Open Data: 3D-Gebäudemodelle LoD2 | Grundrisse, Höhen, Dachformen |
-| NRW Open Data: DOP | Luftbilder für Dach- und Bodenfarben |
+| NRW Open Data: DOP | Luftbilder für Dach- und Bodenfarben; Gegencheck: Untergründe genauer bestimmen, fehlende Gebäude als Patches (Override-Layer) |
 | OpenStreetMap | Straßen, Landnutzung, POIs |
 | Mapillary / Panoramax | Straßenfotos als Vorlage für Fassaden |
 
@@ -45,6 +73,15 @@ Rohdaten ──► Zwischenlayer (semantisch, vektorbasiert) ──► Voxel-Chu
 - **Vorausgenerierung in Fahrtrichtung:** Bei 200 km/h sind es etwa 55 m/s. Mehrere Kilometer Vorlauf entlang der Route, nicht nur ein Radius um den Spieler.
 - **Deterministische Voxelisierung:** Zwischenlayer + Seed ergeben immer denselben Chunk. Der Client voxelisiert selbst, der Server schickt nur den Zwischenlayer und Spieler-Deltas.
 
+### Gelände und was darauf steht
+
+- **Das Gelände ist glatt:** ein Netz aus dem Höhenraster, mit Diagonalen statt Stufen, in jeder Detailstufe. Stufig (Voxel) ist nur, was darauf steht.
+- **Gebaut wird im globalen Voxel-Raster:** Die Unterkante eines Gebäudes rastet auf ein Voxel (20 cm) ein, und zwar nach unten: Es versinkt eher halb im Gelände,
+  als dass es schwebt. Wo das Gelände unter dem Grundriss tiefer liegt, füllt ein Fundament die Lücke.
+- **Das Gelände ist hart, wo etwas hineingreift:** Fundamente, Keller, Gruben und Aufschüttungen. Dort bekommt das Gelände seine Voxel-Flächen mit harter
+  Kante, und das glatte Netz spart die Stelle aus (in Zellen von 80 cm). Darum kann man das Gelände in einem Gebäude abtragen oder mit harter Kante absenken,
+  zum Beispiel für Keller. Das gilt für Gebäude aus den Daten (`cellars` im Zwischenlayer bzw. als Override) und für den Baumodus.
+
 ### Speicherung
 
 - **PostGIS:** Zwischenlayer, räumliche Abfragen
@@ -61,6 +98,16 @@ Fassadentexturen sind sehr klein (< 100 px breit). Sie werden in drei Ebenen bes
 - **Erkennung:** Ein KI-gestütztes Tool wandelt ein Foto in Grammatik-Parameter um.
 - **Fallback:** Gebäude ohne Foto bekommen plausible Parameter aus Baujahr, Viertel und LoD2-Typ.
 - **Datenschutz/Marken:** Gesichter, Kennzeichen und Firmenlogos werden nicht übernommen.
+
+**Fenster:** Ab der ersten Detailstufe sind Fenster Teil der Fassade (Textur bzw. Shader nach demselben Raster wie die Voxel-Fenster), keine Geometrie. Echte Fenster-Voxel gibt es nah am Spieler, in materialisierten Gebäuden und bei Zerstörung (Glas splittert). Nachts leuchten einzelne Fenster.
+
+**Ausstattung:** Jedes Gebäude bekommt eine zufällige, aber stabile Ausstattung (aus Gebäude-ID und Seed, passend zu Nutzung und Viertel). Für das Vorbeifahren mit hohem Tempo reichen ein paar vorgerenderte Innenansichten hinter den Fenstern (Wohnzimmer, Büro, Laden, Treppenhaus - als Textur mit Tiefe, ohne Geometrie); läuft man nah vorbei oder betritt das Gebäude, entsteht die detaillierte Ausstattung (Möbel und Objekte, Abschnitt 7) - dieselbe Wahl, nur genauer.
+
+**Materialien mit Leben:** Kein Voxel eines Materials sieht aus wie der nächste. Jede Materialfarbe hat eine weltfest liegende Textur von 64 x 64
+Voxeln (ein Chunk), aus der jede Voxel-Fläche ihren Ton nimmt - Ziegel versetzt mit eigenem Ton je Stein, Dachziegel in Reihen, Holz mit Maserung,
+Platten mit Fugen, Putz und Beton mit ruhigen Flecken, Gras und Erde mit Körnung. Dazu je Gebäude (aus Gebäude-ID und Seed) eine Farbvariante und eine
+Dreckstufe (sauber bis stark verrußt: dunkler, Flecken, Laufspuren) für Wand und Dach. Alles prozedural; gleiche Flächen bleiben große Rechtecke, die
+Abwechslung kommt aus der Textur.
 
 **Rendering:** Pixel werden nearest-neighbor gerendert, aber antialiased. Das geschieht als „sharp bilinear“ direkt im Shader (Pixel-Art-AA über `fwidth`) statt mit vorab hochskalierten Texturen. Der Effekt ist derselbe, es braucht keinen zusätzlichen Speicher und funktioniert in jeder Entfernung.
 

@@ -1,0 +1,404 @@
+// Raser.Core: die Grundriss-Form eines Voxels - ein Katalog von Bauelementen (Konzept, Abschnitt 1).
+//
+// Neben den Eckhöhen oben (Raser.Shape) kann ein Voxel im Grundriss nur zum Teil gefüllt sein. Die Formen kommen aus einem Katalog, so wie die
+// Fertigteile im Baumarkt:
+//
+// - Diagonalen über 1×1 bis 6×1 Voxel: eine Kante, die auf n Voxeln um einen Voxel steigt. Jedes Voxel des Elements trägt seinen Teil k (0 .. n-1);
+//   im Voxel k läuft die Kante von k/n bis (k+1)/n. 8 Ausrichtungen o: Bit 0 die Seite (0: unter der Kante gefüllt, 1: darüber), Bit 1 gespiegelt
+//   (die Kante fällt statt zu steigen), Bit 2 die Achse (0: das Element läuft in x, 1: in y). 21 Paare (n, k) × 8 = 168 Formen.
+//
+// - Rundungen (Eckkneipen, runde Türme, Ausfahrten): ein Viertelkreis mit Radius r (1..32 Voxel) um eine Ecke des Rasters. Jedes Voxel, durch
+//   das der Bogen läuft, trägt seine Zelle (i, j) im Viertel (0..r-1) und eine Ausrichtung o: Bit 0 die Seite (0: im Kreis gefüllt - die runde
+//   Ecke; 1: außerhalb - die ausgerundete Innenecke), Bit 1 das Viertel links vom Mittelpunkt (x gespiegelt), Bit 2 unterhalb (y gespiegelt).
+//   Werte ab 169: 169 + ((r - 1) * 32 + i) * 32 + j) * 8 + o.
+//
+// - Schnitte mit Versatz (für Grundrisse aus den Daten): eine gerade Kante zwischen zwei Punkten auf dem Rand des Voxels, gerastert auf 1/32 der
+//   Seite (6 mm; gröber schwankt die Richtung der Flächen von Voxel zu Voxel sichtbar im Licht) - 128 Lagen a, b rundherum gegen den
+//   Uhrzeigersinn ab (0, 0); gefüllt links von a -> b. Die Ecke eines Grundrisses im Voxel: a -> v -> b mit v auf dem Gitter 17 x 17 im Voxel.
+//   Nachbarn teilen sich die Punkte auf der gemeinsamen Seite, so schließen die Kanten ohne Stufen aneinander, in jedem Winkel und an jeder Stelle.
+//   Werte ab 262313 (Schnitt: + a * 128 + b; Ecke ab 278697: + (a * 128 + b) * 289 + v).
+//
+// - Schnitte in der Ansicht (Bögen, Gewölbe): derselbe Schnitt wie oben, aber in der senkrechten Ebene quer zur Achse (Achse 0: Schnitt in x und
+//   z, durchgezogen entlang y; Achse 1: in y und z, entlang x) - im Grundriss ist das Voxel voll. Werte ab 5013673: + Achse * 16384 + a * 128 + b.
+//
+// Gespeichert als Zahl je Voxel (0: voll) in einer Tabelle des Chunks, wie die Eckhöhen. Weitere Elemente (Bögen) bekommen die Werte danach.
+namespace Raser {
+    class Plan {
+        static readonly defined int None = 0
+        static readonly defined int Diagonals = 168
+        static readonly defined int ArcBase = 169
+        static readonly defined int ArcRadius = 32       // der größte Radius einer Rundung (Voxel)
+        static readonly defined int ArcEnd = 262313      // 169 + 32 * 32 * 32 * 8
+        static readonly defined int MaxPoints = 8        // so viele Punkte hat ein Polygon höchstens
+        static readonly defined int CutBase = 262313
+        static readonly defined int RimSteps = 32        // Lagen je Seite
+        static readonly defined int CornerBase = 278697  // CutBase + 128 * 128
+        static readonly defined int CutEnd = 5013673     // CornerBase + 128 * 128 * 289
+        static readonly defined int ElevationBase = 5013673
+        static readonly defined int ElevationEnd = 5046441   // ElevationBase + 2 * 16384
+
+        // Die Form der Diagonale: Länge n (1..6), Teil k (0..n-1), Ausrichtung o (0..7).
+        static defined int Diagonal(defined int n, defined int k, defined int o) {
+            int nn = Math.Clamp(n, 1, 6)
+            int kk = Math.Clamp(k, 0, nn - 1)
+            // (n, k) laufen durch: n = 1: 0; n = 2: 1, 2; n = 3: 3, 4, 5; ... - der Index ist n (n - 1) / 2 + k
+            int pair = nn * (nn - 1) / 2 + kk
+            return 1 + pair * 8 + (o & 7)
+        }
+
+        static defined bool IsDiagonal(defined int p) { return p >= 1 && p <= 168 }
+
+        static defined int LengthOf(defined int p) {
+            int pair = (p - 1) / 8
+            int n = 1
+            while ((n + 1) * n / 2 <= pair) { n++ }
+            return n
+        }
+
+        static defined int PartOf(defined int p) {
+            int n = Raser.Plan.LengthOf(p)
+            return (p - 1) / 8 - n * (n - 1) / 2
+        }
+
+        static defined int OrientationOf(defined int p) {
+            if (Raser.Plan.IsArc(p)) { return (p - 169) % 8 }
+            return (p - 1) % 8
+        }
+
+        // Die Rundung: Radius r (1..32), Zelle (i, j) im Viertel, Ausrichtung o (0..7).
+        static defined int Arc(defined int r, defined int i, defined int j, defined int o) {
+            int rr = Math.Clamp(r, 1, 32)
+            int ii = Math.Clamp(i, 0, rr - 1)
+            int jj = Math.Clamp(j, 0, rr - 1)
+            return 169 + (((rr - 1) * 32 + ii) * 32 + jj) * 8 + (o & 7)
+        }
+
+        static defined bool IsArc(defined int p) { return p >= 169 && p < 262313 }
+
+        // Der Schnitt von a nach b (Lagen 0..127 auf dem Rand), gefüllt links davon.
+        static defined int Cut(defined int a, defined int b) { return 262313 + (a & 127) * 128 + (b & 127) }
+
+        // Die Ecke a -> v -> b; v = vy * 17 + vx auf dem Gitter 0..16 im Voxel.
+        static defined int CutCorner(defined int a, defined int v, defined int b) { return 278697 + ((a & 127) * 128 + (b & 127)) * 289 + Math.Clamp(v, 0, 288) }
+
+        static defined bool IsCut(defined int p) { return p >= 262313 && p < 5013673 }
+
+        // Der Schnitt in der Ansicht: Achse (0: durchgezogen entlang y, 1: entlang x), von a nach b auf dem Rand des Quadrats (u, z), gefüllt links.
+        static defined int Elevation(defined int axis, defined int a, defined int b) { return 5013673 + (axis & 1) * 16384 + (a & 127) * 128 + (b & 127) }
+
+        static defined bool IsElevation(defined int p) { return p >= 5013673 && p < 5046441 }
+        static defined int ElevationAxis(defined int p) { return (p - 5013673) / 16384 }
+
+        // Das Polygon in der Ansicht (u quer, z hoch, 0..1), gegen den Uhrzeigersinn.
+        static defined int ElevationPolygon(defined int p, defined float us[], defined float zs[]) {
+            return Raser.Plan.CutPolygon(262313 + (p - 5013673) % 16384, us, zs)
+        }
+
+        // Der Punkt der Lage s (0..127) auf dem Rand: unten nach rechts, rechts nach oben, oben nach links, links nach unten.
+        static defined float RimX(defined int s) {
+            int side = (s & 127) / 32
+            float f = (s % 32) / 32.0
+            if (side == 0) { return f }
+            if (side == 1) { return 1.0 }
+            if (side == 2) { return 1.0 - f }
+            return 0.0
+        }
+
+        static defined float RimY(defined int s) {
+            int side = (s & 127) / 32
+            float f = (s % 32) / 32.0
+            if (side == 0) { return 0.0 }
+            if (side == 1) { return f }
+            if (side == 2) { return 1.0 }
+            return 1.0 - f
+        }
+
+        // Die Lage eines Punkts auf dem Rand (lx, ly im Voxel, 0..1): die nächste Seite, darauf auf 1/32 gerundet.
+        static defined int RimOf(defined float lx, defined float ly) {
+            float d0 = Math.Abs(ly)
+            float d1 = Math.Abs(1.0 - lx)
+            float d2 = Math.Abs(1.0 - ly)
+            float d3 = Math.Abs(lx)
+            float best = Math.Min(Math.Min(d0, d1), Math.Min(d2, d3))
+            int s = 0
+            if (best == d0) {
+                s = Math.Round(Math.Clamp(lx, 0.0, 1.0) * 32.0)!int
+            } else if (best == d1) {
+                s = 32 + Math.Round(Math.Clamp(ly, 0.0, 1.0) * 32.0)!int
+            } else if (best == d2) {
+                s = 64 + Math.Round(Math.Clamp(1.0 - lx, 0.0, 1.0) * 32.0)!int
+            } else {
+                s = 96 + Math.Round(Math.Clamp(1.0 - ly, 0.0, 1.0) * 32.0)!int
+            }
+            return s % 128
+        }
+
+        // Das Polygon eines Schnitts: (v,) b, dann die Ecken des Voxels gegen den Uhrzeigersinn bis a. Bei einer Ecke steht v vorn - von dort sieht
+        // man die ganze Fläche (auch bei einer Innenecke), der Fächer der Deckfläche bleibt richtig.
+        static defined int CutPolygon(defined int p, defined float xs[], defined float ys[]) {
+            int a = 0
+            int b = 0
+            int v = -1
+            if (p >= 278697) {
+                int q = p - 278697
+                v = q % 289
+                a = (q / 289) / 128
+                b = (q / 289) % 128
+            } else {
+                a = (p - 262313) / 128
+                b = (p - 262313) % 128
+            }
+            int m = 0
+            if (v >= 0) {
+                xs[m] = (v % 17) / 16.0
+                ys[m] = (v / 17) / 16.0
+                m++
+            } else {
+                xs[m] = Raser.Plan.RimX(a)
+                ys[m] = Raser.Plan.RimY(a)
+                m++
+            }
+            xs[m] = Raser.Plan.RimX(b)
+            ys[m] = Raser.Plan.RimY(b)
+            m++
+            int d = (a - b + 128) % 128
+            for (int c = 0; c < 4; c++) {
+                // die Ecken in der Reihenfolge ab b
+                int corner = ((b / 32 + 1 + c) % 4) * 32
+                int e = (corner - b + 128) % 128
+                if (e > 0 && e < d) {
+                    xs[m] = Raser.Plan.RimX(corner)
+                    ys[m] = Raser.Plan.RimY(corner)
+                    m++
+                }
+            }
+            if (v >= 0) {
+                xs[m] = Raser.Plan.RimX(a)
+                ys[m] = Raser.Plan.RimY(a)
+                m++
+            }
+            return m
+        }
+        static defined int RadiusOf(defined int p) { return (p - 169) / 8192 + 1 }
+        static defined int ArcI(defined int p) { return ((p - 169) / 256) % 32 }
+        static defined int ArcJ(defined int p) { return ((p - 169) / 8) % 32 }
+
+        // Läuft der Bogen mit Radius r durch die Zelle (i, j)? (sonst ist sie ganz innen oder ganz außen)
+        static defined bool ArcCrosses(defined int r, defined int i, defined int j) {
+            return i * i + j * j < r * r && (i + 1) * (i + 1) + (j + 1) * (j + 1) > r * r
+        }
+
+        // Das Polygon der gefüllten Fläche im Voxel (Koordinaten 0..1, gegen den Uhrzeigersinn) nach xs/ys; gibt die Zahl der Punkte (3..5).
+        static defined int Polygon(defined int p, defined float xs[], defined float ys[]) {
+            if (Raser.Plan.IsArc(p)) { return Raser.Plan.ArcPolygon(p, xs, ys) }
+            if (Raser.Plan.IsCut(p)) { return Raser.Plan.CutPolygon(p, xs, ys) }
+            if (Raser.Plan.IsElevation(p)) { p = 0 }          // im Grundriss voll
+            if (!Raser.Plan.IsDiagonal(p)) {
+                xs[0] = 0.0
+                ys[0] = 0.0
+                xs[1] = 1.0
+                ys[1] = 0.0
+                xs[2] = 1.0
+                ys[2] = 1.0
+                xs[3] = 0.0
+                ys[3] = 1.0
+                return 4
+            }
+            int n = Raser.Plan.LengthOf(p)
+            int k = Raser.Plan.PartOf(p)
+            int o = Raser.Plan.OrientationOf(p)
+            float a = k * 1.0 / n               // die Kante bei x = 0
+            float b = (k + 1) * 1.0 / n         // bei x = 1
+            int m = 0
+            // im Grundmuster (Achse x, steigend): unter der Kante gefüllt
+            if ((o & 1) == 0) {
+                xs[0] = 0.0
+                ys[0] = 0.0
+                xs[1] = 1.0
+                ys[1] = 0.0
+                xs[2] = 1.0
+                ys[2] = b
+                xs[3] = 0.0
+                ys[3] = a
+                m = 4
+                if (a <= 0.0) {
+                    // ein Dreieck: (0,0), (1,0), (1,b)
+                    m = 3
+                }
+            } else {
+                xs[0] = 0.0
+                ys[0] = a
+                xs[1] = 1.0
+                ys[1] = b
+                xs[2] = 1.0
+                ys[2] = 1.0
+                xs[3] = 0.0
+                ys[3] = 1.0
+                m = 4
+                if (b >= 1.0) {
+                    // ein Dreieck: (0,a), (1,1), (0,1)
+                    xs[1] = 1.0
+                    ys[1] = 1.0
+                    xs[2] = 0.0
+                    ys[2] = 1.0
+                    m = 3
+                }
+            }
+            // gespiegelt: x -> 1 - x (die Reihenfolge umkehren, damit es gegen den Uhrzeigersinn bleibt)
+            if ((o & 2) != 0) {
+                for (int i = 0; i < m; i++) { xs[i] = 1.0 - xs[i] }
+                Raser.Plan.Reverse(xs, ys, m)
+            }
+            // Achse y: x und y tauschen (auch das kehrt den Umlauf um)
+            if ((o & 4) != 0) {
+                for (int i = 0; i < m; i++) {
+                    float t = xs[i]
+                    xs[i] = ys[i]
+                    ys[i] = t
+                }
+                Raser.Plan.Reverse(xs, ys, m)
+            }
+            return m
+        }
+
+        // Das Polygon einer Rundung: das Quadrat der Zelle am Kreis beschnitten; zwischen Austritt und Eintritt zwei Punkte auf dem Bogen. Der erste
+        // Punkt ist die Ecke fern vom Mittelpunkt, wenn sie dazugehört - von ihr aus sieht man jeden Punkt der Fläche (auch der nicht konvexen
+        // Innenecke), so bleibt der Fächer der Deckfläche richtig.
+        static defined int ArcPolygon(defined int p, defined float xs[], defined float ys[]) {
+            int r = Raser.Plan.RadiusOf(p)
+            int ci = Raser.Plan.ArcI(p)
+            int cj = Raser.Plan.ArcJ(p)
+            int o = Raser.Plan.OrientationOf(p)
+            bool outside = (o & 1) != 0
+            float rr = r * r * 1.0
+            // die Ecken gegen den Uhrzeigersinn, ab der fernen (1, 1)
+            defined float cx[4]
+            defined float cy[4]
+            cx[0] = 1.0
+            cy[0] = 1.0
+            cx[1] = 0.0
+            cy[1] = 1.0
+            cx[2] = 0.0
+            cy[2] = 0.0
+            cx[3] = 1.0
+            cy[3] = 0.0
+            defined bool keep[4]
+            for (int k = 0; k < 4; k++) {
+                float u = ci + cx[k]
+                float v = cj + cy[k]
+                bool inside = u * u + v * v < rr
+                keep[k] = inside != outside
+            }
+            // die zwei Schnittpunkte mit dem Kreis (Zellkoordinaten) und welcher davon der Eintritt ist
+            defined float ix[2]
+            defined float iy[2]
+            int found = 0
+            int entry = 0
+            for (int k = 0; k < 4; k++) {
+                int l = (k + 1) % 4
+                if (keep[k] == keep[l] || found >= 2) { continue }
+                float px = 0.0
+                float py = 0.0
+                if (cx[k] == cx[l]) {
+                    // senkrechte Kante bei u = ci + cx
+                    float u = ci + cx[k]
+                    px = cx[k]
+                    py = Math.Sqrt(Math.Max(rr - u * u, 0.0)) - cj
+                } else {
+                    float v = cj + cy[k]
+                    py = cy[k]
+                    px = Math.Sqrt(Math.Max(rr - v * v, 0.0)) - ci
+                }
+                ix[found] = Math.Clamp(px, 0.0, 1.0)
+                iy[found] = Math.Clamp(py, 0.0, 1.0)
+                if (!keep[k]) { entry = found }
+                found++
+            }
+            int m = 0
+            if (found < 2) {
+                // der Bogen streift die Zelle nicht: ganz oder gar nicht
+                if (!keep[0]) { return 0 }
+                for (int k = 0; k < 4; k++) {
+                    xs[m] = cx[k]
+                    ys[m] = cy[k]
+                    m++
+                }
+                return m
+            }
+            int exit = 1 - entry
+            int seen = 0
+            for (int k = 0; k < 4; k++) {
+                int l = (k + 1) % 4
+                if (keep[k]) {
+                    xs[m] = cx[k]
+                    ys[m] = cy[k]
+                    m++
+                }
+                if (keep[k] == keep[l]) { continue }
+                int at = seen
+                seen++
+                xs[m] = ix[at]
+                ys[m] = iy[at]
+                m++
+                if (at == exit) {
+                    // auf dem Bogen vom Austritt zum Eintritt
+                    float a0 = Math.Atan2(cj + iy[exit], ci + ix[exit])
+                    float a1 = Math.Atan2(cj + iy[entry], ci + ix[entry])
+                    for (int s = 1; s <= 2; s++) {
+                        float a = a0 + (a1 - a0) * s / 3.0
+                        xs[m] = Math.Clamp(r * Math.Cos(a) - ci, 0.0, 1.0)
+                        ys[m] = Math.Clamp(r * Math.Sin(a) - cj, 0.0, 1.0)
+                        m++
+                    }
+                }
+            }
+            // das Viertel: gespiegelt in x und/oder y (der erste Punkt bleibt vorn, der Umlauf wieder gegen den Uhrzeigersinn)
+            if ((o & 2) != 0) {
+                for (int k = 0; k < m; k++) { xs[k] = 1.0 - xs[k] }
+                Raser.Plan.ReverseTail(xs, ys, m)
+            }
+            if ((o & 4) != 0) {
+                for (int k = 0; k < m; k++) { ys[k] = 1.0 - ys[k] }
+                Raser.Plan.ReverseTail(xs, ys, m)
+            }
+            return m
+        }
+
+        // die Punkte 1 .. m-1 umkehren (der Umlauf dreht sich, der erste Punkt bleibt)
+        static undefined ReverseTail(defined float xs[], defined float ys[], defined int m) {
+            for (int i = 1; i < 1 + (m - 1) / 2; i++) {
+                int j = m - i
+                float tx = xs[i]
+                float ty = ys[i]
+                xs[i] = xs[j]
+                ys[i] = ys[j]
+                xs[j] = tx
+                ys[j] = ty
+            }
+        }
+
+        static undefined Reverse(defined float xs[], defined float ys[], defined int m) {
+            for (int i = 0; i < m / 2; i++) {
+                float tx = xs[i]
+                float ty = ys[i]
+                xs[i] = xs[m - 1 - i]
+                ys[i] = ys[m - 1 - i]
+                xs[m - 1 - i] = tx
+                ys[m - 1 - i] = ty
+            }
+        }
+
+        // Die gefüllte Fläche (Anteil am Voxel).
+        static defined float Area(defined int p) {
+            defined float xs[8]
+            defined float ys[8]
+            int m = Raser.Plan.Polygon(p, xs, ys)
+            float s = 0.0
+            for (int i = 0; i < m; i++) {
+                int j = (i + 1) % m
+                s = s + xs[i] * ys[j] - xs[j] * ys[i]
+            }
+            return s / 2.0
+        }
+    }
+}

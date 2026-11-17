@@ -1,0 +1,21 @@
+{
+  "format": 1,
+  "name": "Raser.Client",
+  "type": "library",
+  "import": "raser.client",
+  "references": [
+    {
+      "project": "../Raser.Core/Raser.Core.fireproj"
+    },
+    {
+      "project": "../Raser.World/Raser.World.fireproj"
+    },
+    {
+      "project": "../Raser.Mesh/Raser.Mesh.fireproj"
+    }
+  ],
+  "settings": {
+    "version": "0.1.0",
+    "description": "Ruhrpott-Raser: gemeinsame Teile von Viewer und Spiel (Welt in der Szene mit Nachladen, Licht und Wetter, Gelände, Hindernisse)."
+  }
+}

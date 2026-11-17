@@ -1,0 +1,993 @@
+// Raser.Game: das Spiel (Roadmap M3: Fahren) - ein Auto durch die Voxel-Welt fahren.
+//
+//   raser [--world world] [--vehicle auto|transporter|motorrad|fahrrad] [--at ost,nord] [--date 07-01] [--time 14:00] [--weather klar|regen|...] [--size 960x600] [--gpu 1]
+//         [--near 1] [--far 5] [--workers 3] [--parked 8]
+//   raser ... --auto 20 [--steer 0.2] [--back 1] --shot bild.png     ohne Fenster: so viele Sekunden Vollgas (mit festem Lenkeinschlag, auch
+//                                                       rückwärts), dann ein Bild
+//
+// W/S oder Pfeile: Gas und Bremse (im Stand: Rückwärtsgang), A/D: lenken, Leertaste: Handbremse, C: Kamera (hinter dem Wagen / Haube),
+// E: aussteigen (im Stand) und am Wagen wieder einsteigen; zu Fuß: W/S gehen, A/D drehen, Umschalt rennen, C: aus den Augen des Spielers.
+// T/G: die Uhr vor und zurück, R: das nächste Wetter. Der Wagen startet auf der nächsten Straße am Startpunkt, in ihrer Richtung.
+// Physik: Raser.Vehicle (Grip aus der Nässe des Wetters); Gebäude halten auf (Obstacles), das Gelände trägt (Ground).
+#import "windows"
+#import "scene3d"
+#import "scene3d.effects"
+#import "filesystem"
+#import "time"
+#import "raser.core"
+#import "raser.world"
+#import "raser.mesh"
+#import "raser.client"
+
+// Das Auto in der Szene: Karosserie, Kabine, vier Räder, Lichter - aus Quadern, an Lage und Richtung des Fahrzeugs gesetzt.
+class CarModel {
+    List<Object> parts
+    List<float> offsets         // je Teil: rechts, hoch, vorn (m)
+    Light beam                  // das Scheinwerferlicht: ein Punktlicht vor dem Wagen (nachts an)
+
+    construct(Scene scene, string kind, defined int color) {
+        this.parts = new List<Object>()
+        this.offsets = new List<float>()
+        int tyre = S3D.Rgb(25, 25, 28)
+        int glass = S3D.Rgb(40, 50, 60)
+        float front = 2.11         // so weit vorn sitzen die Scheinwerfer
+        float lampUp = 0.62
+        if (kind == "transporter") {
+            // Kasten 2,0 x 1,7 x 5,6 m mit Fahrerhaus vorn
+            this.Add(scene, 0.0, 1.2, -0.5, 2.0, 1.7, 4.6, color)
+            this.Add(scene, 0.0, 0.85, 2.3, 2.0, 1.0, 1.0, color)
+            this.Add(scene, 0.0, 1.6, 1.95, 1.9, 0.6, 0.5, glass)
+            foreach (side in [-1.0, 1.0]) {
+                this.Add(scene, side * 0.95, 0.36, 1.9, 0.25, 0.72, 0.72, tyre)
+                this.Add(scene, side * 0.95, 0.36, -1.7, 0.25, 0.72, 0.72, tyre)
+            }
+            front = 2.81
+            lampUp = 0.7
+        } else if (kind == "motorrad" || kind == "fahrrad") {
+            // zwei Räder, Rahmen, Lenker; das Motorrad mit Tank und Sitzbank
+            float wheel = 0.62
+            float axle = 0.72
+            float thick = 0.12
+            if (kind == "fahrrad") {
+                wheel = 0.68
+                axle = 0.55
+                thick = 0.05
+            }
+            this.Add(scene, 0.0, wheel / 2.0, axle, thick, wheel, wheel, tyre)
+            this.Add(scene, 0.0, wheel / 2.0, -axle, thick, wheel, wheel, tyre)
+            if (kind == "motorrad") {
+                this.Add(scene, 0.0, 0.62, 0.0, 0.3, 0.4, 1.3, color)
+                this.Add(scene, 0.0, 0.88, -0.35, 0.3, 0.12, 0.7, S3D.Rgb(30, 30, 32))
+                this.Add(scene, 0.0, 0.8, 0.62, 0.1, 0.5, 0.1, S3D.Rgb(150, 150, 155))
+            } else {
+                this.Add(scene, 0.0, 0.62, 0.0, 0.05, 0.06, 1.0, color)
+                this.Add(scene, 0.0, 0.75, -0.3, 0.05, 0.4, 0.05, color)
+                this.Add(scene, 0.0, 0.97, -0.33, 0.14, 0.05, 0.26, S3D.Rgb(30, 30, 32))
+                this.Add(scene, 0.0, 0.8, 0.5, 0.05, 0.5, 0.05, color)
+            }
+            this.Add(scene, 0.0, 1.06, 0.55, 0.6, 0.05, 0.05, S3D.Rgb(30, 30, 32))
+            front = axle + 0.2
+            lampUp = 0.9
+        } else {
+            // Karosserie 1,8 x 0,55 x 4,2 m, Kabine, Räder
+            this.Add(scene, 0.0, 0.55, 0.0, 1.8, 0.55, 4.2, color)
+            this.Add(scene, 0.0, 1.05, -0.3, 1.6, 0.5, 2.2, glass)
+            foreach (side in [-1.0, 1.0]) {
+                this.Add(scene, side * 0.85, 0.32, 1.35, 0.25, 0.64, 0.64, tyre)
+                this.Add(scene, side * 0.85, 0.32, -1.35, 0.25, 0.64, 0.64, tyre)
+            }
+        }
+        // Scheinwerfer und Rücklichter (Zweiräder: je eins)
+        if (kind == "motorrad" || kind == "fahrrad") {
+            this.Add(scene, 0.0, lampUp, front, 0.12, 0.12, 0.04, S3D.Rgb(255, 244, 210))
+            this.parts[this.parts.Count - 1].Lit = false
+            this.Add(scene, 0.0, lampUp - 0.2, -front, 0.1, 0.08, 0.04, S3D.Rgb(200, 30, 30))
+            this.parts[this.parts.Count - 1].Lit = false
+        } else {
+            foreach (side in [-1.0, 1.0]) {
+                this.Add(scene, side * 0.6, lampUp, front, 0.35, 0.16, 0.04, S3D.Rgb(255, 244, 210))
+                this.parts[this.parts.Count - 1].Lit = false
+                this.Add(scene, side * 0.6, lampUp, 0.0 - front, 0.35, 0.14, 0.04, S3D.Rgb(200, 30, 30))
+                this.parts[this.parts.Count - 1].Lit = false
+            }
+        }
+        float strength = 2.2
+        if (kind == "fahrrad") { strength = 0.8 }
+        var l = Light.Point(0m, 0m, 0m, S3D.Rgb(255, 240, 210), strength)
+        l.Range = 9m
+        l.Cutoff = 32m
+        l.CastShadows = false
+        l.Enabled = false
+        this.beam = l
+        scene.Add(take l)
+    }
+
+    undefined Add(Scene scene, defined float right, defined float up, defined float front, defined float w, defined float h, defined float d, defined int color) {
+        var o = new Object(Template.Box, 0m, 0m, 0m, w * 1m, h * 1m, d * 1m)
+        o.Color = color
+        this.parts.Add(o)
+        this.offsets.Add(right)
+        this.offsets.Add(up)
+        this.offsets.Add(front)
+        scene.Add(take o)
+    }
+
+    // (x, y, z): die Lage in der Szene (y: der Boden unter dem Wagen), heading in Grad (vorwärts ist (-sin, -cos) in x, z); lean: die
+    // Schräglage in Grad (nach links positiv), um die Linie, auf der die Räder stehen.
+    undefined Place(defined float x, defined float y, defined float z, defined float heading, defined float lean) {
+        float h = heading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float rx = Math.Cos(h)
+        float rz = -Math.Sin(h)
+        float c = Math.Cos(lean * Math.PI / 180.0)
+        float sn = Math.Sin(lean * Math.PI / 180.0)
+        for (int i = 0; i < this.parts.Count; i++) {
+            float r0 = this.offsets[i * 3]
+            float u0 = this.offsets[i * 3 + 1]
+            float f = this.offsets[i * 3 + 2]
+            float r = r0 * c - u0 * sn
+            float u = r0 * sn + u0 * c
+            this.parts[i].SetPosition((x + rx * r + fx * f) * 1m, (y + u) * 1m, (z + rz * r + fz * f) * 1m)
+            this.parts[i].SetRotation(0deg, heading * 1deg, lean * 1deg)
+        }
+        // das Licht 7 m voraus, 1,2 m über der Straße
+        this.beam.X = (x + fx * 7.0) * 1m
+        this.beam.Y = (y + 1.2) * 1m
+        this.beam.Z = (z + fz * 7.0) * 1m
+    }
+}
+
+// Der Spieler in der Szene: Beine, Rumpf, Kopf, Arme aus Quadern; Beine und Arme schwingen mit dem gelaufenen Weg. Zum Sitzen (auf einem
+// Zweirad) hat er eigene Teile: Oberschenkel nach vorn, Unterschenkel hinab, die Arme vorn am Lenker - je Teil gilt eine der Haltungen.
+class PersonModel {
+    List<Object> parts
+    List<float> offsets         // je Teil: rechts, hoch, vorn (m; sitzend: ab der Sitzfläche)
+    List<float> swing           // je Teil: so weit schwingt es vor und zurück (m, Vorzeichen: die Seite)
+    List<bool> seated           // je Teil: gehört zur Sitzhaltung (sonst zum Stehen und Gehen)
+    defined bool sitting        // die Haltung des letzten Place / Sit
+    defined bool visible
+
+    construct(Scene scene) {
+        this.parts = new List<Object>()
+        this.offsets = new List<float>()
+        this.swing = new List<float>()
+        this.seated = new List<bool>()
+        int jeans = S3D.Rgb(50, 70, 110)
+        int jacket = S3D.Rgb(60, 110, 70)
+        int skin = S3D.Rgb(225, 180, 150)
+        int hair = S3D.Rgb(70, 50, 35)
+        // stehend
+        this.Add(scene, -0.11, 0.42, 0.0, 0.17, 0.84, 0.2, jeans, 0.2, false)
+        this.Add(scene, 0.11, 0.42, 0.0, 0.17, 0.84, 0.2, jeans, -0.2, false)
+        this.Add(scene, 0.0, 1.14, 0.0, 0.44, 0.6, 0.24, jacket, 0.0, false)
+        this.Add(scene, 0.0, 1.6, 0.0, 0.24, 0.26, 0.24, skin, 0.0, false)
+        this.Add(scene, 0.0, 1.76, -0.01, 0.26, 0.08, 0.26, hair, 0.0, false)
+        this.Add(scene, -0.29, 1.12, 0.0, 0.12, 0.6, 0.14, jacket, -0.14, false)
+        this.Add(scene, 0.29, 1.12, 0.0, 0.12, 0.6, 0.14, jacket, 0.14, false)
+        // sitzend: Oberschenkel waagerecht nach vorn, Unterschenkel vom Knie hinab, Rumpf und Kopf aufrecht, Oberarme hinab, Unterarme zum Lenker
+        foreach (side in [-1.0, 1.0]) {
+            this.Add(scene, side * 0.11, 0.06, 0.17, 0.17, 0.17, 0.5, jeans, 0.0, true)
+            this.Add(scene, side * 0.13, -0.27, 0.38, 0.15, 0.55, 0.17, jeans, 0.0, true)
+            this.Add(scene, side * 0.29, 0.42, 0.08, 0.12, 0.4, 0.14, jacket, 0.0, true)
+            this.Add(scene, side * 0.27, 0.18, 0.47, 0.11, 0.11, 0.75, jacket, 0.0, true)
+        }
+        this.Add(scene, 0.0, 0.35, 0.0, 0.44, 0.6, 0.24, jacket, 0.0, true)
+        this.Add(scene, 0.0, 0.81, 0.02, 0.24, 0.26, 0.24, skin, 0.0, true)
+        this.Add(scene, 0.0, 0.97, 0.01, 0.26, 0.08, 0.26, hair, 0.0, true)
+    }
+
+    undefined Add(Scene scene, defined float right, defined float up, defined float front, defined float w, defined float h, defined float d, defined int color, defined float swing, defined bool seated) {
+        var o = new Object(Template.Box, 0m, 0m, 0m, w * 1m, h * 1m, d * 1m)
+        o.Color = color
+        o.Visible = false
+        this.parts.Add(o)
+        this.offsets.Add(right)
+        this.offsets.Add(up)
+        this.offsets.Add(front)
+        this.swing.Add(swing)
+        this.seated.Add(seated)
+        scene.Add(take o)
+    }
+
+    // Zeigt (oder versteckt) die Teile der aktuellen Haltung; die der anderen sind immer versteckt.
+    undefined Show(defined bool visible) {
+        this.visible = visible
+        for (int i = 0; i < this.parts.Count; i++) { this.parts[i].Visible = visible && this.seated[i] == this.sitting }
+    }
+
+    // Sitzend auf einem Zweirad: (x, y, z) die Mitte der Sitzfläche über dem Boden (seat m hoch), heading in Grad; lean: die Schräglage des
+    // Zweirads (Grad, nach links positiv) - er neigt sich mit, um die Linie, auf der die Räder stehen.
+    undefined Sit(defined float x, defined float y, defined float z, defined float heading, defined float seat, defined float lean) {
+        float h = heading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float rx = Math.Cos(h)
+        float rz = -Math.Sin(h)
+        float c = Math.Cos(lean * Math.PI / 180.0)
+        float sn = Math.Sin(lean * Math.PI / 180.0)
+        if (!this.sitting) {
+            this.sitting = true
+            this.Show(this.visible)
+        }
+        for (int i = 0; i < this.parts.Count; i++) {
+            if (!this.seated[i]) { continue }
+            float r0 = this.offsets[i * 3]
+            float u0 = this.offsets[i * 3 + 1] + seat
+            float f = this.offsets[i * 3 + 2]
+            float r = r0 * c - u0 * sn
+            float u = r0 * sn + u0 * c
+            this.parts[i].SetPosition((x + rx * r + fx * f) * 1m, (y + u) * 1m, (z + rz * r + fz * f) * 1m)
+            this.parts[i].SetRotation(0deg, heading * 1deg, lean * 1deg)
+        }
+    }
+
+    // (x, y, z): die Lage in der Szene (y: der Boden), heading in Grad; stride: der gelaufene Weg (ein Doppelschritt je 1,5 m).
+    undefined Place(defined float x, defined float y, defined float z, defined float heading, defined float stride) {
+        float h = heading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float rx = Math.Cos(h)
+        float rz = -Math.Sin(h)
+        float phase = Math.Sin(stride * 2.0 * Math.PI / 1.5)
+        if (this.sitting) {
+            this.sitting = false
+            this.Show(this.visible)
+        }
+        for (int i = 0; i < this.parts.Count; i++) {
+            if (this.seated[i]) { continue }
+            float r = this.offsets[i * 3]
+            float u = this.offsets[i * 3 + 1]
+            float f = this.offsets[i * 3 + 2] + this.swing[i] * phase
+            this.parts[i].SetPosition((x + rx * r + fx * f) * 1m, (y + u) * 1m, (z + rz * r + fz * f) * 1m)
+            this.parts[i].RotationY = heading * 1deg
+        }
+    }
+}
+
+// Die Verfolgerkamera: ihr Abstand hinter dem Wagen (m).
+class Chase {
+    defined float distance
+    construct() { this.distance = 7.0 }
+}
+
+class Game {
+    // Der Startpunkt: auf der nächsten Straße für Autos (bis 80 m), in ihrer Richtung; sonst der Punkt selbst nach Norden. Gibt Ost, Nord, Richtung.
+    static float[] Start(Raser.FileTileStore store, defined float e, defined float n) {
+        float result[] = [e, n, 0.0]
+        var key = Raser.TileKey.Of(e, n)
+        var tile = store.Load(key)
+        if (tile == undefined) { return result }
+        float x = e - key.East
+        float y = n - key.North
+        float best = 80.0 * 80.0
+        foreach (r in tile.data.roads) {
+            if (!Raser.Props.IsCarRoad(r)) { continue }
+            for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                float ax = r.points[k]
+                float ay = r.points[k + 1]
+                float ex = r.points[k + 2] - ax
+                float ey = r.points[k + 3] - ay
+                float len2 = ex * ex + ey * ey
+                if (len2 < 1.0) { continue }
+                float t = Math.Clamp(((x - ax) * ex + (y - ay) * ey) / len2, 0.1, 0.9)
+                float px = ax + ex * t
+                float py = ay + ey * t
+                float d2 = (px - x) * (px - x) + (py - y) * (py - y)
+                if (d2 < best) {
+                    best = d2
+                    result[0] = px + key.East
+                    result[1] = py + key.North
+                    // vorwärts ist (-sin, cos) in (Ost, Nord)
+                    result[2] = Math.Atan2(-ex, ey) * 180.0 / Math.PI
+                }
+            }
+        }
+        return result
+    }
+
+    // Parkplätze am Straßenrand: auf Straßen für Autos (ab 5 m breit) der Startkachel, je Abschnitt (ab 10 m) in der Mitte rechts am Rand der
+    // Fahrbahn, in Fahrtrichtung - 20 bis 200 m vom Start, je mindestens 25 m auseinander, die nächsten zuerst; nicht in Gebäuden, an Bäumen,
+    // Laternen und Ampeln. Gibt je Platz Ost, Nord, Richtung.
+    static List<float> Parking(Raser.FileTileStore store, Obstacles obstacles, defined float e, defined float n, defined int count) {
+        var found = new List<float>()
+        var key = Raser.TileKey.Of(e, n)
+        var tile = store.Load(key)
+        if (tile == undefined || count <= 0) { return found }
+        var cand = new List<float>()
+        foreach (r in tile.data.roads) {
+            if (!Raser.Props.IsCarRoad(r) || r.width < 5.0) { continue }
+            for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                float ex = r.points[k + 2] - r.points[k]
+                float ey = r.points[k + 3] - r.points[k + 1]
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len < 10.0) { continue }
+                // rechts ist (dy, -dx) bei der Richtung (dx, dy); 1,1 m vom Rand der Fahrbahn
+                float side = r.width / 2.0 - 1.1
+                float pe = key.East + r.points[k] + ex / 2.0 + ey / len * side
+                float pn = key.North + r.points[k + 1] + ey / 2.0 - ex / len * side
+                float d = Math.Sqrt((pe - e) * (pe - e) + (pn - n) * (pn - n))
+                if (d < 20.0 || d > 200.0) { continue }
+                cand.Add(d)
+                cand.Add(pe)
+                cand.Add(pn)
+                cand.Add(Math.Atan2(-ex, ey) * 180.0 / Math.PI)
+            }
+        }
+        // die nächsten zuerst
+        while (found.Count < count * 3) {
+            int best = -1
+            for (int i = 0; i < cand.Count; i = i + 4) {
+                if (cand[i] < 0.0) { continue }
+                if (best < 0 || cand[i] < cand[best]) { best = i }
+            }
+            if (best < 0) { break }
+            float pe = cand[best + 1]
+            float pn = cand[best + 2]
+            float ph = cand[best + 3]
+            cand[best] = -1.0
+            bool free = true
+            for (int j = 0; j < found.Count && free; j = j + 3) {
+                if ((found[j] - pe) * (found[j] - pe) + (found[j + 1] - pn) * (found[j + 1] - pn) < 25.0 * 25.0) { free = false }
+            }
+            // ein Wagen (2,6 m lang zwischen den Kreismitten, Transporter 3,4 m): vorn, Mitte, hinten frei
+            float h = ph * Math.PI / 180.0
+            foreach (along in [-2.0, 0.0, 2.0]) {
+                if (!free) { break }
+                float ce = pe - Math.Sin(h) * along
+                float cn = pn + Math.Cos(h) * along
+                if (obstacles.Blocked(ce, cn, 1.2) || obstacles.Push(ce, cn, 1.2)) { free = false }
+            }
+            if (!free) { continue }
+            found.Add(pe)
+            found.Add(pn)
+            found.Add(ph)
+        }
+        return found
+    }
+
+    static defined int Main(string items[]) {
+        var options = new Options(items)
+        string world = options.Get("world", "world")
+        var store = new Raser.FileTileStore(world)
+        var at = options.Get("at", "376117,5705005").Split(",")
+        var start = Game.Start(store, at[0].ToFloat(), at[1].ToFloat())
+        var size = options.Get("size", "960x600").Split("x")
+        int width = size[0].ToInt()
+        int height = size[1].ToInt()
+
+        var terrain = new Ground(world)
+        float ground = 0.0
+        any g0 = terrain.At(start[0], start[1])
+        if (g0 != undefined) { ground = g0 }
+
+        var fb = new Framebuffer(width, height)
+        var scene = new Scene()
+        scene.Threads = options.Get("render-threads", "0").ToInt()
+        var cam = new Camera(fb)
+        cam.FieldOfView = 65deg
+        cam.Near = 0.2m
+        cam.Far = 3000m
+        scene.Add(cam)
+        var weather = new Raser.Weather()
+        var date = options.Get("date", "07-01").Split("-")
+        weather.day = Raser.Weather.DayOf(date[0].ToInt(), date[1].ToInt())
+        var clock = options.Get("time", "14:00").Split(":")
+        weather.hour = clock[0].ToFloat() + clock[1].ToFloat() / 60.0
+        weather.Preset(options.Get("weather", "klar"))
+
+        int near = options.Get("near", "1").ToInt()
+        int far = options.Get("far", "5").ToInt()
+        int workers = options.Get("workers", "3").ToInt()
+        var view = new WorldView(world, scene, start[0], start[1], ground, near, far, 3.2, false, workers, true)
+        view.farAhead = far
+        view.nearAhead = 2
+        view.memory.minFree = 20.0
+        if (options.Get("gpu", "") != "") { scene.Renderer = RenderMode.Hardware }
+        var atmosphere = new Atmosphere(weather, scene, cam, view, world)
+        atmosphere.Apply()
+        var obstacles = new Obstacles(world)
+
+        // die Fahrzeuge: das eigene (--vehicle auto|transporter|motorrad|fahrrad) am Start, die anderen Klassen dahinter am Rand geparkt
+        var vehicles = new List<Raser.Vehicle>()
+        var models = new List<CarModel>()
+        string kinds[] = ["auto", "transporter", "motorrad", "fahrrad"]
+        int colors[] = [S3D.Rgb(190, 40, 35), S3D.Rgb(230, 230, 225), S3D.Rgb(40, 70, 160), S3D.Rgb(40, 140, 90)]
+        string own = options.Get("vehicle", "auto")
+        float sh = start[2] * Math.PI / 180.0
+        float row = 0.0
+        for (int pass = 0; pass < 2; pass++) {
+            for (int k = 0; k < kinds.length; k++) {
+                if ((kinds[k] == own) != (pass == 0)) { continue }
+                var v = Raser.Vehicle.Of(kinds[k])
+                v.heading = start[2]
+                if (vehicles.Count == 0) {
+                    v.east = start[0]
+                    v.north = start[1]
+                } else {
+                    // dahinter, 1,6 m nach rechts
+                    row = row + v.length / 2.0 + 1.5
+                    v.east = start[0] + Math.Sin(sh) * (row + 4.0) + Math.Cos(sh) * 1.6
+                    v.north = start[1] - Math.Cos(sh) * (row + 4.0) + Math.Sin(sh) * 1.6
+                    row = row + v.length / 2.0
+                }
+                var m = new CarModel(scene, kinds[k], colors[k])
+                vehicles.Add(take v)
+                models.Add(take m)
+            }
+        }
+        // dazu Fahrzeuge am Straßenrand in der Nähe (--parked 8)
+        var spots = Game.Parking(store, obstacles, start[0], start[1], options.Get("parked", "8").ToInt())
+        string parkKinds[] = ["auto", "transporter", "auto", "motorrad", "auto", "fahrrad", "auto", "transporter"]
+        int parkColors[] = [S3D.Rgb(30, 30, 35), S3D.Rgb(200, 200, 60), S3D.Rgb(170, 175, 180), S3D.Rgb(160, 30, 30), S3D.Rgb(30, 60, 120), S3D.Rgb(200, 120, 30), S3D.Rgb(240, 240, 240), S3D.Rgb(60, 100, 60)]
+        for (int k = 0; k * 3 < spots.Count; k++) {
+            string kind = parkKinds[k % parkKinds.length]
+            var v = Raser.Vehicle.Of(kind)
+            v.east = spots[k * 3]
+            v.north = spots[k * 3 + 1]
+            v.heading = spots[k * 3 + 2]
+            var m = new CarModel(scene, kind, parkColors[k % parkColors.length])
+            vehicles.Add(take v)
+            models.Add(take m)
+        }
+        var car = vehicles[0]
+        var model = models[0]
+        float carY = 0.0
+        float camHeading = car.heading
+        bool hood = false
+        var chase = new Chase()
+        var walker = new Raser.Walker()
+        var person = new PersonModel(scene)
+        person.Show(false)
+        bool onFoot = false
+        Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
+        view.Fill(car.east, car.north)
+
+        var hud = new Renderer(fb)
+        var ink = new SolidBrush(0xFFFFFFFF)
+        var shade = new SolidBrush(0xA0000000)
+
+        if (options.Get("bench-model", "") != "") {
+            // Messung: Model.FromArrays mit 16000 Vierecken, als Zahlen-Arrays und als float32-Puffer
+            int nq = 16000
+            defined float pos[] = new float[nq * 12]
+            defined float uv[] = new float[nq * 8]
+            defined int idx[] = new int[nq * 6]
+            byte bp[] = new byte[nq * 48]
+            byte bu[] = new byte[nq * 32]
+            byte bi[] = new byte[nq * 24]
+            for (int i = 0; i < nq * 12; i++) {
+                pos[i] = (i * 7919 % 1000) * 0.05
+                bp.WriteFloat32(i * 4, pos[i])
+            }
+            for (int i = 0; i < nq * 8; i++) {
+                uv[i] = (i % 97) * 0.01
+                bu.WriteFloat32(i * 4, uv[i])
+            }
+            for (int q = 0; q < nq; q++) {
+                int order[] = [0, 1, 2, 0, 2, 3]
+                for (int k = 0; k < 6; k++) {
+                    idx[q * 6 + k] = q * 4 + order[k]
+                    bi.WriteInt32((q * 6 + k) * 4, q * 4 + order[k])
+                }
+            }
+            for (int round = 0; round < 3; round++) {
+                int a0 = DateTime.Now.Ticks
+                var m1 = Model.FromArrays(pos, uv, idx)
+                int a1 = DateTime.Now.Ticks
+                var m2 = Model.FromArrays(bp, bu, bi)
+                int a2 = DateTime.Now.Ticks
+                print("FromArrays 16000 Vierecke: Arrays " + ((a1 - a0) / 10000.0) + " ms, Puffer " + ((a2 - a1) / 10000.0) + " ms")
+            }
+            return 0
+        }
+
+        // --live s [--speed 50]: ohne Fenster in Echtzeit fahren (der Autopilot weicht Wänden aus), je Bild nachladen und rendern - misst das
+        // Nachladen: wie oft unter dem Wagen bzw. 60 m voraus die nahe bzw. irgendeine Stufe fehlte.
+        float live = options.Get("live", "0").ToFloat()
+        if (live > 0.0) {
+            float want = options.Get("speed", "50").ToFloat() / 3.6
+            for (int i = 0; i < 12; i++) { view.spent[i] = 0 }
+            int began = DateTime.Now.Ticks
+            int last = began
+            int frames = 0
+            int noNear = 0
+            int noAhead = 0
+            int worst = 0
+            int hits = 0
+            float way = 0.0
+            float clock = 0.0
+            int pilotTicks = 0
+            bool renderAll = options.Get("render", "") != ""
+            int updateTicks = 0
+            int renderTicks = 0
+            int otherTicks = 0
+            while (clock < live) {
+                int now = DateTime.Now.Ticks
+                float dt = Math.Min((now - last) / 10000000.0, 0.1)
+                if (frames == 0) { dt = 0.03 }
+                if (frames > 0) { worst = Math.Max(worst, now - last) }
+                last = now
+                clock = clock + dt
+                int t1 = DateTime.Now.Ticks
+                float pilot[] = Game.Pilot(car, obstacles, want)
+                pilotTicks = pilotTicks + (DateTime.Now.Ticks - t1)
+                float e0 = car.east
+                float n0 = car.north
+                if (Game.Advance(car, vehicles, obstacles, dt, pilot[0], pilot[1], pilot[2], false, weather.wetness)) { hits++ }
+                Game.Parked(car, vehicles, obstacles, dt, weather.wetness)
+                way = way + Math.Sqrt((car.east - e0) * (car.east - e0) + (car.north - n0) * (car.north - n0))
+                float diff = car.heading - camHeading
+                camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
+                Game.PlaceAll(vehicles, models, terrain, view)
+                Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
+                view.lead = Math.Abs(car.speed) * 2.5
+                if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
+                float h = car.heading * Math.PI / 180.0
+                int t2 = DateTime.Now.Ticks
+                view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
+                int t3 = DateTime.Now.Ticks
+                atmosphere.Update(car.east, car.north, dt)
+                scene.Advance(dt * 1s)
+                int t4 = DateTime.Now.Ticks
+                // ohne --render 1: 30 Bilder je Sekunde ohne Bild (wie mit Grafikkarte: das Rendern kostet hier sonst 0,7 s je Bild)
+                if (renderAll) { cam.Render() } else {
+                    int rest = (333333 - (DateTime.Now.Ticks - now)) / 10000
+                    if (rest > 0) { Sleep(rest * 1ms) }
+                }
+                updateTicks = updateTicks + (t3 - t2)
+                otherTicks = otherTicks + (t4 - t3) + (t2 - t1)
+                renderTicks = renderTicks + (DateTime.Now.Ticks - t4)
+                frames++
+                if (view.near >= 0 && view.StageAt(car.east, car.north) < 2) { noNear++ }
+                if (view.StageAt(car.east - Math.Sin(h) * 60.0, car.north + Math.Cos(h) * 60.0) < 1) { noAhead++ }
+            }
+            cam.Render()
+            Game.Hud(hud, ink, shade, car, weather, height, false, "")
+            float seconds = (DateTime.Now.Ticks - began) / 10000000.0
+            print("Fahrt " + Math.Round(seconds) + " s, " + Math.Round(way) + " m, " + frames + " Bilder (" + (Math.Round(frames / seconds * 10.0) / 10.0) + " je s, längstes " + (worst / 10000) + " ms), " + hits + " Aufpralle")
+            print("ohne nahe Stufe unter dem Wagen: " + noNear + " Bilder, ohne jede Stufe 60 m voraus: " + noAhead + " Bilder; gebaut " + view.nearBuilt + " nah, " + view.farBuilt + " fern, verworfen " + view.dropped + ", zu spät " + view.late)
+            print("je Bild: Autopilot " + (pilotTicks / frames / 10000) + " ms, Nachladen " + (updateTicks / frames / 10000) + " ms, Rendern " + (renderTicks / frames / 10000) + " ms, Rest mit Autopilot " + (otherTicks / frames / 10000) + " ms")
+            string parts = ""
+            for (int i = 0; i < 6; i++) { parts = parts + " " + (view.spent[i] / frames / 10000.0) + "/" + (view.spent[i + 6] / 10000) }
+            print("Nachladen je Abschnitt (Mittel/längstes ms: Speicher, Anordnen, fern, Ergebnisse, nah bestellen, voraus):" + parts)
+            string liveShot = options.Get("shot", "")
+            if (liveShot != "") { IO.File.WriteAllBytes(liveShot, fb.ToPng()) }
+            view.Close()
+            return 0
+        }
+
+        // ohne Fenster: eine Probefahrt
+        float auto = options.Get("auto", "0").ToFloat()
+        string shot = options.Get("shot", "")
+        if (auto > 0.0 || shot != "") {
+            float steer = options.Get("steer", "0").ToFloat()
+            // --back 1: im Rückwärtsgang (auf die dahinter geparkten Fahrzeuge zu)
+            bool back = options.Get("back", "") != ""
+            float dt = 1.0 / 30.0
+            int hits = 0
+            float top = 0.0
+            for (float t = 0.0; t < auto; t = t + dt) {
+                if (Game.Advance(car, vehicles, obstacles, dt, 1.0, 0.0, steer, back, weather.wetness)) { hits++ }
+                Game.Parked(car, vehicles, obstacles, dt, weather.wetness)
+                top = Math.Max(top, car.speed)
+            }
+            camHeading = car.heading + options.Get("look", "0").ToFloat()
+            Game.PlaceAll(vehicles, models, terrain, view)
+            Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
+            Game.Ride(car, person, terrain, view, hood)
+            // --foot s: anhalten, aussteigen und so viele Sekunden gehen (--turn: drehen dabei, --sprint 1)
+            float foot = options.Get("foot", "0").ToFloat()
+            if (foot > 0.0) {
+                car.speed = 0.0
+                bool out = Game.GetOut(car, walker, obstacles)
+                float turn = options.Get("turn", "0").ToFloat()
+                // --to-tree 1: geradewegs auf den nächsten Baum zu
+                float tree[] = undefined
+                if (options.Get("to-tree", "") != "") { tree = obstacles.NearestTree(walker.east, walker.north) }
+                if (tree != undefined) {
+                    // 3 m östlich und etwas nördlich davon los, nach Westen (knapp an der Mitte vorbei: er muss um den Stamm herum)
+                    walker.east = tree[0] + 3.0
+                    walker.north = tree[1] + 0.1
+                    walker.heading = 90.0
+                }
+                for (float t = 0.0; t < foot; t = t + dt) { Game.Walk(walker, vehicles, obstacles, dt, 1.0, turn, options.Get("sprint", "") != "") }
+                camHeading = walker.heading + options.Get("look", "0").ToFloat()
+                Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
+                print("zu Fuß " + foot + " s (ausgestiegen: " + out + "): " + Game.Distance(car, walker) + " m vom Wagen, Richtung " + Math.Round(walker.heading) + "°, Kamera " + chase.distance + " m")
+                if (tree != undefined) { print("zum Baum: noch " + Math.Sqrt((tree[0] - walker.east) * (tree[0] - walker.east) + (tree[1] - walker.north) * (tree[1] - walker.north)) + " m von seiner Mitte") }
+                onFoot = true
+            }
+            view.lead = Math.Abs(car.speed) * 2.5
+            view.Fill(car.east, car.north)
+            atmosphere.Update(car.east, car.north, 0.0)
+            model.beam.Enabled = weather.lampsOn
+            if (weather.rain > 0.0) {
+                for (int k = 0; k < 30; k++) { scene.Advance(0.1s) }
+            }
+            cam.Render()
+            Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
+            print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Tank " + Math.Round(car.fuel * 1000.0) / 10.0 + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m")
+            for (int i = 1; i < vehicles.Count; i++) {
+                print(vehicles[i].name + " bei " + vehicles[i].east + ", " + vehicles[i].north + ", Zustand " + Math.Round(vehicles[i].health * 100.0) + " %")
+            }
+            if (shot != "") {
+                IO.File.WriteAllBytes(shot, fb.ToPng())
+                print(shot)
+            }
+            view.Close()
+            return 0
+        }
+
+        var win = new Window(fb, "Ruhrpott-Raser")
+        win.EnableEvents()
+        bool gas = false
+        bool brake = false
+        bool left = false
+        bool right = false
+        bool handbrake = false
+        bool reverse = false
+        bool sprint = false
+        string presets[] = ["klar", "wolkig", "bedeckt", "niesel", "regen", "starkregen", "dunst", "nebel", "dichter-nebel"]
+        int presetIndex = 0
+        int last = DateTime.Now.Ticks
+        while (win.Tick()) {
+            any ev = win.NextEvent()
+            while (ev != undefined) {
+                if (ev[0] == EventType.KeyDown || ev[0] == EventType.KeyUp) {
+                    bool pressed = ev[0] == EventType.KeyDown
+                    int key = ev[1]
+                    if (key == 119 || key == 1073741906) { gas = pressed }
+                    else if (key == 115 || key == 1073741905) { brake = pressed }
+                    else if (key == 97 || key == 1073741904) { left = pressed }
+                    else if (key == 100 || key == 1073741903) { right = pressed }
+                    else if (key == 32) { handbrake = pressed }
+                    else if (key == 1073742049 || key == 1073742053) { sprint = pressed }
+                    else if (pressed && key == 101) {
+                        // E: aussteigen (im Stand) bzw. einsteigen (am Wagen)
+                        if (onFoot) {
+                            int at = Game.Nearest(vehicles, walker)
+                            if (at >= 0) {
+                                car = vehicles[at]
+                                model = models[at]
+                                onFoot = false
+                                person.Show(false)
+                                camHeading = car.heading
+                                reverse = false
+                            }
+                        } else if (Math.Abs(car.speed) < 1.5 && Game.GetOut(car, walker, obstacles)) {
+                            car.speed = 0.0
+                            onFoot = true
+                            camHeading = walker.heading
+                        }
+                    }
+                    else if (pressed && key == 99) { hood = !hood }
+                    else if (pressed && (key == 116 || key == 103)) {
+                        float step = 0.5
+                        if (key == 103) { step = 23.5 }
+                        weather.hour = (weather.hour + step) % 24.0
+                        weather.Update()
+                        atmosphere.Apply()
+                    } else if (pressed && key == 114) {
+                        presetIndex = (presetIndex + 1) % presets.length
+                        weather.Preset(presets[presetIndex])
+                        atmosphere.Apply()
+                    }
+                }
+                ev = win.NextEvent()
+            }
+            int now = DateTime.Now.Ticks
+            float dt = Math.Min((now - last) / 10000000.0, 0.1)
+            last = now
+            // S bremst; im Stand legt es den Rückwärtsgang ein, W wieder den Vorwärtsgang
+            float throttle = 0.0
+            float braking = 0.0
+            if (gas) {
+                if (reverse && car.speed < -0.5) { braking = 1.0 } else {
+                    reverse = false
+                    throttle = 1.0
+                }
+            }
+            if (brake) {
+                if (!reverse && car.speed > 0.5) { braking = 1.0 } else {
+                    reverse = true
+                    throttle = 1.0
+                }
+            }
+            if (handbrake) { braking = 1.0 }
+            float steer = 0.0
+            if (left) { steer = 1.0 }
+            if (right) { steer = -1.0 }
+            if (onFoot) {
+                // der Wagen steht (rollt aus), der Spieler geht: W/S vor und zurück, A/D drehen, Umschalt rennt
+                float forward = 0.0
+                if (gas) { forward = 1.0 }
+                if (brake) { forward = -1.0 }
+                Game.Walk(walker, vehicles, obstacles, dt, forward, steer, sprint)
+                float diff = walker.heading - camHeading
+                camHeading = camHeading + diff * Math.Min(1.0, dt * 6.0)
+                Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
+                view.lead = 0.0
+                view.near = near
+                view.Update(walker.east, walker.north, 12.0)
+                atmosphere.Update(walker.east, walker.north, dt)
+            } else {
+                Game.Advance(car, vehicles, obstacles, dt, throttle, braking, steer, reverse, weather.wetness)
+                // die Kamera dreht dem Wagen weich nach
+                float diff = car.heading - camHeading
+                camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
+                Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
+                Game.Ride(car, person, terrain, view, hood)
+                view.lead = Math.Abs(car.speed) * 2.5
+                if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
+                float h = car.heading * Math.PI / 180.0
+                view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
+                atmosphere.Update(car.east, car.north, dt)
+            }
+            // die abgestellten Fahrzeuge rollen aus
+            Raser.Vehicle driven = car
+            if (onFoot) { driven = undefined }
+            Game.Parked(driven, vehicles, obstacles, dt, weather.wetness)
+            for (int i = 0; i < vehicles.Count; i++) {
+                models[i].beam.Enabled = weather.lampsOn && !onFoot && vehicles[i] == car
+            }
+            Game.PlaceAll(vehicles, models, terrain, view)
+            scene.Advance(dt * 1s)
+            cam.Render()
+            Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
+        }
+        view.Close()
+        return 0
+    }
+
+    // Ein einfacher Autopilot für Messfahrten: fünf Fühler (bis 50° nach links und rechts, 60 m weit) - er lenkt dorthin, wo am meisten frei
+    // ist, hält das Wunschtempo und bremst vor Wänden. Gibt Gas, Bremse, Lenkung.
+    static float[] Pilot(Raser.Vehicle car, Obstacles obstacles, defined float want) {
+        float bestScore = -1.0
+        float bestTurn = 0.0
+        float straight = 0.0
+        foreach (turn in [0.0, 25.0, -25.0, 50.0, -50.0]) {
+            float h = (car.heading + turn) * Math.PI / 180.0
+            float free = 60.0
+            for (float d = 3.0; d <= 60.0; d = d + 3.0) {
+                if (obstacles.Blocked(car.east - Math.Sin(h) * d, car.north + Math.Cos(h) * d, 1.6)) {
+                    free = d - 3.0
+                    break
+                }
+            }
+            if (turn == 0.0) { straight = free }
+            float score = free - Math.Abs(turn) * 0.15
+            if (score > bestScore) {
+                bestScore = score
+                bestTurn = turn
+            }
+        }
+        float result[] = [0.0, 0.0, bestTurn / 25.0]
+        float stop = car.speed * car.speed / 12.0 + 6.0
+        float target = want
+        if (straight < stop) { target = Math.Min(want, 3.0) }
+        if (car.speed < target) { result[0] = 1.0 } else if (car.speed > target + 1.0) { result[1] = 0.6 }
+        return result
+    }
+
+    // Ein Schritt des Wagens mit Aufprall an Gebäuden und Fahrzeugen (in Teilschritten von höchstens 0,5 m): der Wagen rutscht an Wänden entlang,
+    // angefahrene Fahrzeuge stößt er an. true: aufgeprallt.
+    static defined bool Advance(Raser.Vehicle car, List<Raser.Vehicle> all, Obstacles obstacles, defined float dt, defined float throttle, defined float brake, defined float steer, defined bool reverse, defined float wetness) {
+        float pace = Math.Abs(car.speed) + Math.Abs(car.pushE) + Math.Abs(car.pushN)
+        int parts = Math.Max(1, Math.Ceiling(pace * dt / 0.5)!int)
+        bool hit = false
+        for (int i = 0; i < parts; i++) {
+            float e0 = car.east
+            float n0 = car.north
+            car.Step(dt / parts, throttle, brake, steer, reverse, wetness)
+            // zwei Kreise (vorn, hinten) gegen die Wände
+            for (int c = 0; c < 2; c++) {
+                float offset = car.spread - 2.0 * car.spread * c
+                float h = car.heading * Math.PI / 180.0
+                float ce = car.east - Math.Sin(h) * offset
+                float cn = car.north + Math.Cos(h) * offset
+                if (obstacles.Push(ce, cn, car.radius)) {
+                    if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
+                }
+                // die anderen Fahrzeuge: angefahren rutschen sie los (Vehicle.Shove)
+                foreach (other in all) {
+                    if (other == car) { continue }
+                    float oh = other.heading * Math.PI / 180.0
+                    for (int oc = 0; oc < 2; oc++) {
+                        float oo = other.spread - 2.0 * other.spread * oc
+                        float dx = ce - (other.east - Math.Sin(oh) * oo)
+                        float dy = cn - (other.north + Math.Cos(oh) * oo)
+                        float d = Math.Sqrt(dx * dx + dy * dy)
+                        float deep = car.radius + other.radius - d
+                        if (deep > 0.0 && d > 0.0001) {
+                            float into = car.Collide(offset, dx / d, dy / d, deep)
+                            car.Shove(other, dx / d, dy / d, into)
+                            if (into > 0.5) { hit = true }
+                        }
+                    }
+                }
+            }
+        }
+        return hit
+    }
+
+    // Die abgestellten Fahrzeuge (alle außer driven; undefined: alle) rollen und rutschen aus, gebremst.
+    static undefined Parked(Raser.Vehicle driven, List<Raser.Vehicle> vehicles, Obstacles obstacles, defined float dt, defined float wetness) {
+        foreach (v in vehicles) {
+            if (v == driven) { continue }
+            if (v.speed == 0.0 && v.pushE == 0.0 && v.pushN == 0.0) { continue }
+            Game.Advance(v, vehicles, obstacles, dt, 0.0, 1.0, 0.0, false, wetness)
+        }
+    }
+
+    // Der Wagen in die Szene, auf das Gelände.
+    static undefined PlaceCar(Raser.Vehicle car, CarModel model, Ground terrain, WorldView view) {
+        float y = 0.0
+        any g = terrain.At(car.east, car.north)
+        if (g != undefined) { y = g - view.originZ }
+        model.Place(car.east - view.originE, y, -(car.north - view.originN), car.heading, car.lean)
+    }
+
+    // Die Kamera zu einem Punkt (Wagen oder Spieler, Richtung heading): reach m dahinter und up m hoch, Blick voraus; first: aus seinen Augen
+    // (eye m hoch). Vor einer Wand rückt sie heran und höher, weich wieder hinaus.
+    static undefined Look(Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float east, defined float north, defined float heading, defined float camHeading, defined bool first, defined float dt, defined float reach, defined float up, defined float eye) {
+        float x = east - view.originE
+        float z = -(north - view.originN)
+        float y = 0.0
+        any g = terrain.At(east, north)
+        if (g != undefined) { y = g - view.originZ }
+        if (first) {
+            float ch = heading * Math.PI / 180.0
+            cam.SetPosition((x - Math.Sin(ch) * 0.4) * 1m, (y + eye) * 1m, (z - Math.Cos(ch) * 0.4) * 1m)
+            cam.LookAt((x - Math.Sin(ch) * 30.0) * 1m, (y + eye - 0.25) * 1m, (z - Math.Cos(ch) * 30.0) * 1m)
+            return
+        }
+        float h = camHeading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float free = reach
+        float nearest = 1.0
+        if (reach > 5.0) { nearest = 1.5 }
+        for (float d = nearest; d <= reach; d = d + 0.5) {
+            if (obstacles.Blocked(east - fx * d, north + fz * d, 0.6)) {
+                free = d - 0.5
+                break
+            }
+        }
+        if (dt <= 0.0 || free < chase.distance) { chase.distance = free } else { chase.distance = Math.Min(free, chase.distance + 4.0 * dt) }
+        float back = Math.Max(chase.distance, nearest - 0.5)
+        float cx = x - fx * back
+        float cz = z - fz * back
+        // dicht dran höher: der Blick geht über das Dach bzw. den Kopf
+        float cy = y + up + Math.Max(0.0, reach * 0.5 - back) * 0.6
+        any gc = terrain.At(view.originE + cx, view.originN - cz)
+        if (gc != undefined) { cy = Math.Max(cy, gc - view.originZ + 1.0) }
+        cam.SetPosition(cx * 1m, cy * 1m, cz * 1m)
+        cam.LookAt((x + fx * reach) * 1m, (y + up * 0.5) * 1m, (z + fz * reach) * 1m)
+    }
+
+    // Wagen und Kamera (hinter dem Wagen oder auf der Haube).
+    static undefined Place(Raser.Vehicle car, CarModel model, Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float camHeading, defined bool hood, defined float dt) {
+        Game.PlaceCar(car, model, terrain, view)
+        float reach = 7.0
+        float up = 2.6
+        float eye = 1.25
+        if (car.kind == "transporter") {
+            reach = 9.0
+            up = 3.4
+            eye = 1.75
+        }
+        if (car.IsBike()) {
+            reach = 5.0
+            up = 2.3
+            eye = 1.55
+        }
+        Game.Look(cam, terrain, view, obstacles, chase, car.east, car.north, car.heading, camHeading, hood, dt, reach, up, eye)
+    }
+
+    static undefined PlaceAll(List<Raser.Vehicle> vehicles, List<CarModel> models, Ground terrain, WorldView view) {
+        for (int i = 0; i < vehicles.Count; i++) { Game.PlaceCar(vehicles[i], models[i], terrain, view) }
+    }
+
+    // Auf einem Zweirad sitzt der Spieler sichtbar obenauf (nicht aus seinen Augen), 0,3 m hinter der Mitte, und legt sich mit in die Kurve.
+    static undefined Ride(Raser.Vehicle car, PersonModel person, Ground terrain, WorldView view, defined bool first) {
+        if (!car.IsBike() || first) {
+            person.Show(false)
+            return
+        }
+        float y = 0.0
+        any g = terrain.At(car.east, car.north)
+        if (g != undefined) { y = g - view.originZ }
+        float h = car.heading * Math.PI / 180.0
+        // die Sitzbank (Motorrad) bzw. der Sattel (Fahrrad)
+        float seat = 0.94
+        if (car.kind == "fahrrad") { seat = 1.0 }
+        person.Sit(car.east + Math.Sin(h) * 0.3 - view.originE, y, 0.0 - (car.north - Math.Cos(h) * 0.3 - view.originN), car.heading, seat, car.lean)
+        person.Show(true)
+    }
+
+    // Das nächste Fahrzeug in Reichweite (3,5 m) des Spielers; -1: keins.
+    static defined int Nearest(List<Raser.Vehicle> vehicles, Raser.Walker walker) {
+        int found = -1
+        float best = 3.5
+        for (int i = 0; i < vehicles.Count; i++) {
+            float d = Game.Distance(vehicles[i], walker)
+            if (d < best) {
+                best = d
+                found = i
+            }
+        }
+        return found
+    }
+
+    // Aussteigen: der Spieler neben die Fahrertür (links), sonst rechts; false: kein Platz.
+    static defined bool GetOut(Raser.Vehicle car, Raser.Walker walker, Obstacles obstacles) {
+        float h = car.heading * Math.PI / 180.0
+        foreach (side in [1.0, -1.0]) {
+            float e = car.east - Math.Cos(h) * (car.width / 2.0 + 0.8) * side
+            float n = car.north - Math.Sin(h) * (car.width / 2.0 + 0.8) * side
+            if (obstacles.Blocked(e, n, 0.4)) { continue }
+            walker.east = e
+            walker.north = n
+            walker.heading = car.heading
+            walker.speed = 0.0
+            return true
+        }
+        return false
+    }
+
+    // Ein Schritt des Spielers: Wände und der Wagen halten ihn auf.
+    static undefined Walk(Raser.Walker walker, List<Raser.Vehicle> vehicles, Obstacles obstacles, defined float dt, defined float forward, defined float turn, defined bool sprint) {
+        walker.Step(dt, forward, turn, sprint)
+        if (obstacles.Push(walker.east, walker.north, 0.35)) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
+        foreach (car in vehicles) {
+            float h = car.heading * Math.PI / 180.0
+            foreach (part in [1.0, 0.0, -1.0]) {
+                walker.Avoid(car.east - Math.Sin(h) * car.spread * part, car.north + Math.Cos(h) * car.spread * part, car.radius - 0.05)
+            }
+        }
+    }
+
+    // Spieler (Figur) und Kamera zu Fuß.
+    static undefined PlaceWalker(Raser.Walker walker, PersonModel person, Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float camHeading, defined bool first, defined float dt) {
+        float y = 0.0
+        any g = terrain.At(walker.east, walker.north)
+        if (g != undefined) { y = g - view.originZ }
+        person.Place(walker.east - view.originE, y, -(walker.north - view.originN), walker.heading, walker.stride)
+        person.Show(!first)
+        Game.Look(cam, terrain, view, obstacles, chase, walker.east, walker.north, walker.heading, camHeading, first, dt, 3.5, 2.1, 1.65)
+    }
+
+    static defined float Distance(Raser.Vehicle car, Raser.Walker walker) {
+        return Math.Sqrt((car.east - walker.east) * (car.east - walker.east) + (car.north - walker.north) * (car.north - walker.north))
+    }
+
+    // Der Name des Fahrzeugs, in das der Spieler zu Fuß einsteigen kann ("": keins).
+    static string Near(List<Raser.Vehicle> vehicles, Raser.Walker walker, defined bool onFoot) {
+        if (!onFoot) { return "" }
+        int at = Game.Nearest(vehicles, walker)
+        if (at < 0) { return "" }
+        return vehicles[at].name
+    }
+
+    // Die Anzeige: Tempo, Zustand und Tank des Fahrzeugs, Uhrzeit, Wetter; "rutscht", wenn die Reifen nicht halten.
+    static undefined Hud(Renderer hud, Brush ink, Brush shade, Raser.Vehicle car, Raser.Weather weather, defined int height, defined bool onFoot, string atCar) {
+        hud.FillRect(12, height - 44, 600, 32, shade)
+        int minutes = Math.Floor(weather.hour * 60.0)!int
+        string clock = (minutes / 60) + ":" + ((minutes % 60) / 10) + ((minutes % 60) % 10)
+        string text = Math.Round(Math.Abs(car.speed) * 3.6) + " km/h   Zustand " + Math.Round(car.health * 100.0) + "%"
+        if (car.tank > 0.0) {
+            if (car.fuel <= 0.0) { text = text + "   Tank leer" } else { text = text + "   Tank " + Math.Round(car.fuel * 100.0) + "%" }
+        }
+        text = text + "   " + clock
+        if (car.health <= 0.0) { text = "kaputt   " + clock }
+        // (die Schrift der Anzeige kennt kein ß)
+        if (onFoot) { text = "zu Fuss   " + clock }
+        if (atCar != "") { text = text + "   E: " + atCar }
+        if (weather.rain > 0.0) { text = text + "   Regen" } else if (weather.fog > 0.0) { text = text + "   Nebel" }
+        if (car.sliding && !onFoot) { text = text + "   rutscht" }
+        hud.DrawText(22, height - 36, text, ink)
+    }
+}
+
+Environment.Exit(Game.Main(Environment.Args))

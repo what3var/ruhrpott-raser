@@ -1,0 +1,886 @@
+// Die Tests von Raser.World (forge test src/Raser.World/Raser.World.fireproj).
+#import "testing"
+#import "json"
+#import "filesystem"
+
+class Sample {
+    // Eine kleine Kachel: Gelände mit 2 % Steigung nach Osten bei 60 m, ein Satteldach-Haus, eine Straße, eine Wiese.
+    static Raser.Tile Make() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259)
+        for (int r = 0; r < 259; r++) {
+            for (int c = 0; c < 259; c++) { raster.Set(c, r, 60.0 + (c - 1) * 0.02) }
+        }
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:haus1"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [2.0, 4.0, 10.0, 4.0, 10.0, 11.0, 2.0, 11.0]
+        b.ground = 60.2
+        b.eaves = 66.0
+        b.ridge = 69.0
+        b.roofType = Raser.RoofType.Gable
+        tile.data.buildings.Add(take b)
+        var road = new Raser.Road()
+        road.source = "test:strasse"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "residential"
+        road.points = [0.0, 1.0, 40.0, 1.0]
+        road.width = 2.0
+        tile.data.roads.Add(take road)
+        var area = new Raser.Area()
+        area.source = "test:wiese"
+        area.kind = "landuse=meadow"
+        area.ring = [0.0, 11.6, 12.8, 11.6, 12.8, 30.0, 0.0, 30.0]
+        area.surface = Raser.Material.Sand
+        area.color = Raser.Palette.Sand
+        tile.data.areas.Add(take area)
+        return tile
+    }
+}
+
+class GeometryTests {
+    [Test "Punkt im Polygon und Abstand zur Linie"]
+    undefined Inside() {
+        float square[] = [0.0, 0.0, 10.0, 0.0, 10.0, 10.0, 0.0, 10.0]
+        Testing.Assert.IsTrue(Raser.Geo.Inside(square, 5.0, 5.0))
+        Testing.Assert.IsFalse(Raser.Geo.Inside(square, 11.0, 5.0))
+        Testing.Assert.AreEqual(100.0, Raser.Geo.Area(square))
+        float line[] = [0.0, 0.0, 10.0, 0.0]
+        Testing.Assert.AreEqual(3.0, Raser.Geo.DistanceToLine(line, 5.0, 3.0))
+        Testing.Assert.AreEqual(5.0, Raser.Geo.DistanceToLine(line, 13.0, 4.0))
+    }
+
+    [Test "Triangulieren"]
+    undefined Triangulate() {
+        // ein L (konkav): 6 Ecken, 4 Dreiecke, Fläche 3
+        float l[] = [0.0, 0.0, 2.0, 0.0, 2.0, 1.0, 1.0, 1.0, 1.0, 2.0, 0.0, 2.0]
+        var t = Raser.Geo.Triangulate(l)
+        Testing.Assert.AreEqual(12, t.length)
+        float area = 0.0
+        for (int i = 0; i < t.length; i = i + 3) {
+            float ax = l[t[i] * 2]
+            float ay = l[t[i] * 2 + 1]
+            float bx = l[t[i + 1] * 2]
+            float by = l[t[i + 1] * 2 + 1]
+            float cx = l[t[i + 2] * 2]
+            float cy = l[t[i + 2] * 2 + 1]
+            area = area + ((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)) / 2.0
+        }
+        Testing.Assert.IsTrue(Math.Abs(area - 3.0) < 0.000001)
+        // im Uhrzeigersinn: dieselbe Fläche
+        float cw[] = [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.0]
+        Testing.Assert.AreEqual(6, Raser.Geo.Triangulate(cw).length)
+    }
+
+    [Test "Höhe einer Dachebene"]
+    undefined Plane() {
+        // Eine Fläche, die von y = 0 (z = 6) bis y = 4 (z = 10) ansteigt.
+        float face[] = [0.0, 0.0, 6.0, 10.0, 0.0, 6.0, 10.0, 4.0, 10.0, 0.0, 4.0, 10.0]
+        Testing.Assert.IsTrue(Math.Abs(Raser.Geo.PlaneHeight(face, 5.0, 2.0) - 8.0) < 0.0001)
+        float wall[] = [0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 10.0, 0.0, 5.0]
+        Testing.Assert.IsTrue(Raser.Geo.PlaneHeight(wall, 1.0, 0.0) == undefined)
+    }
+}
+
+class RasterTests {
+    [Test "Bilinear und binär"]
+    undefined Raster() {
+        var r = new Raser.HeightRaster(0.0, 0.0, 1.0, 2, 2)
+        r.Set(0, 0, 10.0)
+        r.Set(1, 0, 12.0)
+        r.Set(0, 1, 14.0)
+        r.Set(1, 1, 16.0)
+        Testing.Assert.AreEqual(13.0, r.At(0.5, 0.5))
+        Testing.Assert.AreEqual(16.0, r.At(5.0, 5.0))
+        var back = Raser.HeightRaster.Decode(r.Encode())
+        Testing.Assert.AreEqual(2, back.cols)
+        Testing.Assert.AreEqual(13.0, back.At(0.5, 0.5))
+    }
+}
+
+class VoxelizerTests {
+    [Test "Gleiche Daten, gleiche Chunks"]
+    undefined Deterministic() {
+        var a = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var b = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var key = new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)
+        var ca = a.Generate(key)
+        var cb = b.Generate(key)
+        Testing.Assert.AreEqual(ca.ContentHash(), cb.ContentHash())
+        Testing.Assert.IsTrue(ca.CountFilled() > 0)
+        Testing.Assert.AreEqual(Raser.Voxelizer.Version, ca.generatorVersion)
+    }
+
+    [Test "Die Reihenfolge der Merkmale ändert nichts"]
+    undefined OrderIndependent() {
+        // Zwei gleich breite Straßen und zwei gleich wichtige Flächen, die sich überlappen - einmal so, einmal andersherum gespeichert.
+        var a = Sample.Make()
+        var b = Sample.Make()
+        foreach (t in [a, b]) {
+            var r2 = new Raser.Road()
+            r2.source = "test:strasse2"
+            r2.id = Raser.Ids.Stable(Raser.IdKind.Road, r2.source)
+            r2.points = [0.0, 1.5, 40.0, 1.5]
+            r2.width = 2.0
+            r2.surface = Raser.Material.Paving
+            r2.color = Raser.Palette.Paving
+            t.data.roads.Add(take r2)
+            var a2 = new Raser.Area()
+            a2.source = "test:flaeche2"
+            a2.id = Raser.Ids.Stable(Raser.IdKind.Area, a2.source)
+            a2.ring = [0.0, 11.0, 12.8, 11.0, 12.8, 20.0, 0.0, 20.0]
+            a2.surface = Raser.Material.Gravel
+            a2.color = Raser.Palette.Gravel
+            t.data.areas.Add(take a2)
+        }
+        b.data.roads.Insert(0, b.data.roads.TakeAt(1))
+        b.data.areas.Insert(0, b.data.areas.TakeAt(1))
+        var key = new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)
+        var ca = new Raser.Voxelizer(a, new Raser.OverrideSet(), 7).Generate(key)
+        var cb = new Raser.Voxelizer(b, new Raser.OverrideSet(), 7).Generate(key)
+        Testing.Assert.AreEqual(ca.ContentHash(), cb.ContentHash())
+    }
+
+    [Test "Gelände: Oberfläche mit Höhen-Schnitten"]
+    undefined Terrain() {
+        var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var layers = v.ChunkLayers()
+        Testing.Assert.AreEqual(4, layers[0])
+        Testing.Assert.AreEqual(5, layers[1])
+        // Der Boden steigt um 2 cm je Meter nach Osten: bei x = 30,0 .. 30,2 m (Säule 22 im Chunk 2) liegt er bei 60,60 .. 60,604 m - auf der
+        // Unterkante des Voxels 303 (in Dritteln: 0), also ist das Voxel 302 die Oberfläche (z 46 im Chunk 4, der bei Voxel 256 beginnt), voll.
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20 + 2, 22292 * 20 + 3, 4))
+        Testing.Assert.AreEqual(46, VoxelizerTests.Top(c, 22, 10))
+        Testing.Assert.AreEqual(Raser.Material.Grass!int, c.MaterialAt(22, 10, 46))
+        Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(22, 10, 45))
+        // bei x = 32,4 .. 32,6 m (bis 60,652 m, ein Drittel über der Unterkante): Voxel 303 ist die Oberfläche, geschnitten
+        Testing.Assert.AreEqual(47, VoxelizerTests.Top(c, 34, 10))
+        Testing.Assert.IsTrue(c.CountShaped() > 0)
+        // Darüber ist nichts: Chunk 5 beginnt bei 64 m.
+        Testing.Assert.AreEqual(0, v.Generate(new Raser.ChunkKey(1473 * 20 + 2, 22292 * 20 + 3, 5)).CountFilled())
+    }
+
+    // Das oberste Voxel einer Säule (-1: keins).
+    static int Top(Raser.Chunk c, int x, int y) {
+        for (int z = 63; z >= 0; z--) {
+            if (c.MaterialAt(x, y, z) != 0) { return z }
+        }
+        return -1
+    }
+
+    [Test "Gebäude mit Wänden, Fenstern und Dach"]
+    undefined Building() {
+        var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var low = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        var high = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 5))
+        // Das Haus steht bei x 2..10, y 4..11 m: Säulen 10..49, 20..54. Boden 60,2 m = Voxel 301 (z 45 im Chunk 4).
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, low.MaterialAt(30, 37, 45))
+        Testing.Assert.AreEqual(0, low.MaterialAt(30, 37, 50))
+        // die Wand zwei Voxel dick (Säulen 10 und 11); ein Fenster ist in beiden Lagen frei - die Scheibe wird eingehängt (Raser.Facade.Panes)
+        bool wallFound = false
+        bool openFound = false
+        for (int y = 21; y < 54; y++) {
+            for (int z = 46; z < 64; z++) {
+                if (low.MaterialAt(10, y, z) == Raser.Material.Brick!int && low.MaterialAt(11, y, z) == Raser.Material.Brick!int) { wallFound = true }
+                if (low.MaterialAt(10, y, z) == 0 && low.MaterialAt(11, y, z) == 0) { openFound = true }
+                Testing.Assert.IsTrue(low.MaterialAt(10, y, z) != Raser.Material.Glass!int)
+            }
+        }
+        Testing.Assert.IsTrue(wallFound)
+        Testing.Assert.IsTrue(openFound)
+        var sample = Sample.Make()
+        var facade = Raser.Facade.Plan(sample.data.buildings[0], sample.data.roads)
+        var panes = new List<float>()
+        facade.Panes(sample.data.buildings[0], 301, panes)
+        Testing.Assert.IsTrue(panes.Count >= 9 * 4)
+        // jedes Element liegt 20 cm hinter der Wandflucht und ist höher als 40 cm
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            Testing.Assert.IsTrue(panes[k + 5] - panes[k + 4] >= 0.4)
+            Testing.Assert.IsTrue(Raser.Geo.Inside(sample.data.buildings[0].footprint, (panes[k] + panes[k + 2]) / 2.0, (panes[k + 1] + panes[k + 3]) / 2.0))
+        }
+        // Der First (69 m = Voxel 344, z 24 im Chunk 5) läuft in x-Richtung (die längere Seite) bei y = 7,5 m (Säule 37).
+        Testing.Assert.AreEqual(24, VoxelizerTests.Top(high, 30, 37))
+        Testing.Assert.AreEqual(Raser.Material.RoofTiles!int, high.MaterialAt(30, 37, 24))
+        // An der Traufe (y = 4,2 m) ist das Dach niedriger.
+        Testing.Assert.IsTrue(VoxelizerTests.Top(high, 30, 21) < 12)
+        Testing.Assert.IsTrue(high.CountShaped() > 0)
+    }
+
+    [Test "Keller: Gelände ausgehoben, Wand läuft hinunter"]
+    undefined Cellar() {
+        var set = new Raser.OverrideSet()
+        set.AddText("{ \"overrides\": [ { \"target\": \"test:haus1\", \"set\": { \"cellars\": 1 } } ] }", "keller.json")
+        var c = new Raser.Voxelizer(Sample.Make(), set, 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // Boden bei Voxel 301 (z 45), ein Geschoss (2,8 m = 14 Voxel) tiefer: Kellerboden bei z 31, darunter das Fundament
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(30, 37, 31))
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(30, 37, 30))
+        Testing.Assert.AreEqual(0, c.MaterialAt(30, 37, 32))
+        Testing.Assert.AreEqual(0, c.MaterialAt(30, 37, 44))
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(30, 37, 45))
+        Testing.Assert.AreEqual(Raser.Material.Brick!int, c.MaterialAt(10, 37, 35))
+        // daneben bleibt das Gelände
+        Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(5, 37, 35))
+    }
+
+    [Test "Props: Baum und Bank stehen auf dem Gelände, nur in Luft"]
+    undefined Props() {
+        var tile = Sample.Make()
+        var tree = new Raser.Prop()
+        tree.source = "test:baum"
+        tree.id = Raser.Ids.Stable(Raser.IdKind.Prop, tree.source)
+        tree.kind = "tree"
+        tree.x = 20.1
+        tree.y = 20.1
+        tree.height = 8.0
+        tile.data.props.Add(take tree)
+        var bench = new Raser.Prop()
+        bench.source = "test:bank"
+        bench.id = Raser.Ids.Stable(Raser.IdKind.Prop, bench.source)
+        bench.kind = "bench"
+        bench.x = 23.1
+        bench.y = 20.1
+        tile.data.props.Add(take bench)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var low = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 4))
+        // Gelände bei x 20 m: 60 + 21 * 0,02 = 60,42 m - oberstes Gelände-Voxel 302, der Stamm ab 303 (z 47 im Chunk 4); Säule 100 = x 0 im Chunk 1
+        Testing.Assert.AreEqual(Raser.Material.Wood!int, low.MaterialAt(100 - 64, 100 - 64, 47))
+        Testing.Assert.AreEqual(Raser.Palette.Bark, low.ColorAt(100 - 64, 100 - 64, 47))
+        // eine Lage reicht in den Boden (das oberste Gelände-Voxel), darunter bleibt das Gelände
+        Testing.Assert.AreEqual(Raser.Material.Wood!int, low.MaterialAt(100 - 64, 100 - 64, 46))
+        Testing.Assert.IsTrue(low.MaterialAt(100 - 64, 100 - 64, 45) != Raser.Material.Wood!int)
+        // die Krone reicht in den Chunk darüber: Laub
+        var high = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 5))
+        int leaves = 0
+        for (int z = 0; z < 64; z++) {
+            for (int y = 0; y < 64; y++) {
+                for (int x = 0; x < 64; x++) {
+                    if (high.MaterialAt(x, y, z) == Raser.Material.Leaves!int) { leaves++ }
+                }
+            }
+        }
+        Testing.Assert.IsTrue(leaves > 200)
+        // die Bank (x 23,1 m = Säule 115, im Chunk 51): der Sitz aus Holz 40 cm über dem Gelände, 9 Voxel lang
+        int seat = 0
+        for (int y = 0; y < 64; y++) {
+            if (low.MaterialAt(51, y, 49) == Raser.Material.Wood!int) { seat++ }
+        }
+        Testing.Assert.AreEqual(9, seat)
+        // gleiche Daten, gleicher Chunk
+        var again = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        Testing.Assert.IsTrue(again.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)).ContentHash() == new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)).ContentHash())
+    }
+
+    [Test "Steiles Dach: die Säule unter dem Dach-Voxel ist bis zur tiefsten Ecke gefüllt"]
+    undefined SteepRoof() {
+        var tile = Sample.Make()
+        // das Haus mit 60° steilem Satteldach: Traufe 64 m, First 69 m bei 3,5 m halber Breite (y 4 .. 11)
+        tile.data.buildings[0].eaves = 64.0
+        tile.data.buildings[0].ridge = 70.0
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var high = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 5))
+        // in jeder Säule zwischen Traufe und First: unter dem obersten Dach-Voxel kein Loch bis zur tiefsten Ecke
+        for (int y = 22; y < 37; y++) {
+            int top = VoxelizerTests.Top(high, 30, y)
+            if (top < 1) { continue }
+            Testing.Assert.AreEqual(Raser.Material.RoofTiles!int, high.MaterialAt(30, y, top - 1))
+        }
+    }
+
+    [Test "Schräge Wand: Schnitte ohne Stufen, die Fläche stimmt, am Fuß ein voller Sockel"]
+    undefined SlantedWall() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:schraeg"
+        b.function = "alkis=51009_1610"      // ohne Fenster und Türen (hier geht es um die Form)
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        // ein Parallelogramm: die untere Kante steigt 1:2 von (2, 2) nach (10, 6)
+        b.footprint = [2.0, 2.0, 10.0, 6.0, 10.0, 11.0, 2.0, 11.0]
+        b.ground = 60.0
+        b.eaves = 64.0
+        b.ridge = 64.0
+        b.roofType = Raser.RoofType.Flat
+        tile.data.buildings.Add(take b)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // die Kante: jede Säule, durch die sie läuft, hat einen Schnitt; zusammen ergeben die Flächen den Grundriss (bis auf Bruchteile eines Voxels)
+        float sum = 0.0
+        int cuts = 0
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                if (c.MaterialAt(x, y, 44) == 0) { continue }
+                int p = c.PlanAt(x, y, 44)
+                if (Raser.Plan.IsCut(p)) { cuts++ }
+                sum = sum + Raser.Plan.Area(p)
+                // auf der Höhe des Geländes (Voxel 299, die Oberfläche liegt bei 60,0 m): voll
+                Testing.Assert.AreEqual(0, c.PlanAt(x, y, 43))
+            }
+        }
+        // die Fläche des Parallelogramms: 8 m x 7 m im Mittel = 56 m² = 1400 Voxel
+        Testing.Assert.IsTrue(Math.Abs(sum - 1400.0) < 3.0)
+        Testing.Assert.IsTrue(cuts >= 40)
+        // die schräge Kante ohne Stufen: in der Säule (12, 11) läuft sie von (12, 11) nach (14, 12) - ein Schnitt, gefüllt darüber
+        Testing.Assert.IsTrue(Raser.Plan.IsCut(c.PlanAt(13, 11, 47)))
+    }
+
+    [Test "Runder Turm: der Kreis aus Schnitten, ohne Stufen"]
+    undefined RoundTower() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:turm"
+        b.function = "alkis=51009_1610"      // ohne Fenster und Türen (hier geht es um die Form)
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        // ein Kreis mit 2 m Radius um (6, 6) aus 32 Punkten: im Raster der Mittelpunkt (30, 30), Radius 10 Voxel
+        float fp[] = new float[64]
+        for (int k = 0; k < 32; k++) {
+            float a = k * Math.PI / 16.0
+            fp[k * 2] = 6.0 + 2.0 * Math.Cos(a)
+            fp[k * 2 + 1] = 6.0 + 2.0 * Math.Sin(a)
+        }
+        b.footprint = fp
+        b.ground = 60.0
+        b.eaves = 64.0
+        b.ridge = 64.0
+        b.roofType = Raser.RoofType.Flat
+        tile.data.buildings.Add(take b)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // außerhalb des Kreises nichts, auf ihm überall ein Schnitt; die Fläche wie die des 32-Ecks (2 m Radius: 12,49 m² = 312 Voxel)
+        Testing.Assert.AreEqual(0, c.MaterialAt(40, 30, 47))
+        Testing.Assert.AreEqual(0, c.MaterialAt(38, 38, 47))
+        float sum = 0.0
+        int cuts = 0
+        for (int y = 0; y < 64; y++) {
+            for (int x = 0; x < 64; x++) {
+                if (c.MaterialAt(x, y, 44) == 0) { continue }
+                int p = c.PlanAt(x, y, 44)
+                if (Raser.Plan.IsCut(p)) { cuts++ }
+                sum = sum + Raser.Plan.Area(p)
+            }
+        }
+        Testing.Assert.IsTrue(Math.Abs(sum - 312.1) < 2.0)
+        Testing.Assert.IsTrue(cuts > 40)
+        // hinter dem Rand ist die Wand dicker
+        Testing.Assert.IsTrue(c.MaterialAt(38, 30, 47) != 0)
+    }
+
+    [Test "Baumscheiben: Bäume rücken von der Fahrbahn weg, nicht in Gebäude"]
+    undefined TreePits() {
+        var tile = Sample.Make()
+        var road = new Raser.Road()
+        road.source = "test:fahrbahn"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 30.0, 60.0, 30.0]
+        road.width = 6.0
+        tile.data.roads.Add(take road)
+        // ein Baum am Fahrbahnrand (1 m neben der Mitte), einer weit weg, einer auf dem Fußweg der Probe (keine Fahrbahn)
+        float xs[] = [20.0, 20.0, 20.0]
+        float ys[] = [31.0, 50.0, 1.0]
+        for (int k = 0; k < 3; k++) {
+            var p = new Raser.Prop()
+            p.source = "test:baum" + k
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = "tree"
+            p.x = xs[k]
+            p.y = ys[k]
+            tile.data.props.Add(take p)
+        }
+        int first = tile.data.props.Count - 3
+        Raser.Props.Settle(tile)
+        // 3 m halbe Breite + 0,7 m Scheibe + 0,1 m: 3,8 m neben der Mitte, auf der Seite, auf der er stand
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first].y - 33.8) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first].x - 20.0) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first + 1].y - 50.0) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first + 2].y - 1.0) < 0.001)
+        // noch einmal: nichts ändert sich
+        Raser.Props.Settle(tile)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[first].y - 33.8) < 0.001)
+    }
+
+    [Test "Grundrisse: Punkte rasten ein, Schlitze und Mini-Knicke verschwinden"]
+    undefined CleanFootprints() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        // zwei Reihenhäuser mit 6 cm Schlitz dazwischen; das rechte hat in der Front einen Knick von 3 cm
+        var a = new Raser.Building()
+        a.source = "test:links"
+        a.id = Raser.Ids.Stable(Raser.IdKind.Building, a.source)
+        a.footprint = [0.0, 0.0, 6.0, 0.0, 6.0, 10.0, 0.0, 10.0]
+        tile.data.buildings.Add(take a)
+        var b = new Raser.Building()
+        b.source = "test:rechts"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [6.06, 0.0, 9.0, 0.03, 12.0, 0.0, 12.0, 10.0, 6.06, 10.0]
+        tile.data.buildings.Add(take b)
+        // ein drittes, dessen Ecke 8 cm vor der Rückwand des linken liegt (T-Stoß)
+        var c = new Raser.Building()
+        c.source = "test:hinten"
+        c.id = Raser.Ids.Stable(Raser.IdKind.Building, c.source)
+        c.footprint = [2.0, 10.08, 4.0, 10.08, 4.0, 14.0, 2.0, 14.0]
+        tile.data.buildings.Add(take c)
+        Raser.Footprints.Clean(tile)
+        float r[] = tile.data.buildings[1].footprint
+        // die Ecken an der Trennwand liegen jetzt auf denen des linken Hauses, der Knick ist weg
+        Testing.Assert.AreEqual(8, r.length)
+        Testing.Assert.IsTrue(Math.Abs(r[0] - 6.0) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(r[6] - 6.0) < 0.0001)
+        // das hintere Haus steht auf der Rückwand
+        float h[] = tile.data.buildings[2].footprint
+        Testing.Assert.IsTrue(Math.Abs(h[1] - 10.0) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(h[3] - 10.0) < 0.0001)
+        // das linke Haus bleibt, wie es war
+        Testing.Assert.AreEqual(8, tile.data.buildings[0].footprint.length)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.buildings[0].footprint[2] - 6.0) < 0.0001)
+    }
+
+    [Test "Grünstreifen: Baumreihen werden Beete zwischen Fahrbahn und Gehweg"]
+    undefined Strips() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var road = new Raser.Road()
+        road.source = "test:allee"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=secondary"
+        road.points = [0.0, 50.0, 200.0, 50.0]
+        road.width = 7.0
+        tile.data.roads.Add(take road)
+        // links (y > 50) drei Bäume alle 8 m, 1 m hinter dem Rand; weit dahinter einer allein; rechts einer; einer zu weit weg vom Rand
+        float xs[] = [20.0, 28.0, 36.0, 90.0, 50.0, 120.0]
+        float ys[] = [54.5, 54.5, 54.5, 54.5, 45.5, 60.0]
+        for (int k = 0; k < 6; k++) {
+            var p = new Raser.Prop()
+            p.source = "test:baum" + k
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = "tree"
+            p.x = xs[k]
+            p.y = ys[k]
+            tile.data.props.Add(take p)
+        }
+        Raser.Strips.Build(tile)
+        Testing.Assert.AreEqual(3, tile.strips.Count)
+        var first = tile.strips[0]
+        foreach (st in tile.strips) {
+            if (st.side == 1 && st.s0 < 30.0) { first = st }
+        }
+        Testing.Assert.AreEqual(1, first.side)
+        Testing.Assert.IsTrue(Math.Abs(first.s0 - 18.4) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(first.s1 - 37.6) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(first.width - 1.7) < 0.001)
+        // im Beet negativ, auf dem Gehweg dahinter und auf der Fahrbahn positiv
+        var probe = new Raser.StripProbe()
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 54.0, probe) < 0.0)
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 56.0, probe) > 0.0)
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 52.0, probe) > 0.0)
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 25.0, 46.0, probe) > 0.0)
+        Testing.Assert.IsTrue(Raser.Strips.Value(first, tile.data.roads[0].points, 45.0, 54.0, probe) > 0.0)
+    }
+
+    [Test "Fassade: Fenster gleichmäßig je Lauf, nicht um die Ecke; Läden mit Schaufenstern und Glastür zur Straße"]
+    undefined Facades() {
+        var roads = new List<Road>()
+        var road = new Raser.Road()
+        road.source = "test:strasse"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 5.0, 60.0, 5.0]
+        road.width = 6.0
+        roads.Add(take road)
+        // ein Haus 12 x 8 m, die lange Seite (y = 10) zur Straße
+        var b = new Raser.Building()
+        b.source = "test:fassade"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [10.0, 10.0, 22.0, 10.0, 22.0, 18.0, 10.0, 18.0]
+        b.ground = 60.0
+        b.eaves = 72.0
+        b.ridge = 76.0
+        b.function = "shop=bakery"
+        var f = Raser.Facade.Plan(b, roads)
+        Testing.Assert.AreEqual(Raser.Facade.ShopStyle, f.style)
+        Testing.Assert.AreEqual(4, f.runs.Count)
+        // oben: vier Fenster auf 12 m (Mitten 1,5 / 4,5 / 7,5 / 10,5 m), an der Ecke Wand
+        f.At(11.5, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Window, f.upper)
+        f.At(12.1, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Window + Raser.Facade.Frame, f.upper)
+        f.At(10.1, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Wall, f.upper)
+        f.At(13.0, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Wall, f.upper)
+        // unten zur Straße: Schaufenster, in der Mitte eine Glastür; hinten Fenster
+        f.At(11.5, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Shop, f.ground)
+        int doors = 0
+        for (float x = 10.1; x < 22.0; x = x + 0.2) {
+            f.At(x, 10.1)
+            if (f.ground == Raser.Facade.GlassDoor) { doors++ }
+        }
+        Testing.Assert.IsTrue(doors >= 5 && doors <= 7)
+        f.At(11.5, 17.9)
+        Testing.Assert.AreEqual(Raser.Facade.Window, f.ground)
+        // ein Wohnhaus ohne Funktion: Haustür zur Straße, keine Schaufenster
+        b.function = undefined
+        var w = Raser.Facade.Plan(b, roads)
+        Testing.Assert.AreEqual(Raser.Facade.Residential, w.style)
+        int house = 0
+        for (float x = 10.1; x < 22.0; x = x + 0.2) {
+            w.At(x, 10.1)
+            if (w.ground == Raser.Facade.Door || w.ground == Raser.Facade.RaisedDoor) { house++ }
+            Testing.Assert.IsTrue(w.ground != Raser.Facade.Shop)
+        }
+        Testing.Assert.IsTrue(house >= 4)
+        // eine Überdachung: nichts
+        b.function = "alkis=51009_1610"
+        var none = Raser.Facade.Plan(b, roads)
+        none.At(11.7, 10.1)
+        Testing.Assert.AreEqual(Raser.Facade.Wall, none.ground)
+        Testing.Assert.AreEqual(Raser.Facade.Wall, none.upper)
+    }
+
+    [Test "Dachüberstand: das Steildach reicht 40 cm über die Wand, darunter Luft"]
+    undefined Overhang() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:satteldach"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.function = "alkis=51009_1610"
+        // 10 x 8 m, First entlang x (die längere Seite), Traufe 64 m, First 69 m: Neigung 5 m auf 4 m
+        b.footprint = [10.0, 10.0, 20.0, 10.0, 20.0, 18.0, 10.0, 18.0]
+        b.ground = 60.0
+        b.eaves = 64.0
+        b.ridge = 69.0
+        b.roofType = Raser.RoofType.Gable
+        b.roof = Raser.Material.RoofTiles
+        tile.data.buildings.Add(take b)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        // x = 15 m ist Voxel 75: im Chunk daneben (64 .. 127) die Spalte 11
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20, 4))
+        // vor der Südwand (y = 10 m, Voxel 50) in Voxel 49 (9,8 .. 10 m): das Dach etwa 0,1 .. 0,25 m unter der Traufe - Voxel 318 / 319 (z 62, 63)
+        int roofFound = 0
+        for (int z = 58; z < 64; z++) {
+            if (c.MaterialAt(11, 49, z) == Raser.Material.RoofTiles!int) { roofFound++ }
+        }
+        Testing.Assert.IsTrue(roofFound >= 1)
+        // darunter Luft (kein Wandvoxel, nur Gelände unten)
+        Testing.Assert.AreEqual(0, c.MaterialAt(11, 49, 50))
+        // in der Wand selbst (Voxel 50) Wand, darüber Dach
+        Testing.Assert.IsTrue(c.MaterialAt(11, 50, 50) != 0)
+        // weiter als 40 cm (Voxel 47: 9,4 .. 9,6 m) kein Dach
+        for (int z = 40; z < 64; z++) {
+            int m = c.MaterialAt(11, 47, z)
+            Testing.Assert.IsTrue(m != Raser.Material.RoofTiles!int)
+        }
+        // am Ortgang (x = 20 m, Voxel 100: Spalte 36) läuft das Dach weiter - Voxel 100, y = 14 m (Voxel 70: Chunk-Zeile 1, Zeile 6), First 69 m
+        var high = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 5))
+        int verge = 0
+        for (int z = 0; z < 30; z++) {
+            if (high.MaterialAt(36, 6, z) == Raser.Material.RoofTiles!int) { verge++ }
+        }
+        Testing.Assert.IsTrue(verge >= 1)
+    }
+
+    [Test "Durchfahrt: ein Weg durch das Haus ist bis zur vollen Höhe frei, das Gewölbe ein Stück"]
+    undefined Passage() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var b = new Raser.Building()
+        b.source = "test:torhaus"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.function = "alkis=51009_1610"
+        b.footprint = [2.0, 2.0, 12.0, 2.0, 12.0, 10.0, 2.0, 10.0]
+        b.ground = 60.0
+        b.eaves = 70.0
+        b.ridge = 70.0
+        b.roofType = Raser.RoofType.Flat
+        tile.data.buildings.Add(take b)
+        // ein Fußweg (2 m breit) entlang y bei x = 7,1 m quer durch das Haus
+        var r = new Raser.Road()
+        r.source = "test:durchgang"
+        r.id = Raser.Ids.Stable(Raser.IdKind.Road, r.source)
+        r.kind = "highway=footway"
+        r.points = [7.1, 0.0, 7.1, 14.0]
+        r.width = 2.0
+        tile.data.roads.Add(take r)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // Boden 60 m = Voxel 300 (z 44); in der Mitte des Durchgangs (x = 35, y = 30): Pflaster, darüber frei bis 3 m (z 45 .. 58) - auch am Rand
+        // (x = 29: 25 cm hinter der Seitenwand des Gewölbes): das Gewölbe ist ein eingehängtes Stück
+        Testing.Assert.AreEqual(Raser.Material.Paving!int, c.MaterialAt(35, 30, 44))
+        for (int z = 45; z <= 58; z++) {
+            Testing.Assert.AreEqual(0, c.MaterialAt(35, 30, z))
+            Testing.Assert.AreEqual(0, c.MaterialAt(29, 30, z))
+        }
+        // in der Außenwand (y = 10) ist der Durchgang offen, darüber die Decke
+        Testing.Assert.AreEqual(0, c.MaterialAt(35, 10, 50))
+        Testing.Assert.IsTrue(c.MaterialAt(35, 30, 60) != 0)
+        // ein Stück durch das ganze Haus (8 m), 1,2 m halbe Breite, 3 m hoch, 1,2 m Stich
+        var ps = Raser.Voxelizer.Passages(tile.data.buildings[0], tile.data.roads)
+        Testing.Assert.AreEqual(7, ps.Count)
+        Testing.Assert.IsTrue(Math.Abs(Math.Abs(ps[3] - ps[1]) - 8.0) < 0.01)
+        Testing.Assert.IsTrue(Math.Abs(ps[5] - 3.0) < 0.001 && Math.Abs(ps[6] - 1.2) < 0.001)
+        // neben dem Durchgang (x = 20) das Haus wie sonst: die Bodenplatte, Wand an der Außenseite
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(20, 30, 44))
+        Testing.Assert.IsTrue(c.MaterialAt(20, 10, 50) != 0)
+    }
+
+    [Test "Haustür mit Rundbogen: Bogenstück auf der Wandflucht, die Wand darüber offen"]
+    undefined ArchedDoor() {
+        var roads = new List<Road>()
+        var road = new Raser.Road()
+        road.source = "test:strasse"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 5.0, 60.0, 5.0]
+        road.width = 6.0
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        tile.data.roads.Add(take road)
+        var b = new Raser.Building()
+        b.source = "test:wohnhaus"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = [2.0, 8.0, 12.0, 8.0, 12.0, 12.0, 2.0, 12.0]
+        b.ground = 60.0
+        b.eaves = 66.0
+        b.ridge = 66.0
+        b.roofType = Raser.RoofType.Flat
+        tile.data.buildings.Add(take b)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // die Südwand (y = 8 m: Voxel 40 außen, 41 innen): Türblatt, Oberlicht und Bogenstück sind eingehängt; die Wand ist über der Tür zwei
+        // Voxel höher offen als neben ihr
+        var af = Raser.Facade.Plan(tile.data.buildings[0], tile.data.roads)
+        var arches = new List<float>()
+        af.Arches(tile.data.buildings[0], 300, arches)
+        Testing.Assert.AreEqual(10, arches.Count)
+        Testing.Assert.IsTrue(Math.Abs(arches[1] - 8.0) < 0.001 && Math.Abs(arches[3] - 8.0) < 0.001)       // auf der Wandflucht
+        Testing.Assert.IsTrue(Math.Abs(arches[6] - arches[4] - 0.4) < 0.001)                                 // Oberkante 40 cm über dem Kämpfer
+        Testing.Assert.IsTrue(Math.Abs(arches[9] + 1.0) < 0.001)                                             // Normale nach Süden
+        int doorX = Math.Floor((arches[0] + arches[2]) / 2.0 / 0.2)!int
+        int springZ = Math.Round(arches[4] / 0.2)!int - 256
+        Testing.Assert.AreEqual(0, c.MaterialAt(doorX, 40, springZ))
+        Testing.Assert.AreEqual(0, c.MaterialAt(doorX, 41, springZ + 1))
+        Testing.Assert.IsTrue(c.MaterialAt(doorX, 40, springZ + 2) != 0)
+        var facade = Raser.Facade.Plan(tile.data.buildings[0], tile.data.roads)
+        var panes = new List<float>()
+        facade.Panes(tile.data.buildings[0], 300, panes)
+        int doors = 0
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            int kind = Math.Round(panes[k + 6])!int
+            if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
+                doors++
+                // in der Südwand, 20 cm innen (y = 8,2 m)
+                Testing.Assert.IsTrue(Math.Abs(panes[k + 1] - 8.2) < 0.001)
+            }
+        }
+        Testing.Assert.AreEqual(1, doors)
+    }
+
+    [Test "Fassade: Elemente bleiben auf der Wand, auch wenn ein Lauf über den Anfang des Rings läuft"]
+    undefined PanesOnWall() {
+        var roads = new List<Road>()
+        var b = new Raser.Building()
+        b.source = "test:rund"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.function = "shop=kiosk"
+        // ein Kreis (Radius 4 m um (10, 10), 24 Punkte): ein einziger Lauf rundherum; dazu ein Rechteck, dessen Ring mitten in einer Wand beginnt
+        float fp[] = new float[48]
+        for (int k = 0; k < 24; k++) {
+            float a = k * Math.PI / 12.0
+            fp[k * 2] = 10.0 + 4.0 * Math.Cos(a)
+            fp[k * 2 + 1] = 10.0 + 4.0 * Math.Sin(a)
+        }
+        b.footprint = fp
+        b.ground = 60.0
+        b.eaves = 64.0
+        b.ridge = 64.0
+        var f = Raser.Facade.Plan(b, roads)
+        var panes = new List<float>()
+        f.Panes(b, 300, panes)
+        Testing.Assert.IsTrue(panes.Count >= 9 * 6)
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            // beide Enden 20 cm innen vom Kreis (3,8 m von der Mitte, die Sehnen der 24 Kanten liegen bis 3 cm weiter innen)
+            float ra = Math.Sqrt((panes[k] - 10.0) * (panes[k] - 10.0) + (panes[k + 1] - 10.0) * (panes[k + 1] - 10.0))
+            float rb = Math.Sqrt((panes[k + 2] - 10.0) * (panes[k + 2] - 10.0) + (panes[k + 3] - 10.0) * (panes[k + 3] - 10.0))
+            Testing.Assert.IsTrue(ra > 3.7 && ra < 3.85)
+            Testing.Assert.IsTrue(rb > 3.7 && rb < 3.85)
+        }
+        var c = new Raser.Building()
+        c.source = "test:eck"
+        c.id = Raser.Ids.Stable(Raser.IdKind.Building, c.source)
+        c.footprint = [6.0, 0.0, 12.0, 0.0, 12.0, 8.0, 0.0, 8.0, 0.0, 0.0]
+        c.ground = 60.0
+        c.eaves = 66.0
+        c.ridge = 66.0
+        var g = Raser.Facade.Plan(c, roads)
+        var q = new List<float>()
+        g.Panes(c, 300, q)
+        Testing.Assert.IsTrue(q.Count >= 9 * 4)
+        for (int k = 0; k + 8 < q.Count; k = k + 9) {
+            Testing.Assert.IsTrue(q[k] >= 0.19 && q[k] <= 11.81 && q[k + 2] >= 0.19 && q[k + 2] <= 11.81)
+            Testing.Assert.IsTrue(q[k + 1] >= 0.19 && q[k + 1] <= 7.81 && q[k + 3] >= 0.19 && q[k + 3] <= 7.81)
+        }
+    }
+
+    [Test "Kirche: Spitzbogenfenster und Portal am Schiff, Schallöffnungen und Uhr am Turm, innen ein Raum"]
+    undefined Churches() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var road = new Raser.Road()
+        road.source = "test:kirchweg"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 1.0, 60.0, 1.0]
+        road.width = 2.0
+        tile.data.roads.Add(take road)
+        // das Schiff: 8 x 6 m (x 2..10, y 4..10), Traufe 10 m über dem Boden
+        var nave = new Raser.Building()
+        nave.source = "test:schiff"
+        nave.id = Raser.Ids.Stable(Raser.IdKind.Building, nave.source)
+        nave.function = "alkis=31001_3041"
+        nave.footprint = [2.0, 4.0, 10.0, 4.0, 10.0, 10.0, 2.0, 10.0]
+        nave.ground = 60.0
+        nave.eaves = 70.0
+        nave.ridge = 70.0
+        nave.roofType = Raser.RoofType.Flat
+        tile.data.buildings.Add(take nave)
+        var f = Raser.Facade.Plan(tile.data.buildings[0], tile.data.roads)
+        Testing.Assert.AreEqual(Raser.Facade.Church, f.style)
+        var panes = new List<float>()
+        f.Panes(tile.data.buildings[0], 300, panes)
+        int lancets = 0
+        int portals = 0
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            int kind = Math.Round(panes[k + 6])!int
+            if (kind == Raser.Facade.Lancet) {
+                lancets++
+                // von 2,4 m bis unter die Traufe, höher als 4 m
+                Testing.Assert.IsTrue(Math.Abs(panes[k + 4] - 62.4) < 0.001)
+                Testing.Assert.IsTrue(panes[k + 5] - panes[k + 4] > 4.0 && panes[k + 5] < 69.5)
+            }
+            if (kind == Raser.Facade.Portal) {
+                portals++
+                // zur Straße (Südwand, 20 cm innen)
+                Testing.Assert.IsTrue(Math.Abs(panes[k + 1] - 4.2) < 0.001)
+            }
+        }
+        Testing.Assert.AreEqual(1, portals)
+        Testing.Assert.IsTrue(lancets >= 4)
+        // die Voxel: in der Ostwand (x = 10 m: Säule 49 außen) ist ein Fenster offen und hat oben Bogen-Voxel; innen keine Zwischendecke
+        var c = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        int open = 0
+        for (int y = 21; y < 49; y++) {
+            if (c.MaterialAt(49, y, 60) == 0 && c.MaterialAt(48, y, 60) == 0) { open++ }
+        }
+        Testing.Assert.IsTrue(open >= 4)
+        // je Fenster und Portal ein Bogenstück: Spitzbogen an den Fenstern, Rundbogen am Portal
+        var arches = new List<float>()
+        f.Arches(tile.data.buildings[0], 300, arches)
+        Testing.Assert.AreEqual((lancets + portals) * 10, arches.Count)
+        int pointed = 0
+        for (int k = 0; k + 9 < arches.Count; k = k + 10) {
+            if (arches[k + 7] > 0.5) { pointed++ }
+            Testing.Assert.IsTrue(arches[k + 6] >= arches[k + 4] + arches[k + 5] - 0.001)
+        }
+        Testing.Assert.AreEqual(lancets, pointed)
+        Testing.Assert.AreEqual(0, c.MaterialAt(30, 35, 58))          // 2,8 m über dem Boden (z 44 + 14): keine Decke
+        // der Turm: 5 x 5 m, 30 m hoch
+        var tower = new Raser.Building()
+        tower.source = "test:turm"
+        tower.id = Raser.Ids.Stable(Raser.IdKind.Building, tower.source)
+        tower.function = "alkis=31001_3041"
+        tower.footprint = [20.0, 4.0, 25.0, 4.0, 25.0, 9.0, 20.0, 9.0]
+        tower.ground = 60.0
+        tower.eaves = 90.0
+        tower.ridge = 100.0
+        var tf = Raser.Facade.Plan(tower, tile.data.roads)
+        var tp = new List<float>()
+        tf.Panes(tower, 300, tp)
+        int louvres = 0
+        int clocks = 0
+        for (int k = 0; k + 8 < tp.Count; k = k + 9) {
+            int kind = Math.Round(tp[k + 6])!int
+            if (kind == Raser.Facade.Louvre) { louvres++ }
+            if (kind == Raser.Facade.Clock) {
+                clocks++
+                Testing.Assert.IsTrue(tp[k + 4] > 87.0 && tp[k + 5] < 90.0)
+            }
+            Testing.Assert.IsTrue(kind == Raser.Facade.Louvre || kind == Raser.Facade.Clock)
+        }
+        Testing.Assert.AreEqual(4, louvres)
+        Testing.Assert.AreEqual(4, clocks)
+    }
+
+    [Test "Straße und Fläche"]
+    undefined Surfaces() {
+        var v = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4))
+        // Die Straße bei y = 0..2 m; bei x = 1 m liegt der Boden bei 60,02 m - kaum über der Unterkante von Voxel 300, also ist Voxel 299 = z 43
+        // die Oberfläche.
+        Testing.Assert.AreEqual(Raser.Material.Asphalt!int, c.MaterialAt(5, 5, 43))
+        Testing.Assert.AreEqual(Raser.Material.Gravel!int, c.MaterialAt(5, 5, 42))
+        // Die Fläche (als Sand) ab y = 11,6 m.
+        Testing.Assert.AreEqual(Raser.Material.Sand!int, c.MaterialAt(5, 62, 43))
+        Testing.Assert.AreEqual(Raser.Material.Grass!int, c.MaterialAt(5, 15, 43))
+    }
+
+    [Test "Overrides ändern Daten und Hash"]
+    undefined Overrides() {
+        var set = new Raser.OverrideSet()
+        set.AddText("{ \"overrides\": [ { \"target\": \"test:haus1\", \"set\": { \"roofType\": \"Flat\", \"eaves\": 64.0, \"ridge\": 64.0 } }, { \"tile\": \"1473_22292\", \"set\": { \"quarter\": \"zechensiedlung\" } } ] }", "test.json")
+        var tile = Sample.Make()
+        Testing.Assert.AreEqual(2, set.For(tile).Count)
+        int h1 = set.HashFor(tile)
+        Testing.Assert.IsTrue(h1 != 0)
+        var v = new Raser.Voxelizer(tile, set, 7)
+        Testing.Assert.AreEqual(h1, v.overridesHash)
+        Testing.Assert.AreEqual("zechensiedlung", tile.data.quarter)
+        Testing.Assert.AreEqual(Raser.RoofType.Flat, tile.data.buildings[0].roofType)
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 5))
+        Testing.Assert.AreEqual(0, c.CountFilled())
+        var other = new Raser.OverrideSet()
+        other.AddText("{ \"overrides\": [ { \"target\": \"test:haus1\", \"set\": { \"eaves\": 64.0, \"ridge\": 64.0, \"roofType\": \"Flat\" } }, { \"tile\": \"1473_22292\", \"set\": { \"quarter\": \"zechensiedlung\" } } ] }", "b.json")
+        Testing.Assert.AreEqual(h1, other.HashFor(Sample.Make()))
+        var none = new Raser.OverrideSet()
+        none.AddText("{ \"overrides\": [ { \"target\": \"test:anderswo\", \"remove\": true } ] }", "c.json")
+        Testing.Assert.AreEqual(0, none.HashFor(Sample.Make()))
+    }
+
+    [Test "Unbekanntes Override-Feld ist ein Fehler"]
+    undefined BadOverride() {
+        var set = new Raser.OverrideSet()
+        set.AddText("{ \"overrides\": [ { \"target\": \"test:haus1\", \"set\": { \"farbe\": 3 } } ] }", "bad.json")
+        bool thrown = false
+        try {
+            set.Apply(Sample.Make())
+        } catch (Raser.DataException e) {
+            thrown = e.message.Contains("farbe") && e.message.Contains("bad.json")
+        }
+        Testing.Assert.IsTrue(thrown)
+    }
+}
+
+class StoreTests {
+    [Test "Speichern, Laden, Chunks erzeugen"]
+    undefined Store() {
+        string root = IO.Path.Combine(IO.Path.GetTempPath(), "raser-test-" + Raser.Fnv.Hex(Raser.Fnv.OfText("store")))
+        if (IO.Directory.Exists(root)) { IO.Directory.Delete(root, true) }
+        var store = new Raser.FileTileStore(root)
+        var tile = Sample.Make()
+        int hash = tile.DataHash()
+        store.Save(tile)
+        Testing.Assert.IsTrue(store.Has(new Raser.TileKey(1473, 22292)))
+        var back = store.Load(new Raser.TileKey(1473, 22292))
+        Testing.Assert.AreEqual(1, back.data.buildings.Count)
+        Testing.Assert.AreEqual(Raser.RoofType.Gable, back.data.buildings[0].roofType)
+        Testing.Assert.AreEqual(hash, back.DataHash())
+        Testing.Assert.AreEqual(1, store.Keys().Count)
+        IO.Directory.Delete(root, true)
+    }
+}

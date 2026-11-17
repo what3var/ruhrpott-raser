@@ -1,0 +1,591 @@
+// Die Tests von Raser.Core (forge test src/Raser.Core/Raser.Core.fireproj).
+#import "testing"
+
+class GridTests {
+    [Test "FloorDiv rundet nach unten"]
+    undefined FloorDiv() {
+        Testing.Assert.AreEqual(-1, Raser.Grid.FloorDiv(-1, 64))
+        Testing.Assert.AreEqual(-1, Raser.Grid.FloorDiv(-64, 64))
+        Testing.Assert.AreEqual(-2, Raser.Grid.FloorDiv(-65, 64))
+        Testing.Assert.AreEqual(0, Raser.Grid.FloorDiv(63, 64))
+        Testing.Assert.AreEqual(63, Raser.Grid.FloorMod(-1, 64))
+    }
+
+    [Test "Voxel und Kacheln aus Metern"]
+    undefined Voxels() {
+        Testing.Assert.AreEqual(64, Raser.Grid.VoxelOf(12.8))
+        Testing.Assert.AreEqual(-1, Raser.Grid.VoxelOf(-0.1))
+        var t = Raser.TileKey.Of(377123.5, 5706999.0)
+        Testing.Assert.AreEqual("1473_22292", t.ToString())
+        Testing.Assert.AreEqual(377088.0, t.East)
+        var back = Raser.TileKey.Parse("1473_22292")
+        Testing.Assert.IsTrue(back.Equals(t))
+        Testing.Assert.IsTrue(Raser.TileKey.OfVoxel(t.VoxelX + 1279, t.VoxelY).Equals(t))
+        Testing.Assert.IsTrue(Raser.TileKey.Parse("x_1") == undefined)
+    }
+
+    [Test "Chunks gehören zu ihrer Kachel"]
+    undefined Chunks() {
+        var c = Raser.ChunkKey.OfVoxel(-1, 1280, 5)
+        Testing.Assert.AreEqual("-1_20_0", c.ToString())
+        Testing.Assert.AreEqual("-1_1", c.Tile().ToString())
+        Testing.Assert.IsTrue(Raser.ChunkKey.Parse("-1_20_0").Equals(c))
+    }
+}
+
+class PlanTests {
+    [Test "Grundriss-Formen: Katalog hin und zurück"]
+    undefined Catalog() {
+        int seen = 0
+        for (int n = 1; n <= 6; n++) {
+            for (int k = 0; k < n; k++) {
+                for (int o = 0; o < 8; o++) {
+                    int p = Raser.Plan.Diagonal(n, k, o)
+                    Testing.Assert.IsTrue(Raser.Plan.IsDiagonal(p))
+                    Testing.Assert.AreEqual(n, Raser.Plan.LengthOf(p))
+                    Testing.Assert.AreEqual(k, Raser.Plan.PartOf(p))
+                    Testing.Assert.AreEqual(o, Raser.Plan.OrientationOf(p))
+                    seen++
+                }
+            }
+        }
+        Testing.Assert.AreEqual(168, seen)
+        Testing.Assert.AreEqual(168, Raser.Plan.Diagonal(6, 5, 7))
+    }
+
+    [Test "Grundriss-Formen: Flächen, Gegenstücke ergeben ein Voxel"]
+    undefined Areas() {
+        // 3x1: die Teile unter der Kante haben 1/6, 1/2, 5/6
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Diagonal(3, 0, 0)) - 1.0 / 6.0) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Diagonal(3, 1, 0)) - 0.5) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Diagonal(3, 2, 0)) - 5.0 / 6.0) < 0.0001)
+        for (int n = 1; n <= 6; n++) {
+            for (int k = 0; k < n; k++) {
+                for (int o = 0; o < 8; o = o + 2) {
+                    float a = Raser.Plan.Area(Raser.Plan.Diagonal(n, k, o))
+                    float b = Raser.Plan.Area(Raser.Plan.Diagonal(n, k, o + 1))
+                    Testing.Assert.IsTrue(a > 0.0)
+                    Testing.Assert.IsTrue(Math.Abs(a + b - 1.0) < 0.0001)        // positiv: gegen den Uhrzeigersinn
+                }
+            }
+        }
+    }
+
+    [Test "Rundungen: Katalog, Gegenstücke, Viertelkreis-Fläche"]
+    undefined Arcs() {
+        int p = Raser.Plan.Arc(17, 9, 14, 5)
+        Testing.Assert.IsTrue(Raser.Plan.IsArc(p))
+        Testing.Assert.IsTrue(!Raser.Plan.IsDiagonal(p))
+        Testing.Assert.AreEqual(17, Raser.Plan.RadiusOf(p))
+        Testing.Assert.AreEqual(9, Raser.Plan.ArcI(p))
+        Testing.Assert.AreEqual(14, Raser.Plan.ArcJ(p))
+        Testing.Assert.AreEqual(5, Raser.Plan.OrientationOf(p))
+        Testing.Assert.IsTrue(Raser.Plan.IsArc(Raser.Plan.Arc(32, 31, 31, 7)))
+        Testing.Assert.AreEqual(Raser.Plan.ArcEnd - 1, Raser.Plan.Arc(32, 31, 31, 7))
+        defined float xs[8]
+        defined float ys[8]
+        for (int r = 1; r <= 12; r++) {
+            float sum = 0.0
+            for (int i = 0; i < r; i++) {
+                for (int j = 0; j < r; j++) {
+                    if ((i + 1) * (i + 1) + (j + 1) * (j + 1) <= r * r) {
+                        sum = sum + 1.0
+                        continue
+                    }
+                    if (!Raser.Plan.ArcCrosses(r, i, j)) { continue }
+                    for (int o = 0; o < 8; o = o + 2) {
+                        float a = Raser.Plan.Area(Raser.Plan.Arc(r, i, j, o))
+                        float b = Raser.Plan.Area(Raser.Plan.Arc(r, i, j, o + 1))
+                        Testing.Assert.IsTrue(a >= 0.0 && b >= 0.0)
+                        Testing.Assert.IsTrue(Math.Abs(a + b - 1.0) < 0.0001)
+                        Testing.Assert.IsTrue(Raser.Plan.Polygon(Raser.Plan.Arc(r, i, j, o + 1), xs, ys) <= Raser.Plan.MaxPoints)
+                    }
+                    sum = sum + Raser.Plan.Area(Raser.Plan.Arc(r, i, j, 0))
+                }
+            }
+            // der Viertelkreis, bis auf die Sehnen des Bogens (drei je Zelle)
+            float exact = Math.PI * r * r / 4.0
+            Testing.Assert.IsTrue(sum <= exact + 0.0001)
+            Testing.Assert.IsTrue(sum > exact - 0.04 * r)
+        }
+    }
+
+    [Test "Schnitte mit Versatz: Flächen, Gegenstücke, Ecken"]
+    undefined Cuts() {
+        // von unten Mitte nach oben Mitte: links davon die halbe Fläche
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Cut(16, 80)) - 0.5) < 0.0001)
+        // von (0, 0,25) nach (1, 0,75): darüber (links in Laufrichtung) die Hälfte
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.Cut(120, 56)) - 0.5) < 0.0001)
+        for (int a = 0; a < 128; a = a + 3) {
+            for (int b = 0; b < 128; b = b + 5) {
+                if (a == b) { continue }
+                float x = Raser.Plan.Area(Raser.Plan.Cut(a, b))
+                float y = Raser.Plan.Area(Raser.Plan.Cut(b, a))
+                Testing.Assert.IsTrue(x >= -0.0001 && y >= -0.0001)
+                Testing.Assert.IsTrue(Math.Abs(x + y - 1.0) < 0.0001)
+            }
+        }
+        // die Ecke (0, 0,5) -> (0,5, 0,5) -> (0,5, 0): ein L aus drei Vierteln; umgekehrt das Viertel
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.CutCorner(112, 144, 16)) - 0.75) < 0.0001)
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.Area(Raser.Plan.CutCorner(16, 144, 112)) - 0.25) < 0.0001)
+        Testing.Assert.IsTrue(Raser.Plan.IsCut(Raser.Plan.CutCorner(127, 288, 127)))
+        Testing.Assert.IsTrue(!Raser.Plan.IsArc(Raser.Plan.Cut(0, 1)))
+        // die Lage auf dem Rand: geteilte Punkte ergeben dieselbe Stelle
+        Testing.Assert.AreEqual(44, Raser.Plan.RimOf(1.0, 0.37))
+        Testing.Assert.AreEqual(116, Raser.Plan.RimOf(0.0, 0.37))
+        Testing.Assert.IsTrue(Math.Abs(Raser.Plan.RimY(44) - Raser.Plan.RimY(116)) < 0.0001)
+    }
+
+    [Test "Grundriss-Formen im Chunk: Kodieren, Dekodieren, Hash"]
+    undefined InChunk() {
+        var c = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))
+        c.Set(5, 6, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(5, 6, 7, Raser.Plan.Diagonal(4, 2, 5))
+        c.Set(5, 7, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(5, 7, 7, Raser.Plan.Arc(20, 3, 19, 6))
+        c.Set(5, 8, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.SetPlan(5, 8, 7, Raser.Plan.CutCorner(3, 44, 27))
+        var back = Raser.Chunk.Decode(c.Encode())
+        Testing.Assert.AreEqual(Raser.Plan.Diagonal(4, 2, 5), back.PlanAt(5, 6, 7))
+        Testing.Assert.AreEqual(Raser.Plan.Arc(20, 3, 19, 6), back.PlanAt(5, 7, 7))
+        Testing.Assert.AreEqual(Raser.Plan.CutCorner(3, 44, 27), back.PlanAt(5, 8, 7))
+        Testing.Assert.AreEqual(0, back.PlanAt(5, 6, 8))
+        Testing.Assert.AreEqual(c.ContentHash(), back.ContentHash())
+        var plain = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))
+        plain.Set(5, 6, 7, Raser.Material.Brick!int, Raser.Palette.Brick)
+        Testing.Assert.IsTrue(plain.ContentHash() != c.ContentHash())
+        // Luft löscht die Form
+        c.Set(5, 6, 7, 0, 0)
+        Testing.Assert.AreEqual(0, c.PlanAt(5, 6, 7))
+    }
+}
+
+class ShapeTests {
+    [Test "Eckhöhen in einem Byte"]
+    undefined Corners() {
+        int s = Raser.Shape.Make(0, 1, 2, 3)
+        Testing.Assert.AreEqual(0, Raser.Shape.Corner(s, 0))
+        Testing.Assert.AreEqual(1, Raser.Shape.Corner(s, 1))
+        Testing.Assert.AreEqual(2, Raser.Shape.Corner(s, 2))
+        Testing.Assert.AreEqual(3, Raser.Shape.Corner(s, 3))
+        Testing.Assert.AreEqual(255, Raser.Shape.Make(3, 3, 3, 3))
+        Testing.Assert.IsTrue(Raser.Shape.IsFull(Raser.Shape.Make(9, 5, 4, 3)))
+        Testing.Assert.AreEqual(0, Raser.Shape.Make(0, 0, 0, 0))
+        Testing.Assert.IsTrue(Raser.Shape.IsEmpty(Raser.Shape.Make(-1, 0, 0, 0)))
+        Testing.Assert.IsTrue(Math.Abs(Raser.Shape.CornerMeters(s, 2) - 0.2 * 2.0 / 3.0) < 0.000001)
+    }
+
+    [Test "Materialtabelle"]
+    undefined Materials() {
+        Testing.Assert.AreEqual(17, Raser.Materials.Count())
+        Testing.Assert.AreEqual("Ziegel", Raser.Materials.Of(Raser.Material.Brick).name)
+        Testing.Assert.IsTrue(Raser.Materials.IsSolid(Raser.Material.Concrete!int))
+        Testing.Assert.IsFalse(Raser.Materials.IsSolid(Raser.Material.Water!int))
+        Testing.Assert.AreEqual(0x9A3B2A, Raser.Palette.Rgb(Raser.Palette.Brick))
+    }
+}
+
+class BytesTests {
+    [Test "Schreiben und Lesen"]
+    undefined RoundTrip() {
+        var w = new Raser.ByteWriter(16)
+        w.Byte(7)
+        w.Int16(-2)
+        w.Int32(-123456789)
+        w.Int64(-3750763034362895579)
+        w.Varint(300)
+        w.SignedVarint(-5)
+        w.Text("Zeche")
+        for (int i = 0; i < 100; i++) { w.Byte(i) }
+        var r = new Raser.ByteReader(w.ToBytes())
+        Testing.Assert.AreEqual(7, r.Byte())
+        Testing.Assert.AreEqual(-2, r.Int16())
+        Testing.Assert.AreEqual(-123456789, r.Int32())
+        Testing.Assert.AreEqual(-3750763034362895579, r.Int64())
+        Testing.Assert.AreEqual(300, r.Varint())
+        Testing.Assert.AreEqual(-5, r.SignedVarint())
+        Testing.Assert.AreEqual("Zeche", r.Text())
+        for (int i = 0; i < 100; i++) { Testing.Assert.AreEqual(i, r.Byte()) }
+        Testing.Assert.IsTrue(r.AtEnd)
+    }
+
+    [Test "FNV-1a 64 wie veröffentlicht"]
+    undefined Fnv() {
+        // Prüfwerte von FNV-1a 64: "" und "a".
+        Testing.Assert.AreEqual("cbf29ce484222325", Raser.Fnv.Hex(Raser.Fnv.OfBytes(new byte[0])))
+        Testing.Assert.AreEqual("af63dc4c8601ec8c", Raser.Fnv.Hex(Raser.Fnv.OfBytes("a".ToBytes())))
+    }
+
+    [Test "Sortieren"]
+    undefined Sort() {
+        // (List<T>.Sort aus fire - früher eigenes Raser.Sorting)
+        var l = new List<int>([5, -1, 3, 3, 0, 100, -7])
+        l.Sort()
+        Testing.Assert.AreEqual("-7,-1,0,3,3,5,100", ",".Join(l))
+        var t = new List<string>(["b", "a", "c"])
+        t.Sort()
+        Testing.Assert.AreEqual("a,b,c", ",".Join(t))
+    }
+}
+
+class ChunkTests {
+    [Test "Ein leerer Chunk braucht keine Puffer"]
+    undefined Empty() {
+        var c = new Raser.Chunk(new Raser.ChunkKey(1, 2, 3))
+        Testing.Assert.IsTrue(c.IsEmpty)
+        c.Set(1, 1, 1, 0, 0)
+        Testing.Assert.IsTrue(c.IsEmpty)
+        Testing.Assert.AreEqual(0, c.MaterialAt(5, 5, 5))
+        Testing.Assert.AreEqual(255, c.ShapeAt(5, 5, 5))
+    }
+
+    [Test "Setzen, Füllen, Formen"]
+    undefined SetAndFill() {
+        var c = new Raser.Chunk(new Raser.ChunkKey(0, 0, 0))
+        c.Fill(0, 0, 0, 63, 63, 9, Raser.Material.Soil!int, Raser.Palette.Soil)
+        Testing.Assert.AreEqual(40960, c.CountFilled())
+        c.Set(3, 4, 10, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 2, 2, 1))
+        Testing.Assert.AreEqual(1, c.CountShaped())
+        Testing.Assert.AreEqual(2, Raser.Shape.Corner(c.ShapeAt(3, 4, 10), 1))
+        c.Set(3, 4, 10, 0, 0)
+        Testing.Assert.AreEqual(0, c.CountShaped())
+        Testing.Assert.AreEqual(40960, c.CountFilled())
+    }
+
+    [Test "Kodieren und Dekodieren"]
+    undefined Codec() {
+        var c = new Raser.Chunk(new Raser.ChunkKey(-3, 7, -1))
+        c.generatorVersion = 4
+        c.overridesHash = -42
+        c.seed = 1234567
+        c.Fill(0, 0, 0, 63, 63, 20, Raser.Material.Rock!int, Raser.Palette.Rock)
+        c.Fill(10, 10, 21, 20, 20, 40, Raser.Material.Brick!int, Raser.Palette.Brick)
+        c.Set(0, 0, 21, Raser.Material.Grass!int, Raser.Palette.Grass, Raser.Shape.Make(1, 1, 3, 2))
+        var bytes = c.Encode()
+        Testing.Assert.IsTrue(bytes.length < 3000)
+        var d = Raser.Chunk.Decode(bytes)
+        Testing.Assert.AreEqual("-3_7_-1", d.key.ToString())
+        Testing.Assert.AreEqual(4, d.generatorVersion)
+        Testing.Assert.AreEqual(-42, d.overridesHash)
+        Testing.Assert.AreEqual(1234567, d.seed)
+        Testing.Assert.AreEqual(c.CountFilled(), d.CountFilled())
+        Testing.Assert.AreEqual(c.ContentHash(), d.ContentHash())
+        Testing.Assert.AreEqual(Raser.Shape.Make(1, 1, 3, 2), d.ShapeAt(0, 0, 21))
+        var empty = Raser.Chunk.Decode(new Raser.Chunk(new Raser.ChunkKey(0, 0, 0)).Encode())
+        Testing.Assert.IsTrue(empty.IsEmpty)
+    }
+}
+
+class IdTests {
+    [Test "Stabile IDs"]
+    undefined Stable() {
+        int a = Raser.Ids.Stable(Raser.IdKind.Building, "lod2:DENW39AL1000abcd")
+        int b = Raser.Ids.Stable(Raser.IdKind.Building, "lod2:DENW39AL1000abcd")
+        int c = Raser.Ids.Stable(Raser.IdKind.Road, "lod2:DENW39AL1000abcd")
+        Testing.Assert.AreEqual(a, b)
+        Testing.Assert.IsTrue(a != c)
+        Testing.Assert.IsTrue(a > 0)
+        Testing.Assert.AreEqual(Raser.IdKind.Building, Raser.Ids.KindOf(a))
+        Testing.Assert.AreEqual(Raser.IdKind.Road, Raser.Ids.KindOf(c))
+        Testing.Assert.IsTrue(Raser.Ids.Format(a).StartsWith("Building:"))
+    }
+
+    [Test "Laufzeit-IDs eines Servers"]
+    undefined Runtime() {
+        var ids = new Raser.IdAllocator(513)
+        int p = ids.Next(Raser.IdKind.Player)
+        int v = ids.Next(Raser.IdKind.Vehicle)
+        Testing.Assert.IsTrue(p != v)
+        Testing.Assert.AreEqual(513, Raser.IdAllocator.ServerOf(v))
+        Testing.Assert.AreEqual(Raser.IdKind.Vehicle, Raser.Ids.KindOf(v))
+    }
+}
+
+class WeatherTests {
+    [Test "Sonnenstand über Bochum: Sommer hoch, Winter tief, nachts darunter, morgens im Osten"]
+    undefined Sun() {
+        var w = new Raser.Weather()
+        w.day = Raser.Weather.DayOf(6, 21)
+        w.hour = 13.5                       // Sommerzeit: Mittag um 13:30
+        w.Update()
+        Testing.Assert.IsTrue(w.elevation > 60.0 && w.elevation < 63.0)
+        Testing.Assert.IsTrue(w.azimuth > 170.0 && w.azimuth < 190.0)
+        w.day = Raser.Weather.DayOf(12, 21)
+        w.hour = 12.5
+        w.Update()
+        Testing.Assert.IsTrue(w.elevation > 13.5 && w.elevation < 16.5)
+        w.hour = 0.5
+        w.Update()
+        Testing.Assert.IsTrue(w.elevation < -40.0)
+        Testing.Assert.IsTrue(w.lampsOn)
+        w.day = Raser.Weather.DayOf(3, 20)
+        w.hour = 8.0
+        w.Update()
+        Testing.Assert.IsTrue(w.azimuth > 80.0 && w.azimuth < 125.0)
+        Testing.Assert.IsTrue(w.sunX > 0.5)
+    }
+
+    [Test "Wetter: bedeckt ohne Schatten, Nebel nah, Regen macht nass"]
+    undefined Presets() {
+        var w = new Raser.Weather()
+        w.day = Raser.Weather.DayOf(7, 1)
+        w.hour = 14.0
+        w.Preset("klar")
+        Testing.Assert.IsTrue(w.shadows)
+        Testing.Assert.IsTrue(!w.lampsOn)
+        float clearSun = w.sunIntensity
+        w.Preset("bedeckt")
+        Testing.Assert.IsTrue(!w.shadows)
+        Testing.Assert.IsTrue(w.sunIntensity < clearSun * 0.5)
+        w.Preset("nebel")
+        Testing.Assert.IsTrue(w.hazeEnd < 300.0)
+        w.Preset("dichter-nebel")
+        float dense = w.hazeEnd
+        Testing.Assert.IsTrue(dense < 80.0)
+        w.SetFog(0.3)
+        Testing.Assert.IsTrue(w.hazeEnd > dense * 3.0)
+        w.Preset("niesel")
+        float drizzle = w.hazeEnd
+        w.Preset("starkregen")
+        Testing.Assert.IsTrue(w.wetness > 0.9)
+        Testing.Assert.IsTrue(w.hazeEnd < drizzle)
+        w.SetRain(0.1)
+        Testing.Assert.IsTrue(w.wetness < 0.2)
+        Testing.Assert.AreEqual(0x808080, Raser.Weather.Mix(0x000000, 0xFFFFFF, 0.5) & 0xFEFEFE)
+    }
+}
+
+class VehicleTests {
+    [Test "Fahrzeug: beschleunigt bis zur Höchstgeschwindigkeit, bremst nass länger, fährt Bögen"]
+    undefined Drive() {
+        var car = new Raser.Vehicle()
+        for (int i = 0; i < 300; i++) { car.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        // nach 15 s: schnell, aber unter der Höchstgeschwindigkeit; geradeaus nach Norden
+        Testing.Assert.IsTrue(car.speed > 35.0 && car.speed < 55.0)
+        Testing.Assert.IsTrue(Math.Abs(car.east) < 0.001 && car.north > 250.0)
+        // bremsen aus 30 m/s: trocken kürzer als nass
+        float dry = VehicleTests.BrakeDistance(0.0)
+        float wet = VehicleTests.BrakeDistance(1.0)
+        Testing.Assert.IsTrue(dry > 40.0 && dry < 70.0)
+        Testing.Assert.IsTrue(wet > dry * 1.5)
+        // ein Linksbogen bei 10 m/s: die Richtung wächst, der Wagen kommt nach Westen
+        var turn = new Raser.Vehicle()
+        turn.speed = 10.0
+        for (int i = 0; i < 40; i++) { turn.Step(0.05, 0.3, 0.0, 1.0, false, 0.0) }
+        Testing.Assert.IsTrue(turn.heading > 20.0)
+        Testing.Assert.IsTrue(turn.east < -2.0)
+        // zu schnell in die Kurve: er rutscht und hält höchstens Grip x 9 m/s² quer
+        var fast = new Raser.Vehicle()
+        fast.speed = 40.0
+        fast.Step(0.05, 0.0, 0.0, 1.0, false, 0.0)
+        for (int i = 0; i < 10; i++) { fast.Step(0.05, 0.0, 0.0, 1.0, false, 0.0) }
+        Testing.Assert.IsTrue(fast.sliding)
+        // rückwärts
+        var back = new Raser.Vehicle()
+        for (int i = 0; i < 40; i++) { back.Step(0.05, 1.0, 0.0, 0.0, true, 0.0) }
+        Testing.Assert.IsTrue(back.speed < -2.0 && back.north < -2.0)
+        // Aquaplaning
+        Testing.Assert.IsTrue(Raser.Vehicle.GripOf(1.0, 35.0) < 0.3)
+        Testing.Assert.IsTrue(Raser.Vehicle.GripOf(1.0, 20.0) > 0.5)
+        Testing.Assert.IsTrue(Math.Abs(Raser.Vehicle.GripOf(0.0, 50.0) - 1.0) < 0.001)
+    }
+
+    [Test "Fahrzeug: rutscht schräg an der Wand entlang, prallt frontal zurück"]
+    undefined Walls() {
+        // nach Norden mit 10 m/s, die Wand im Osten schiebt nach Westen (-1, 0): quer zur Fahrt, es kostet kein Tempo
+        var car = new Raser.Vehicle()
+        car.speed = 10.0
+        float into = car.Collide(1.2, -1.0, 0.0, 0.1)
+        Testing.Assert.IsTrue(into < 0.001 && Math.Abs(car.speed - 10.0) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(car.east + 0.1) < 0.001)
+        // vorn nach Westen gedrückt: die Nase dreht nach links
+        Testing.Assert.IsTrue(car.heading > 1.0)
+        // schräg (45° nach Nordosten) gegen die Wand im Osten: er bleibt in Fahrt, langsamer
+        var slant = new Raser.Vehicle()
+        slant.heading = -45.0
+        slant.speed = 10.0
+        into = slant.Collide(1.2, -1.0, 0.0, 0.05)
+        Testing.Assert.IsTrue(into > 6.0 && into < 8.0)
+        Testing.Assert.IsTrue(slant.speed > 3.0 && slant.speed < 7.5)
+        Testing.Assert.IsTrue(slant.heading > -45.0)
+        // frontal gegen eine Wand im Norden: zurück
+        var front = new Raser.Vehicle()
+        front.speed = 10.0
+        into = front.Collide(1.2, 0.0, -1.0, 0.2)
+        Testing.Assert.IsTrue(into > 9.9 && front.speed < 0.0 && front.speed > -3.0)
+        Testing.Assert.IsTrue(Math.Abs(front.heading) < 0.001)
+    }
+
+    [Test "Fahrzeugklassen: Transporter träge, Motorrad schnell, Fahrrad langsam"]
+    undefined Classes() {
+        float after[] = new float[4]
+        string kinds[] = ["auto", "transporter", "motorrad", "fahrrad"]
+        for (int k = 0; k < 4; k++) {
+            var v = Raser.Vehicle.Of(kinds[k])
+            Testing.Assert.AreEqual(kinds[k], v.kind)
+            for (int i = 0; i < 100; i++) { v.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+            after[k] = v.speed
+        }
+        // nach 5 s Vollgas
+        Testing.Assert.IsTrue(after[1] < after[0] && after[0] < after[2])
+        Testing.Assert.IsTrue(after[3] > 5.0 && after[3] < 9.0)
+        var van = Raser.Vehicle.Of("transporter")
+        Testing.Assert.IsTrue(Math.Abs(van.radius - 1.1) < 0.001 && Math.Abs(van.spread - 1.7) < 0.001)
+        Testing.Assert.IsTrue(Raser.Vehicle.Of("fahrrad").IsBike() && !van.IsBike())
+        Testing.Assert.AreEqual("auto", Raser.Vehicle.Of("panzer").kind)
+    }
+
+    [Test "Zweiräder legen sich in die Kurve: atan(v · Gierrate / g), höchstens 40°, Autos nicht"]
+    undefined Lean() {
+        // Motorrad mit 15 m/s, links gelenkt: es legt sich nach links, so weit wie Fliehkraft und Gewicht es verlangen
+        var bike = Raser.Vehicle.Of("motorrad")
+        bike.speed = 15.0
+        for (int i = 0; i < 40; i++) { bike.Step(0.02, 0.0, 0.0, 0.15, false, 0.0) }
+        float yawRate = bike.speed / bike.wheelbase * Math.Tan(bike.steerAngle * Math.PI / 180.0)
+        float expect = Math.Atan(bike.speed * yawRate / 9.81) * 180.0 / Math.PI
+        Testing.Assert.IsTrue(bike.lean > 15.0 && Math.Abs(bike.lean - expect) < 1.0)
+        // voll rechts: höchstens 40° nach rechts
+        for (int i = 0; i < 60; i++) { bike.Step(0.02, 0.3, 0.0, -1.0, false, 0.0) }
+        Testing.Assert.IsTrue(bike.lean < -35.0 && bike.lean >= -40.0)
+        // geradeaus: es richtet sich wieder auf
+        for (int i = 0; i < 100; i++) { bike.Step(0.02, 0.3, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(bike.lean) < 0.5)
+        // ein Auto bleibt gerade
+        var car = new Raser.Vehicle()
+        car.speed = 15.0
+        for (int i = 0; i < 40; i++) { car.Step(0.02, 0.3, 0.0, 1.0, false, 0.0) }
+        Testing.Assert.IsTrue(car.lean == 0.0)
+    }
+
+    [Test "Schaden aus der Wucht: kleine Stöße fast nichts, 50 km/h frontal viel, kaputt fährt nicht"]
+    undefined Damage() {
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(1.5) == 0.0)
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(5.0) < 0.05)
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(30.0) == 1.0)
+        // 50 km/h frontal gegen eine Wand im Norden
+        var car = new Raser.Vehicle()
+        Testing.Assert.IsTrue(car.health == 1.0)
+        car.speed = 50.0 / 3.6
+        car.Collide(1.2, 0.0, -1.0, 0.1)
+        Testing.Assert.IsTrue(car.health > 0.5 && car.health < 0.7)
+        // schräg und langsam an der Wand entlang: kaum etwas
+        var slant = new Raser.Vehicle()
+        slant.heading = -20.0
+        slant.speed = 8.0
+        slant.Collide(1.2, -1.0, 0.0, 0.05)
+        Testing.Assert.IsTrue(slant.health > 0.99)
+        // noch zweimal: hin, er fährt nicht mehr
+        for (int i = 0; i < 2; i++) {
+            car.speed = 50.0 / 3.6
+            car.Collide(1.2, 0.0, -1.0, 0.1)
+        }
+        Testing.Assert.IsTrue(car.health == 0.0)
+        car.speed = 0.0
+        for (int i = 0; i < 20; i++) { car.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(car.speed == 0.0)
+    }
+
+    [Test "Tank: Gas verbraucht Sprit, leer fährt nichts, das Fahrrad braucht keinen"]
+    undefined Fuel() {
+        // eine Minute Vollgas: ein Zehntel des Tanks
+        var car = new Raser.Vehicle()
+        for (int i = 0; i < 1200; i++) { car.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(car.fuel - 0.9) < 0.001)
+        // rollen kostet nichts
+        for (int i = 0; i < 100; i++) { car.Step(0.05, 0.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(car.fuel - 0.9) < 0.001)
+        // halbes Gas: halb so viel
+        var half = Raser.Vehicle.Of("motorrad")
+        for (int i = 0; i < 600; i++) { half.Step(0.05, 0.5, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(Math.Abs(half.fuel - 0.95) < 0.001)
+        // leer: kein Antrieb
+        var empty = new Raser.Vehicle()
+        empty.fuel = 0.0
+        for (int i = 0; i < 20; i++) { empty.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(empty.speed == 0.0 && empty.fuel == 0.0)
+        // das Fahrrad
+        var bike = Raser.Vehicle.Of("fahrrad")
+        for (int i = 0; i < 1200; i++) { bike.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(bike.fuel == 1.0 && bike.speed > 5.0)
+    }
+
+    [Test "Stoß: ein angefahrenes Fahrzeug rutscht los und bleibt stehen, Wände halten es auf"]
+    undefined Shove() {
+        // mit 10 m/s nach Norden frontal auf ein gleich schweres, das nördlich steht: beide gut 5 m/s
+        var car = new Raser.Vehicle()
+        var other = new Raser.Vehicle()
+        other.north = 4.2
+        car.speed = 10.0
+        float into = car.Collide(1.2, 0.0, -1.0, 0.1)
+        car.Shove(other, 0.0, -1.0, into)
+        Testing.Assert.IsTrue(Math.Abs(other.pushN - 5.0) < 0.001 && Math.Abs(other.pushE) < 0.001)
+        Testing.Assert.IsTrue(car.speed > 2.0 && car.speed < 4.0)
+        Testing.Assert.IsTrue(other.health < 1.0)
+        // es rutscht 5² / (2 x 7) = 1,8 m (in Schritten etwas mehr) und steht
+        for (int i = 0; i < 40; i++) { other.Step(0.05, 0.0, 1.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(other.pushN == 0.0 && Math.Abs(other.north - 4.2 - 1.85) < 0.15)
+        // ein Fahrrad fliegt fast mit dem ganzen Tempo davon, ein Transporter kaum
+        var bike = Raser.Vehicle.Of("fahrrad")
+        var van = Raser.Vehicle.Of("transporter")
+        var c2 = new Raser.Vehicle()
+        c2.Shove(bike, 0.0, -1.0, 10.0)
+        c2.Shove(van, 0.0, -1.0, 10.0)
+        Testing.Assert.IsTrue(bike.pushN > 9.5 && van.pushN < 4.0)
+        // rutscht es gegen eine Wand im Norden, hört das Rutschen dorthin auf
+        van.Collide(1.7, 0.0, -1.0, 0.05)
+        Testing.Assert.IsTrue(van.pushN == 0.0)
+    }
+
+    static defined float BrakeDistance(defined float wetness) {
+        var car = new Raser.Vehicle()
+        car.speed = 30.0
+        int steps = 0
+        while (car.speed > 0.0 && steps < 2000) {
+            car.Step(0.02, 0.0, 1.0, 0.0, false, wetness)
+            steps++
+        }
+        return car.north
+    }
+}
+
+class WalkerTests {
+    [Test "Spieler zu Fuß: geht, sprintet, dreht, weicht Hindernissen aus"]
+    undefined Walk() {
+        var w = new Raser.Walker()
+        for (int i = 0; i < 100; i++) { w.Step(0.05, 1.0, 0.0, false) }
+        // 5 s gehen: gut 10 m nach Norden
+        Testing.Assert.IsTrue(w.north > 10.0 && w.north < 11.1 && Math.Abs(w.east) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(w.speed - 2.2) < 0.001)
+        Testing.Assert.IsTrue(Math.Abs(w.stride - w.north) < 0.001)
+        for (int i = 0; i < 20; i++) { w.Step(0.05, 1.0, 0.0, true) }
+        Testing.Assert.IsTrue(Math.Abs(w.speed - 5.5) < 0.001)
+        // loslassen: er steht nach einer halben Sekunde
+        for (int i = 0; i < 10; i++) { w.Step(0.05, 0.0, 0.0, false) }
+        Testing.Assert.IsTrue(w.speed == 0.0)
+        // links drehen und gehen: nach Westen
+        var t = new Raser.Walker()
+        for (int i = 0; i < 12; i++) { t.Step(0.05, 0.0, 1.0, false) }
+        Testing.Assert.IsTrue(Math.Abs(t.heading - 90.0) < 0.001)
+        for (int i = 0; i < 20; i++) { t.Step(0.05, 1.0, 0.0, false) }
+        Testing.Assert.IsTrue(t.east < -1.5 && Math.Abs(t.north) < 0.001)
+        // rückwärts langsamer
+        var b = new Raser.Walker()
+        for (int i = 0; i < 40; i++) { b.Step(0.05, -1.0, 0.0, true) }
+        Testing.Assert.IsTrue(Math.Abs(b.speed + 1.32) < 0.001 && b.north < -2.0)
+        // ein Kreis im Weg (Radius 1 m bei 0, 1): der Spieler bleibt 1,35 m davor
+        var a = new Raser.Walker()
+        a.speed = 2.0
+        a.north = 0.2
+        Testing.Assert.IsTrue(a.Avoid(0.0, 1.0, 1.0))
+        Testing.Assert.IsTrue(Math.Abs(a.north + 0.35) < 0.001 && a.speed == 2.0)
+        Testing.Assert.IsFalse(a.Avoid(0.0, 1.0, 1.0))
+        // knapp neben der Mitte auf einen Pfosten zu: er gleitet daran vorbei
+        var r = new Raser.Walker()
+        r.east = 0.1
+        for (int i = 0; i < 100; i++) {
+            r.Step(0.05, 1.0, 0.0, false)
+            r.Avoid(0.0, 3.0, 0.3)
+        }
+        Testing.Assert.IsTrue(r.north > 6.0 && r.east > 0.5)
+    }
+}

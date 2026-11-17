@@ -1,0 +1,55 @@
+// Raser.Core: der Spieler zu Fuß (Roadmap M3) - ohne Szene, also testbar und später auf dem Server dieselbe Rechnung.
+//
+// Lage (Ost, Nord in m), Richtung (Grad, 0 = Nord, gegen den Uhrzeigersinn: vorwärts ist (-sin, cos), wie beim Fahrzeug). Gehen 2,2 m/s,
+// sprinten 5,5 m/s, rückwärts langsamer; das Tempo folgt der Eingabe mit 12 m/s². stride zählt den gelaufenen Weg (für die Schritte der Figur).
+namespace Raser {
+    class Walker {
+        defined float east
+        defined float north
+        defined float heading           // Grad
+        defined float speed             // m/s, rückwärts negativ
+        defined float stride            // der gelaufene Weg (m)
+        defined float walkSpeed
+        defined float sprintSpeed
+        defined float turnRate          // Grad/s
+
+        construct() {
+            this.walkSpeed = 2.2
+            this.sprintSpeed = 5.5
+            this.turnRate = 150.0
+        }
+
+        // Ein Schritt: forward -1 (rückwärts) .. 1, turn -1 (rechts) .. 1 (links), sprint: rennen (nur vorwärts).
+        undefined Step(defined float dt, defined float forward, defined float turn, defined bool sprint) {
+            float f = Math.Clamp(forward, -1.0, 1.0)
+            float want = f * this.walkSpeed
+            if (f > 0.0 && sprint) { want = f * this.sprintSpeed }
+            if (f < 0.0) { want = want * 0.6 }
+            float change = 12.0 * dt
+            this.speed = this.speed + Math.Clamp(want - this.speed, -change, change)
+            this.heading = this.heading + Math.Clamp(turn, -1.0, 1.0) * this.turnRate * dt
+            float h = this.heading * Math.PI / 180.0
+            this.east = this.east - Math.Sin(h) * this.speed * dt
+            this.north = this.north + Math.Cos(h) * this.speed * dt
+            this.stride = this.stride + Math.Abs(this.speed) * dt
+        }
+
+        // Aus einem Hindernis hinaus: (nx, ny) zeigt heraus, depth m weit. Das Tempo bleibt: schräg davor gleitet er daran entlang (um einen
+        // Stamm herum), frontal tritt er auf der Stelle.
+        undefined Push(defined float nx, defined float ny, defined float depth) {
+            this.east = this.east + nx * depth
+            this.north = this.north + ny * depth
+        }
+
+        // Gegen einen Kreis (Mitte, Radius; der Spieler hat 0,35 m): hinaus, wenn er darin steht. true: berührt.
+        defined bool Avoid(defined float e, defined float n, defined float radius) {
+            float dx = this.east - e
+            float dy = this.north - n
+            float d = Math.Sqrt(dx * dx + dy * dy)
+            float reach = radius + 0.35
+            if (d >= reach || d < 0.0001) { return false }
+            this.Push(dx / d, dy / d, reach - d)
+            return true
+        }
+    }
+}

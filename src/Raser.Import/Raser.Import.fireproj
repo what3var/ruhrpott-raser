@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "name": "Raser.Import",
+  "type": "library",
+  "import": "raser.import",
+  "references": [
+    { "project": "../Raser.Core/Raser.Core.fireproj" },
+    { "project": "../Raser.World/Raser.World.fireproj" }
+  ],
+  "settings": {
+    "version": "0.1.0",
+    "description": "Ruhrpott-Raser: Import der Rohdaten (DGM1 als XYZ, LoD2 als CityGML, OSM als XML) in den Zwischenlayer."
+  }
+}

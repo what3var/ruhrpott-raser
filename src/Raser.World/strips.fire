@@ -1,0 +1,158 @@
+// Raser.World: Grünstreifen an Straßen (Konzept, Abschnitt 1: Straßenraum).
+//
+// Straßenbäume stehen fast nie einzeln im Pflaster, sondern in einem Beet zwischen Fahrbahn und Gehweg: direkt hinter dem Bordstein, mit einer
+// Einfassung aus schmalen Kantensteinen (6 cm), Erde mit niedrigen Sträuchern (oft Rosen), dazwischen Laternen. Aus den Bäumen einer Straßenseite, die nahe am Rand stehen,
+// werden Streifen (zur Fahrbahn hin direkt am Bordstein, sonst schmale Kantensteine): ein Lauf von Bäumen mit Lücken unter 14 m, an den Enden 1,6 m über den ersten und letzten Baum hinaus; die Breite reicht vom
+// Fahrbahnrand bis 0,7 m hinter den Baum, der am weitesten weg steht (1,2 .. 3,2 m). Der Gehweg dieser Straßenseite liegt dahinter.
+// Lage auf der Straße: s die Länge entlang der Mittellinie (Rohdaten), off der Abstand quer (links positiv).
+namespace Raser {
+    class Strip {
+        defined int road            // die ID der Straße
+        defined int side            // 1: links der Laufrichtung, -1: rechts
+        defined float s0
+        defined float s1
+        defined float width         // ab dem Fahrbahnrand (m)
+        defined float half          // die halbe Breite der Fahrbahn
+    }
+
+    // Wo ein Punkt an einer Linie liegt (Ergebnis von Raser.Strips.Probe).
+    class StripProbe {
+        defined float s
+        defined float off
+        defined float x             // Ergebnis von Raser.Strips.PointAt
+        defined float y
+    }
+
+    class Strips {
+        static readonly defined float Gap = 14.0          // größere Lücken zwischen Bäumen trennen die Streifen
+        static readonly defined float Reach = 3.0         // so weit hinter dem Fahrbahnrand gehört ein Baum noch zum Streifen
+        static readonly defined float Edge = 0.06         // die Einfassung: schmale Kantensteine (m)
+
+        // Lage von (x, y) an der Linie: das nächste Segment, s entlang, off quer (links positiv).
+        static undefined Probe(float line[], defined float x, defined float y, StripProbe out) {
+            float best = 1.0e30
+            float acc = 0.0
+            out.s = 0.0
+            out.off = 1.0e30
+            for (int k = 0; k + 3 < line.length; k = k + 2) {
+                float ax = line[k]
+                float ay = line[k + 1]
+                float ex = line[k + 2] - ax
+                float ey = line[k + 3] - ay
+                float len2 = ex * ex + ey * ey
+                if (len2 <= 0.0) { continue }
+                float len = Math.Sqrt(len2)
+                float t = Math.Clamp(((x - ax) * ex + (y - ay) * ey) / len2, 0.0, 1.0)
+                float cx = ax + ex * t
+                float cy = ay + ey * t
+                float d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+                if (d2 < best) {
+                    best = d2
+                    out.s = acc + t * len
+                    float cross = ex * (y - ay) - ey * (x - ax)
+                    out.off = Math.Sqrt(d2)
+                    if (cross < 0.0) { out.off = -out.off }
+                }
+                acc = acc + len
+            }
+        }
+
+        // Der Punkt bei s entlang, off quer (nach out.x, out.y).
+        static undefined PointAt(float line[], defined float s, defined float off, StripProbe out) {
+            float acc = 0.0
+            out.x = line[0]
+            out.y = line[1]
+            for (int k = 0; k + 3 < line.length; k = k + 2) {
+                float ax = line[k]
+                float ay = line[k + 1]
+                float ex = line[k + 2] - ax
+                float ey = line[k + 3] - ay
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len <= 0.0) { continue }
+                if (s <= acc + len || k + 5 >= line.length) {
+                    float t = (s - acc) / len
+                    out.x = ax + ex * t - ey / len * off
+                    out.y = ay + ey * t + ex / len * off
+                    return
+                }
+                acc = acc + len
+            }
+        }
+
+        // Die Streifen einer Kachel aus ihren Bäumen (nach Raser.Props.Settle).
+        static undefined Build(Tile tile) {
+            tile.strips = new List<Strip>()
+            if (tile.data == undefined || tile.data.props == undefined || tile.data.roads == undefined) { return }
+            var probe = new Raser.StripProbe()
+            var roads = tile.data.roads
+            // je Baum: die nächste Straße für Autos, wenn er nahe genug am Rand steht
+            var treeRoad = new List<int>()
+            var treeS = new List<float>()
+            var treeOff = new List<float>()
+            foreach (p in tile.data.props) {
+                if (p.kind != "tree") { continue }
+                int best = -1
+                float bestEdge = 1.0e30
+                float bs = 0.0
+                float bo = 0.0
+                for (int ri = 0; ri < roads.Count; ri++) {
+                    var r = roads[ri]
+                    if (!Raser.Props.IsCarRoad(r) || r.points.length < 4) { continue }
+                    Raser.Strips.Probe(r.points, p.x, p.y, probe)
+                    float edge = Math.Abs(probe.off) - r.width / 2.0
+                    if (edge < bestEdge) {
+                        bestEdge = edge
+                        best = ri
+                        bs = probe.s
+                        bo = probe.off
+                    }
+                }
+                if (best < 0 || bestEdge > Raser.Strips.Reach || bestEdge < 0.0) { continue }
+                treeRoad.Add(best)
+                treeS.Add(bs)
+                treeOff.Add(bo)
+            }
+            // je Straße und Seite: die Bäume nach s, in Läufe geteilt
+            for (int ri = 0; ri < roads.Count; ri++) {
+                for (int side = -1; side <= 1; side = side + 2) {
+                    var ss = new List<float>()
+                    var oo = new List<float>()
+                    for (int k = 0; k < treeRoad.Count; k++) {
+                        if (treeRoad[k] != ri || treeOff[k] * side <= 0.0) { continue }
+                        // einsortieren (wenige Bäume je Straße)
+                        int at = ss.Count
+                        while (at > 0 && ss[at - 1] > treeS[k]) { at-- }
+                        ss.Insert(at, treeS[k])
+                        oo.Insert(at, Math.Abs(treeOff[k]))
+                    }
+                    if (ss.Count == 0) { continue }
+                    float half = roads[ri].width / 2.0
+                    int first = 0
+                    for (int k = 1; k <= ss.Count; k++) {
+                        if (k < ss.Count && ss[k] - ss[k - 1] <= Raser.Strips.Gap) { continue }
+                        var strip = new Raser.Strip()
+                        strip.road = roads[ri].id
+                        strip.side = side
+                        strip.half = half
+                        strip.s0 = ss[first] - 1.6
+                        strip.s1 = ss[k - 1] + 1.6
+                        float far = 0.0
+                        for (int q = first; q < k; q++) { far = Math.Max(far, oo[q] - half) }
+                        strip.width = Math.Clamp(far + 0.7, 1.2, 3.2)
+                        tile.strips.Add(take strip)
+                        first = k
+                    }
+                }
+            }
+        }
+
+        // Der Wert des Streifens an (x, y) für die Straße mit den Punkten line: < 0 im Beet (das Maximum der Abstände zu den vier Kanten).
+        static defined float Value(Strip strip, float line[], defined float x, defined float y, StripProbe probe) {
+            Raser.Strips.Probe(line, x, y, probe)
+            if (probe.off * strip.side <= 0.0) { return 1.0e30 }
+            float dr = Math.Abs(probe.off) - strip.half
+            // zur Straße hin reicht das Beet bis an den Bordstein (12 cm breit oben): keine eigene Einfassung dort
+            return Math.Max(Math.Max(0.12 - Raser.Strips.Edge - dr, dr - strip.width), Math.Max(strip.s0 - probe.s, probe.s - strip.s1))
+        }
+    }
+}

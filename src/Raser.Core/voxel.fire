@@ -1,0 +1,256 @@
+// Raser.Core: was in einem Voxel steht.
+//
+// Pro Voxel: Material-ID (1 Byte) + Farbindex (1 Byte, aus der Palette). Oberflächen-Voxel können oben schräg abgeschnitten sein (Konzept, Abschnitt 1):
+// Die Form ist ein Byte mit vier Eckhöhen zu je 2 Bit, in Dritteln eines Voxels: 0, 1/3, 2/3 oder 3/3 (eine Ecke darf auf der Unterkante liegen - so
+// schließen Lagen lückenlos aneinander, auch wo eine schräge Fläche von einer Voxel-Lage in die nächste wechselt).
+// Benachbarte Voxel berechnen dieselbe Ecke aus denselben Daten und teilen sich so die Eckhöhen; es entstehen lückenlose Flächen.
+namespace Raser {
+    // Die Materialien. Die Nummer ist die Material-ID im Voxel und bleibt stabil (neue Materialien nur hinten anhängen).
+    enum Material {
+        Air = 0,
+        Soil = 1,
+        Grass = 2,
+        Sand = 3,
+        Gravel = 4,
+        Rock = 5,
+        Water = 6,
+        Asphalt = 7,
+        Paving = 8,
+        Concrete = 9,
+        Wood = 10,
+        Glass = 11,
+        Metal = 12,
+        Brick = 13,
+        Plaster = 14,
+        RoofTiles = 15,
+        Leaves = 16
+    }
+
+    // Die Werte eines Raser.Materials. Physikalische Werte sind von Anfang an da (Konzept, Abschnitt 7: Zerstörbarkeit), werden aber noch nicht genutzt.
+    class MaterialInfo {
+        Material id
+        string name
+        defined bool solid
+        defined bool transparent
+        defined int color            // Standard-Farbindex
+        defined float threshold      // Bruchschwelle (relativ, 1 = Ziegel)
+        defined float toughness      // wie viel Energie ein Voxel aufzehrt (relativ)
+        defined float density        // kg/m³
+
+        construct(Material id, string name, defined bool solid, defined bool transparent, defined int color, defined float threshold, defined float toughness, defined float density) {
+            this.id = id
+            this.name = name
+            this.solid = solid
+            this.transparent = transparent
+            this.color = color
+            this.threshold = threshold
+            this.toughness = toughness
+            this.density = density
+        }
+    }
+
+    // Die Palette: 256 Farben (0xRRGGBB). Die ersten 32 Einträge sind benannt; 32 .. 127 sind dieselben Farben in Dreckstufen 1 .. 3 (Index + 32 *
+    // Stufe: dunkler, grauer - das Muster der Textur bringt Flecken und Laufspuren dazu, Raser.Atlas); der Rest ist frei für Pinsel und Spieler.
+    class Palette {
+        static readonly defined int None = 0
+        static readonly defined int Soil = 1
+        static readonly defined int Grass = 2
+        static readonly defined int Sand = 3
+        static readonly defined int Gravel = 4
+        static readonly defined int Rock = 5
+        static readonly defined int Water = 6
+        static readonly defined int Asphalt = 7
+        static readonly defined int Paving = 8
+        static readonly defined int Concrete = 9
+        static readonly defined int Wood = 10
+        static readonly defined int Glass = 11
+        static readonly defined int Metal = 12
+        static readonly defined int Brick = 13          // Ruhrpott-Rot
+        static readonly defined int Plaster = 14        // Weiß
+        static readonly defined int RoofTiles = 15
+        static readonly defined int RoadMarking = 16
+        static readonly defined int BrickDark = 17
+        static readonly defined int BrickLight = 18
+        static readonly defined int PlasterCream = 19
+        static readonly defined int PlasterGrey = 20
+        static readonly defined int PlasterYellow = 21
+        static readonly defined int RoofDark = 22
+        static readonly defined int RoofFlat = 23
+        static readonly defined int Forest = 24
+        static readonly defined int Field = 25
+        static readonly defined int Rail = 26
+        static readonly defined int Leaves = 27
+        static readonly defined int LeavesDark = 28
+        static readonly defined int LeavesLight = 29
+        static readonly defined int Bark = 30
+        static readonly defined int Sidewalk = 31          // Gehweg: schmale Pflastersteine, heller als die Fahrbahn
+        // ohne Kachel im Atlas (flach): Schilder und Licht
+        static readonly defined int SignWhite = 160
+        static readonly defined int SignRed = 161
+        static readonly defined int SignBlue = 162
+        static readonly defined int SignYellow = 163
+        static readonly defined int SignGreen = 164
+        static readonly defined int Lamp = 165
+        static readonly defined int FlowerPink = 166      // Blüten in Beeten
+        static readonly defined int FlowerYellow = 167
+        static readonly defined int FlowerWhite = 168
+        static readonly defined int GlassLit = 169        // Glas eines Fensters, hinter dem abends Licht brennt (am Tag wie Glas)
+        static readonly defined int Window = 170          // ferne Stufe: ein Fenster als undurchsichtige Fläche (Glas vor dunklem Inneren)
+        static readonly defined int WindowLit = 171       // dasselbe mit Licht dahinter (am Tag gleich, nachts leuchtet es)
+        static readonly defined int WindowFrame = 172     // ferne Stufe: Schaufenster und Türen aus Glas, etwas heller
+        static readonly defined int StainedBlue = 173     // Kirchenfenster: farbiges Glas
+        static readonly defined int StainedRed = 174
+        static readonly defined int StainedAmber = 175
+        static readonly defined int ClockFace = 176       // Zifferblatt einer Turmuhr
+
+        static int colors[] = Raser.Palette.Build()
+
+        static int[] Build() {
+            int c[256]
+            for (int i = 0; i < 256; i++) { c[i] = (i << 16) | (i << 8) | i }   // ein Grauverlauf für alles Unbenannte
+            c[0] = 0x000000
+            c[1] = 0x6B4F33
+            c[2] = 0x4F7A33
+            c[3] = 0xD8C38A
+            c[4] = 0x8C8478
+            c[5] = 0x6E6A64
+            c[6] = 0x2F5F8A
+            c[7] = 0x3A3A3C
+            c[8] = 0x7D7670
+            c[9] = 0x9C9A94
+            c[10] = 0x9A6B3F
+            c[11] = 0xA8C8D8
+            c[12] = 0x7F858C
+            c[13] = 0x9A3B2A
+            c[14] = 0xE8E4DA
+            c[15] = 0x7A2E22
+            c[16] = 0xE8E8E0
+            c[17] = 0x6E2A1E
+            c[18] = 0xB5573E
+            c[19] = 0xE3D6B4
+            c[20] = 0xA9A59C
+            c[21] = 0xD9C27A
+            c[22] = 0x3F2C28
+            c[23] = 0x55524E
+            c[24] = 0x2F5226
+            c[25] = 0x8E9A4A
+            c[26] = 0x5A4A40
+            c[27] = 0x3E6B2A
+            c[28] = 0x2C5220
+            c[29] = 0x5C8A34
+            c[30] = 0x4A3A2C
+            c[31] = 0xA8A096
+            c[160] = 0xF2F2EE
+            c[161] = 0xC8202A
+            c[162] = 0x1F4E9C
+            c[163] = 0xF2C200
+            c[164] = 0x1E7A3C
+            c[165] = 0xFFE7A0
+            c[166] = 0xE8A0A8
+            c[167] = 0xF0D070
+            c[168] = 0xF4F0E6
+            c[169] = 0xA8C8D8
+            c[170] = 0x566470
+            c[171] = 0x566470
+            c[172] = 0x6A7C88
+            c[173] = 0x3E5C8C
+            c[174] = 0x8C3A3A
+            c[175] = 0xB08A3C
+            c[176] = 0xEDE8D8
+            for (int level = 1; level < 4; level++) {
+                for (int i = 1; i < 32; i++) { c[i + 32 * level] = Raser.Palette.Soiled(c[i], level) }
+            }
+            return c
+        }
+
+        static defined int Rgb(defined int index) { return Raser.Palette.colors[index & 255] }
+
+        // Eine Farbe in der Dreckstufe level (0 .. 3): je Stufe 8 % dunkler und 10 % zum Grau des Rußes hin.
+        static defined int Soiled(defined int rgb, defined int level) {
+            float f = 1.0 - 0.08 * level
+            float g = 0.10 * level
+            int r = Math.Round((((rgb >> 16) & 255) * (1.0 - g) + 70 * g) * f)!int
+            int gr = Math.Round((((rgb >> 8) & 255) * (1.0 - g) + 66 * g) * f)!int
+            int b = Math.Round(((rgb & 255) * (1.0 - g) + 60 * g) * f)!int
+            return (r << 16) | (gr << 8) | b
+        }
+
+        // Der Index einer benannten Farbe (unter 32) in der Dreckstufe level; andere Farben bleiben.
+        static defined int Dirty(defined int index, defined int level) {
+            if (index <= 0 || index >= 32 || level <= 0) { return index }
+            return index + 32 * Math.Min(level, 3)
+        }
+
+        // Die benannte Grundfarbe und die Dreckstufe eines Index.
+        static defined int BaseOf(defined int index) {
+            if (index < 128) { return index % 32 }
+            return index
+        }
+        static defined int DirtOf(defined int index) {
+            if (index < 128) { return index / 32 }
+            return 0
+        }
+    }
+
+    class Materials {
+        static List<MaterialInfo> table = Raser.Materials.Build()
+
+        static List<MaterialInfo> Build() {
+            var t = new List<MaterialInfo>()
+            t.Add(new MaterialInfo(Raser.Material.Air, "Luft", false, true, 0, 0.0, 0.0, 1.2))
+            t.Add(new MaterialInfo(Raser.Material.Soil, "Erde", true, false, Raser.Palette.Soil, 0.3, 0.6, 1500.0))
+            t.Add(new MaterialInfo(Raser.Material.Grass, "Rasen", true, false, Raser.Palette.Grass, 0.3, 0.6, 1400.0))
+            t.Add(new MaterialInfo(Raser.Material.Sand, "Sand", true, false, Raser.Palette.Sand, 0.2, 0.4, 1600.0))
+            t.Add(new MaterialInfo(Raser.Material.Gravel, "Schotter", true, false, Raser.Palette.Gravel, 0.4, 0.6, 1800.0))
+            t.Add(new MaterialInfo(Raser.Material.Rock, "Fels", true, false, Raser.Palette.Rock, 3.0, 3.0, 2600.0))
+            t.Add(new MaterialInfo(Raser.Material.Water, "Wasser", false, true, Raser.Palette.Water, 0.0, 0.0, 1000.0))
+            t.Add(new MaterialInfo(Raser.Material.Asphalt, "Asphalt", true, false, Raser.Palette.Asphalt, 1.5, 1.5, 2300.0))
+            t.Add(new MaterialInfo(Raser.Material.Paving, "Pflaster", true, false, Raser.Palette.Paving, 1.2, 1.2, 2200.0))
+            t.Add(new MaterialInfo(Raser.Material.Concrete, "Beton", true, false, Raser.Palette.Concrete, 2.5, 2.5, 2400.0))
+            t.Add(new MaterialInfo(Raser.Material.Wood, "Holz", true, false, Raser.Palette.Wood, 0.5, 0.8, 600.0))
+            t.Add(new MaterialInfo(Raser.Material.Glass, "Glas", true, true, Raser.Palette.Glass, 0.05, 0.1, 2500.0))
+            t.Add(new MaterialInfo(Raser.Material.Metal, "Metall", true, false, Raser.Palette.Metal, 2.0, 3.0, 7850.0))
+            t.Add(new MaterialInfo(Raser.Material.Brick, "Ziegel", true, false, Raser.Palette.Brick, 1.0, 1.0, 1800.0))
+            t.Add(new MaterialInfo(Raser.Material.Plaster, "Putz", true, false, Raser.Palette.Plaster, 0.8, 0.8, 1600.0))
+            t.Add(new MaterialInfo(Raser.Material.RoofTiles, "Dachziegel", true, false, Raser.Palette.RoofTiles, 0.6, 0.6, 1900.0))
+            t.Add(new MaterialInfo(Raser.Material.Leaves, "Laub", true, false, Raser.Palette.Leaves, 0.05, 0.1, 300.0))
+            return t
+        }
+
+        static MaterialInfo Of(Material m) { return Raser.Materials.table[m!int] }
+
+        static defined int Count() { return Raser.Materials.table.Count }
+
+        static defined bool IsSolid(defined int id) { return id > 0 && id < Raser.Materials.table.Count && Raser.Materials.table[id].solid }
+    }
+
+    // Die Form eines Voxels: vier Eckhöhen in Vierteln (1..4). Ecken: 0 = (x0, y0), 1 = (x1, y0), 2 = (x1, y1), 3 = (x0, y1).
+    // Gespeichert ist Höhe - 1 in je zwei Bit; 0xFF ist der volle Würfel.
+    class Shape {
+        static readonly defined int Full = 255
+
+        static readonly defined float Step = 0.0666666666666667     // ein Drittel Voxel (m)
+
+        // Aus vier Eckhöhen in Dritteln (0..3; 3 an allen Ecken: voll = 255).
+        static defined int Make(defined int h0, defined int h1, defined int h2, defined int h3) {
+            return Raser.Shape.Clamp(h0) | (Raser.Shape.Clamp(h1) << 2) | (Raser.Shape.Clamp(h2) << 4) | (Raser.Shape.Clamp(h3) << 6)
+        }
+
+        static defined int Clamp(defined int h) {
+            if (h < 0) { return 0 }
+            if (h > 3) { return 3 }
+            return h
+        }
+
+        // Die Höhe der Ecke (0..3 Drittel).
+        static defined int Corner(defined int shape, defined int corner) { return (shape >> (corner * 2)) & 3 }
+
+        // Alle Ecken auf der Unterkante: das Voxel hat keinen Inhalt.
+        static defined bool IsEmpty(defined int shape) { return (shape & 255) == 0 }
+
+        static defined bool IsFull(defined int shape) { return (shape & 255) == 255 }
+
+        // Die Höhe einer Ecke in Metern über der Unterkante des Voxels.
+        static defined float CornerMeters(defined int shape, defined int corner) { return Raser.Shape.Corner(shape, corner) * 0.2 / 3.0 }
+    }
+}

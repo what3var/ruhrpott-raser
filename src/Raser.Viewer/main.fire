@@ -1,0 +1,371 @@
+// Raser.Viewer: die Voxel-Welt mit scene3d betrachten (Roadmap M2: fahrbare Kamera durch die Testregion - der erste Renderer, noch ohne GPU).
+//
+//   raser-viewer [--world world] --at ost,nord [--yaw 30] [--pitch -35] [--distance 60] [--size 960x600]
+//                [--near 1] [--far 6] [--spacing 3.2]     Voxel bis `near` Blöcke um den Blickpunkt, fern bis `far` Blöcke (je 51,2 m)
+//   raser-viewer ... --shot bild.png      ein Bild ohne Fenster
+//   raser-viewer ... --opaque             ohne Glas und Wasser
+//   raser-viewer ... --render-threads 1   so viele Threads rendern (0: alle Kerne)
+//   raser-viewer ... --workers 3          so viele Threads bauen die nahen Blöcke (0: im Hauptprogramm)
+//   raser-viewer ... --no-mesh-cache      nahe Blöcke immer neu bauen (sonst aus <welt>/meshes, gebaute werden dort gespeichert)
+//   raser-viewer ... [--far-ahead far] [--near-ahead 2] [--min-free 20] [--memory-mb 0]
+//                                         ist Zeit übrig, so viele Ringe über die Radien hinaus vorausladen (versteckt); was aus den Radien fällt, bleibt
+//                                         im Vorrat, bis weniger als min-free Prozent des Speichers frei sind (oder der Viewer mehr als memory-mb belegt)
+//   raser-viewer ... --fly 1500 [--speed 83] [--budget-ms 30] [--lead m] [--shot ende.png]   (lead: Ladepunkt voraus, Standard Tempo x 2,5 s)
+//                                         ohne Fenster in Echtzeit geradeaus fliegen, nachladen und rendern; die Zeiten am Ende
+//
+//   raser-viewer ... --date 12-21 --time 17:30 --weather klar|wolkig|bedeckt|niesel|regen|starkregen|dunst|nebel|dichter-nebel
+//                    [--rain 0..1] [--fog 0..1] [--clouds 0..1]     Licht und Wetter (Raser.Weather), die Stärken auch einzeln
+//
+//   raser-viewer ... --gpu 1               die Grafikkarte zeichnet (Vulkan), sonst der Software-Renderer
+//   raser-viewer ... --free 1              im Fenster mit freiem Flug beginnen (sonst Fahrmodus); --fly ... --drive 1: der Messflug am Boden
+//
+// Im Fenster, Fahrmodus: W/S Gas und Bremse, A/D lenken, Umschalt mehr Gas, Pfeile hoch/runter der Blick; F wechselt zum freien Flug.
+// Freier Flug: W/S vor und zurück, A/D seitwärts, Q/E hoch und runter, Pfeile drehen, Umschalt schneller; T/G die Uhr eine halbe Stunde vor und
+// zurück, R das nächste Wetter, +/- Regen bzw. Nebel stärker oder schwächer.
+// Detailstufen (Roadmap M2): nah die Voxel-Chunks, vernetzt mit Raser.Mesh (Stufe 0); weiter weg Netze direkt aus dem Zwischenlayer (Raser.FarMesher:
+// Höhenraster, Grundrisse, LoD2-Dächer). Je Block ein scene3d-Objekt, die Farben aus einer Palette-Textur. Je Bild wird bis zu einem Zeitbudget
+// nachgeladen: grob vor fein, vom Blickpunkt nach außen; zu weit weg wird entladen.
+// Szene: x = Ost, y = oben, z = -Nord (scene3d: Y oben, die Kamera blickt nach -Z), Ursprung beim Zielpunkt.
+#import "windows"
+#import "scene3d"
+#import "scene3d.effects"
+#import "filesystem"
+#import "time"
+#import "raser.core"
+#import "raser.world"
+#import "raser.mesh"
+#import "raser.client"
+
+class Viewer {
+    static defined int Main(string items[]) {
+        var options = new Options(items)
+        var store = new Raser.FileTileStore(options.Get("world", "world"))
+        string at = options.Get("at", "376130,5704900")
+        var parts = at.Split(",")
+        float e = parts[0].ToFloat()
+        float n = parts[1].ToFloat()
+        float yaw = options.Get("yaw", "30").ToFloat()
+        float pitch = options.Get("pitch", "-35").ToFloat()
+        float distance = options.Get("distance", "60").ToFloat()
+        var size = options.Get("size", "960x600").Split("x")
+        int width = size[0].ToInt()
+        int height = size[1].ToInt()
+
+        // Höhe des Bodens am Ziel aus dem Höhenraster der Kachel
+        var tileKey = Raser.TileKey.Of(e, n)
+        var tile = store.Load(tileKey)
+        float ground = 0.0
+        if (tile != undefined && tile.heights != undefined) { ground = tile.heights.At(e - tileKey.East, n - tileKey.North) }
+
+        var fb = new Framebuffer(width, height)
+        var scene = new Scene()
+        scene.Shadows = false
+        scene.Threads = options.Get("render-threads", "0").ToInt()     // 0: so viele wie die Maschine hat (scene3d); weniger lässt den Workern Kerne
+        var cam = new Camera(fb)
+        cam.FieldOfView = 60deg
+        cam.Near = 0.2m
+        cam.Far = 3000m
+        // das Wetter: --date MM-TT, --time HH:MM, --weather (Raser.Weather.Preset), --rain/--fog/--clouds
+        var weather = new Raser.Weather()
+        var date = options.Get("date", "07-01").Split("-")
+        weather.day = Raser.Weather.DayOf(date[0].ToInt(), date[1].ToInt())
+        var clock = options.Get("time", "14:00").Split(":")
+        weather.hour = clock[0].ToFloat() + clock[1].ToFloat() / 60.0
+        weather.Preset(options.Get("weather", "klar"))
+        // die Stärken einzeln (0 .. 1)
+        if (options.Get("clouds", "") != "") { weather.clouds = options.Get("clouds", "").ToFloat() }
+        if (options.Get("rain", "") != "") { weather.SetRain(options.Get("rain", "").ToFloat()) }
+        if (options.Get("fog", "") != "") { weather.SetFog(options.Get("fog", "").ToFloat()) }
+        weather.Light()
+        float yr = yaw * Math.PI / 180.0
+        float pr = pitch * Math.PI / 180.0
+        // Kamera hinter dem Ziel, Blick auf das Ziel
+        float cx = Math.Sin(yr) * Math.Cos(pr) * distance
+        float cz = Math.Cos(yr) * Math.Cos(pr) * distance
+        float cy = -Math.Sin(pr) * distance
+        cam.SetPosition(cx * 1m, cy * 1m, cz * 1m)
+        cam.LookAt(0m, 0m, 0m)
+        scene.Add(cam)
+        int near = options.Get("near", "1").ToInt()
+        int far = options.Get("far", "6").ToInt()
+        float spacing = options.Get("spacing", "3.2").ToFloat()
+        int workers = options.Get("workers", "3").ToInt()
+        var view = new WorldView(options.Get("world", "world"), scene, e, n, ground, near, far, spacing, options.Get("opaque", "") != "", workers, options.Get("no-mesh-cache", "") == "")
+        view.farAhead = options.Get("far-ahead", far + "").ToInt()
+        view.nearAhead = options.Get("near-ahead", "2").ToInt()
+        view.memory.minFree = options.Get("min-free", "20").ToFloat()
+        view.memory.budgetMb = options.Get("memory-mb", "0").ToInt()
+        // --gpu: die Grafikkarte zeichnet (scene3d RenderMode.Hardware, Vulkan); ohne Karte oder Treiber weiter in Software
+        if (options.Get("gpu", "") != "") {
+            scene.Renderer = RenderMode.Hardware
+            print("Grafikkarte: " + S3D.HardwareName() + " " + S3D.HardwareError())
+        }
+        var atmosphere = new Atmosphere(weather, scene, cam, view, options.Get("world", "world"))
+        atmosphere.Apply()
+        print("Wetter: Sonne " + Math.Round(weather.elevation) + "°, Wolken " + weather.clouds + ", Regen " + weather.rain + ", Nebel " + weather.fog + ", Sicht " + Math.Round(weather.hazeEnd) + " m, Schatten " + weather.shadows + ", Laternen " + weather.lampsOn)
+        int start = DateTime.Now.Ticks
+        print("Lade um " + e + ", " + n + " (Voxel im Radius " + near + ", fern bis " + far + " Blöcke à 51,2 m, " + workers + " Worker)")
+        var here = view.WorldOf(cam)
+        view.Fill(here[0], here[1])
+        print(view.objects + " Objekte, " + view.triangles + " Dreiecke in " + ((DateTime.Now.Ticks - start) / 10000000.0) + " s (" + view.farBuilt + " ferne, " + view.nearBuilt + " nahe Blöcke)")
+
+        // Ein Flug ohne Fenster in Echtzeit: geradeaus in Blickrichtung mit `speed` m/s, je Bild nachladen (bis `budget-ms`) und rendern;
+        // am Ende die Zeiten.
+        float fly = options.Get("fly", "0").ToFloat()
+        if (fly > 0.0) {
+            float speed = options.Get("speed", "15").ToFloat()
+            float budget = options.Get("budget-ms", "30").ToFloat()
+            view.lead = options.Get("lead", (speed * 2.5) + "").ToFloat()
+            bool onGround = options.Get("drive", "") != ""
+            var flyGround = new Ground(options.Get("world", "world"))
+            var flyObstacles = new Obstacles(options.Get("world", "world"))
+            int baseNear = view.near
+            // ab 35 m/s (126 km/h) ohne die nahe Voxel-Stufe: sie wäre vorbei, bevor sie gebaut ist
+            if (speed > 35.0) { view.near = -1 }
+            float h = cam.RotationY / 1deg * Math.PI / 180.0
+            float fx = -Math.Sin(h)
+            float fz = -Math.Cos(h)
+            int renderTicks = 0
+            int updateTicks = 0
+            int worstUpdate = 0
+            int worstRender = 0
+            int behind = 0
+            int frames = 0
+            float flown = 0.0
+            int last = DateTime.Now.Ticks
+            while (flown < fly) {
+                int now = DateTime.Now.Ticks
+                float step = speed * (now - last) / 10000000.0
+                last = now
+                flown = flown + step
+                if (onGround && flyObstacles.Blocked(view.originE + cam.X / 1m + fx * step, view.originN - (cam.Z / 1m + fz * step), 0.6)) {
+                    // am Boden: vor einer Wand endet der Messflug
+                    print("Wand nach " + flown + " m")
+                    break
+                }
+                cam.SetPosition(cam.X + fx * step * 1m, cam.Y, cam.Z + fz * step * 1m)
+                if (onGround) {
+                    any gh = flyGround.At(view.originE + cam.X / 1m, view.originN - cam.Z / 1m)
+                    if (gh != undefined) { cam.Y = (gh - view.originZ + 1.4) * 1m }
+                }
+                int t0 = DateTime.Now.Ticks
+                var w = view.WorldOf(cam)
+                int missing = view.Update(w[0], w[1], budget)
+                if (missing > 0) { behind++ }
+                int t1 = DateTime.Now.Ticks
+                cam.Render()
+                int t2 = DateTime.Now.Ticks
+                updateTicks = updateTicks + (t1 - t0)
+                renderTicks = renderTicks + (t2 - t1)
+                worstUpdate = Math.Max(worstUpdate, t1 - t0)
+                worstRender = Math.Max(worstRender, t2 - t1)
+                frames++
+            }
+            if (frames == 0) { frames = 1 }
+            print(frames + " Bilder über " + fly + " m: Nachladen im Mittel " + (updateTicks / frames / 10000.0) + " ms (höchstens " + (worstUpdate / 10000.0) + " ms), Rendern " + (renderTicks / frames / 10000.0) + " ms (höchstens " + (worstRender / 10000.0) + " ms)")
+            print("ferne Blöcke: " + view.farBuilt + " (je " + (view.farTicks / Math.Max(1, view.farBuilt) / 10000.0) + " ms), nahe Blöcke: " + view.nearBuilt + " (je " + (view.nearTicks / Math.Max(1, view.nearBuilt) / 10000.0) + " ms, davon Modelle im Hauptprogramm " + (view.nearShowTicks / Math.Max(1, view.nearBuilt) / 10000.0) + " ms; " + view.late + " zu spät), aus dem Vorrat: " + view.fromCache + ", entladen: " + view.dropped + "; jetzt " + view.objects + " Objekte mit " + view.triangles + " Dreiecken sichtbar, " + view.cachedTriangles + " im Vorrat (" + view.blocks.Count + " Blöcke, Viewer " + view.memory.processMb + " MB, frei " + Math.Round(view.memory.freePercent) + " %); in " + behind + " von " + frames + " Bildern war noch nicht alles in der gewünschten Stufe")
+        }
+
+
+        string shot = options.Get("shot", "")
+        if (shot != "") {
+            var at0 = view.WorldOf(cam)
+            atmosphere.Update(at0[0], at0[1], 0.0)
+            // der Regen braucht ein paar Sekunden, bis er fällt
+            if (weather.rain > 0.0) {
+                for (int k = 0; k < 30; k++) { scene.Advance(0.1s) }
+            }
+            int t0 = DateTime.Now.Ticks
+            cam.Render()
+            print("Bild in " + ((DateTime.Now.Ticks - t0) / 10000.0) + " ms")
+            IO.File.WriteAllBytes(shot, fb.ToPng())
+            print(shot)
+            view.Close()
+            return 0
+        }
+
+        var win = new Window(fb, "Ruhrpott-Raser - " + e + ", " + n)
+        win.EnableEvents()
+        bool forward = false
+        bool back = false
+        bool left = false
+        bool right = false
+        bool rise = false
+        bool sink = false
+        bool turnLeft = false
+        bool turnRight = false
+        bool lookUp = false
+        bool lookDown = false
+        bool fast = false
+        // Fahrmodus (Standard): die Kamera 1,4 m über dem Gelände, W/S Gas und Bremse (rückwärts), A/D lenken, Umschalt mehr Gas; F wechselt zum
+        // freien Flug und zurück. Geladen wird voraus (Tempo x 2,5 s), ab 126 km/h ohne die nahe Voxel-Stufe.
+        bool driving = options.Get("free", "") == ""
+        float velocity = 0.0
+        var terrain = new Ground(options.Get("world", "world"))
+        var obstacles = new Obstacles(options.Get("world", "world"))
+        int nearRadius = view.near
+        float heading = cam.RotationY / 1deg
+        float tilt = cam.RotationX / 1deg
+        string presets[] = ["klar", "wolkig", "bedeckt", "niesel", "regen", "starkregen", "dunst", "nebel", "dichter-nebel"]
+        int presetIndex = 0
+        int last = DateTime.Now.Ticks
+        while (win.Tick()) {
+            any ev = win.NextEvent()
+            while (ev != undefined) {
+                if (ev[0] == EventType.KeyDown || ev[0] == EventType.KeyUp) {
+                    bool pressed = ev[0] == EventType.KeyDown
+                    int key = ev[1]
+                    if (key == 119) { forward = pressed }
+                    else if (key == 115) { back = pressed }
+                    else if (key == 97) { left = pressed }
+                    else if (key == 100) { right = pressed }
+                    else if (key == 101) { rise = pressed }
+                    else if (key == 113) { sink = pressed }
+                    else if (key == 1073741904) { turnLeft = pressed }
+                    else if (key == 1073741903) { turnRight = pressed }
+                    else if (key == 1073741906) { lookUp = pressed }
+                    else if (key == 1073741905) { lookDown = pressed }
+                    else if (key == 1073742049 || key == 1073742053) { fast = pressed }
+                    else if (pressed && key == 102) {
+                        driving = !driving
+                        velocity = 0.0
+                        if (driving) { tilt = -4.0 }
+                    }
+                    else if (pressed && key == 116) {
+                        // T: eine halbe Stunde weiter, G: zurück, R: das nächste Wetter
+                        weather.hour = (weather.hour + 0.5) % 24.0
+                        weather.Update()
+                        atmosphere.Apply()
+                    } else if (pressed && key == 103) {
+                        weather.hour = (weather.hour + 23.5) % 24.0
+                        weather.Update()
+                        atmosphere.Apply()
+                    } else if (pressed && (key == 43 || key == 61 || key == 1073741911 || key == 45 || key == 1073741910)) {
+                        // + / -: Regen bzw. Nebel stärker oder schwächer (je nachdem, was gerade ist), sonst die Wolken
+                        float step = 0.1
+                        if (key == 45 || key == 1073741910) { step = -0.1 }
+                        if (weather.rain > 0.0) { weather.SetRain(weather.rain + step) } else if (weather.fog > 0.0) { weather.SetFog(weather.fog + step) } else {
+                            weather.clouds = Math.Clamp(weather.clouds + step, 0.0, 1.0)
+                            weather.Light()
+                        }
+                        atmosphere.Apply()
+                        print("Regen " + weather.rain + ", Nebel " + weather.fog + ", Wolken " + weather.clouds)
+                    } else if (pressed && key == 114) {
+                        presetIndex = (presetIndex + 1) % presets.length
+                        weather.Preset(presets[presetIndex])
+                        atmosphere.Apply()
+                        print("Wetter: " + presets[presetIndex] + ", " + Math.Floor(weather.hour) + " Uhr")
+                    }
+                }
+                ev = win.NextEvent()
+            }
+            int now = DateTime.Now.Ticks
+            float dt = (now - last) / 10000000.0
+            last = now
+            float speed = 15.0
+            if (fast) { speed = 60.0 }
+            if (driving) {
+                // Gas, Bremse, Rollwiderstand; Lenken nur in Fahrt, bei Tempo träger
+                float accel = 0.0
+                if (forward) {
+                    accel = 4.0
+                    if (fast) { accel = 9.0 }
+                    if (velocity < 0.0) { accel = 10.0 }
+                }
+                if (back) {
+                    accel = -4.0
+                    if (velocity > 0.0) { accel = -10.0 }
+                }
+                velocity = velocity + accel * dt
+                velocity = velocity - velocity * 0.05 * dt - Math.Sign(velocity) * 0.3 * dt
+                if (!forward && !back && Math.Abs(velocity) < 0.3) { velocity = 0.0 }
+                velocity = Math.Clamp(velocity, -8.0, 90.0)
+                float steer = 0.0
+                if (left || turnLeft) { steer = 1.0 }
+                if (right || turnRight) { steer = -1.0 }
+                float rate = 70.0 / (1.0 + Math.Abs(velocity) / 12.0)
+                heading = heading + steer * rate * dt * Math.Clamp(velocity / 3.0, -1.0, 1.0)
+                float hd = heading * Math.PI / 180.0
+                float nx = cam.X / 1m - Math.Sin(hd) * velocity * dt
+                float nz = cam.Z / 1m - Math.Cos(hd) * velocity * dt
+                // Kollision: nicht in Gebäude (0,6 m Abstand) - erst an der Wand entlang gleiten (nur eine Achse), sonst stehen bleiben
+                if (obstacles.Blocked(view.originE + nx, view.originN - nz, 0.6)) {
+                    float ox = cam.X / 1m
+                    float oz = cam.Z / 1m
+                    if (!obstacles.Blocked(view.originE + nx, view.originN - oz, 0.6)) {
+                        nz = oz
+                        velocity = velocity * (1.0 - Math.Min(1.0, dt * 3.0))
+                    } else if (!obstacles.Blocked(view.originE + ox, view.originN - nz, 0.6)) {
+                        nx = ox
+                        velocity = velocity * (1.0 - Math.Min(1.0, dt * 3.0))
+                    } else {
+                        nx = ox
+                        nz = oz
+                        velocity = 0.0
+                    }
+                }
+                float ny = cam.Y / 1m
+                any gh = terrain.At(view.originE + nx, view.originN - nz)
+                if (gh != undefined) {
+                    float want = gh - view.originZ + 1.4
+                    ny = ny + (want - ny) * Math.Min(1.0, dt * 8.0)
+                }
+                if (lookUp) { tilt = Math.Min(tilt + 45.0 * dt, 60.0) }
+                if (lookDown) { tilt = Math.Max(tilt - 45.0 * dt, -60.0) }
+                cam.SetPosition(nx * 1m, ny * 1m, nz * 1m)
+                cam.RotationY = heading * 1deg
+                cam.RotationX = tilt * 1deg
+                view.lead = Math.Abs(velocity) * 2.5
+                if (Math.Abs(velocity) > 35.0) { view.near = -1 } else { view.near = nearRadius }
+                var wd = view.WorldOf(cam)
+                view.Update(wd[0], wd[1], 15.0)
+                atmosphere.Update(wd[0], wd[1], dt)
+                scene.Advance(dt * 1s)
+                cam.Render()
+                continue
+            }
+            view.near = nearRadius
+            view.lead = 0.0
+            if (turnLeft) { heading = heading + 60.0 * dt }
+            if (turnRight) { heading = heading - 60.0 * dt }
+            if (lookUp) { tilt = Math.Min(tilt + 45.0 * dt, 89.0) }
+            if (lookDown) { tilt = Math.Max(tilt - 45.0 * dt, -89.0) }
+            float h = heading * Math.PI / 180.0
+            float fx = -Math.Sin(h)
+            float fz = -Math.Cos(h)
+            float mx = 0.0
+            float mz = 0.0
+            float my = 0.0
+            if (forward) {
+                mx = mx + fx
+                mz = mz + fz
+            }
+            if (back) {
+                mx = mx - fx
+                mz = mz - fz
+            }
+            if (left) {
+                mx = mx + fz
+                mz = mz - fx
+            }
+            if (right) {
+                mx = mx - fz
+                mz = mz + fx
+            }
+            if (rise) { my = my + 1.0 }
+            if (sink) { my = my - 1.0 }
+            cam.SetPosition(cam.X + mx * speed * dt * 1m, cam.Y + my * speed * dt * 1m, cam.Z + mz * speed * dt * 1m)
+            cam.RotationY = heading * 1deg
+            cam.RotationX = tilt * 1deg
+            var w = view.WorldOf(cam)
+            view.Update(w[0], w[1], 15.0)
+            atmosphere.Update(w[0], w[1], dt)
+            scene.Advance(dt * 1s)
+            cam.Render()
+        }
+        view.Close()
+        return 0
+    }
+}
+
+Environment.Exit(Viewer.Main(Environment.Args))

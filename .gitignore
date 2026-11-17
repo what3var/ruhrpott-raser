@@ -1,0 +1,6 @@
+bin/
+obj/
+/world/
+*.obj
+*.mtl
+/data/raw/

@@ -1,0 +1,167 @@
+// Raser.Store: Geometrien als WKB (Well-Known Binary, ISO, Little Endian) - so gehen sie verlustfrei zu PostGIS (ST_GeomFromWKB) und zurück (ST_AsBinary).
+//
+// Typen: Point (1), LineString (2), Polygon (3), MultiPolygon (6); mit Z jeweils + 1000. Ringe werden geschlossen geschrieben (erster Punkt am Ende
+// wiederholt, wie WKB es verlangt) und ohne den wiederholten Punkt gelesen - so wie Raser die Ringe hält.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class Wkb {
+        static undefined Header(ByteWriter w, defined int type) {
+            w.Byte(1)                // Little Endian
+            w.Int32(type)
+        }
+
+        static undefined Float(ByteWriter w, defined float v) {
+            w.Reserve(8)
+            w.data.WriteFloat64(w.length, v, true)
+            w.length = w.length + 8
+        }
+
+        static byte[] Point(defined float x, defined float y) {
+            var w = new Raser.ByteWriter(32)
+            Raser.Wkb.Header(w, 1)
+            Raser.Wkb.Float(w, x)
+            Raser.Wkb.Float(w, y)
+            return w.ToBytes()
+        }
+
+        // points: x0, y0, x1, y1, ...
+        static byte[] LineString(float points[]) {
+            var w = new Raser.ByteWriter(16 + points.length * 8)
+            Raser.Wkb.Header(w, 2)
+            w.Int32(points.length / 2)
+            for (int i = 0; i < points.length; i++) { Raser.Wkb.Float(w, points[i]) }
+            return w.ToBytes()
+        }
+
+        // Ein Ring (x, y bei stride 2; x, y, z bei stride 3) als geschlossener Ring.
+        static undefined Ring(ByteWriter w, float ring[], defined int stride, defined int dims) {
+            int n = ring.length / stride
+            w.Int32(n + 1)
+            for (int i = 0; i <= n; i++) {
+                int k = (i % n) * stride
+                for (int d = 0; d < dims; d++) { Raser.Wkb.Float(w, ring[k + d]) }
+            }
+        }
+
+        // Ein Polygon ohne Löcher aus einem Ring mit x, y (stride 2).
+        static byte[] Polygon(float ring[]) {
+            var w = new Raser.ByteWriter(32 + ring.length * 8)
+            Raser.Wkb.Header(w, 3)
+            w.Int32(1)
+            Raser.Wkb.Ring(w, ring, 2, 2)
+            return w.ToBytes()
+        }
+
+        // Mehrere Polygone mit x, y, z (je ein Ring, stride 3).
+        static byte[] MultiPolygonZ(List<RoofFace> faces) {
+            var w = new Raser.ByteWriter(64)
+            Raser.Wkb.Header(w, 1006)
+            w.Int32(faces.Count)
+            foreach (f in faces) {
+                Raser.Wkb.Header(w, 1003)
+                w.Int32(1)
+                Raser.Wkb.Ring(w, f.points, 3, 3)
+            }
+            return w.ToBytes()
+        }
+
+        // ---- Lesen ----
+
+        // Liest den Kopf: gibt [Typ ohne Z-Kennung, Dimensionen] und lässt den Leser dahinter stehen.
+        static int[] ReadHeader(ByteReader r) {
+            int order = r.Byte()
+            if (order != 1) { throw new Raser.DataException("WKB: only little endian is read (ST_AsBinary(geom, 'NDR')).") }
+            int type = r.Int32()
+            int dims = 2
+            if (type > 1000 && type < 2000) {
+                type = type - 1000
+                dims = 3
+            }
+            if ((type & 0x80000000) != 0) {
+                type = type & 0xFFFF
+                dims = 3
+            }
+            int result[] = [type, dims]
+            return result
+        }
+
+        static defined float ReadFloat(ByteReader r) {
+            r.Need(8)
+            float v = r.data.ReadFloat64(r.position, true)
+            r.position = r.position + 8
+            return v
+        }
+
+        // Ein Ring ohne den wiederholten Schlusspunkt, mit `keep` Werten je Punkt (2: x, y; 3: x, y, z).
+        static float[] ReadRing(ByteReader r, defined int dims, defined int keep) {
+            int n = r.Int32()
+            int m = n
+            if (n > 1) { m = n - 1 }
+            float result[] = new float[m * keep]
+            for (int i = 0; i < n; i++) {
+                for (int d = 0; d < dims; d++) {
+                    float v = Raser.Wkb.ReadFloat(r)
+                    if (i < m && d < keep) { result[i * keep + d] = v }
+                }
+            }
+            return result
+        }
+
+        // Der äußere Ring eines Polygons (x, y).
+        static float[] ReadPolygon(byte data[]) {
+            var r = new Raser.ByteReader(data)
+            var h = Raser.Wkb.ReadHeader(r)
+            if (h[0] != 3) { throw new Raser.DataException("WKB: expected a polygon, found type " + h[0] + ".") }
+            int rings = r.Int32()
+            var outer = Raser.Wkb.ReadRing(r, h[1], 2)
+            return outer
+        }
+
+        static float[] ReadLineString(byte data[]) {
+            var r = new Raser.ByteReader(data)
+            var h = Raser.Wkb.ReadHeader(r)
+            if (h[0] != 2) { throw new Raser.DataException("WKB: expected a line string, found type " + h[0] + ".") }
+            int n = r.Int32()
+            float result[] = new float[n * 2]
+            for (int i = 0; i < n; i++) {
+                for (int d = 0; d < h[1]; d++) {
+                    float v = Raser.Wkb.ReadFloat(r)
+                    if (d < 2) { result[i * 2 + d] = v }
+                }
+            }
+            return result
+        }
+
+        static float[] ReadPoint(byte data[]) {
+            var r = new Raser.ByteReader(data)
+            var h = Raser.Wkb.ReadHeader(r)
+            if (h[0] != 1) { throw new Raser.DataException("WKB: expected a point, found type " + h[0] + ".") }
+            float x = Raser.Wkb.ReadFloat(r)
+            float y = Raser.Wkb.ReadFloat(r)
+            float result[] = [x, y]
+            return result
+        }
+
+        // Die Polygone eines MultiPolygonZ als Dachflächen (x, y, z; je der äußere Ring).
+        static List<RoofFace> ReadMultiPolygonZ(byte data[]) {
+            var faces = new List<RoofFace>()
+            var r = new Raser.ByteReader(data)
+            var h = Raser.Wkb.ReadHeader(r)
+            if (h[0] != 6) { throw new Raser.DataException("WKB: expected a multi polygon, found type " + h[0] + ".") }
+            int n = r.Int32()
+            for (int i = 0; i < n; i++) {
+                var ph = Raser.Wkb.ReadHeader(r)
+                int rings = r.Int32()
+                var face = new Raser.RoofFace()
+                for (int k = 0; k < rings; k++) {
+                    var ring = Raser.Wkb.ReadRing(r, ph[1], 3)
+                    if (k == 0) { face.points = take ring }
+                }
+                faces.Add(take face)
+            }
+            return faces
+        }
+    }
+}

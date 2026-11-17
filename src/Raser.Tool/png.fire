@@ -1,0 +1,55 @@
+// Raser.Tool: Bilder als PNG schreiben (RGB, 8 Bit) - für Draufsichten zur Kontrolle.
+#import "compression"
+#import "hash"
+#import "raser.core"
+
+class Png {
+    static undefined Chunk(Raser.ByteWriter w, string type, byte data[]) {
+        Png.BigEndian(w, data.length)
+        var body = new Raser.ByteWriter(data.length + 4)
+        for (int i = 0; i < 4; i++) { body.Byte(type[i].ToInt()) }
+        body.Bytes(data)
+        var bytes = body.ToBytes()
+        w.Bytes(bytes)
+        Png.BigEndian(w, Hash.Crc32.Of(bytes))
+    }
+
+    static undefined BigEndian(Raser.ByteWriter w, defined int v) {
+        w.Byte(v >> 24)
+        w.Byte(v >> 16)
+        w.Byte(v >> 8)
+        w.Byte(v)
+    }
+
+    // rgb: width * height Farben 0xRRGGBB, Zeile für Zeile von oben.
+    static byte[] Encode(int rgb[], defined int width, defined int height) {
+        var w = new Raser.ByteWriter(width * height + 1024)
+        int magic[] = [137, 80, 78, 71, 13, 10, 26, 10]
+        foreach (b in magic) { w.Byte(b) }
+        var header = new Raser.ByteWriter(13)
+        Png.BigEndian(header, width)
+        Png.BigEndian(header, height)
+        header.Byte(8)      // Bit je Kanal
+        header.Byte(2)      // RGB
+        header.Byte(0)
+        header.Byte(0)
+        header.Byte(0)
+        Png.Chunk(w, "IHDR", header.ToBytes())
+        byte raw[] = new byte[height * (width * 3 + 1)]
+        int at = 0
+        for (int y = 0; y < height; y++) {
+            raw[at] = 0
+            at++
+            for (int x = 0; x < width; x++) {
+                int c = rgb[y * width + x]
+                raw[at] = (c >> 16) & 255
+                raw[at + 1] = (c >> 8) & 255
+                raw[at + 2] = c & 255
+                at = at + 3
+            }
+        }
+        Png.Chunk(w, "IDAT", Compression.ZLib.Compress(raw, 6))
+        Png.Chunk(w, "IEND", new byte[0])
+        return w.ToBytes()
+    }
+}

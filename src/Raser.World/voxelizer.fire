@@ -1,0 +1,1597 @@
+// Raser.World: die deterministische Voxelisierung (Konzept, Abschnitt 2). Zwischenlayer + Overrides + Seed ergeben immer denselben Chunk.
+//
+// Gelände: In jeder Voxel-Säule liegt die Oberfläche im Voxel der höchsten Ecke; die vier Eckhöhen kommen aus dem Höhenraster an den Ecken der Säule
+// (gerundet auf 5 cm). Nachbarn rechnen dieselbe Ecke aus denselben Daten - die Höhen-Schnitte schließen lückenlos aneinander (Konzept, Abschnitt 1).
+// Unter der Oberfläche: ein paar Voxel Erde (unter Straßen Schotter), darunter Fels.
+// Gebäude: Säulen, deren Mitte im Grundriss liegt, sind Gebäude vom Boden bis zum Dach; Säulen am Rand sind Wand (mit Fensterreihen je Geschoss),
+// innen liegen Decken alle 2,8 m. Das Dach ist das Voxel unter der Dachfläche, wie beim Gelände mit Eckhöhen abgeschnitten. Mit LoD2-Dachflächen
+// kommt die Höhe aus deren Ebenen, sonst aus Dachform, Traufe und First.
+#import "raser.core"
+#import "json"
+
+namespace Raser {
+    // Was die Voxelisierung über ein Gebäude vorab berechnet.
+    class RoofModel {
+        Building building
+        Box2 box
+        Facade facade           // Fenster und Türen (Raser.Facade, im Voxelizer geplant)
+        defined float dx        // Firstrichtung
+        defined float dy
+        defined float midAlong
+        defined float midAcross
+        defined float halfAlong
+        defined float halfAcross
+        defined int groundVoxel
+        defined bool pitched
+        defined int wallColor
+        defined int roofColor
+        float eaveRing[]        // Steildach: der Grundriss um den Dachüberstand nach außen versetzt (undefined: kein Überstand)
+        List<float> passages    // Durchfahrten (Torbögen): je Stück ax, ay, bx, by, halbe Breite, lichte Höhe, Stich des Bogens
+        float planes[]          // je Dachfläche: a, b, c (z = a x + b y + c), gültig (1) oder senkrecht (0)
+        float faceBoxes[]       // je Dachfläche: minX, minY, maxX, maxY
+
+        construct(Building b, defined int seed) {
+            this.building = b
+            this.box = Raser.Box2.Of(b.footprint)
+            try this.box.TakeTo(this)
+            var dir = Raser.Geo.LongestEdge(b.footprint)
+            this.dx = dir[0]
+            this.dy = dir[1]
+            float minA = 1.0e30
+            float maxA = -1.0e30
+            float minC = 1.0e30
+            float maxC = -1.0e30
+            for (int i = 0; i + 1 < b.footprint.length; i = i + 2) {
+                float a = b.footprint[i] * this.dx + b.footprint[i + 1] * this.dy
+                float c = -b.footprint[i] * this.dy + b.footprint[i + 1] * this.dx
+                if (a < minA) { minA = a }
+                if (a > maxA) { maxA = a }
+                if (c < minC) { minC = c }
+                if (c > maxC) { maxC = c }
+            }
+            this.midAlong = (minA + maxA) / 2.0
+            this.midAcross = (minC + maxC) / 2.0
+            this.halfAlong = (maxA - minA) / 2.0
+            this.halfAcross = (maxC - minC) / 2.0
+            if (this.halfAcross < 0.1) { this.halfAcross = 0.1 }
+            if (this.halfAlong < 0.1) { this.halfAlong = 0.1 }
+            this.groundVoxel = Raser.Grid.VoxelOf(b.ground)
+            this.pitched = b.roofs.Count > 0 || (b.ridge - b.eaves > 0.3 && b.roofType != Raser.RoofType.Flat)
+            if (this.pitched && b.ridge - b.eaves > 0.5) { this.eaveRing = Raser.Geo.Offset(b.footprint, Raser.RoofModel.Overhang) }
+            int h = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), b.id), seed)
+            this.wallColor = Raser.RoofModel.Variant(b.wallColor, h)
+            this.roofColor = b.roofColor
+            if (!this.pitched && b.roof == Raser.Material.RoofTiles) { this.roofColor = Raser.Palette.RoofFlat }
+            // je Gebäude eine Dreckstufe für Wand und Dach (Raser.Palette.Dirty; aus ID und Seed, also stabil)
+            this.wallColor = Raser.Palette.Dirty(this.wallColor, Raser.RoofModel.DirtLevel(h >> 8))
+            this.roofColor = Raser.Palette.Dirty(this.roofColor, Raser.RoofModel.DirtLevel(h >> 16))
+            int nf = b.roofs.Count
+            this.planes = new float[nf * 4]
+            this.faceBoxes = new float[nf * 4]
+            for (int f = 0; f < nf; f++) {
+                float pts[] = b.roofs[f].points
+                var plane = Raser.Geo.Plane(pts)
+                for (int k = 0; k < 4; k++) { this.planes[f * 4 + k] = plane[k] }
+                var box = Raser.Box2.Of(pts, 3)
+                this.faceBoxes[f * 4] = box.minX
+                this.faceBoxes[f * 4 + 1] = box.minY
+                this.faceBoxes[f * 4 + 2] = box.maxX
+                this.faceBoxes[f * 4 + 3] = box.maxY
+            }
+        }
+
+        // Wie schmutzig: 0 sauber (35 %), 1 (35 %), 2 (20 %), 3 stark (10 %).
+        static defined int DirtLevel(defined int h) {
+            int p = (h & 1023) % 100
+            if (p < 35) { return 0 }
+            if (p < 70) { return 1 }
+            if (p < 90) { return 2 }
+            return 3
+        }
+
+        // Ziegel und Putz in leichten Varianten (aus ID und Seed, also stabil).
+        static defined int Variant(defined int color, defined int h) {
+            int pick = (h >> 33) & 3
+            if (color == Raser.Palette.Brick) {
+                int options[] = [Raser.Palette.Brick, Raser.Palette.BrickDark, Raser.Palette.BrickLight, Raser.Palette.Brick]
+                return options[pick]
+            }
+            if (color == Raser.Palette.Plaster) {
+                int options[] = [Raser.Palette.Plaster, Raser.Palette.PlasterCream, Raser.Palette.PlasterGrey, Raser.Palette.PlasterYellow]
+                return options[pick]
+            }
+            return color
+        }
+
+        defined bool Contains(defined float x, defined float y) {
+            if (!this.box.Contains(x, y)) { return false }
+            return Raser.Geo.Inside(this.building.footprint, x, y)
+        }
+
+        static readonly defined float Overhang = 0.4    // Dachüberstand von Steildächern an Traufe und Ortgang (m)
+
+        // Die Höhe der Dachfläche an (x, y).
+        defined float RoofAt(defined float x, defined float y) {
+            return this.RoofSurface(x, y, false)
+        }
+
+        // Die Dachfläche über den Grundriss hinaus fortgesetzt (für den Überstand: an der Traufe fällt sie weiter, am Ortgang läuft sie weiter).
+        defined float RoofOut(defined float x, defined float y) {
+            return this.RoofSurface(x, y, true)
+        }
+
+        defined float RoofSurface(defined float x, defined float y, defined bool outside) {
+            Building b = this.building
+            if (b.roofs.Count > 0) { return this.FacesAt(x, y) }
+            if (!this.pitched) { return b.eaves }
+            float rise = b.ridge - b.eaves
+            float across = Math.Abs(-x * this.dy + y * this.dx - this.midAcross) / this.halfAcross
+            float along = Math.Abs(x * this.dx + y * this.dy - this.midAlong)
+            float h = b.ridge
+            switch (b.roofType) {
+                case Raser.RoofType.Shed:
+                    float t = (-x * this.dy + y * this.dx - this.midAcross) / this.halfAcross
+                    h = b.eaves + rise * (t + 1.0) / 2.0
+                case Raser.RoofType.Hip:
+                    float end = (along - (this.halfAlong - this.halfAcross)) / this.halfAcross
+                    if (end < 0.0) { end = 0.0 }
+                    h = b.ridge - rise * Math.Max(across, end)
+                case Raser.RoofType.Mansard:
+                    float end2 = (along - (this.halfAlong - this.halfAcross)) / this.halfAcross
+                    if (end2 < 0.0) { end2 = 0.0 }
+                    h = b.ridge - rise * Math.Max(across, end2)
+                case Raser.RoofType.Pyramid:
+                    h = b.ridge - rise * Math.Max(across, along / this.halfAlong)
+                case default:
+                    h = b.ridge - rise * across
+            }
+            if (outside) { return Math.Clamp(h, b.eaves - 2.0, b.ridge) }
+            return Math.Clamp(h, b.eaves, b.ridge)
+        }
+
+        // Aus LoD2-Dachflächen: die höchste Ebene, in deren Polygon der Punkt liegt; sonst die Ebene der nächsten Fläche, auf Traufe..First begrenzt.
+        defined float FacesAt(defined float x, defined float y) {
+            Building b = this.building
+            float best = -1.0e30
+            bool found = false
+            float nearDist = 1.0e30
+            float nearHeight = b.eaves
+            int nf = b.roofs.Count
+            for (int f = 0; f < nf; f++) {
+                if (this.planes[f * 4 + 3] == 0.0) { continue }
+                float h = this.planes[f * 4] * x + this.planes[f * 4 + 1] * y + this.planes[f * 4 + 2]
+                bool inBox = x >= this.faceBoxes[f * 4] && y >= this.faceBoxes[f * 4 + 1] && x <= this.faceBoxes[f * 4 + 2] && y <= this.faceBoxes[f * 4 + 3]
+                if (inBox && Raser.Geo.Inside(b.roofs[f].points, x, y, 3)) {
+                    if (h > best) { best = h }
+                    found = true
+                } else if (!found) {
+                    float d = Raser.RoofModel.DistanceToRing(b.roofs[f].points, x, y)
+                    if (d < nearDist) {
+                        nearDist = d
+                        nearHeight = h
+                    }
+                }
+            }
+            float top = b.ridge
+            if (top < b.eaves) { top = b.eaves }
+            if (found) { return Math.Clamp(best, b.ground, top + 0.5) }
+            return Math.Clamp(nearHeight, b.ground, top)
+        }
+
+        static defined float DistanceToRing(float poly[], defined float x, defined float y) {
+            int n = poly.length / 3
+            float best = 1.0e30
+            int j = n - 1
+            for (int i = 0; i < n; i++) {
+                float d = Raser.Geo.DistanceToSegment(x, y, poly[j * 3], poly[j * 3 + 1], poly[i * 3], poly[i * 3 + 1])
+                if (d < best) { best = d }
+                j = i
+            }
+            return best
+        }
+    }
+
+    class Voxelizer {
+        // 2: neu erzeugt, weil native Builds vor fire 8a0292a die unterste Ebene zu hoch setzten (HeightRaster.Min falsch gelesen)
+        // 3: bei Gleichstand (Straßenbreite, Flächenpriorität, überlappende Gebäude) gewinnt die kleinere ID - unabhängig von der Reihenfolge der Merkmale
+        // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
+        // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
+        // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 29: Durchfahrten 25 cm breiter in den Voxeln (glatte Seitenwände im eingehängten Gewölbe)
+        // 28: Bögen als eingehängte Stücke (Raser.Facade.Arches, Gewölbe der Durchfahrten): die Wand lässt Rechtecke bis zum Scheitel frei
+        // 27: Bögen bleiben in der Wandflucht (kein Bogenschnitt, wo ein Schnitt im Grundriss ist), innen wie außen glatt; schräge Durchfahrten mit
+        //     geradem Sturz; keine Fenster und Türen in Durchfahrten
+        // 26: Wandsäulen unter Steildächern ab der tiefsten Dachecke mit Dachmaterial (graue Streifen im Dach)
+        // 25: Kirchen (Spitzbogenfenster, Portal, Schallöffnungen, ohne Zwischendecken)
+        // 24: Punkte auf Läufen, die über den Ringanfang laufen (Stufen vor Türen lagen falsch); Pavillons ohne Zwischendecken
+        // 23: Fenster und Türen als eingehängte Elemente (Raser.Facade.Panes), die Wand lässt nur die Öffnung frei
+        // 22: innere Wandlage auch hinter Schnitten (Glas in runden und schrägen Wänden fehlte)
+        // 21: Haustüren mit Rundbogen und Oberlicht; Durchfahrten immer mit glattem Bogen (Achse nach der Rasterrichtung)
+        // 20: Durchfahrten mit Torbögen (Raser.Plan.Elevation für den Bogen)
+        // 19: Außenwände zwei Voxel dick, Öffnungen mit Laibung (außen frei, Glas und Tür innen)
+        // 18: Dachüberstand bei Steildächern (40 cm, RoofModel.eaveRing), das Dach über der Wand voll
+        // 17: Fenster mit Licht dahinter (Raser.Palette.GlassLit: am Tag wie Glas, nachts warm)
+        // 16: Fenster und Türen aus der Fassade (Raser.Facade): Läufe, Plätze, Stil nach Nutzung, Stufen vor erhöhten Haustüren
+        // 15: Grünstreifen mit Sträuchern (Raser.Strips)
+        // 14: Grundrisse bereinigt (Raser.Footprints: Punkte rasten ein), Bäume rücken mit ihrer Baumscheibe von der Fahrbahn weg (Raser.Props.Settle beim Laden)
+        // 13: Schnitte mit Versatz (Raser.Plan.Cut) statt Diagonalen und Rundungen - Kanten ohne Stufen in jedem Winkel
+        // 12: Rundungen (Raser.Plan.Arc) an Ketten kurzer, gleichmäßig drehender Kanten; der Sockel unter Bauelementen bündig mit dem Gelände
+        // 11: die Grundriss-Formen erst über dem Gelände (Sockel), keine Löcher am Wandfuß
+        // 10: Diagonalen nach Bresenham - je Voxelreihe ein Element, lückenlos und ohne Drift
+        // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
+        // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
+        // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
+        static readonly defined int Version = 29
+        static readonly defined float StoreyHeight = 2.8
+
+        Tile tile
+        defined int seed
+        defined int overridesHash
+        defined int dataHash
+        List<RoofModel> models
+        List<Box2> roadBoxes
+        List<Box2> areaBoxes
+        // die Props als gestempelte Modelle: das Modell (geteilt) und der Fußpunkt in Voxeln der Welt
+        List<VoxelModel> propModels
+        List<int> propAt                  // je Prop: x, y, z (Voxel der Welt) und der Index des Modells
+        defined float propTop             // die höchste Spitze (m)
+
+        // Wendet die Overrides auf die Kachel an (an Ort und Stelle) und bereitet die Merkmale vor.
+        construct(Tile tile, OverrideSet overrides, defined int seed) {
+            this.tile = tile
+            try tile.TakeTo(this)
+            this.seed = seed
+            if (overrides != undefined) {
+                try overrides.TakeTo(this)
+                this.overridesHash = overrides.HashFor(tile)
+                overrides.Apply(tile)
+            }
+            this.dataHash = tile.DataHash()
+            this.models = new List<RoofModel>()
+            foreach (b in tile.data.buildings) {
+                if (b.footprint == undefined || b.footprint.length < 6) { continue }
+                if (b.ridge <= b.ground) { continue }
+                var model = new Raser.RoofModel(b, seed)
+                Raser.Voxelizer.PlanFacade(model, tile.data.roads)
+                this.models.Add(take model)
+            }
+            this.roadBoxes = new List<Box2>()
+            foreach (r in tile.data.roads) {
+                var box = Raser.Box2.Of(r.points)
+                box.Grow(r.width / 2.0 + 0.2)
+                this.roadBoxes.Add(take box)
+            }
+            this.areaBoxes = new List<Box2>()
+            foreach (a in tile.data.areas) { this.areaBoxes.Add(Raser.Box2.Of(a.ring)) }
+            this.propModels = new List<VoxelModel>()
+            this.propAt = new List<int>()
+            this.propIndex = new Dictionary<string, int>()
+            this.AddProps(this.tile, 0.0, 0.0)
+            this.AddBushes()
+        }
+
+        Dictionary<string, int> propIndex
+
+        // Die Modelle der Props einer Kachel (gleiche Art, Höhe, Variante, Richtung: ein Modell) und ihre Fußpunkte: auf dem obersten Gelände-Voxel
+        // ihrer Säule. (ox, oy): wo die Kachel `t` liegt, von dieser aus (m) - für die Nachbarn, deren Bäume über die Grenze ragen; von ihnen nur
+        // die Props bis 12 m an dieser Kachel.
+        undefined AddProps(Tile t, defined float ox, defined float oy) {
+            foreach (p in t.data.props) { this.AddProp(t, ox, oy, p.kind, p.height, p.id, p.angle, p.detail, p.x + ox, p.y + oy) }
+        }
+
+        // Die Sträucher in den Grünstreifen der Kachel (Raser.Strips): in Reihen alle 0,6 m, quer alle 0,5 m, ein Teil frei; nicht auf der
+        // Einfassung und nicht dicht an Bäumen und Laternen. Deterministisch aus der Straße und der Lage im Streifen.
+        undefined AddBushes() {
+            if (this.tile.strips == undefined) { return }
+            var probe = new Raser.StripProbe()
+            foreach (strip in this.tile.strips) {
+                float line[] = undefined
+                foreach (r in this.tile.data.roads) {
+                    if (r.id == strip.road) { line = r.points }
+                }
+                if (line == undefined) { continue }
+                int row = 0
+                for (float s = strip.s0 + 0.4; s < strip.s1 - 0.3; s = s + 0.6) {
+                    int col = 0
+                    for (float q = Raser.Strips.Edge + 0.35; q < strip.width - Raser.Strips.Edge - 0.2; q = q + 0.5) {
+                        int seed = strip.road + row * 7919 + col * 104729
+                        col++
+                        if (Raser.Props.Rand(seed, 70, 0) < 0.3) { continue }
+                        float js = (Raser.Props.Rand(seed, 71, 0) - 0.5) * 0.3
+                        float jq = (Raser.Props.Rand(seed, 72, 0) - 0.5) * 0.2
+                        Raser.Strips.PointAt(line, s + js, strip.side * (strip.half + q + jq), probe)
+                        float x = probe.x
+                        float y = probe.y
+                        if (x < -1.0 || y < -1.0 || x > 257.0 || y > 257.0) { continue }
+                        bool near = false
+                        foreach (p in this.tile.data.props) {
+                            if ((p.kind == "tree" || p.kind == "lamp" || p.kind == "sign") && (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y) < 0.36) {
+                                near = true
+                                break
+                            }
+                        }
+                        if (near) { continue }
+                        this.AddProp(this.tile, 0.0, 0.0, "bush", 0.0, seed, 0.0, undefined, x, y)
+                    }
+                    row++
+                }
+            }
+        }
+
+        // Ein Prop an (px, py) (kachel-lokal hier); t, ox, oy: die Kachel, aus deren Höhenraster der Fußpunkt kommt, und wo sie liegt.
+        undefined AddProp(Tile t, defined float ox, defined float oy, string kind, defined float pheight, defined int id, defined float angle, string detail, defined float px, defined float py) {
+            int vx0 = this.tile.key.x * 1280
+            int vy0 = this.tile.key.y * 1280
+            if (px < -12.0 || py < -12.0 || px > 268.0 || py > 268.0) { return }
+            int variant = Math.Abs(id) % 6
+            float height = Math.Round(pheight)
+            int quarters = (Math.Round(angle / 90.0)!int % 4 + 4) % 4
+            string key = kind + "/" + height + "/" + variant + "/" + quarters + "/" + detail
+            if (!this.propIndex.ContainsKey(key)) {
+                var m = Raser.Props.Make(kind, height, Raser.Fnv.AddInt(Raser.Fnv.Start(), variant + 17 * kind.Length), quarters * 90.0, detail)
+                if (m == undefined) { return }
+                this.propIndex[key] = this.propModels.Count
+                this.propModels.Add(take m)
+            }
+            int mi = this.propIndex[key]
+            int cx = Math.Floor(px / 0.2)!int
+            int cy = Math.Floor(py / 0.2)!int
+            // das Gelände aus dem Raster der Kachel des Props (kachel-lokal dort)
+            float lx = cx * 0.2 - ox
+            float ly = cy * 0.2 - oy
+            float h0 = 0.0
+            float h1 = 0.0
+            float h2 = 0.0
+            float h3 = 0.0
+            if (t.heights != undefined) {
+                h0 = t.heights.At(lx, ly)
+                h1 = t.heights.At(lx + 0.2, ly)
+                h2 = t.heights.At(lx + 0.2, ly + 0.2)
+                h3 = t.heights.At(lx, ly + 0.2)
+            }
+            int z = Raser.Voxelizer.TopVoxel(h0, h1, h2, h3) + 1
+            this.propAt.Add(vx0 + cx)
+            this.propAt.Add(vy0 + cy)
+            this.propAt.Add(z)
+            this.propAt.Add(mi)
+            float top = (z + this.propModels[mi].sz) * 0.2
+            if (top > this.propTop) { this.propTop = top }
+        }
+
+        // Stempelt die Props in einen Chunk: nur in Luft (Gebäude und Gelände bleiben).
+        undefined StampProps(Chunk chunk) {
+            int kx = chunk.key.VoxelX
+            int ky = chunk.key.VoxelY
+            int kz = chunk.key.VoxelZ
+            for (int p = 0; p + 3 < this.propAt.Count; p = p + 4) {
+                var m = this.propModels[this.propAt[p + 3]]
+                // die Ecke des Modells in Voxeln der Welt
+                int mx = this.propAt[p] - m.ox
+                int my = this.propAt[p + 1] - m.oy
+                int mz = this.propAt[p + 2]
+                if (mx + m.sx <= kx || my + m.sy <= ky || mz + m.sz <= kz || mx >= kx + 64 || my >= ky + 64 || mz >= kz + 64) { continue }
+                chunk.Allocate()
+                byte mats[] = chunk.materials
+                byte cols[] = chunk.colors
+                byte mm[] = m.materials
+                byte mc[] = m.colors
+                int x0 = Math.Max(mx, kx)
+                int x1 = Math.Min(mx + m.sx, kx + 64)
+                int y0 = Math.Max(my, ky)
+                int y1 = Math.Min(my + m.sy, ky + 64)
+                // die unterste Lage reicht ein Voxel in den Boden (in das oberste Gelände-Voxel, das oft nur zum Teil gefüllt ist): keine Lücke
+                // unter Stamm, Mast und Füßen
+                int below = mz - 1
+                if (below >= kz && below < kz + 64) {
+                    for (int y = Math.Max(my, ky); y < Math.Min(my + m.sy, ky + 64); y++) {
+                        for (int x = Math.Max(mx, kx); x < Math.Min(mx + m.sx, kx + 64); x++) {
+                            int src = (x - mx) + (y - my) * m.sx
+                            int mat = mm[src]
+                            if (mat == 0) { continue }
+                            int dst = (x - kx) + ((y - ky) << 6) + ((below - kz) << 12)
+                            if (mats[dst] > 8) { continue }          // Bauwerke bleiben
+                            mats[dst] = mat
+                            cols[dst] = mc[src]
+                            chunk.shapes.Remove(dst)
+                        }
+                    }
+                }
+                int z0 = Math.Max(mz, kz)
+                int z1 = Math.Min(mz + m.sz, kz + 64)
+                for (int z = z0; z < z1; z++) {
+                    for (int y = y0; y < y1; y++) {
+                        for (int x = x0; x < x1; x++) {
+                            int src = (x - mx) + (y - my) * m.sx + (z - mz) * m.sx * m.sy
+                            int mat = mm[src]
+                            if (mat == 0) { continue }
+                            int dst = (x - kx) + ((y - ky) << 6) + ((z - kz) << 12)
+                            if (mats[dst] != 0) { continue }
+                            mats[dst] = mat
+                            cols[dst] = mc[src]
+                        }
+                    }
+                }
+            }
+        }
+
+        // Die Höhe des Geländes an einem kachel-lokalen Punkt.
+        defined float TerrainAt(defined float x, defined float y) {
+            if (this.tile.heights == undefined) { return 0.0 }
+            return this.tile.heights.At(x, y)
+        }
+
+        // Die Chunk-Ebenen (z), die die Kachel braucht: [unterste, oberste].
+        int[] ChunkLayers() {
+            float low = 0.0
+            float high = 0.0
+            if (this.tile.heights != undefined) {
+                low = this.tile.heights.Min()
+                high = this.tile.heights.Max()
+            }
+            foreach (m in this.models) {
+                if (m.building.ridge > high) { high = m.building.ridge }
+                if (m.building.eaves > high) { high = m.building.eaves }
+                float bottom = m.building.ground - m.building.cellars * Raser.Voxelizer.StoreyHeight
+                if (bottom < low) { low = bottom }
+            }
+            if (this.propTop > high) { high = this.propTop }
+            int result[] = [Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(low - 3.0), 64), Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(high + 1.0), 64)]
+            return result
+        }
+
+        // Alle Chunk-Schlüssel der Kachel (20 x 20 Säulen x die Ebenen aus ChunkLayers).
+        List<ChunkKey> ChunkKeys() {
+            var layers = this.ChunkLayers()
+            var keys = new List<ChunkKey>()
+            int cx0 = this.tile.key.x * 20
+            int cy0 = this.tile.key.y * 20
+            for (int cy = 0; cy < 20; cy++) {
+                for (int cx = 0; cx < 20; cx++) {
+                    for (int cz = layers[0]; cz <= layers[1]; cz++) { keys.Add(new Raser.ChunkKey(cx0 + cx, cy0 + cy, cz)) }
+                }
+            }
+            return keys
+        }
+
+        // Die Höhe einer Ecke über der Unterkante des Voxels k in Dritteln (0..3, Raser.Shape).
+        static defined int Quarter(defined float h, defined int k) {
+            int q = Math.Round((h - k * 0.2) / 0.2 * 3.0)!int
+            if (q < 0) { return 0 }
+            if (q > 3) { return 3 }
+            return q
+        }
+
+        // Das Voxel, in dem die höchste der vier Ecken liegt.
+        static defined int TopVoxel(defined float a, defined float b, defined float c, defined float d) {
+            float m = Math.Max(Math.Max(a, b), Math.Max(c, d))
+            return Math.Floor(m * 5.0 - 0.0001)!int
+        }
+
+        // Der Plan der Säulen der letzten Chunk-Säule (die Chunks einer Säule kommen nacheinander, siehe ChunkKeys).
+        ColumnPlan plan
+        defined int planX
+        defined int planY
+
+        Chunk Generate(ChunkKey key) {
+            if (this.plan == undefined || this.planX != key.x || this.planY != key.y) {
+                this.plan = this.Plan(key.x, key.y)
+                this.planX = key.x
+                this.planY = key.y
+            }
+            var chunk = new Raser.Chunk(new Raser.ChunkKey(key.x, key.y, key.z))
+            chunk.generatorVersion = Raser.Voxelizer.Version
+            chunk.overridesHash = this.overridesHash
+            chunk.seed = this.seed
+            this.plan.Fill(chunk)
+            this.StampProps(chunk)
+            return chunk
+        }
+
+        // Schnitte mit Versatz (Raser.Plan.Cut): für jede Säule, durch die der Grundriss läuft, die Kante zwischen Eintritt und Austritt, beide auf
+        // 1/32 der Seite gerastert - Nachbarn teilen sich den Punkt auf der gemeinsamen Seite, die Kante läuft ohne Stufen durch, in jedem Winkel und
+        // an jeder Stelle. Liegt eine Ecke des Grundrisses in der Säule, wird es eine Ecke (a -> v -> b); mehrere Punkte (Rundungen aus kurzen
+        // Kanten): eine Gerade, wenn sie höchstens 0,15 Voxel abweichen, sonst die Ecke am weitesten weg. Läuft der Grundriss mehrmals durch dieselbe
+        // Säule (spitze Ecken, schmale Stellen), bleibt sie, wie das Raster sie sieht.
+        // eaves: statt der Grundrisse die Ringe der Dachüberstände (RoofModel.eaveRing).
+        static undefined FitCuts(List<RoofModel> models, int owner[], defined int planOf[], defined int lx0, defined int ly0, defined bool eaves = false) {
+            defined int hits[4356]
+            defined int result[4356]
+            var touched = new List<int>()
+            var inner = new List<float>()
+            for (int m = 0; m < models.Count; m++) {
+                if (eaves) {
+                    if (models[m].eaveRing != undefined) { Raser.Voxelizer.FitRing(models[m].eaveRing, m, owner, planOf, lx0, ly0, hits, result, touched, inner) }
+                } else {
+                    Raser.Voxelizer.FitRing(models[m].building.footprint, m, owner, planOf, lx0, ly0, hits, result, touched, inner)
+                }
+            }
+        }
+
+        static undefined FitRing(float ring[], defined int m, int owner[], defined int planOf[], defined int lx0, defined int ly0, defined int hits[], defined int result[], List<int> touched, List<float> inner) {
+            int n = ring.length / 2
+            if (n < 3) { return }
+            // in Voxeln relativ zur Chunk-Säule, minimal verschoben (nie genau auf einer Rasterlinie: keine Mehrdeutigkeit an Ecken)
+            defined float px[n]
+            defined float py[n]
+            float area2 = 0.0
+            float minX = 1.0e30
+            float minY = 1.0e30
+            float maxX = -1.0e30
+            float maxY = -1.0e30
+            for (int k = 0; k < n; k++) {
+                px[k] = ring[k * 2] / 0.2 - lx0 + 0.000137
+                py[k] = ring[k * 2 + 1] / 0.2 - ly0 + 0.000291
+                minX = Math.Min(minX, px[k])
+                minY = Math.Min(minY, py[k])
+                maxX = Math.Max(maxX, px[k])
+                maxY = Math.Max(maxY, py[k])
+            }
+            if (maxX < -1.0 || maxY < -1.0 || minX > 65.0 || minY > 65.0) { return }
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                area2 = area2 + px[k] * py[l] - px[l] * py[k]
+            }
+            bool ccw = area2 > 0.0
+            touched.Clear()
+            // einmal um den Ring (zweimal über die Kanten: begonnen wird am ersten Übertritt einer Zellgrenze, aufgehört am selben Punkt)
+            bool started = false
+            bool done = false
+            int e0 = -1
+            float ex = 0.0
+            float ey = 0.0
+            int cellX = 0
+            int cellY = 0
+            inner.Clear()
+            for (int e = 0; e < 2 * n && !done; e++) {
+                int k = e % n
+                int l = (k + 1) % n
+                float ax = px[k]
+                float ay = py[k]
+                float dx = px[l] - ax
+                float dy = py[l] - ay
+                int ix = Math.Floor(ax)!int
+                int iy = Math.Floor(ay)!int
+                int stepX = 1
+                int stepY = 1
+                if (dx < 0.0) { stepX = -1 }
+                if (dy < 0.0) { stepY = -1 }
+                float tMaxX = 1.0e30
+                float tMaxY = 1.0e30
+                float tDX = 1.0e30
+                float tDY = 1.0e30
+                if (Math.Abs(dx) > 1.0e-12) {
+                    float nx = ix * 1.0
+                    if (stepX > 0) { nx = ix + 1.0 }
+                    tMaxX = (nx - ax) / dx
+                    tDX = 1.0 / Math.Abs(dx)
+                }
+                if (Math.Abs(dy) > 1.0e-12) {
+                    float ny = iy * 1.0
+                    if (stepY > 0) { ny = iy + 1.0 }
+                    tMaxY = (ny - ay) / dy
+                    tDY = 1.0 / Math.Abs(dy)
+                }
+                bool firstCrossing = true
+                while (true) {
+                    float t = Math.Min(tMaxX, tMaxY)
+                    if (t >= 1.0) {
+                        // die Kante endet in der Zelle: ihr Endpunkt liegt innen
+                        if (started) {
+                            inner.Add(px[l] - cellX)
+                            inner.Add(py[l] - cellY)
+                        }
+                        break
+                    }
+                    float qx = ax + dx * t
+                    float qy = ay + dy * t
+                    if (started) {
+                        // der Durchgang durch (cellX, cellY) endet hier
+                        Raser.Voxelizer.EmitCut(cellX, cellY, ex - cellX, ey - cellY, qx - cellX, qy - cellY, inner, ccw, hits, result, touched)
+                        if (e >= e0 + n && firstCrossing) {
+                            done = true
+                            break
+                        }
+                    } else {
+                        started = true
+                        e0 = e
+                    }
+                    firstCrossing = false
+                    if (tMaxX < tMaxY) {
+                        ix = ix + stepX
+                        tMaxX = tMaxX + tDX
+                    } else {
+                        iy = iy + stepY
+                        tMaxY = tMaxY + tDY
+                    }
+                    cellX = ix
+                    cellY = iy
+                    ex = qx
+                    ey = qy
+                    inner.Clear()
+                }
+            }
+            // übernehmen: nur Säulen mit genau einem Durchgang
+            foreach (cell in touched) {
+                int p = result[cell]
+                int count = hits[cell]
+                hits[cell] = 0
+                result[cell] = 0
+                if (count != 1) { continue }
+                if (owner[cell] >= 0 && owner[cell] != m) { continue }
+                if (p == 0) { continue }
+                float a = Raser.Plan.Area(p)
+                if (a > 0.97) {
+                    owner[cell] = m
+                    planOf[cell] = 0
+                } else if (a < 0.03) {
+                    if (owner[cell] == m) {
+                        owner[cell] = -1
+                        planOf[cell] = 0
+                    }
+                } else {
+                    owner[cell] = m
+                    planOf[cell] = p
+                }
+            }
+        }
+
+        // Einen Durchgang des Rings durch die Zelle (x, y) festhalten: Eintritt (ex, ey), Austritt (qx, qy) und die Punkte dazwischen im Voxel.
+        static undefined EmitCut(defined int x, defined int y, defined float ex, defined float ey, defined float qx, defined float qy, List<float> inner, defined bool ccw, defined int hits[], defined int result[], List<int> touched) {
+            if (x < -1 || y < -1 || x > 64 || y > 64) { return }
+            int cell = (y + 1) * 66 + (x + 1)
+            if (hits[cell] == 0) { touched.Add(cell) }
+            hits[cell] = hits[cell] + 1
+            int sa = Raser.Plan.RimOf(ex, ey)
+            int sb = Raser.Plan.RimOf(qx, qy)
+            // der Punkt am weitesten von der Geraden
+            int v = -1
+            float far = 0.15
+            float cx = qx - ex
+            float cy = qy - ey
+            float cl = Math.Sqrt(cx * cx + cy * cy)
+            for (int k = 0; k + 1 < inner.Count; k = k + 2) {
+                float vx = inner[k]
+                float vy = inner[k + 1]
+                float d = 0.0
+                if (cl > 1.0e-9) {
+                    d = Math.Abs((vx - ex) * cy - (vy - ey) * cx) / cl
+                } else {
+                    d = Math.Sqrt((vx - ex) * (vx - ex) + (vy - ey) * (vy - ey))
+                }
+                if (d > far) {
+                    far = d
+                    int gx = Math.Clamp(Math.Round(vx * 16.0)!int, 0, 16)
+                    int gy = Math.Clamp(Math.Round(vy * 16.0)!int, 0, 16)
+                    v = gy * 17 + gx
+                }
+            }
+            // gefüllt links von a -> b: bei einem Ring gegen den Uhrzeigersinn in Laufrichtung, sonst umgekehrt
+            int a = sa
+            int b = sb
+            if (!ccw) {
+                a = sb
+                b = sa
+            }
+            if (v < 0 && a == b) {
+                result[cell] = 0
+                return
+            }
+            if (v >= 0) { result[cell] = Raser.Plan.CutCorner(a, v, b) } else { result[cell] = Raser.Plan.Cut(a, b) }
+        }
+
+        // Fassade und Durchfahrten eines Gebäudes planen (Voxel und Netze gleich): wo eine Durchfahrt durch die Wand geht, sind keine Fenster und Türen.
+        static undefined PlanFacade(RoofModel model, List<Road> roads) {
+            model.facade = Raser.Facade.Plan(model.building, roads)
+            model.passages = Raser.Voxelizer.Passages(model.building, roads)
+            if (model.passages.Count == 0) { return }
+            var f = model.facade
+            for (int r = 0; r < f.runs.Count; r++) {
+                for (int level = 0; level < 2; level++) {
+                    var slots = f.runs[r].upper
+                    if (level == 0) { slots = f.runs[r].ground }
+                    foreach (slot in slots) {
+                        f.PointOn(r, slot.center)
+                        for (int q = 0; q + 6 < model.passages.Count; q = q + 7) {
+                            // (im Erdgeschoss; darüber nur, wenn der Bogen bis ins nächste Geschoss reicht)
+                            if (level == 1 && model.passages[q + 5] < 2.6) { continue }
+                            if (Raser.Voxelizer.PassageDistance(model.passages, q, f.px, f.py) < model.passages[q + 4] + slot.half + 0.5) { slot.kind = Raser.Facade.Wall }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Die Durchfahrten eines Gebäudes: Straßen und Wege (Ebene 0), die den Grundriss ganz durchqueren (mindestens zwei Schnittpunkte), je
+        // Stück im Grundriss ax, ay, bx, by, die halbe Breite (Fußweg ab 1,2 m), die lichte Höhe (Fußweg 3 m, sonst 4 m) und der Stich des Bogens
+        // (Fußweg bis 1,2 m, sonst bis 1,5 m); nur, wenn das Gebäude einen Meter höher ist als der Durchgang.
+        static List<float> Passages(Building b, List<Road> roads) {
+            var out = new List<float>()
+            float ring[] = b.footprint
+            if (ring == undefined || roads == undefined) { return out }
+            var box = Raser.Box2.Of(ring)
+            foreach (r in roads) {
+                if (r.kind == undefined || !r.kind.StartsWith("highway=") || r.layer != 0 || r.points == undefined || r.points.length < 4) { continue }
+                if (r.kind == "highway=steps") { continue }
+                var rb = Raser.Box2.Of(r.points)
+                if (!rb.Overlaps(box.minX, box.minY, box.maxX, box.maxY)) { continue }
+                bool foot = r.kind == "highway=footway" || r.kind == "highway=path" || r.kind == "highway=pedestrian" || r.kind == "highway=cycleway"
+                float height = 4.0
+                if (foot) { height = 3.0 }
+                if (b.eaves - b.ground < height + 1.0) { continue }
+                float half = Math.Clamp(r.width / 2.0, 1.2, 3.5)
+                float rise = Math.Min(half, 1.5)
+                if (foot) { rise = Math.Min(half, 1.2) }
+                // die Stücke innerhalb des Grundrisses (Schnittpunkte je Segment mit dem Ring, dazwischen die Mitte prüfen)
+                var pieces = new List<float>()
+                int crossings = 0
+                for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                    float ax = r.points[k]
+                    float ay = r.points[k + 1]
+                    float bx = r.points[k + 2]
+                    float by = r.points[k + 3]
+                    var ts = new List<float>()
+                    ts.Add(0.0)
+                    int n = ring.length / 2
+                    for (int e = 0; e < n; e++) {
+                        int f = (e + 1) % n
+                        float cx = ring[e * 2]
+                        float cy = ring[e * 2 + 1]
+                        float dx = ring[f * 2] - cx
+                        float dy = ring[f * 2 + 1] - cy
+                        float ex = bx - ax
+                        float ey = by - ay
+                        float den = ex * dy - ey * dx
+                        if (Math.Abs(den) < 1.0e-9) { continue }
+                        float t = ((cx - ax) * dy - (cy - ay) * dx) / den
+                        float u = ((cx - ax) * ey - (cy - ay) * ex) / den
+                        if (t > 0.0 && t < 1.0 && u >= 0.0 && u < 1.0) {
+                            ts.Add(t)
+                            crossings++
+                        }
+                    }
+                    ts.Add(1.0)
+                    ts.Sort()
+                    for (int q = 0; q + 1 < ts.Count; q++) {
+                        float tm = (ts[q] + ts[q + 1]) / 2.0
+                        if (!Raser.Geo.Inside(ring, ax + (bx - ax) * tm, ay + (by - ay) * tm)) { continue }
+                        pieces.Add(ax + (bx - ax) * ts[q])
+                        pieces.Add(ay + (by - ay) * ts[q])
+                        pieces.Add(ax + (bx - ax) * ts[q + 1])
+                        pieces.Add(ay + (by - ay) * ts[q + 1])
+                    }
+                }
+                if (crossings < 2) { continue }
+                // ein echter Durchgang ist mindestens 2,5 m lang (Wege an der gemeinsamen Grenze zweier Häuser streifen sie nur)
+                float inside = 0.0
+                for (int q = 0; q + 3 < pieces.Count; q = q + 4) {
+                    float lx = pieces[q + 2] - pieces[q]
+                    float ly = pieces[q + 3] - pieces[q + 1]
+                    inside = inside + Math.Sqrt(lx * lx + ly * ly)
+                }
+                if (inside < 2.5) { continue }
+                for (int q = 0; q + 3 < pieces.Count; q = q + 4) {
+                    out.Add(pieces[q])
+                    out.Add(pieces[q + 1])
+                    out.Add(pieces[q + 2])
+                    out.Add(pieces[q + 3])
+                    out.Add(half)
+                    out.Add(height)
+                    out.Add(rise)
+                }
+            }
+            return out
+        }
+
+        // Der Abstand eines Punkts zur Achse des Stücks q (über die Enden hinaus um 0,5 m verlängert, damit die Wände ganz geöffnet sind).
+        static defined float PassageDistance(List<float> p, defined int q, defined float x, defined float y) {
+            float ax = p[q]
+            float ay = p[q + 1]
+            float ex = p[q + 2] - ax
+            float ey = p[q + 3] - ay
+            float len = Math.Sqrt(ex * ex + ey * ey)
+            if (len < 0.0001) { return 1.0e30 }
+            float ux = ex / len
+            float uy = ey / len
+            float t = (x - ax) * ux + (y - ay) * uy
+            if (t < -0.5 || t > len + 0.5) { return 1.0e30 }
+            return Math.Abs(-(x - ax) * uy + (y - ay) * ux)
+        }
+
+        // Die Höhe eines Türbogens (absolut, m) an der Stelle off im Türplatz: vom Kämpfer spring aus ein Segment mit 35 cm Stich.
+        static defined float DoorArch(defined float spring, defined float off, defined float half) {
+            float t = Math.Clamp(off / half, -1.0, 1.0)
+            return spring + 0.35 * Math.Sqrt(Math.Max(1.0 - t * t, 0.0))
+        }
+
+        // Die Höhe des Bogens (über dem Boden) im Abstand d von der Achse: bis zum Kämpfer gerade, darüber eine halbe Ellipse.
+        static defined float ArchAt(List<float> p, defined int q, defined float d) {
+            float half = p[q + 4]
+            float height = p[q + 5]
+            float rise = p[q + 6]
+            float t = Math.Clamp(d / half, 0.0, 1.0)
+            return height - rise + rise * Math.Sqrt(Math.Max(1.0 - t * t, 0.0))
+        }
+
+        // Was in einer Wand-Voxel einer Öffnung ist (Raser.Facade): 0 Wand, 1 Glas, 2 Tür (Holz), 3 Tor (Metall), 4 Fensterrahmen (Holz, weiß),
+        // 5 Rahmen von Schaufenstern (Metall, dunkel). inStorey: die Lage im Geschoss,
+        // rel: über dem Boden des Gebäudes (ein Voxel über dem Erdgeschoss-Voxel, für das ganze Gebäude gleich - sonst treppen Brüstungen und
+        // Türschwellen mit dem Gelände), top: das Dach-Voxel.
+        static defined int Opening(defined int kindFramed, defined int inStorey, defined int rel, defined int vz, defined int top) {
+            int kind = kindFramed & 127
+            bool mullion = (kindFramed & Raser.Facade.Frame) != 0
+            // die Rahmen ringsum: die äußeren Säulen und die oberste und unterste Lage (4: Holz weiß, 5: Metall dunkel)
+            if (kind == Raser.Facade.Window && inStorey >= 5 && inStorey <= 11 && (mullion || inStorey == 5 || inStorey == 11)) { return 4 }
+            if (kind == Raser.Facade.Large && inStorey >= 4 && inStorey <= 12 && (mullion || inStorey == 4 || inStorey == 12)) { return 4 }
+            if (kind == Raser.Facade.Shop && rel >= 2 && rel <= 12 && (mullion || rel == 2 || rel == 12)) { return 5 }
+            if (kind == Raser.Facade.Tall && rel >= 2 && vz <= top - 3 && (mullion || rel == 2 || vz == top - 3)) { return 5 }
+            if (kind == Raser.Facade.Window) { if (inStorey >= 5 && inStorey <= 11) { return 1 } }
+            if (kind == Raser.Facade.Shop) { if (rel >= 2 && rel <= 12) { return 1 } }
+            if (kind == Raser.Facade.Door) { if (rel >= 0 && rel <= 10) { return 2 } }
+            if (kind == Raser.Facade.RaisedDoor) { if (rel >= 3 && rel <= 12) { return 2 } }
+            if (kind == Raser.Facade.GlassDoor) { if (rel >= 0 && rel <= 11) { return 1 } }
+            if (kind == Raser.Facade.Garage) { if (rel >= 0 && rel <= 10) { return 3 } }
+            if (kind == Raser.Facade.Ribbon) { if (inStorey >= 6 && inStorey <= 11) { return 1 } }
+            if (kind == Raser.Facade.Tall) { if (rel >= 2 && vz <= top - 3) { return 1 } }
+            if (kind == Raser.Facade.Large) { if (inStorey >= 4 && inStorey <= 12) { return 1 } }
+            return 0
+        }
+
+        // Was in jeder der 64 x 64 Säulen einer Chunk-Säule steht - unabhängig von der Höhe, also einmal für alle Chunks darüber und darunter.
+        // Alle Lagen werden aus dem kachel-lokalen Voxel-Index gerechnet ((lx + 0,5) * 0,2), damit jeder Chunk dieselbe Säule gleich sieht.
+        // Grundrisse und Flächen werden zeilenweise gerastert (Schnittpunkte der Zeile mit dem Ring, Gerade-Ungerade wie Geo.Inside),
+        // Straßen segmentweise (nur die Säulen im Rechteck um das Segment).
+        ColumnPlan Plan(defined int cx, defined int cy) {
+            var plan = new Raser.ColumnPlan()
+            int lx0 = cx * 64 - this.tile.key.VoxelX
+            int ly0 = cy * 64 - this.tile.key.VoxelY
+            float mx0 = lx0 * 0.2
+            float my0 = ly0 * 0.2
+            float mx1 = (lx0 + 64) * 0.2
+            float my1 = (ly0 + 64) * 0.2
+
+            // Was die Säule berührt.
+            var models = new List<RoofModel>()
+            foreach (m in this.models) {
+                if (m.box.Overlaps(mx0 - 1.0, my0 - 1.0, mx1 + 1.0, my1 + 1.0)) { models.Add(m) }
+            }
+
+            // Geländehöhen an den 65 x 65 Ecken.
+            float[32] corners[4225]
+            for (int j = 0; j <= 64; j++) {
+                for (int i = 0; i <= 64; i++) { corners[j * 65 + i] = this.TerrainAt((lx0 + i) * 0.2, (ly0 + j) * 0.2) }
+            }
+
+            // Welches Gebäude in welcher Säule steht (-1: keins); eine Spalte und Zeile Rand rundherum für die Wände. Bei Überlappung gewinnt die kleinere ID (unabhängig von der Reihenfolge der Merkmale).
+            int owner[4356]
+            for (int k = 0; k < 4356; k++) { owner[k] = -1 }
+            var crossings = new List<float>()
+            for (int m = 0; m < models.Count; m++) {
+                float ring[] = models[m].building.footprint
+                for (int j = -1; j <= 64; j++) {
+                    float py = (ly0 + j + 0.5) * 0.2
+                    Raser.Geo.Crossings(ring, 2, py, crossings)
+                    for (int q = 0; q + 1 < crossings.Count; q = q + 2) {
+                        int i0 = Raser.Voxelizer.FirstColumn(crossings[q], lx0, -1)
+                        int i1 = Raser.Voxelizer.FirstColumn(crossings[q + 1], lx0, -1) - 1
+                        if (i1 > 64) { i1 = 64 }
+                        for (int i = i0; i <= i1; i++) {
+                            int o = (j + 1) * 66 + (i + 1)
+                            if (owner[o] < 0 || models[m].building.id < models[owner[o]].building.id) { owner[o] = m }
+                        }
+                    }
+                }
+            }
+
+            // Die Kanten der Grundrisse: Schnitte mit Versatz (Raser.Plan.Cut), auch für die Säulen direkt außerhalb
+            defined int planOf[4356]
+            Raser.Voxelizer.FitCuts(models, owner, planOf, lx0, ly0)
+
+            // Dachüberstände der Steildächer: der versetzte Ring, ohne die Säulen der Gebäude selbst; seine Außenkante mit Schnitten wie die Wände
+            int eaveOwner[4356]
+            for (int k = 0; k < 4356; k++) { eaveOwner[k] = -1 }
+            for (int m = 0; m < models.Count; m++) {
+                if (models[m].eaveRing == undefined) { continue }
+                float ering[] = models[m].eaveRing
+                for (int j = -1; j <= 64; j++) {
+                    float py = (ly0 + j + 0.5) * 0.2
+                    Raser.Geo.Crossings(ering, 2, py, crossings)
+                    for (int q = 0; q + 1 < crossings.Count; q = q + 2) {
+                        int i0 = Raser.Voxelizer.FirstColumn(crossings[q], lx0, -1)
+                        int i1 = Raser.Voxelizer.FirstColumn(crossings[q + 1], lx0, -1) - 1
+                        if (i1 > 64) { i1 = 64 }
+                        for (int i = i0; i <= i1; i++) {
+                            int o = (j + 1) * 66 + (i + 1)
+                            if (eaveOwner[o] < 0 || models[m].building.id < models[eaveOwner[o]].building.id) { eaveOwner[o] = m }
+                        }
+                    }
+                }
+            }
+            defined int eavePlan[4356]
+            Raser.Voxelizer.FitCuts(models, eaveOwner, eavePlan, lx0, ly0, true)
+
+            // Flächen: die höchste Priorität gewinnt, bei gleicher die kleinere ID.
+            int areaPriority[4096]
+            int areaMaterial[4096]
+            int areaColor[4096]
+            int areaId[4096]
+            for (int k = 0; k < 4096; k++) {
+                areaPriority[k] = -1000000
+                areaMaterial[k] = Raser.Material.Grass!int
+                areaColor[k] = Raser.Palette.Grass
+                areaId[k] = 0
+            }
+            for (int ai = 0; ai < this.tile.data.areas.Count; ai++) {
+                if (!this.areaBoxes[ai].Overlaps(mx0, my0, mx1, my1)) { continue }
+                var a = this.tile.data.areas[ai]
+                for (int j = 0; j < 64; j++) {
+                    float py = (ly0 + j + 0.5) * 0.2
+                    Raser.Geo.Crossings(a.ring, 2, py, crossings)
+                    for (int q = 0; q + 1 < crossings.Count; q = q + 2) {
+                        int i0 = Raser.Voxelizer.FirstColumn(crossings[q], lx0, 0)
+                        int i1 = Raser.Voxelizer.FirstColumn(crossings[q + 1], lx0, 0) - 1
+                        if (i1 > 63) { i1 = 63 }
+                        for (int i = i0; i <= i1; i++) {
+                            int k = j * 64 + i
+                            if (a.priority > areaPriority[k] || (a.priority == areaPriority[k] && a.id < areaId[k])) {
+                                areaPriority[k] = a.priority
+                                areaId[k] = a.id
+                                areaMaterial[k] = a.surface!int
+                                areaColor[k] = a.color
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Straßen: die breiteste gewinnt, bei gleicher Breite die kleinere ID.
+            float[32] roadWidth[4096]
+            int roadMaterial[4096]
+            int roadColor[4096]
+            int roadId[4096]
+            for (int k = 0; k < 4096; k++) {
+                roadWidth[k] = 0.0
+                roadId[k] = 0
+            }
+            for (int ri = 0; ri < this.tile.data.roads.Count; ri++) {
+                if (!this.roadBoxes[ri].Overlaps(mx0, my0, mx1, my1)) { continue }
+                var r = this.tile.data.roads[ri]
+                float hw = r.width / 2.0
+                int n = r.points.length / 2
+                for (int sgi = 0; sgi < n; sgi++) {
+                    if (n > 1 && sgi == n - 1) { break }
+                    float ax = r.points[sgi * 2]
+                    float ay = r.points[sgi * 2 + 1]
+                    float bx = ax
+                    float by = ay
+                    if (n > 1) {
+                        bx = r.points[sgi * 2 + 2]
+                        by = r.points[sgi * 2 + 3]
+                    }
+                    int i0 = Math.Floor((Math.Min(ax, bx) - hw) * 5.0)!int - lx0 - 1
+                    int i1 = Math.Floor((Math.Max(ax, bx) + hw) * 5.0)!int - lx0 + 1
+                    int j0 = Math.Floor((Math.Min(ay, by) - hw) * 5.0)!int - ly0 - 1
+                    int j1 = Math.Floor((Math.Max(ay, by) + hw) * 5.0)!int - ly0 + 1
+                    if (i0 < 0) { i0 = 0 }
+                    if (j0 < 0) { j0 = 0 }
+                    if (i1 > 63) { i1 = 63 }
+                    if (j1 > 63) { j1 = 63 }
+                    for (int j = j0; j <= j1; j++) {
+                        float py = (ly0 + j + 0.5) * 0.2
+                        for (int i = i0; i <= i1; i++) {
+                            int k = j * 64 + i
+                            if (r.width < roadWidth[k] || (r.width == roadWidth[k] && r.id >= roadId[k])) { continue }
+                            float px = (lx0 + i + 0.5) * 0.2
+                            if (Raser.Geo.DistanceToSegment(px, py, ax, ay, bx, by) <= hw) {
+                                roadWidth[k] = r.width
+                                roadId[k] = r.id
+                                roadMaterial[k] = r.surface!int
+                                roadColor[k] = r.color
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Dachhöhen an den Ecken, je Gebäude einmal gerechnet.
+            float roofCorner[4225]
+            int cornerOwner[4225]
+            for (int k = 0; k < 4225; k++) { cornerOwner[k] = -1 }
+
+            int storey = Math.Round(Raser.Voxelizer.StoreyHeight * 5.0)!int
+            plan.storey = storey
+            for (int y = 0; y < 64; y++) {
+                for (int x = 0; x < 64; x++) {
+                    int c = y * 64 + x
+                    float h0 = corners[y * 65 + x]
+                    float h1 = corners[y * 65 + x + 1]
+                    float h2 = corners[(y + 1) * 65 + x + 1]
+                    float h3 = corners[(y + 1) * 65 + x]
+                    int terrainTop = Raser.Voxelizer.TopVoxel(h0, h1, h2, h3)
+                    plan.floor[c] = terrainTop
+                    int b = owner[(y + 1) * 66 + (x + 1)]
+                    if (b >= 0) {
+                        var model = models[b]
+                        Building bd = model.building
+                        int k0 = y * 65 + x
+                        int k1 = k0 + 1
+                        int k2 = k0 + 66
+                        int k3 = k0 + 65
+                        if (cornerOwner[k0] != b) {
+                            roofCorner[k0] = model.RoofAt((lx0 + x) * 0.2, (ly0 + y) * 0.2)
+                            cornerOwner[k0] = b
+                        }
+                        if (cornerOwner[k1] != b) {
+                            roofCorner[k1] = model.RoofAt((lx0 + x + 1) * 0.2, (ly0 + y) * 0.2)
+                            cornerOwner[k1] = b
+                        }
+                        if (cornerOwner[k2] != b) {
+                            roofCorner[k2] = model.RoofAt((lx0 + x + 1) * 0.2, (ly0 + y + 1) * 0.2)
+                            cornerOwner[k2] = b
+                        }
+                        if (cornerOwner[k3] != b) {
+                            roofCorner[k3] = model.RoofAt((lx0 + x) * 0.2, (ly0 + y + 1) * 0.2)
+                            cornerOwner[k3] = b
+                        }
+                        float r0 = roofCorner[k0]
+                        float r1 = roofCorner[k1]
+                        float r2 = roofCorner[k2]
+                        float r3 = roofCorner[k3]
+                        int ground = model.groundVoxel
+                        int roof = Raser.Voxelizer.TopVoxel(r0, r1, r2, r3)
+                        if (roof < ground) { roof = ground }
+                        plan.kind[c] = 1
+                        plan.top[c] = roof
+                        plan.ground[c] = ground
+                        plan.cellar[c] = ground - bd.cellars * storey
+                        plan.shape[c] = Raser.Shape.Make(Raser.Voxelizer.Quarter(r0, roof), Raser.Voxelizer.Quarter(r1, roof), Raser.Voxelizer.Quarter(r2, roof), Raser.Voxelizer.Quarter(r3, roof))
+                        // liegt die Fläche auf der Unterkante des obersten Voxels, ist das darunter das Dach-Voxel
+                        if (Raser.Shape.IsEmpty(plan.shape[c]) && roof > ground) {
+                            roof--
+                            plan.top[c] = roof
+                            plan.shape[c] = Raser.Shape.Make(Raser.Voxelizer.Quarter(r0, roof), Raser.Voxelizer.Quarter(r1, roof), Raser.Voxelizer.Quarter(r2, roof), Raser.Voxelizer.Quarter(r3, roof))
+                        }
+                        plan.rc0[c] = r0
+                        plan.rc1[c] = r1
+                        plan.rc2[c] = r2
+                        plan.rc3[c] = r3
+                        // steile Dächer fallen in einer Säule um mehr als ein Voxel: bis zur tiefsten Ecke darunter voll mit Dachmaterial (sonst sieht man
+                        // durch das Dach auf die Decken darunter)
+                        float lowest = Math.Min(Math.Min(r0, r1), Math.Min(r2, r3))
+                        plan.roofLow[c] = Math.Max(ground, Math.Floor(lowest * 5.0)!int)
+                        plan.material[c] = bd.roof!int
+                        plan.color[c] = model.roofColor
+                        plan.below[c] = bd.wall!int
+                        plan.belowColor[c] = model.wallColor
+                        int o = (y + 1) * 66 + (x + 1)
+                        int flags = 0
+                        if (owner[o - 1] != b || owner[o + 1] != b || owner[o - 66] != b || owner[o + 66] != b) { flags = 1 }
+                        // hinter einem Bauelement (Diagonale, Rundung) ist die Wand eine Säule dicker - sonst bliebe dort nur ein schmaler Keil
+                        if (planOf[o - 1] != 0 || planOf[o + 1] != 0 || planOf[o - 66] != 0 || planOf[o + 66] != 0) { flags = flags | 1 }
+                        // Die Außenwand ist zwei Voxel dick (40 cm): außen die Lage am Rand, dahinter eine zweite - in Öffnungen bleibt die äußere frei,
+                        // Glas, Tür und Rahmen sitzen in der inneren (Laibung). Nach dem Abstand zur Kante des Grundrisses, so auch an schrägen Wänden.
+                        if (model.facade != undefined) {
+                            model.facade.At((lx0 + x + 0.5) * 0.2, (ly0 + y + 0.5) * 0.2)
+                            float wd = model.facade.distance
+                            if (wd < 0.4 && (flags & 1) == 0) { flags = 1 | 4 }
+                            // (innere Lage: eine Wandsäule, die nicht selbst am Rand liegt - auch hinter den Schnitten schräger und runder Wände)
+                            else if ((flags & 1) != 0 && planOf[o] == 0 && owner[o - 1] == b && owner[o + 1] == b && owner[o - 66] == b && owner[o + 66] == b) { flags = flags | 4 }
+                        }
+                        // Durchfahrten: im Durchgang die Höhe des Bogens (an der Mitte und an den beiden Rändern der Säule quer zum Weg), daneben
+                        // massive Seitenwände ohne Fenster
+                        bool passWall = false
+                        if (model.passages.Count > 0) {
+                            float pcx = (lx0 + x + 0.5) * 0.2
+                            float pcy = (ly0 + y + 0.5) * 0.2
+                            for (int q = 0; q + 6 < model.passages.Count; q = q + 7) {
+                                float dist = Raser.Voxelizer.PassageDistance(model.passages, q, pcx, pcy)
+                                float hw = model.passages[q + 4]
+                                // (die Voxel treten 25 cm hinter die glatten Seitenwände des eingehängten Gewölbes zurück)
+                                if (dist < hw + 0.25) {
+                                    float pdx = model.passages[q + 2] - model.passages[q]
+                                    float pdy = model.passages[q + 3] - model.passages[q + 1]
+                                    float pl = Math.Sqrt(pdx * pdx + pdy * pdy)
+                                    // der Bogen wird entlang einer Rasterachse durchgezogen: nur bei Durchfahrten entlang x oder y (bis 3°); schräge
+                                    // bekommen einen geraden Sturz in voller Höhe (ein schräger Bogen gäbe einen Kamm)
+                                    // die Voxel lassen den Durchgang bis zur vollen Höhe frei; das Gewölbe ist ein eingehängtes Stück (FarMesher.Arches)
+                                    int axis = -1
+                                    float hc = Raser.Voxelizer.ArchAt(model.passages, q, dist)
+                                    float h0 = hc
+                                    float h1 = hc
+                                    if (axis == 0) {
+                                        h0 = Raser.Voxelizer.ArchAt(model.passages, q, Raser.Voxelizer.PassageDistance(model.passages, q, pcx - 0.1, pcy))
+                                        h1 = Raser.Voxelizer.ArchAt(model.passages, q, Raser.Voxelizer.PassageDistance(model.passages, q, pcx + 0.1, pcy))
+                                    } else if (axis == 1) {
+                                        h0 = Raser.Voxelizer.ArchAt(model.passages, q, Raser.Voxelizer.PassageDistance(model.passages, q, pcx, pcy - 0.1))
+                                        h1 = Raser.Voxelizer.ArchAt(model.passages, q, Raser.Voxelizer.PassageDistance(model.passages, q, pcx, pcy + 0.1))
+                                    }
+                                    if (axis < 0) {
+                                        hc = model.passages[q + 5]
+                                        h0 = hc
+                                        h1 = hc
+                                    }
+                                    plan.passCenter[c] = bd.ground + hc
+                                    plan.passEdge0[c] = bd.ground + h0
+                                    plan.passEdge1[c] = bd.ground + h1
+                                    plan.passAxis[c] = axis
+                                    break
+                                } else if (dist < hw + 0.65) {
+                                    passWall = true
+                                }
+                            }
+                        }
+                        if (passWall && plan.passCenter[c] == 0.0) { flags = 1 | 4 }
+                        // Fenster und Türen: aus der Fassade des Gebäudes, nach der Lage der Säule auf ihrem Lauf (über Chunk-Grenzen gleich)
+                        if ((flags & 1) != 0 && model.facade != undefined && !passWall) {
+                            plan.groundKind[c] = model.facade.ground
+                            plan.upperKind[c] = model.facade.upper
+                            // Kirchen-Öffnungen (Fenster, Portal, Schallöffnung): Lage im Platz, Achse der Wand und die Höhen
+                            int ck = model.facade.ground & 127
+                            plan.archKind[c] = 0
+                            if (ck == Raser.Facade.Lancet || ck == Raser.Facade.Portal || ck == Raser.Facade.Louvre) {
+                                model.facade.ChurchExtent(ck, model.groundVoxel * 0.2, bd.eaves, model.facade.slotHalf)
+                                if (model.facade.cspring > model.facade.cz0) {
+                                    plan.archKind[c] = ck
+                                    plan.archLow[c] = model.facade.cz0
+                                    plan.archSpring[c] = model.facade.cspring
+                                    plan.archRise[c] = model.facade.crise
+                                    plan.archOffset[c] = model.facade.slotOffset
+                                    plan.archHalf[c] = model.facade.slotHalf
+                                    plan.archAxis[c] = -1
+                                    plan.archSign[c] = 1.0
+                                    if (Math.Abs(model.facade.wallX) > 0.97) {
+                                        plan.archAxis[c] = 0
+                                        if (model.facade.wallX < 0.0) { plan.archSign[c] = -1.0 }
+                                    } else if (Math.Abs(model.facade.wallY) > 0.97) {
+                                        plan.archAxis[c] = 1
+                                        if (model.facade.wallY < 0.0) { plan.archSign[c] = -1.0 }
+                                    }
+                                }
+                            }
+                            // Haustüren mit Rundbogen: die Lage im Türplatz und die Achse der Wand (Raser.Plan.Elevation; -1: schräg, der Bogen treppt)
+                            int gk = model.facade.ground & 127
+                            plan.doorAxis[c] = -2
+                            if (gk == Raser.Facade.Door || gk == Raser.Facade.RaisedDoor) {
+                                plan.doorOffset[c] = model.facade.slotOffset
+                                plan.doorHalf[c] = model.facade.slotHalf
+                                plan.doorAxis[c] = -1
+                                plan.doorSign[c] = 1.0
+                                if (Math.Abs(model.facade.wallX) > 0.97) {
+                                    plan.doorAxis[c] = 0
+                                    if (model.facade.wallX < 0.0) { plan.doorSign[c] = -1.0 }
+                                } else if (Math.Abs(model.facade.wallY) > 0.97) {
+                                    plan.doorAxis[c] = 1
+                                    if (model.facade.wallY < 0.0) { plan.doorSign[c] = -1.0 }
+                                }
+                            }
+                            plan.groundSlot[c] = model.facade.groundSlot
+                            plan.upperSlot[c] = model.facade.upperSlot
+                            plan.building[c] = bd.id
+                        } else {
+                            plan.groundKind[c] = 0
+                            plan.upperKind[c] = 0
+                        }
+                        plan.flags[c] = flags
+                        plan.thick[c] = model.facade != undefined && model.facade.style != Raser.Facade.None
+                        plan.hall[c] = model.facade != undefined && (model.facade.style == Raser.Facade.Pavilion || model.facade.style == Raser.Facade.Church)
+                        plan.planShape[c] = planOf[o]
+                        plan.eaveFull[c] = model.eaveRing != undefined
+                        if (planOf[o] != 0) {
+                            // der Sockel unter dem Bauelement: oben mit den Eckhöhen des Geländes, bündig mit dem Boden daneben
+                            int surface = terrainTop
+                            int gshape = Raser.Shape.Make(Raser.Voxelizer.Quarter(h0, surface), Raser.Voxelizer.Quarter(h1, surface), Raser.Voxelizer.Quarter(h2, surface), Raser.Voxelizer.Quarter(h3, surface))
+                            if (Raser.Shape.IsEmpty(gshape)) {
+                                surface--
+                                gshape = Raser.Shape.Make(Raser.Voxelizer.Quarter(h0, surface), Raser.Voxelizer.Quarter(h1, surface), Raser.Voxelizer.Quarter(h2, surface), Raser.Voxelizer.Quarter(h3, surface))
+                            }
+                            plan.plinth[c] = surface
+                            plan.plinthShape[c] = gshape
+                        }
+                        if (terrainTop > plan.highest) { plan.highest = terrainTop }
+                        if (roof > plan.highest) { plan.highest = roof }
+                        continue
+                    }
+                    int material = areaMaterial[c]
+                    int color = areaColor[c]
+                    int below = Raser.Material.Soil!int
+                    int belowColor = Raser.Palette.Soil
+                    if (roadWidth[c] > 0.0) {
+                        material = roadMaterial[c]
+                        color = roadColor[c]
+                        below = Raser.Material.Gravel!int
+                        belowColor = Raser.Palette.Gravel
+                    }
+                    if (material == Raser.Material.Water!int) {
+                        below = Raser.Material.Sand!int
+                        belowColor = Raser.Palette.Sand
+                    }
+                    plan.kind[c] = 0
+                    int surface = terrainTop
+                    int tshape = Raser.Shape.Make(Raser.Voxelizer.Quarter(h0, surface), Raser.Voxelizer.Quarter(h1, surface), Raser.Voxelizer.Quarter(h2, surface), Raser.Voxelizer.Quarter(h3, surface))
+                    // liegt die Oberfläche auf der Unterkante des obersten Voxels, ist das darunter die Oberfläche
+                    if (Raser.Shape.IsEmpty(tshape)) {
+                        surface--
+                        tshape = Raser.Shape.Make(Raser.Voxelizer.Quarter(h0, surface), Raser.Voxelizer.Quarter(h1, surface), Raser.Voxelizer.Quarter(h2, surface), Raser.Voxelizer.Quarter(h3, surface))
+                    }
+                    plan.top[c] = surface
+                    plan.shape[c] = tshape
+                    // ein Dachüberstand darüber: eine Platte unter der fortgesetzten Dachfläche (unten offen: die Untersicht)
+                    int eo = (y + 1) * 66 + (x + 1)
+                    if (eaveOwner[eo] >= 0) {
+                        var em = models[eaveOwner[eo]]
+                        float e0 = em.RoofOut((lx0 + x) * 0.2, (ly0 + y) * 0.2)
+                        float e1 = em.RoofOut((lx0 + x + 1) * 0.2, (ly0 + y) * 0.2)
+                        float e2 = em.RoofOut((lx0 + x + 1) * 0.2, (ly0 + y + 1) * 0.2)
+                        float e3 = em.RoofOut((lx0 + x) * 0.2, (ly0 + y + 1) * 0.2)
+                        int et = Raser.Voxelizer.TopVoxel(e0, e1, e2, e3)
+                        int es = Raser.Shape.Make(Raser.Voxelizer.Quarter(e0, et), Raser.Voxelizer.Quarter(e1, et), Raser.Voxelizer.Quarter(e2, et), Raser.Voxelizer.Quarter(e3, et))
+                        if (Raser.Shape.IsEmpty(es)) {
+                            et--
+                            es = Raser.Shape.Make(Raser.Voxelizer.Quarter(e0, et), Raser.Voxelizer.Quarter(e1, et), Raser.Voxelizer.Quarter(e2, et), Raser.Voxelizer.Quarter(e3, et))
+                        }
+                        int el = Math.Floor(Math.Min(Math.Min(e0, e1), Math.Min(e2, e3)) * 5.0)!int - 1
+                        if (el <= surface) { el = surface + 1 }
+                        if (et > surface + 1) {
+                            plan.eaveTop[c] = et
+                            plan.eaveLow[c] = el
+                            plan.eaveShape[c] = es
+                            plan.eaveMaterial[c] = em.building.roof!int
+                            plan.eaveColor[c] = em.roofColor
+                            plan.eavePlan[c] = eavePlan[eo]
+                            plan.rc0[c] = e0
+                            plan.rc1[c] = e1
+                            plan.rc2[c] = e2
+                            plan.rc3[c] = e3
+                            if (et > plan.highest) { plan.highest = et }
+                        }
+                    }
+                    // Stufen vor einer erhöhten Haustür (Raser.Facade): je Stufe ein Voxel über dem Gelände
+                    foreach (m in models) {
+                        if (m.facade == undefined || m.facade.stairs.Count == 0) { continue }
+                        int steps = m.facade.StepsAt((lx0 + x + 0.5) * 0.2, (ly0 + y + 0.5) * 0.2)
+                        if (steps > 0) {
+                            plan.stair[c] = surface + steps
+                            if (plan.stair[c] > plan.highest) { plan.highest = plan.stair[c] }
+                            break
+                        }
+                    }
+                    plan.material[c] = material
+                    plan.color[c] = color
+                    plan.below[c] = below
+                    plan.belowColor[c] = belowColor
+                    if (terrainTop > plan.highest) { plan.highest = terrainTop }
+                }
+            }
+            return plan
+        }
+
+        // Die erste Säule (ab first), deren Mitte (lx0 + i + 0,5) * 0,2 nicht links von x liegt.
+        static defined int FirstColumn(defined float x, defined int lx0, defined int first) {
+            int i = Math.Ceiling(x * 5.0 - 0.5)!int - lx0
+            // genau prüfen, wie Geo.Inside es täte (Rundung der Formel oben)
+            while ((lx0 + i - 1 + 0.5) * 0.2 >= x) { i = i - 1 }
+            while ((lx0 + i + 0.5) * 0.2 < x) { i = i + 1 }
+            if (i < first) { return first }
+            return i
+        }
+    }
+
+    // Der Plan der 64 x 64 Säulen einer Chunk-Säule; Fill schreibt daraus einen Chunk beliebiger Höhe.
+    // Gelände: top = oberstes Voxel, shape seine Form, material/color die Oberfläche, below/belowColor die zwei Voxel darunter.
+    // Gebäude: top = Dach-Voxel, ground = Boden, material/color das Dach, below/belowColor die Wand, flags Bit 0 = Wand, Bit 1 = Fensterspalte.
+    // floor: das oberste Voxel des Geländes in der Säule (unter Gebäuden das Fundament).
+    class ColumnPlan {
+        int kind[4096]
+        int top[4096]
+        int shape[4096]
+        int material[4096]
+        int color[4096]
+        int below[4096]
+        int belowColor[4096]
+        int ground[4096]
+        int cellar[4096]        // Gebäude: das unterste Voxel des untersten Kellers (= ground ohne Keller)
+        defined float rc0[4096]         // Gebäude: die Dachhöhen an den vier Ecken der Säule (m) - je Lage eine eigene Form
+        defined float rc1[4096]
+        defined float rc2[4096]
+        defined float rc3[4096]
+        defined int planShape[4096]     // Gebäude: die Grundriss-Form der Säule (Raser.Plan, 0: voll) - für alle Voxel über dem Sockel
+        defined int plinth[4096]        // Gebäude mit Grundriss-Form: das oberste Voxel des Sockels (die Geländeoberfläche)
+        defined int plinthShape[4096]   // und seine Eckhöhen (wie das Gelände daneben)
+        defined int roofLow[4096]       // Gebäude: ab hier bis unter das Dach-Voxel voll mit Dachmaterial (steile Dächer)
+        int floor[4096]
+        int flags[4096]
+        defined int groundKind[4096]    // Wände: was im Erdgeschoss in der Säule ist (Raser.Facade: Fenster, Schaufenster, Tür ...)
+        defined int upperKind[4096]     // und darüber
+        defined bool thick[4096]        // Wand zwei Voxel dick (flags & 4: die innere Lage)
+        defined bool hall[4096]         // Pavillon: ein Raum ohne Zwischendecken (hinter den hohen Scheiben)
+        defined int archKind[4096]      // Kirchen-Öffnung in der Wandsäule (Raser.Facade.Lancet, Portal, Louvre; 0: keine)
+        defined float archLow[4096]     // Unterkante, Kämpfer, Stich (m), Lage im Platz, halbe Breite, Achse (-1: schräge Wand) und Richtung
+        defined float archSpring[4096]
+        defined float archRise[4096]
+        defined float archOffset[4096]
+        defined float archHalf[4096]
+        defined int archAxis[4096]
+        defined float archSign[4096]
+        defined int doorAxis[4096]      // Haustür mit Bogen: Achse (-2: keine, -1: schräge Wand), Lage im Türplatz, halbe Breite, Richtung
+        defined float doorOffset[4096]
+        defined float doorHalf[4096]
+        defined float doorSign[4096]
+        defined float passCenter[4096]  // Durchfahrt: die Höhe des Bogens über der Säulenmitte (m, absolut; 0: keine)
+        defined float passEdge0[4096]   // an den Rändern der Säule quer zum Weg (u = 0 und u = 1)
+        defined float passEdge1[4096]
+        defined int passAxis[4096]      // die Achse des Bogens (Raser.Plan.Elevation; -1: schräger Weg, der Bogen treppt)
+        defined int groundSlot[4096]    // welches Fenster (Lauf und Platz, Raser.Facade) - ob abends Licht dahinter brennt, ist je Fenster gleich
+        defined int upperSlot[4096]
+        defined int building[4096]      // die ID des Gebäudes der Säule
+        defined int stair[4096]         // Gelände: Stufen vor einer Tür bis zu diesem Voxel (0: keine)
+        defined int eaveTop[4096]       // Gelände: ein Dachüberstand darüber - das oberste Voxel (0: keiner), das unterste, Form, Material, Farbe
+        defined int eaveLow[4096]
+        defined int eaveShape[4096]
+        defined int eaveMaterial[4096]
+        defined int eaveColor[4096]
+        defined int eavePlan[4096]      // Grundriss-Form am Rand des Überstands
+        defined bool eaveFull[4096]     // Gebäude mit Überstand: das Dach über der Wand voll (die Schnitte der Wand gelten nur darunter)
+        defined int storey
+        defined int highest
+
+        construct() { this.highest = -1000000 }
+
+        // Eine Nachbarsäule ohne Gebäude (Gelände), -1: keine im Chunk.
+        defined int GroundNeighbor(defined int c) {
+            int x = c & 63
+            int y = c >> 6
+            if (x > 0 && this.kind[c - 1] == 0) { return c - 1 }
+            if (x < 63 && this.kind[c + 1] == 0) { return c + 1 }
+            if (y > 0 && this.kind[c - 64] == 0) { return c - 64 }
+            if (y < 63 && this.kind[c + 64] == 0) { return c + 64 }
+            return -1
+        }
+
+        undefined Fill(Chunk chunk) {
+            int vz0 = chunk.key.VoxelZ
+            if (this.highest < vz0) { return }      // alles liegt unter diesem Chunk: nur Luft
+            chunk.Allocate()
+            int soil = Raser.Material.Soil!int
+            int soilColor = Raser.Palette.Soil
+            int rock = Raser.Material.Rock!int
+            int rockColor = Raser.Palette.Rock
+            int concrete = Raser.Material.Concrete!int
+            int concreteColor = Raser.Palette.Concrete
+            int glass = Raser.Material.Glass!int
+            int glassColor = Raser.Palette.Glass
+            for (int c = 0; c < 4096; c++) {
+                int top = this.top[c]
+                int floor = this.floor[c]
+                if (this.kind[c] == 0) {
+                    if (top < vz0 && this.stair[c] < vz0 && this.eaveTop[c] < vz0) { continue }
+                    int zEnd = top - vz0
+                    if (zEnd > 63) { zEnd = 63 }
+                    for (int z = 0; z <= zEnd; z++) {
+                        int i = c + (z << 12)
+                        int depth = top - (vz0 + z)
+                        if (depth == 0) {
+                            if (Raser.Shape.IsEmpty(this.shape[c])) { continue }      // die Oberfläche liegt auf der Unterkante: Luft
+                            chunk.materials[i] = this.material[c]
+                            chunk.colors[i] = this.color[c]
+                            if (this.shape[c] != 255) { chunk.shapes[i] = this.shape[c] }
+                        } else if (depth <= 2) {
+                            chunk.materials[i] = this.below[c]
+                            chunk.colors[i] = this.belowColor[c]
+                        } else if (depth <= 10) {
+                            chunk.materials[i] = soil
+                            chunk.colors[i] = soilColor
+                        } else {
+                            chunk.materials[i] = rock
+                            chunk.colors[i] = rockColor
+                        }
+                    }
+                    // der Dachüberstand: je Lage mit der Form aus den Eckhöhen der fortgesetzten Dachfläche (wie das Dach selbst)
+                    int et = this.eaveTop[c]
+                    if (et > 0) {
+                        for (int vz = Math.Max(this.eaveLow[c], vz0); vz <= et && vz < vz0 + 64; vz++) {
+                            int i = c + ((vz - vz0) << 12)
+                            int ls = this.eaveShape[c]
+                            if (vz < et) { ls = Raser.Shape.Make(Raser.Voxelizer.Quarter(this.rc0[c], vz), Raser.Voxelizer.Quarter(this.rc1[c], vz), Raser.Voxelizer.Quarter(this.rc2[c], vz), Raser.Voxelizer.Quarter(this.rc3[c], vz)) }
+                            if (Raser.Shape.IsEmpty(ls)) { continue }
+                            chunk.materials[i] = this.eaveMaterial[c]
+                            chunk.colors[i] = this.eaveColor[c]
+                            if (ls != 255) { chunk.shapes[i] = ls }
+                            if (this.eavePlan[c] != 0) { chunk.plans[i] = this.eavePlan[c] }
+                        }
+                    }
+                    // Stufen vor einer Tür (Beton, die Oberseite voll)
+                    int st = this.stair[c]
+                    if (st > top) {
+                        for (int vz = Math.Max(top + 1, vz0); vz <= st && vz < vz0 + 64; vz++) {
+                            int i = c + ((vz - vz0) << 12)
+                            chunk.materials[i] = concrete
+                            chunk.colors[i] = concreteColor
+                        }
+                        if (top >= vz0 && top < vz0 + 64) {
+                            // das Gelände darunter voll, damit die Stufe nicht auf einer Schräge schwebt
+                            chunk.shapes.Remove(c + ((top - vz0) << 12))
+                            if (chunk.materials[c + ((top - vz0) << 12)] == 0) {
+                                chunk.materials[c + ((top - vz0) << 12)] = this.material[c]
+                                chunk.colors[c + ((top - vz0) << 12)] = this.color[c]
+                            }
+                        }
+                    }
+                    continue
+                }
+                // Gebäude
+                int ground = this.ground[c]
+                int cellar = this.cellar[c]
+                bool wall = (this.flags[c] & 1) != 0
+                int bottom = floor
+                if (cellar - 1 < bottom) { bottom = cellar - 1 }
+                int zEnd = top - vz0
+                if (zEnd > 63) { zEnd = 63 }
+                float pc = this.passCenter[c]
+                for (int z = 0; z <= zEnd; z++) {
+                    int vz = vz0 + z
+                    int i = c + (z << 12)
+                    if (pc > 0.0 && vz >= ground) {
+                        // die Durchfahrt: am Boden Pflaster, darüber frei bis zum Bogen, im Bogen-Voxel der Schnitt in der Ansicht, darüber eine Decke
+                        float zb = vz * 0.2
+                        float e0 = this.passEdge0[c]
+                        float e1 = this.passEdge1[c]
+                        float lo = Math.Min(e0, e1)
+                        float hi = Math.Max(e0, e1)
+                        int pm = concrete
+                        int pcol = concreteColor
+                        if (wall) {
+                            pm = this.below[c]
+                            pcol = this.belowColor[c]
+                        }
+                        if (vz == ground) {
+                            chunk.materials[i] = Raser.Material.Paving!int
+                            chunk.colors[i] = Raser.Palette.Sidewalk
+                            continue
+                        }
+                        if (zb + 0.2 <= lo + 0.0001) { continue }
+                        if (zb < hi && this.passAxis[c] >= 0 && this.planShape[c] == 0) {
+                            float f0 = Math.Clamp((e0 - zb) / 0.2, 0.0, 1.0)
+                            float f1 = Math.Clamp((e1 - zb) / 0.2, 0.0, 1.0)
+                            if (f0 >= 1.0 && f1 >= 1.0) { continue }
+                            chunk.materials[i] = pm
+                            chunk.colors[i] = pcol
+                            if (f0 > 0.0 || f1 > 0.0) { chunk.plans[i] = Raser.Plan.Elevation(this.passAxis[c], Raser.Plan.RimOf(0.0, f0), Raser.Plan.RimOf(1.0, f1)) }
+                            continue
+                        }
+                        if (zb < hi && zb + 0.1 < pc) { continue }
+                        if (!wall && zb < hi + 0.4) {
+                            chunk.materials[i] = pm
+                            chunk.colors[i] = pcol
+                            continue
+                        }
+                    }
+                    if (vz < ground && vz >= cellar) {
+                        // Keller: das Gelände ist ausgehoben, die Außenwand läuft durch, je Geschoss eine Decke
+                        if (wall) {
+                            chunk.materials[i] = this.below[c]
+                            chunk.colors[i] = this.belowColor[c]
+                        } else if ((vz - cellar) % this.storey == 0) {
+                            chunk.materials[i] = concrete
+                            chunk.colors[i] = concreteColor
+                        }
+                        continue
+                    }
+                    if (vz < ground) {
+                        if (vz >= cellar - 1 || vz > floor) {
+                            chunk.materials[i] = concrete           // Fundament (auch wo das Gelände tiefer liegt)
+                            chunk.colors[i] = concreteColor
+                        } else if (bottom - vz <= 10) {
+                            chunk.materials[i] = soil
+                            chunk.colors[i] = soilColor
+                        } else {
+                            chunk.materials[i] = rock
+                            chunk.colors[i] = rockColor
+                        }
+                        continue
+                    }
+                    if (vz == top) {
+                        if (Raser.Shape.IsEmpty(this.shape[c])) { continue }          // die Fläche liegt auf der Unterkante: Luft
+                        chunk.materials[i] = this.material[c]
+                        chunk.colors[i] = this.color[c]
+                        if (this.shape[c] != 255) { chunk.shapes[i] = this.shape[c] }
+                        continue
+                    }
+                    // (auch in Wandsäulen: sonst ragt bei steilen Dächern Wandmaterial bis zur höchsten Ecke durch die Dachfläche)
+                    if (vz >= this.roofLow[c] && (!wall || this.eaveFull[c])) {
+                        // unter dem Dach-Voxel: jede Lage mit ihrer eigenen Form aus den Eckhöhen (so schließt die Fläche lückenlos)
+                        int ls = Raser.Shape.Make(Raser.Voxelizer.Quarter(this.rc0[c], vz), Raser.Voxelizer.Quarter(this.rc1[c], vz), Raser.Voxelizer.Quarter(this.rc2[c], vz), Raser.Voxelizer.Quarter(this.rc3[c], vz))
+                        if (Raser.Shape.IsEmpty(ls)) { continue }
+                        chunk.materials[i] = this.material[c]
+                        chunk.colors[i] = this.color[c]
+                        if (ls != 255) { chunk.shapes[i] = ls }
+                        continue
+                    }
+                    int inStorey = (vz - ground) % this.storey
+                    if (wall) {
+                        int kind = this.upperKind[c]
+                        if (vz - ground < this.storey) { kind = this.groundKind[c] }
+                        // Öffnungen mit Bogen: die Wand lässt ein Rechteck bis zum Scheitel frei, die Zwickel füllt ein eingehängtes Bogenstück
+                        // (Raser.Facade.Arches, vernetzt in Raser.FarMesher.Arches) - Kirchenfenster, Portale, Schallöffnungen ...
+                        int ak = this.archKind[c]
+                        if (ak != 0) {
+                            kind = 0
+                            float zb = vz * 0.2
+                            if (zb + 0.1 >= this.archLow[c] && zb < Raser.Facade.ArchTop(this.archSpring[c], this.archRise[c]) - 0.001 && vz < top - 1) { continue }
+                        }
+                        // ... und Haustüren: zwei Voxel über dem Türblatt (Rundbogen mit Oberlicht)
+                        int dk = this.groundKind[c] & 127
+                        if (this.thick[c] && (dk == Raser.Facade.Door || dk == Raser.Facade.RaisedDoor)) {
+                            int topRel = 10
+                            if (dk == Raser.Facade.RaisedDoor) { topRel = 12 }
+                            int rel = vz - ground - 1
+                            if (rel == topRel + 1 || rel == topRel + 2) { continue }
+                        }
+                        int open = 0
+                        if (kind != 0 && vz < top - 1) { open = Raser.Voxelizer.Opening(kind, inStorey, vz - ground - 1, vz, top) }
+                        // eine Öffnung bleibt in beiden Lagen frei: Scheibe, Tür und Rahmen werden als Elemente zwischen die Laibungen gehängt
+                        // (Raser.Facade.Panes, vernetzt in Raser.FarMesher.Windows) - glatt auch in schrägen und runden Wänden
+                        if (open != 0 && this.thick[c]) { continue }
+                        if (open == 1) {
+                            chunk.materials[i] = glass
+                            chunk.colors[i] = glassColor
+                            // abends Licht dahinter: in gut einem Drittel der Wohnungen, in den meisten Läden (je Fenster und Geschoss gleich)
+                            int storeyNo = (vz - ground) / this.storey
+                            int slot = this.upperSlot[c]
+                            float chance = 0.35
+                            if (storeyNo == 0) {
+                                slot = this.groundSlot[c]
+                                if ((kind & 127) == Raser.Facade.Shop || (kind & 127) == Raser.Facade.GlassDoor) { chance = 0.8 }
+                            }
+                            if (Raser.Props.Rand(this.building[c], slot, storeyNo) < chance) { chunk.colors[i] = Raser.Palette.GlassLit }
+                        } else if (open == 2) {
+                            chunk.materials[i] = Raser.Material.Wood!int
+                            chunk.colors[i] = Raser.Palette.Wood + 64
+                        } else if (open == 3) {
+                            chunk.materials[i] = Raser.Material.Metal!int
+                            chunk.colors[i] = Raser.Palette.Metal + 32
+                        } else if (open == 4) {
+                            chunk.materials[i] = Raser.Material.Wood!int
+                            chunk.colors[i] = Raser.Palette.Plaster
+                        } else if (open == 5) {
+                            chunk.materials[i] = Raser.Material.Metal!int
+                            chunk.colors[i] = Raser.Palette.Metal + 64
+                        } else {
+                            chunk.materials[i] = this.below[c]
+                            chunk.colors[i] = this.belowColor[c]
+                        }
+                    } else if (inStorey == 0 && (vz == ground || !this.hall[c])) {
+                        chunk.materials[i] = concrete
+                        chunk.colors[i] = concreteColor
+                    }
+                }
+                // die Grundriss-Form der Säule für alles über dem Gelände (Wand, Fenster, Dach); bis zur Geländeoberfläche bleibt die Säule voll - ein
+                // Sockel, sonst blieben am Fuß der Wand die abgeschnittenen Dreiecke als Löcher im Boden
+                int ps = this.planShape[c]
+                if (ps != 0) {
+                    int pl = this.plinth[c]
+                    int planFrom = ground
+                    if (pl + 1 > planFrom) { planFrom = pl + 1 }
+                    // der Sockel: oben bündig mit dem Gelände (darüber beginnt die Form; bis zur Oberfläche bleibt es voll)
+                    if (pl >= vz0 && pl <= vz0 + zEnd && pl + 1 >= ground) {
+                        int ip = c + ((pl - vz0) << 12)
+                        int gs = this.plinthShape[c]
+                        if (chunk.materials[ip] != 0 && gs != 255) { chunk.shapes[ip] = gs }
+                        // oben sieht man ihn nur als Boden neben der Wand: der Belag des Geländes daneben (sonst Zacken in Wandfarbe am Fuß)
+                        int nb = this.GroundNeighbor(c)
+                        if (nb >= 0 && chunk.materials[ip] != 0) {
+                            chunk.materials[ip] = this.material[nb]
+                            chunk.colors[ip] = this.color[nb]
+                        }
+                    }
+                    for (int z = 0; z <= zEnd; z++) {
+                        int vz = vz0 + z
+                        if (vz < planFrom) { continue }
+                        if (this.eaveFull[c] && vz >= this.roofLow[c]) { continue }
+                        int i = c + (z << 12)
+                        if (Raser.Plan.IsElevation(chunk.plans.Get(i, 0))) { continue }
+                        if (chunk.materials[i] != 0) { chunk.plans[i] = ps }
+                    }
+                }
+            }
+        }
+    }
+}
