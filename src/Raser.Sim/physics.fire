@@ -1,0 +1,241 @@
+// Raser.Sim: die Rechnung eines Schritts der Welt ohne Szene - Fahrzeuge mit Aufprall an Gebäuden, Pfosten und anderen Fahrzeugen (Raser.Vehicle),
+// der Spieler zu Fuß (Raser.Walker), Ein- und Aussteigen, Startpunkt und Parkplätze am Straßenrand. Dieselbe Rechnung im Spiel (offline und als
+// Vorhersage am Server) und auf dem Server (autoritativ).
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class Physics {
+        // Der Startpunkt: auf der nächsten Straße für Autos (bis 80 m), in ihrer Richtung; sonst der Punkt selbst nach Norden. Gibt Ost, Nord, Richtung.
+        static float[] Start(Raser.FileTileStore store, defined float e, defined float n) { return Raser.Physics.StartIn(store.Load(Raser.TileKey.Of(e, n)), e, n) }
+
+        // Dasselbe mit der schon geladenen Kachel unter (e, n) (undefined: keine).
+        static float[] StartIn(Raser.Tile tile, defined float e, defined float n) {
+            float result[] = [e, n, 0.0]
+            var key = Raser.TileKey.Of(e, n)
+            if (tile == undefined) { return result }
+            float x = e - key.East
+            float y = n - key.North
+            float best = 80.0 * 80.0
+            foreach (r in tile.data.roads) {
+                if (!Raser.Props.IsCarRoad(r)) { continue }
+                for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                    float ax = r.points[k]
+                    float ay = r.points[k + 1]
+                    float ex = r.points[k + 2] - ax
+                    float ey = r.points[k + 3] - ay
+                    float len2 = ex * ex + ey * ey
+                    if (len2 < 1.0) { continue }
+                    float t = Math.Clamp(((x - ax) * ex + (y - ay) * ey) / len2, 0.1, 0.9)
+                    float px = ax + ex * t
+                    float py = ay + ey * t
+                    float d2 = (px - x) * (px - x) + (py - y) * (py - y)
+                    if (d2 < best) {
+                        best = d2
+                        result[0] = px + key.East
+                        result[1] = py + key.North
+                        // vorwärts ist (-sin, cos) in (Ost, Nord)
+                        result[2] = Math.Atan2(-ex, ey) * 180.0 / Math.PI
+                    }
+                }
+            }
+            return result
+        }
+
+        // Parkplätze am Straßenrand: auf Straßen für Autos (ab 5 m breit) der Startkachel, je Abschnitt (ab 10 m) in der Mitte rechts am Rand der
+        // Fahrbahn, in Fahrtrichtung - 20 bis 200 m vom Start, je mindestens 25 m auseinander, die nächsten zuerst; nicht in Gebäuden, an Bäumen,
+        // Laternen und Ampeln. Gibt je Platz Ost, Nord, Richtung.
+        static List<float> Parking(Raser.FileTileStore store, Raser.Obstacles obstacles, defined float e, defined float n, defined int count) { return Raser.Physics.ParkingIn(store.Load(Raser.TileKey.Of(e, n)), obstacles, e, n, count) }
+
+        // Dasselbe mit der schon geladenen Kachel unter (e, n) (undefined: keine).
+        static List<float> ParkingIn(Raser.Tile tile, Raser.Obstacles obstacles, defined float e, defined float n, defined int count) {
+            var found = new List<float>()
+            var key = Raser.TileKey.Of(e, n)
+            if (tile == undefined || count <= 0) { return found }
+            var cand = new List<float>()
+            foreach (r in tile.data.roads) {
+                if (!Raser.Props.IsCarRoad(r) || r.width < 5.0) { continue }
+                for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                    float ex = r.points[k + 2] - r.points[k]
+                    float ey = r.points[k + 3] - r.points[k + 1]
+                    float len = Math.Sqrt(ex * ex + ey * ey)
+                    if (len < 10.0) { continue }
+                    // rechts ist (dy, -dx) bei der Richtung (dx, dy); 1,1 m vom Rand der Fahrbahn
+                    float side = r.width / 2.0 - 1.1
+                    float pe = key.East + r.points[k] + ex / 2.0 + ey / len * side
+                    float pn = key.North + r.points[k + 1] + ey / 2.0 - ex / len * side
+                    float d = Math.Sqrt((pe - e) * (pe - e) + (pn - n) * (pn - n))
+                    if (d < 20.0 || d > 200.0) { continue }
+                    cand.Add(d)
+                    cand.Add(pe)
+                    cand.Add(pn)
+                    cand.Add(Math.Atan2(-ex, ey) * 180.0 / Math.PI)
+                }
+            }
+            // die nächsten zuerst
+            while (found.Count < count * 3) {
+                int best = -1
+                for (int i = 0; i < cand.Count; i = i + 4) {
+                    if (cand[i] < 0.0) { continue }
+                    if (best < 0 || cand[i] < cand[best]) { best = i }
+                }
+                if (best < 0) { break }
+                float pe = cand[best + 1]
+                float pn = cand[best + 2]
+                float ph = cand[best + 3]
+                cand[best] = -1.0
+                bool free = true
+                for (int j = 0; j < found.Count && free; j = j + 3) {
+                    if ((found[j] - pe) * (found[j] - pe) + (found[j + 1] - pn) * (found[j + 1] - pn) < 25.0 * 25.0) { free = false }
+                }
+                // ein Wagen (2,6 m lang zwischen den Kreismitten, Transporter 3,4 m): vorn, Mitte, hinten frei
+                float h = ph * Math.PI / 180.0
+                foreach (along in [-2.0, 0.0, 2.0]) {
+                    if (!free) { break }
+                    float ce = pe - Math.Sin(h) * along
+                    float cn = pn + Math.Cos(h) * along
+                    if (obstacles.Blocked(ce, cn, 1.2) || obstacles.Push(ce, cn, 1.2)) { free = false }
+                }
+                if (!free) { continue }
+                found.Add(pe)
+                found.Add(pn)
+                found.Add(ph)
+            }
+            return found
+        }
+
+        // Ein Schritt des Wagens mit Aufprall an Gebäuden und Fahrzeugen (in Teilschritten von höchstens 0,5 m): der Wagen rutscht an Wänden entlang,
+        // angefahrene Fahrzeuge stößt er an. true: aufgeprallt.
+        static defined bool Advance(Raser.Vehicle car, List<Raser.Vehicle> all, Raser.Obstacles obstacles, defined float dt, defined float throttle, defined float brake, defined float steer, defined bool reverse, defined float wetness) {
+            float pace = Math.Abs(car.speed) + Math.Abs(car.pushE) + Math.Abs(car.pushN)
+            int parts = Math.Max(1, Math.Ceiling(pace * dt / 0.5)!int)
+            bool hit = false
+            for (int i = 0; i < parts; i++) {
+                float e0 = car.east
+                float n0 = car.north
+                car.Step(dt / parts, throttle, brake, steer, reverse, wetness)
+                // zwei Kreise (vorn, hinten) gegen die Wände
+                for (int c = 0; c < 2; c++) {
+                    float offset = car.spread - 2.0 * car.spread * c
+                    float h = car.heading * Math.PI / 180.0
+                    float ce = car.east - Math.Sin(h) * offset
+                    float cn = car.north + Math.Cos(h) * offset
+                    if (obstacles.Push(ce, cn, car.radius)) {
+                        if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
+                    }
+                    // die anderen Fahrzeuge: angefahren rutschen sie los (Vehicle.Shove)
+                    foreach (other in all) {
+                        if (other == car) { continue }
+                        float oh = other.heading * Math.PI / 180.0
+                        for (int oc = 0; oc < 2; oc++) {
+                            float oo = other.spread - 2.0 * other.spread * oc
+                            float dx = ce - (other.east - Math.Sin(oh) * oo)
+                            float dy = cn - (other.north + Math.Cos(oh) * oo)
+                            float d = Math.Sqrt(dx * dx + dy * dy)
+                            float deep = car.radius + other.radius - d
+                            if (deep > 0.0 && d > 0.0001) {
+                                float into = car.Collide(offset, dx / d, dy / d, deep)
+                                car.Shove(other, dx / d, dy / d, into)
+                                if (into > 0.5) { hit = true }
+                            }
+                        }
+                    }
+                }
+            }
+            return hit
+        }
+
+        // Die abgestellten Fahrzeuge (alle außer driven; undefined: alle) rollen und rutschen aus, gebremst.
+        static undefined Parked(Raser.Vehicle driven, List<Raser.Vehicle> vehicles, Raser.Obstacles obstacles, defined float dt, defined float wetness) {
+            foreach (v in vehicles) {
+                if (v == driven) { continue }
+                if (v.speed == 0.0 && v.pushE == 0.0 && v.pushN == 0.0) { continue }
+                Raser.Physics.Advance(v, vehicles, obstacles, dt, 0.0, 1.0, 0.0, false, wetness)
+            }
+        }
+
+        // Das nächste Fahrzeug in Reichweite (3,5 m) des Spielers; -1: keins.
+        static defined int Nearest(List<Raser.Vehicle> vehicles, Raser.Walker walker) {
+            int found = -1
+            float best = 3.5
+            for (int i = 0; i < vehicles.Count; i++) {
+                float d = Raser.Physics.Distance(vehicles[i], walker)
+                if (d < best) {
+                    best = d
+                    found = i
+                }
+            }
+            return found
+        }
+
+        // Aussteigen: der Spieler neben die Fahrertür (links), sonst rechts; false: kein Platz.
+        static defined bool GetOut(Raser.Vehicle car, Raser.Walker walker, Raser.Obstacles obstacles) {
+            float h = car.heading * Math.PI / 180.0
+            foreach (side in [1.0, -1.0]) {
+                float e = car.east - Math.Cos(h) * (car.width / 2.0 + 0.8) * side
+                float n = car.north - Math.Sin(h) * (car.width / 2.0 + 0.8) * side
+                if (obstacles.Blocked(e, n, 0.4)) { continue }
+                walker.east = e
+                walker.north = n
+                walker.heading = car.heading
+                walker.speed = 0.0
+                return true
+            }
+            return false
+        }
+
+        // Ein Schritt des Spielers: Wände und der Wagen halten ihn auf.
+        static undefined Walk(Raser.Walker walker, List<Raser.Vehicle> vehicles, Raser.Obstacles obstacles, defined float dt, defined float forward, defined float turn, defined bool sprint) {
+            walker.Step(dt, forward, turn, sprint)
+            if (obstacles.Push(walker.east, walker.north, 0.35)) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
+            foreach (car in vehicles) {
+                float h = car.heading * Math.PI / 180.0
+                foreach (part in [1.0, 0.0, -1.0]) {
+                    walker.Avoid(car.east - Math.Sin(h) * car.spread * part, car.north + Math.Cos(h) * car.spread * part, car.radius - 0.05)
+                }
+            }
+        }
+
+        static defined float Distance(Raser.Vehicle car, Raser.Walker walker) {
+            return Math.Sqrt((car.east - walker.east) * (car.east - walker.east) + (car.north - walker.north) * (car.north - walker.north))
+        }
+
+        // Übernimmt den Zustand eines Fahrzeugs (Lage, Tempo, Lenkung, Stoß, Schräglage, Zustand, Tank) und, wenn kind anders ist, die Klasse
+        // mit ihren Maßen.
+        static undefined CopyState(Raser.Vehicle src, Raser.Vehicle dst) {
+            if (dst.kind != src.kind) {
+                dst.kind = src.kind
+                dst.name = src.name
+                dst.wheelbase = src.wheelbase
+                dst.topSpeed = src.topSpeed
+                dst.power = src.power
+                dst.brakes = src.brakes
+                dst.maxSteer = src.maxSteer
+                dst.tank = src.tank
+                dst.mass = src.mass
+                dst.Size(src.length, src.width)
+            }
+            dst.east = src.east
+            dst.north = src.north
+            dst.heading = src.heading
+            dst.speed = src.speed
+            dst.steerAngle = src.steerAngle
+            dst.sliding = src.sliding
+            dst.grip = src.grip
+            dst.health = src.health
+            dst.fuel = src.fuel
+            dst.pushE = src.pushE
+            dst.pushN = src.pushN
+            dst.lean = src.lean
+        }
+
+        static undefined CopyWalker(Raser.Walker src, Raser.Walker dst) {
+            dst.east = src.east
+            dst.north = src.north
+            dst.heading = src.heading
+            dst.speed = src.speed
+            dst.stride = src.stride
+            dst.load = src.load
+        }
+    }
+}
