@@ -654,6 +654,7 @@ class Game {
                 IO.File.WriteAllBytes(shot, fb.ToPng())
                 print(shot)
             }
+            if (options.Get("gpu", "") != "") { print("GPU: '" + S3D.HardwareName() + "', gezeichnet von " + cam.LastRenderer + ", Fehler: '" + S3D.HardwareError() + "', Objekte " + view.objects + ", Dreiecke " + view.triangles) }
             // --bench-sky n: so oft die Welt und den Himmel rendern, getrennt gemessen
             int benchSky = options.Get("bench-sky", "0").ToInt()
             if (benchSky > 0) {

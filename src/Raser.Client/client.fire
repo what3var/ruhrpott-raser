@@ -780,7 +780,11 @@ class WorldView {
                 var obj = new Object(set.models[i])
                 obj.KeepMeshCoordinates = true          // die Koordinaten des Netzes sind Welt-Koordinaten (Ursprung des Netzes an der Position 0, 0, 0)
                 obj.Texture = this.palette
-                if (set.opacities[i] < 1.0) { obj.Opacity = set.opacities[i] }
+                if (set.opacities[i] < 1.0) { obj.Opacity = set.opacities[i] } else {
+                    // undurchsichtig: der Atlas hat durchsichtige Texel (Glas), ohne Schwelle gälte darum jedes Objekt mit ihm als gemischt -
+                    // auf der GPU schriebe es dann keine Tiefe und verschwände ganz im Nebel (und gemischt kostet Sortieren)
+                    obj.AlphaCutoff = 0.5
+                }
                 if (this.night || this.wet) { this.Look(obj, set.opacities[i]) }
                 set.objects.Add(obj)
                 this.scene.Add(take obj)

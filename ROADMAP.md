@@ -113,6 +113,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Lange Fahrten: Hindernisse und Gelände geben Kacheln weiter als eine Kachel wieder frei (`Trim`), Fahrzeuge weiter als 400 m werden nicht nachgesetzt
 - [ ] Netze auf 6000 statt 16 000 Vierecke begrenzt (ein Worker hält die Sperre von scene3d beim Bauen eines Modells kürzer) - ob das Rendern davon etwas merkt, ist nicht gemessen: `--live` ohne `--render` rendert nicht ("Rendern" ist dort die Wartezeit bis zum nächsten Bild)
 - [ ] LOD für weite Sichtweiten
+- [x] GPU (`--gpu 1`, getestet mit lavapipe: `FIRE_S3D_GPU=cpu`): die Welt erscheint (undurchsichtige Netze mit `AlphaCutoff`), Nebel/Lichtkacheln/Spiegelungen kommen aus fire 74a2c16d
+- [ ] Himmel nativ in scene3d (`Object.Background`: zuerst gezeichnet, ohne Tiefe und Nebel) - dann Regen vor dem Himmel und Himmel auf der GPU
 
 ### Detail und Abwechslung
 - [ ] Fahrzeuge detaillierter: echte Modelle statt Quadern (Karosserieformen, Scheiben, Räder mit Felgen, Spiegel, Kennzeichen, Lichter), mehrere Modelle je Klasse (Kleinwagen, Kombi, SUV, Taxi, Bus, Lieferwagen, Roller, Rennrad ...), Farben und Zustand sichtbar (Beulen, Schmutz)
