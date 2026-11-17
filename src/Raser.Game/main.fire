@@ -248,6 +248,7 @@ class PersonModel {
 // Die Verfolgerkamera: ihr Abstand hinter dem Wagen (m).
 class Chase {
     defined float distance
+    defined float swing             // so weit (Grad) weicht sie seitlich aus
     construct() { this.distance = 7.0 }
 }
 
@@ -595,7 +596,7 @@ class Game {
                 for (float t = 0.0; t < foot; t = t + dt) { Game.Walk(walker, vehicles, obstacles, dt, 1.0, turn, options.Get("sprint", "") != "") }
                 camHeading = walker.heading + options.Get("look", "0").ToFloat()
                 Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
-                print("zu Fuß " + foot + " s (ausgestiegen: " + out + "): " + Game.Distance(car, walker) + " m vom Wagen, Richtung " + Math.Round(walker.heading) + "°, Kamera " + chase.distance + " m")
+                print("zu Fuß " + foot + " s (ausgestiegen: " + out + "): " + Game.Distance(car, walker) + " m vom Wagen, Richtung " + Math.Round(walker.heading) + "°, Kamera " + chase.distance + " m, " + Math.Round(chase.swing) + "°")
                 if (tree != undefined) { print("zum Baum: noch " + Math.Sqrt((tree[0] - walker.east) * (tree[0] - walker.east) + (tree[1] - walker.north) * (tree[1] - walker.north)) + " m von seiner Mitte") }
                 onFoot = true
             }
@@ -608,7 +609,7 @@ class Game {
             }
             cam.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
-            print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Tank " + Math.Round(car.fuel * 1000.0) / 10.0 + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m")
+            print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Tank " + Math.Round(car.fuel * 1000.0) / 10.0 + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m, " + Math.Round(chase.swing) + "°")
             for (int i = 1; i < vehicles.Count; i++) {
                 print(vehicles[i].name + " bei " + vehicles[i].east + ", " + vehicles[i].north + ", Zustand " + Math.Round(vehicles[i].health * 100.0) + " %")
             }
@@ -843,28 +844,57 @@ class Game {
             cam.LookAt((x - Math.Sin(ch) * 30.0) * 1m, (y + eye - 0.25) * 1m, (z - Math.Cos(ch) * 30.0) * 1m)
             return
         }
-        float h = camHeading * Math.PI / 180.0
-        float fx = -Math.Sin(h)
-        float fz = -Math.Cos(h)
-        float free = reach
+        // Steht hinten eine Wand, weicht die Kamera zur Seite aus (bis 60°, weich): gewählt wird die Richtung mit dem weitesten freien Weg (gerade
+        // dahinter bevorzugt). Bleibt es eng (unter 2,5 m), rückt sie heran und steigt, bis sie von schräg oben auf das Fahrzeug blickt.
         float nearest = 1.0
         if (reach > 5.0) { nearest = 1.5 }
-        for (float d = nearest; d <= reach; d = d + 0.5) {
-            if (obstacles.Blocked(east - fx * d, north + fz * d, 0.6)) {
-                free = d - 0.5
-                break
+        float bestFree = -1.0
+        float bestScore = -1000.0
+        float bestSwing = 0.0
+        foreach (swing in [0.0, 20.0, -20.0, 40.0, -40.0, 60.0, -60.0]) {
+            float free = Game.FreeBehind(obstacles, east, north, camHeading + swing, nearest, reach)
+            // gerade dahinter gilt 1 m mehr als 20° daneben; die alte Seite behält 0,5 m Vorsprung (kein Hin und Her)
+            float score = free - Math.Abs(swing) / 20.0
+            if ((swing > 0.0) == (chase.swing > 0.0) && swing != 0.0) { score = score + 0.5 }
+            if (score > bestScore) {
+                bestScore = score
+                bestFree = free
+                bestSwing = swing
             }
         }
+        if (bestFree >= reach - 0.01) { bestSwing = 0.0 }
+        if (dt <= 0.0) { chase.swing = bestSwing } else {
+            float turn = 120.0 * dt
+            chase.swing = chase.swing + Math.Clamp(bestSwing - chase.swing, -turn, turn)
+        }
+        float h = (camHeading + chase.swing) * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float free = Game.FreeBehind(obstacles, east, north, camHeading + chase.swing, nearest, reach)
         if (dt <= 0.0 || free < chase.distance) { chase.distance = free } else { chase.distance = Math.Min(free, chase.distance + 4.0 * dt) }
         float back = Math.Max(chase.distance, nearest - 0.5)
         float cx = x - fx * back
         float cz = z - fz * back
-        // dicht dran höher: der Blick geht über das Dach bzw. den Kopf
-        float cy = y + up + Math.Max(0.0, reach * 0.5 - back) * 0.6
+        // dicht dran höher: der Blick geht über das Dach bzw. den Kopf; unter 2,5 m steil von oben
+        float cy = y + up + Math.Max(0.0, reach * 0.5 - back) * 0.6 + Math.Max(0.0, 2.5 - back) * 1.4
         any gc = terrain.At(view.originE + cx, view.originN - cz)
         if (gc != undefined) { cy = Math.Max(cy, gc - view.originZ + 1.0) }
         cam.SetPosition(cx * 1m, cy * 1m, cz * 1m)
-        cam.LookAt((x + fx * reach) * 1m, (y + up * 0.5) * 1m, (z + fz * reach) * 1m)
+        // der Blick: voraus in Fahrtrichtung; eng von oben näher auf das Fahrzeug
+        float hh = camHeading * Math.PI / 180.0
+        float ahead = reach * Math.Clamp(back / 2.5, 0.35, 1.0)
+        cam.LookAt((x - Math.Sin(hh) * ahead) * 1m, (y + up * 0.5 - Math.Max(0.0, 2.5 - back) * 0.3) * 1m, (z - Math.Cos(hh) * ahead) * 1m)
+    }
+
+    // Wie weit (m) hinter (east, north) entgegen der Richtung heading (Grad) frei ist, ab nearest, bis reach (in 0,5-m-Schritten).
+    static defined float FreeBehind(Obstacles obstacles, defined float east, defined float north, defined float heading, defined float nearest, defined float reach) {
+        float h = heading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fn = Math.Cos(h)
+        for (float d = nearest; d <= reach; d = d + 0.5) {
+            if (obstacles.Blocked(east - fx * d, north - fn * d, 0.6)) { return d - 0.5 }
+        }
+        return reach
     }
 
     // Wagen und Kamera (hinter dem Wagen oder auf der Haube).

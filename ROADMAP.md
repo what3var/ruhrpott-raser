@@ -94,7 +94,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Fahrzeugphysik (Einspurmodell `Raser.Vehicle`) inkl. Nässe und Aquaplaning
 - [x] Aufprall: der Wagen (zwei Kreise) rutscht an Wänden entlang und dreht dabei weg, frontal prallt er zurück (`Vehicle.Collide`, `Obstacles.Push`)
 - [x] Verfolgerkamera weicht Gebäuden aus (rückt heran und höher, weich wieder hinaus)
-- [ ] Kamera dicht an der Wand (unter 1 m, v. a. Zweiräder): sie steckt dann fast im Fahrer, das Fahrzeug ist nicht zu sehen - besser seitlich ausweichen
+- [x] Kamera an der Wand: weicht bis 60° zur Seite aus (die Richtung mit dem weitesten freien Weg), bleibt es eng, steigt sie und blickt von oben
 - [x] Schaden aus der Wucht des Aufpralls (`Vehicle.health`, `DamageOf`: bis 7 km/h nichts, 50 km/h frontal 39 %; kaputt fährt nichts), Anzeige „Zustand“
 - [ ] Glätte; Bordsteine; Laternen und Schilder umfahren
 - [x] Fahrzeugklassen (`Vehicle.Of`): Auto, Transporter, Motorrad, Fahrrad - eigene Fahrwerte, Modelle, Kamera; die anderen Klassen stehen am Start geparkt, der Spieler steigt ins nächste ein; Fahrzeuge halten einander auf
