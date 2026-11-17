@@ -110,6 +110,12 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Vorausladen gezielt in Fahrtrichtung (heute: Ringe um einen Punkt voraus); Kacheln in Obstacles/Ground bei langen Fahrten wieder freigeben
 - [ ] LOD für weite Sichtweiten
 
+### Detail und Abwechslung
+- [ ] Fahrzeuge detaillierter: echte Modelle statt Quadern (Karosserieformen, Scheiben, Räder mit Felgen, Spiegel, Kennzeichen, Lichter), mehrere Modelle je Klasse (Kleinwagen, Kombi, SUV, Taxi, Bus, Lieferwagen, Roller, Rennrad ...), Farben und Zustand sichtbar (Beulen, Schmutz)
+- [ ] Spieler und Fußgänger detaillierter: Figur mit Gelenken (Ober-/Unterarm, Knie), Gehen/Rennen/Sitzen als Animation, verschiedene Statur, Kleidung, Frisuren, Hautfarben
+- [ ] Grünstreifen detaillierter: Gräser, Stauden, Blühstreifen, Bodendecker, Rindenmulch, Laub, Baumschutzbügel, Poller; verschiedene Bepflanzung je Straßenart und Stadtteil
+- [ ] Mehr Abwechslung überall: Varianten statt Wiederholung (Bäume nach Art, Fassaden, Fenster, Türen, Straßenmöbel, Werbung, Mülltonnen, Fahrräder an Ständern), zufällig aber deterministisch je Ort
+
 ## M4: Multiplayer-Grundgerüst
 - [ ] Koordinator + ein Regionsserver auf einem Rechner, Protokoll schon für mehrere Regionen ausgelegt
 - [ ] Globale, eindeutige Objekt-IDs; globale Dienste (Konten, Inventar, Wirtschaft) getrennt von Regionen
