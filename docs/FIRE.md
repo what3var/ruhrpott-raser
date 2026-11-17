@@ -7,9 +7,10 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 
 | Fund | Umweg im Projekt | Stand |
 |---|---|---|
-| Statische Felder werden in Deklarationsreihenfolge initialisiert; ein Initialisierer, der ein später deklariertes statisches Feld liest, bekommt `undefined`. | Reihenfolge der Klassen in `voxel.fire` beachten | Verhalten, nicht dokumentiert |
+| Statische Felder werden in Deklarationsreihenfolge initialisiert; ein Initialisierer, der ein später deklariertes statisches Feld liest, bekommt `undefined`. | Reihenfolge der Klassen in `voxel.fire` beachten | **muss behoben werden:** der Compiler soll zur Compilezeit ermitteln, welcher Initialisierer von welchem statischen Feld abhängt, und in dieser Reihenfolge initialisieren (ein Zyklus ist ein Fehler) |
 | Ein Ausdruck kann nicht mit `&&` auf der nächsten Zeile weitergehen (Zeilenende beendet die Anweisung). | Eine Zeile | Verhalten |
 | Ein Objekt, das einem Konstruktor übergeben und in einem Feld gespeichert wird, stirbt mit dem Aufrufer, wenn es ein Temporärwert war (`new Voxelizer(Sample.Make(), ...)`). | `try x.TakeTo(this)` in den Konstruktoren | Absicht (Besitzmodell); leicht zu vergessen, ein Hinweis des Typprüfers wäre hilfreich |
+| **Wunsch: ein Schlüsselwort `replace`** für das Überschreiben eines Felds: es löscht das bisherige Objekt (bzw. Array, Container), wenn es im Besitz des Objekts ist, und setzt dann den neuen Wert. Hintergrund: ein Feld neu zu belegen (`this.d = new Dictionary<...>()`, `this.one = take b`, `this.a = undefined`) gibt das Alte **absichtlich nicht** frei - sonst müsste fire jedes Mal sämtliche Referenzen auf das Objekt und alle seine Kinder prüfen. Das Löschen darf deshalb **niemals implizit** passieren, nur mit `replace`. | heute `delete this.f` vor dem Überschreiben (`MeshBatch.Pack`), bzw. `List` + `Clear` (`WorldView.making`) | Idee |
 
 ## scene3d
 
@@ -18,47 +19,11 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 | Nebel auch auf der GPU (laut Doku nur Fast und Software). | Hardware-Renderer | offen |
 | Kacheln (`Scene.LightCulling`) und Spiegelungen (`Object.Reflectivity`) auch auf der GPU. | Hardware-Renderer | offen |
 
-## Speicher
-
-| Was | Umweg | Stand |
-|---|---|---|
-| **Ein neuer Container im selben Feld gibt den alten samt Inhalt nicht frei** (`this.d = new Dictionary<...>()`). Nachbau unten: 6 Runden mit je 20 Objekten à 16 MB - 2 → 1923 MB, nichts kommt zurück. | `Clear` statt eines neuen Containers | offen (a9d8598d) |
-| **Ein Objekt in einem Feld ersetzen gibt das alte nicht frei**: `this.one = take b` 60-mal mit je 16 MB, danach `this.one = undefined` - 1923 → 2883 MB. Im Spiel (`WorldView.making`, je Ergebnis eines Workers) wuchs der Speicher so in 48 s auf 12 GB (OOM). | das Objekt in einer `List` halten und mit `Clear` freigeben | offen (a9d8598d) |
-
-```fire
-class Big {
-    defined float a[]
-    construct() { this.a = new float[2000000] }
-}
-class Holder {
-    Dictionary<int, Big> d
-    Big one
-    construct() { }
-}
-var h = new Holder()
-float start = Environment.ProcessMemory / 1000000.0
-for (int r = 0; r < 6; r++) {
-    h.d = new Dictionary<int, Big>()
-    for (int i = 0; i < 20; i++) {
-        var b = new Big()
-        h.d[i] = b
-        b.TakeTo(h.d)
-    }
-}
-print("neuer Container im Feld: " + Math.Round(start) + " -> " + Math.Round(Environment.ProcessMemory / 1000000.0) + " MB")   // 2 -> 1923 MB
-start = Environment.ProcessMemory / 1000000.0
-for (int r = 0; r < 60; r++) {
-    var b = new Big()
-    h.one = take b
-}
-h.one = undefined
-print("Objekt im Feld ersetzt: " + Math.Round(start) + " -> " + Math.Round(Environment.ProcessMemory / 1000000.0) + " MB")    // 1923 -> 2883 MB
-```
-
 ## Threads
 
-- **Zahlen-Arrays werden beim Abholen aus einem Kanal kopiert, Byte-Puffer nicht** (ein Worker schickt ein Objekt mit einem Array, das
-  Hauptprogramm misst sein `TryReceive`):
+- **Zahlen-Arrays kosten beim Abholen aus einem Kanal Zeit je Wert, Byte-Puffer nicht - auch mit `take`** (ein Worker schickt ein Objekt mit
+  einem Array, das Hauptprogramm misst sein `TryReceive`). `Send(take x)` gibt laut Doku weiter wie `handover`; trotzdem kosten 2 Mio. Werte
+  65 ms - ob als Array direkt (`Channel<float[]>`, `Send(take a)`), als Feld eines Objekts oder als frisches Ergebnis eines Aufrufs:
 
   | Inhalt | TryReceive |
   |---|---|
@@ -97,7 +62,5 @@ print("Objekt im Feld ersetzt: " + Math.Round(start) + " -> " + Math.Round(Envir
   Hauptprogramms übernimmt beim `Sleep` offenbar den Worker und kommt erst zurück, wenn der nachgibt - und `TryReceive` in der Schleife gibt
   nicht nach. Rechnet das Hauptprogramm vor dem `Sleep` 300 ms selbst (der Worker hat dann schon einen anderen Thread), kommt es zurück.
   Umweg in Raser: die Worker laufen mit `fire dedicated`.
-- **Ohne Nachbau:** im Spiel dauert das Abholen eines Ergebnisses aus dem Kanal der Worker trotzdem noch oft 40 bis 175 ms - auch für
-  kleine Ergebnisse (eine ferne Stufe, 80 KB, 128 ms), bei 3 Workern (`dedicated`) plus einem für die fernen Stufen. Nachgebaut mit gleich großen
-  Ergebnissen (bis 30 Netze, 23 MB, Byte-Puffer), mit Workern daneben in `Decompress`, Dateilesen, `Compress` oder beim Freigeben von 20 000
-  Objekten: nie über 0,3 ms. Die Worker im Spiel laden Chunks (Dateien, Deflate), bauen Netze und schreiben den Netz-Cache.
+- `Send(new float[n])` lehnt der Typprüfer mit TC029 ab („An object goes into a channel only with a word … - or fresh ('new', the result of a
+  call)“) - für ein Array zählt `new` nicht als frisch, das Ergebnis eines Aufrufs schon.
