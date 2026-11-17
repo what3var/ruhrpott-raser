@@ -117,6 +117,18 @@ Der Server ist für Uhr und Wetter maßgeblich (`WorldClock` mit `Raser.Weather`
 (`--timescale`, 1 = Echtzeit), das Wetter ist ein Preset. Die Clients übernehmen beides und stellen die eigenen Tasten (T/G/R) zurück, sobald der
 Server das nächste Mal schickt.
 
+## Verkehr und Fußgänger (später auf dem Server)
+
+Autos und Fußgänger rechnet jetzt jeder Client für sich (`--traffic N --people N`). Die Simulation ist schon so gebaut, dass der
+Regionsserver sie übernehmen kann: `Raser.Traffic` (Projekt `src/Raser.Traffic`) hat keine Szene, nur den Spurgraph aus den Straßen der
+Kacheln (`Raser.RoadGraph`, sortiert nach Straßen-ID: dieselben Kacheln geben denselben Graphen, egal in welcher Folge sie kamen) und einen
+Schritt `Step(dt, spieler)` mit den Lagen aller Spieler (Ost, Nord, Richtung, Tempo, Radius, Art). Zufall nur aus eigenen Seeds
+(`Raser.TrafficRandom`, je Auto und Fußgänger), keine Uhr, keine Threads - mit demselben Seed und denselben Eingaben ist das Ergebnis gleich.
+Ein Aufprall ist `Raser.Vehicle.Shove` auf den Körper des Autos und `Traffic.Hit`; danach rechnet `Raser.Vehicle` (auch ohne Szene). Die Ansicht
+(`TrafficView` in `src/Raser.Game/npcs.fire`) ordnet nur Modelle zu. Später: der Regionsserver führt `Step` mit 20 Hz für alle Spieler seiner
+Region und schickt je Kachel im Interesse eines Spielers die Autos und Fußgänger im Snapshot (ID, Spur, s, Tempo, Zustand - die Lage folgt
+aus dem Graphen, den der Client selbst baut), Unfälle und Stürze als Ereignis; der Client rechnet zwischen zwei Snapshots weiter.
+
 ## Persistenz
 
 Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created) und `sessions` (Hash des Tokens,
@@ -141,6 +153,7 @@ Deltas der Welt im Key-Value-Store (Konzept, Abschnitt 8).
 | `src/Raser.Net` | das Protokoll (`Raser.Packet`, `Raser.Wire`, `Raser.FrameReader`, `Raser.Link`), Befehle (`Raser.Commands`), Passwörter (`Raser.Passwords`) - mit Tests |
 | `src/Raser.Server` | `raser-server`: Launcher-API, Konten, Gateway, Koordinator, Regionsserver, Uhr und Wetter |
 | `src/Raser.Client` | `NetSession` (Verbindung, Chat, Konsole), `ChatOverlay` |
-| `src/Raser.Game` | `online.fire`: die anderen Spieler in der Szene; `--bot`: ein Client ohne Welt und Fenster (für Tests) |
+| `src/Raser.Game` | `online.fire`: die anderen Spieler in der Szene; `--bot`: ein Client ohne Welt und Fenster (für Tests); `npcs.fire`: der Verkehr in der Szene |
+| `src/Raser.Traffic` | Spurgraph und Simulation von Autos und Fußgängern (`Raser.RoadGraph`, `Raser.Traffic`) - ohne Szene, mit Tests |
 
 Probe von Hand: `tools/server-smoke.sh <raser-server> <raser-game>` startet den Server, registriert über HTTP, verbindet zwei Bots (`raser-game --bot 12 --say "..."`) und prüft, dass sie sich sehen, den Chat lesen, dass `/time` von einem Spieler abgelehnt wird und von einem Admin wirkt, und dass ein falsches Token abgelehnt wird.
