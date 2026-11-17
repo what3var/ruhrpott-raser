@@ -221,3 +221,22 @@ class SettingsTests {
         IO.Directory.Delete(dir, true)
     }
 }
+
+class WindowTests {
+    [Test "Passwortfeld zeigt Sternchen, merkt den Text"]
+    undefined Password() {
+        var box = new Launcher.PasswordBox(160)
+        box.TextInput(undefined, "geh")
+        box.TextInput(undefined, "eim")
+        Testing.Assert.AreEqual("geheim", box.secret)
+        Testing.Assert.AreEqual("******", box.Text)
+        box.Select(0, 2)
+        box.ReplaceSelection("X")
+        Testing.Assert.AreEqual("Xheim", box.secret)
+        Testing.Assert.AreEqual("*****", box.Text)
+        Testing.Assert.IsFalse(box.Undo())
+        box.Clear()
+        Testing.Assert.AreEqual("", box.secret)
+        Testing.Assert.AreEqual("", box.Text)
+    }
+}
