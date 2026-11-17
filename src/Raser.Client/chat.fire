@@ -1,0 +1,141 @@
+// Raser.Client: Chat und Konsole über dem Bild.
+//
+// Enter öffnet die Chatzeile, Enter schickt, Escape bricht ab; die letzten 8 Zeilen stehen 10 s oben links. Die Taste ^ (bzw. `, links neben
+// der 1) öffnet die Konsole: halber Bildschirm mit den Antworten des Servers und einer Eingabezeile, Befehle beginnen mit / (/help). Solange
+// eine der beiden offen ist, gehen alle Tasten dorthin (nicht an das Fahrzeug); losgelassene Tasten gehen weiter an das Spiel.
+#import "windows"
+#import "time"
+#import "raser.net"
+
+class ChatOverlay {
+    static readonly defined int Closed = 0
+    static readonly defined int Typing = 1
+    static readonly defined int Console = 2
+
+    defined int mode
+    string input
+    defined int openedAt            // Ticks: die Taste, die geöffnet hat, kommt oft gleich noch als Text (^, `)
+    Brush ink
+    Brush shade
+    Brush system
+    Brush answer
+    Brush error
+    Brush dim
+
+    construct() {
+        this.mode = ChatOverlay.Closed
+        this.input = ""
+        this.openedAt = 0
+        this.ink = new SolidBrush(0xFFFFFFFF)
+        this.shade = new SolidBrush(0xB0000000)
+        this.system = new SolidBrush(0xFFFFE070)
+        this.answer = new SolidBrush(0xFF9AD0FF)
+        this.error = new SolidBrush(0xFFFF7070)
+        this.dim = new SolidBrush(0xFFB0B0B0)
+    }
+
+    defined bool Active { get { return this.mode != ChatOverlay.Closed } }
+
+    // Die Taste der Konsole: ^ bzw. ` (Taste links neben der 1, Scancode 53, auf jeder Belegung).
+    static defined bool IsConsoleKey(defined int key, defined int scancode) { return scancode == 53 || key == 96 || key == 94 }
+
+    // Ein Ereignis des Fensters (Window.NextEvent); true: verbraucht, das Spiel soll es nicht sehen.
+    defined bool Handle(any ev, NetSession session) {
+        int type = ev[0]
+        if (type == EventType.KeyUp) { return false }
+        if (type == EventType.KeyDown) {
+            int key = ev[1]
+            int scancode = ev[2]
+            if (this.mode == ChatOverlay.Closed) {
+                if (key == 13) {
+                    this.Open(ChatOverlay.Typing)
+                    return true
+                }
+                if (ChatOverlay.IsConsoleKey(key, scancode)) {
+                    this.Open(ChatOverlay.Console)
+                    return true
+                }
+                return false
+            }
+            if (key == 27 || (this.mode == ChatOverlay.Console && ChatOverlay.IsConsoleKey(key, scancode))) {
+                this.mode = ChatOverlay.Closed
+                this.input = ""
+            } else if (key == 13) {
+                if (this.input.Trim() != "" && session != undefined) { session.Say(this.input) }
+                this.input = ""
+                // die Konsole bleibt offen, der Chat schließt
+                if (this.mode == ChatOverlay.Typing) { this.mode = ChatOverlay.Closed }
+            } else if (key == 8) {
+                if (this.input.Length > 0) { this.input = this.input.Substring(0, this.input.Length - 1) }
+            }
+            return true
+        }
+        if (type == EventType.TextInput) {
+            if (this.mode == ChatOverlay.Closed) { return false }
+            string text = ev[1]
+            // (die Taste, die eben geöffnet hat, als Zeichen)
+            if (DateTime.UtcNow.Ticks - this.openedAt < 3000000 && (text == "^" || text == "`" || text == "°")) { return true }
+            if (this.input.Length + text.Length <= Raser.Protocol.MaxText) { this.input = this.input + Raser.Texts.Clean(text, Raser.Protocol.MaxText) }
+            return true
+        }
+        return false
+    }
+
+    undefined Open(defined int mode) {
+        this.mode = mode
+        this.input = ""
+        this.openedAt = DateTime.UtcNow.Ticks
+    }
+
+    Brush BrushOf(defined int kind) {
+        if (kind == Raser.Protocol.FromSystem) { return this.system }
+        if (kind == Raser.Protocol.Answer) { return this.answer }
+        if (kind == Raser.Protocol.Error) { return this.error }
+        return this.ink
+    }
+
+    // Zeichnet Chat bzw. Konsole (nach dem Bild, wie die Anzeige).
+    undefined Draw(Renderer hud, defined int width, defined int height, NetSession session) {
+        int line = hud.TextHeight() + 2
+        int now = DateTime.UtcNow.Ticks
+        if (this.mode == ChatOverlay.Console) {
+            int h = height / 2
+            hud.FillRect(0, 0, width, h, this.shade)
+            int rows = (h - line - 12) / line
+            string head = "Konsole (^ oder Escape schliesst) - /help"
+            if (session != undefined) { head = head + " - " + Raser.Texts.Plain(session.status) }
+            hud.DrawText(8, 4, head, this.dim)
+            if (session != undefined) {
+                var lines = session.console
+                int first = Math.Max(0, lines.Count - (rows - 1))
+                int y = 4 + line
+                for (int i = first; i < lines.Count; i++) {
+                    hud.DrawText(8, y, Raser.Texts.Plain(lines[i].text), this.BrushOf(lines[i].kind))
+                    y = y + line
+                }
+            }
+            hud.DrawText(8, h - line - 4, "> " + Raser.Texts.Plain(this.input) + "_", this.ink)
+            return
+        }
+        // der Chat: die letzten 8 Zeilen der letzten 10 s (beim Schreiben alle 8)
+        int shown = 0
+        int y = 8
+        if (session != undefined) {
+            var lines = session.chat
+            int first = Math.Max(0, lines.Count - 8)
+            for (int i = first; i < lines.Count; i++) {
+                if (this.mode == ChatOverlay.Closed && now - lines[i].at > 100000000) { continue }
+                string text = Raser.Texts.Plain(lines[i].text)
+                hud.FillRect(4, y - 1, hud.TextWidth(text) + 8, line, this.shade)
+                hud.DrawText(8, y, text, this.BrushOf(lines[i].kind))
+                y = y + line
+                shown++
+            }
+        }
+        if (this.mode == ChatOverlay.Typing) {
+            string prompt = "Sagen: " + Raser.Texts.Plain(this.input) + "_"
+            hud.FillRect(4, y - 1, Math.Max(240, hud.TextWidth(prompt) + 8), line, this.shade)
+            hud.DrawText(8, y, prompt, this.ink)
+        }
+    }
+}
