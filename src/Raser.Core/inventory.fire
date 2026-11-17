@@ -262,15 +262,18 @@ namespace Raser {
     class ContainerStore {
         List<Raser.Container> all
         defined int next
+        Raser.IdAllocator ids           // auf dem Server: globale IDs (Raser.IdKind.Item); undefined: fortlaufend ab 1
 
         construct() {
             this.all = new List<Raser.Container>()
             this.next = 1
+            this.ids = undefined
         }
 
         defined int Create(defined int kind, defined int size) {
             int id = this.next
             this.next++
+            if (this.ids != undefined) { id = this.ids.Next(Raser.IdKind.Item) }
             this.all.Add(new Raser.Container(id, kind, size))
             return id
         }
@@ -330,16 +333,19 @@ namespace Raser {
         List<Raser.ItemDrop> all
         defined int next
         defined int changes             // zählt jede Änderung (die Szene gleicht sich daran ab)
+        Raser.IdAllocator ids           // auf dem Server: globale IDs (Raser.IdKind.Item); undefined: fortlaufend ab 1
 
         construct() {
             this.all = new List<Raser.ItemDrop>()
             this.next = 1
             this.changes = 0
+            this.ids = undefined
         }
 
         defined int Add(defined float east, defined float north, defined int item, defined int count, defined int data) {
             int id = this.next
             this.next++
+            if (this.ids != undefined) { id = this.ids.Next(Raser.IdKind.Item) }
             this.all.Add(new Raser.ItemDrop(id, east, north, item, count, data))
             this.changes++
             return id

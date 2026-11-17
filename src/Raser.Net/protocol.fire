@@ -3,25 +3,36 @@
 // Ein Rahmen: 2 Byte Länge (Little Endian), dann die Nachricht: 1 Byte Art, dann die Felder (Varints, ZigZag für Vorzeichen, Texte als Länge +
 // UTF-8). Lage in cm (UTM 32), Richtung in 1/100 Grad, Tempo in cm/s. Jede Nachricht trägt, was später mehrere Regionsserver brauchen: Region
 // bzw. Kachel.
+//
+// Version 2 (autoritativer Server): der Client schickt nur noch seine Eingaben je Takt (Input, 30 je s) und Operationen am Inventar (InvOp);
+// der Server rechnet die Welt und schickt Snapshots (15 je s) mit dem eigenen Zustand (bitgenau, für die Vorhersage), der Nummer der zuletzt
+// gerechneten Eingabe und den Entitäten in der Nähe (nur die geänderten, dazu die verschwundenen).
 #import "io"
 #import "raser.core"
+#import "raser.sim"
 
 namespace Raser {
     // Die Nummern des Protokolls.
     class Protocol {
-        static readonly defined int Version = 1
+        static readonly defined int Version = 2
         static readonly defined int MaxClientFrame = 1024        // Bytes je Rahmen vom Client
         static readonly defined int MaxServerFrame = 65535       // Bytes je Rahmen vom Server
         static readonly defined int MaxText = 200                // Zeichen je Chatzeile oder Befehl
         static readonly defined int MaxField = 512               // Bytes je Textfeld (UTF-8)
-        static readonly defined int MaxPlayers = 256             // Spieler je Snapshot
+        static readonly defined int MaxPlayers = 256             // Spieler je Snapshot (v1)
+        static readonly defined int MaxEntities = 1024           // Entitäten je Snapshot
+        static readonly defined int MaxInputs = 8                // Eingaben je Input-Nachricht
+        static readonly defined int MaxContainers = 64           // Behälter je InvSet
+        static readonly defined int SnapshotEvery = 2            // ein Snapshot je so viele Takte (30 Hz / 2 = 15 Hz)
 
         // Client -> Server
         static readonly defined int Hello = 1
-        static readonly defined int State = 2
+        static readonly defined int State = 2                    // (nur v1; ein v2-Server wirft hinaus)
         static readonly defined int Chat = 3
         static readonly defined int Command = 4
         static readonly defined int Bye = 5
+        static readonly defined int Input = 6
+        static readonly defined int InvOp = 7
         // Server -> Client
         static readonly defined int Welcome = 10
         static readonly defined int Reject = 11
@@ -32,6 +43,8 @@ namespace Raser {
         static readonly defined int Weather = 16
         static readonly defined int Teleport = 17
         static readonly defined int Kick = 18
+        static readonly defined int InvSet = 20
+        static readonly defined int Event = 22
 
         // Arten einer Chatzeile (Said)
         static readonly defined int FromPlayer = 0
@@ -39,7 +52,14 @@ namespace Raser {
         static readonly defined int Answer = 2
         static readonly defined int Error = 3
 
-        // Fahrzeugarten im State: 0 zu Fuß, dann wie Raser.Vehicle.kind.
+        // Ereignisse (Event)
+        static readonly defined int KnockedDown = 1              // id: der Spieler, other: wer ihn umgehauen hat (0: niemand)
+
+        // Operationen am Inventar über Raser.InvOp hinaus (InvOp.kind)
+        static readonly defined int OpOpen = 5                   // drop: den Rucksack am Boden öffnen
+        static readonly defined int OpClose = 6                  // den geöffneten schließen
+
+        // Fahrzeugarten: 0 zu Fuß, dann wie Raser.Vehicle.kind.
         static defined int KindOf(string vehicle, defined bool onFoot) {
             if (onFoot) { return 0 }
             if (vehicle == "auto") { return 1 }
@@ -59,6 +79,90 @@ namespace Raser {
         }
     }
 
+    // Die Arten der Entitäten im Snapshot.
+    class EntityType {
+        static readonly defined int Player = 1          // ein Spieler (zu Fuß; im Fahrzeug Bit InVehicle, a = Fahrzeug)
+        static readonly defined int Vehicle = 2         // ein Fahrzeug der Spieler (auch geparkt): variant = Art (KindOf), a = Fahrer, b = Schräglage (1/10 Grad)
+        static readonly defined int NpcCar = 3          // ein Auto des Verkehrs: variant = Art/Farbe, bits = Zustand
+        static readonly defined int Pedestrian = 4      // ein Fußgänger: variant = Aussehen, bits = Zustand (steht, liegt)
+        static readonly defined int Item = 5            // ein Gegenstand am Boden: variant = Art (Raser.Items), a = Anzahl, b = data (Rucksack: sein Behälter)
+        static readonly defined int Last = 5
+
+        // Zustandsbits (bits)
+        static readonly defined int InVehicle = 1       // Spieler: sitzt in einem Fahrzeug
+        static readonly defined int Sliding = 2         // Fahrzeug: rutscht
+        static readonly defined int Lying = 4           // Spieler/Fußgänger: liegt (umgehauen)
+        static readonly defined int Standing = 8        // NPC: steht (wartet)
+    }
+
+    // Eine Entität im Snapshot: ID, Art, Variante, Zustandsbits, Lage, Richtung, Tempo und zwei Zahlen je nach Art.
+    class Entity {
+        defined int id
+        defined int type
+        defined int variant
+        defined int bits
+        defined float east
+        defined float north
+        defined float heading
+        defined float speed
+        defined int a
+        defined int b
+
+        construct(defined int id, defined int type) {
+            this.id = id
+            this.type = type
+            this.variant = 0
+            this.bits = 0
+            this.east = 0.0
+            this.north = 0.0
+            this.heading = 0.0
+            this.speed = 0.0
+            this.a = 0
+            this.b = 0
+        }
+
+        // Ein Fahrzeug der Welt als Entität.
+        static Raser.Entity OfVehicle(Raser.SimVehicle v) {
+            var e = new Raser.Entity(v.id, Raser.EntityType.Vehicle)
+            var b = v.body
+            e.variant = Raser.Protocol.KindOf(b.kind, false)
+            if (b.sliding) { e.bits = Raser.EntityType.Sliding }
+            e.east = b.east
+            e.north = b.north
+            e.heading = b.heading
+            e.speed = b.speed
+            e.a = v.driver
+            e.b = Math.Round(b.lean * 10.0)!int
+            return e
+        }
+
+        Raser.Entity Clone() {
+            var e = new Raser.Entity(this.id, this.type)
+            e.variant = this.variant
+            e.bits = this.bits
+            e.east = this.east
+            e.north = this.north
+            e.heading = this.heading
+            e.speed = this.speed
+            e.a = this.a
+            e.b = this.b
+            return e
+        }
+
+        // Ein Fingerabdruck dessen, was über die Leitung geht (quantisiert): gleich = der Client hat es schon.
+        defined int Hash() {
+            int h = Raser.Fnv.AddInt(-3750763034362895579, this.type)
+            h = Raser.Fnv.AddInt(h, this.variant)
+            h = Raser.Fnv.AddInt(h, this.bits)
+            h = Raser.Fnv.AddInt(h, Raser.Wire.Cm(this.east))
+            h = Raser.Fnv.AddInt(h, Raser.Wire.Cm(this.north))
+            h = Raser.Fnv.AddInt(h, Raser.Wire.Angle(this.heading))
+            h = Raser.Fnv.AddInt(h, Raser.Wire.Cm(this.speed))
+            h = Raser.Fnv.AddInt(h, this.a)
+            return Raser.Fnv.AddInt(h, this.b)
+        }
+    }
+
     // Eine Nachricht, die nicht zum Protokoll passt (der Server wirft den Client dann hinaus).
     class ProtocolException : Exception {
         construct(string message) : base(message) { }
@@ -67,8 +171,9 @@ namespace Raser {
     // Eine Nachricht des Protokolls. Welche Felder gelten, hängt von der Art ab (Raser.Wire).
     class Packet {
         defined int type
-        defined int id                  // Spieler-ID (global, Raser.IdAllocator)
-        defined int seq                 // Folgenummer (State)
+        defined int id                  // Spieler-ID (global, Raser.IdAllocator); Event: um wen es geht
+        defined int other               // Event: der Verursacher
+        defined int seq                 // Folgenummer (State, Input: die erste; InvOp; InvSet: die zuletzt geprüfte Operation)
         defined int version             // Protokollversion (Hello)
         defined int region              // Region (Welcome, Snapshot)
         defined int tileX               // Kachel (Raser.TileKey)
@@ -77,20 +182,33 @@ namespace Raser {
         defined float north
         defined float heading           // Grad
         defined float speed             // m/s
-        defined int kind                // Fahrzeugart (State, Snapshot) bzw. Art der Chatzeile (Said)
+        defined int kind                // Fahrzeugart (Hello, State) bzw. Art der Chatzeile (Said) bzw. des Ereignisses (Event)
         defined int time                // Serverzeit (ms seit 1970)
+        defined int tick                // Takt des Servers (Welcome, Snapshot)
+        defined int rate                // Takte je s (Welcome)
+        defined int ack                 // Snapshot: die zuletzt gerechnete Eingabe
         defined bool admin
+        defined bool ok                 // InvSet: die Operation seq ist angenommen
         string text                     // Token, Chat, Befehl, Grund, Wetter
         string name                     // Name, Absender, Client-Version
         defined int year
         defined int day                 // Tag im Jahr (1 .. 365)
         defined int seconds             // Uhrzeit (s am Tag)
         defined float scale             // Zeitraffer (Spielsekunden je Sekunde)
-        List<Raser.Packet> players      // Snapshot: die Spieler in der Nähe (je id, Kachel, Lage, Richtung, Tempo, kind)
+        List<Raser.Packet> players      // Snapshot v1: die Spieler in der Nähe
+        List<Raser.Controls> controls   // Input: die Eingaben ab seq (fortlaufend)
+        Raser.Pawn self                 // Snapshot: der eigene Spieler (undefined: noch keiner)
+        Raser.Vehicle selfVehicle       // ... und sein Fahrzeug (undefined: zu Fuß)
+        List<Raser.Entity> entities     // Snapshot: neue und geänderte Entitäten in der Nähe
+        List<int> gone                  // Snapshot: Entitäten, die der Client vergessen soll
+        Raser.InvOp op                  // InvOp
+        defined int invIds[]            // InvSet: Taschen, Hände, Rücken, Handy, Maus, geöffnet, geöffnet am Boden
+        List<Raser.Container> containers // InvSet: die Behälter, an die der Spieler kommt
 
         construct(defined int type) {
             this.type = type
             this.id = 0
+            this.other = 0
             this.seq = 0
             this.version = 0
             this.region = 0
@@ -102,7 +220,11 @@ namespace Raser {
             this.speed = 0.0
             this.kind = 0
             this.time = 0
+            this.tick = 0
+            this.rate = 0
+            this.ack = 0
             this.admin = false
+            this.ok = false
             this.text = ""
             this.name = ""
             this.year = 0
@@ -110,19 +232,32 @@ namespace Raser {
             this.seconds = 0
             this.scale = 1.0
             this.players = new List<Raser.Packet>()
+            this.controls = new List<Raser.Controls>()
+            this.self = undefined
+            this.selfVehicle = undefined
+            this.entities = new List<Raser.Entity>()
+            this.gone = new List<int>()
+            this.op = undefined
+            this.invIds = new int[7]
+            for (int i = 0; i < 7; i++) { this.invIds[i] = 0 }
+            this.containers = new List<Raser.Container>()
         }
 
-        // Die Anmeldung: Token, Name und Client-Version (im Feld name als "name|version").
-        static Raser.Packet Hello(string token, string user, string client) {
+        // Die Anmeldung: Token, Name und Client-Version (im Feld name als "name|version"), die gewünschte Fahrzeugart (0 zu Fuß) und der
+        // gewünschte Startpunkt (der Server prüft beides).
+        static Raser.Packet Hello(string token, string user, string client, defined int kind = 1, defined float east = 0.0, defined float north = 0.0) {
             var p = new Raser.Packet(Raser.Protocol.Hello)
             p.version = Raser.Protocol.Version
             p.text = token
             p.name = user
             if (client != undefined && client != "") { p.name = user + "|" + client }
+            p.kind = kind
+            p.east = east
+            p.north = north
             return p
         }
 
-        // Eine Lage (State; für Snapshots je Spieler dasselbe mit id).
+        // Eine Lage (State v1; für Snapshots v1 je Spieler dasselbe mit id).
         static Raser.Packet Moved(defined int seq, defined float east, defined float north, defined float heading, defined float speed, defined int kind) {
             var p = new Raser.Packet(Raser.Protocol.State)
             p.seq = seq
@@ -151,6 +286,39 @@ namespace Raser {
             p.kind = kind
             return p
         }
+
+        // Der eigene Spieler für den Snapshot (Kopien: bitgenau, was der Server gerechnet hat); car: sein Fahrzeug (undefined: zu Fuß).
+        undefined SetSelf(Raser.Pawn pawn, Raser.Vehicle car) {
+            var self = new Raser.Pawn(pawn.id)
+            self.vehicle = pawn.vehicle
+            self.useHeld = pawn.useHeld
+            self.seq = pawn.seq
+            Raser.Physics.CopyWalker(pawn.walker, self.walker)
+            this.self = take self
+            if (car != undefined) {
+                var v = Raser.Vehicle.Of(car.kind)
+                Raser.Physics.CopyState(car, v)
+                this.selfVehicle = take v
+            }
+        }
+
+        // Eingaben ab der ersten (fortlaufend).
+        static Raser.Packet Inputs(List<Raser.Controls> list) {
+            var p = new Raser.Packet(Raser.Protocol.Input)
+            foreach (c in list) { p.controls.Add(c.Clone()) }
+            if (list.Count > 0) { p.seq = list[0].seq }
+            return p
+        }
+
+        // Eine Operation am Inventar mit Folgenummer.
+        static Raser.Packet Op(defined int seq, Raser.InvOp op) {
+            var p = new Raser.Packet(Raser.Protocol.InvOp)
+            p.seq = seq
+            var o = new Raser.InvOp(op.kind, op.source, op.sourceSlot, op.target, op.targetSlot, op.count)
+            o.drop = op.drop
+            p.op = take o
+            return p
+        }
     }
 
     // Kodieren und Dekodieren der Nachrichten.
@@ -164,9 +332,23 @@ namespace Raser {
                 w.Varint(p.version)
                 Raser.Wire.Text(w, p.text)
                 Raser.Wire.Text(w, p.name)
+                // ab v2: Fahrzeugart und Startpunkt
+                if (p.version >= 2) {
+                    w.Byte(p.kind)
+                    w.SignedVarint(Raser.Wire.Cm(p.east))
+                    w.SignedVarint(Raser.Wire.Cm(p.north))
+                }
             } else if (t == Raser.Protocol.State) {
                 w.Varint(p.seq)
                 Raser.Wire.Place(w, p)
+            } else if (t == Raser.Protocol.Input) {
+                if (p.controls.Count < 1 || p.controls.Count > Raser.Protocol.MaxInputs) { throw new Raser.ProtocolException("1 bis " + Raser.Protocol.MaxInputs + " Eingaben je Nachricht, nicht " + p.controls.Count + ".") }
+                w.Varint(p.controls[0].seq)
+                w.Byte(p.controls.Count)
+                foreach (c in p.controls) { Raser.Wire.WriteControls(w, c) }
+            } else if (t == Raser.Protocol.InvOp) {
+                w.Varint(p.seq)
+                p.op.Write(w)
             } else if (t == Raser.Protocol.Chat || t == Raser.Protocol.Command || t == Raser.Protocol.Reject || t == Raser.Protocol.Kick) {
                 Raser.Wire.Text(w, p.text)
             } else if (t == Raser.Protocol.Bye) {
@@ -176,14 +358,10 @@ namespace Raser {
                 w.Varint(p.time)
                 w.Byte(Raser.Wire.Flag(p.admin))
                 Raser.Wire.Text(w, p.name)
+                w.Varint(p.rate)
+                w.Varint(p.tick)
             } else if (t == Raser.Protocol.Snapshot) {
-                w.Varint(p.time)
-                w.Varint(p.region)
-                w.Varint(p.players.Count)
-                foreach (q in p.players) {
-                    w.Varint(q.id)
-                    Raser.Wire.Place(w, q)
-                }
+                Raser.Wire.WriteSnapshot(w, p)
             } else if (t == Raser.Protocol.Join) {
                 w.Varint(p.id)
                 w.Byte(Raser.Wire.Flag(p.admin))
@@ -204,6 +382,19 @@ namespace Raser {
                 w.SignedVarint(Raser.Wire.Cm(p.east))
                 w.SignedVarint(Raser.Wire.Cm(p.north))
                 w.Varint(Raser.Wire.Angle(p.heading))
+            } else if (t == Raser.Protocol.InvSet) {
+                w.Varint(p.seq)
+                w.Byte(Raser.Wire.Flag(p.ok))
+                for (int i = 0; i < 7; i++) { w.Varint(p.invIds[i]) }
+                if (p.containers.Count > Raser.Protocol.MaxContainers) { throw new Raser.ProtocolException("Zu viele Behälter (" + p.containers.Count + ").") }
+                w.Varint(p.containers.Count)
+                foreach (c in p.containers) { c.Write(w) }
+            } else if (t == Raser.Protocol.Event) {
+                w.Byte(p.kind)
+                w.Varint(p.id)
+                w.Varint(p.other)
+                w.SignedVarint(Raser.Wire.Cm(p.east))
+                w.SignedVarint(Raser.Wire.Cm(p.north))
             } else {
                 throw new Raser.ProtocolException("Unbekannte Art " + t + ".")
             }
@@ -234,9 +425,27 @@ namespace Raser {
                     p.version = r.Varint()
                     p.text = Raser.Wire.ReadText(r)
                     p.name = Raser.Wire.ReadText(r)
+                    if (p.version >= 2) {
+                        p.kind = r.Byte()
+                        if (p.kind > 4) { throw new Raser.ProtocolException("Unbekannte Fahrzeugart " + p.kind + ".") }
+                        p.east = r.SignedVarint() / 100.0
+                        p.north = r.SignedVarint() / 100.0
+                    }
                 } else if (t == Raser.Protocol.State) {
                     p.seq = r.Varint()
                     Raser.Wire.ReadPlace(r, p)
+                } else if (t == Raser.Protocol.Input) {
+                    p.seq = r.Varint()
+                    int n = r.Byte()
+                    if (n < 1 || n > Raser.Protocol.MaxInputs) { throw new Raser.ProtocolException("1 bis " + Raser.Protocol.MaxInputs + " Eingaben je Nachricht, nicht " + n + ".") }
+                    for (int i = 0; i < n; i++) {
+                        var c = Raser.Wire.ReadControls(r, p.seq + i)
+                        p.controls.Add(take c)
+                    }
+                } else if (t == Raser.Protocol.InvOp) {
+                    p.seq = r.Varint()
+                    p.op = Raser.InvOp.Read(r)
+                    if (p.op.kind < 1 || p.op.kind > Raser.Protocol.OpClose) { throw new Raser.ProtocolException("Unbekannte Operation " + p.op.kind + ".") }
                 } else if (t == Raser.Protocol.Chat || t == Raser.Protocol.Command || t == Raser.Protocol.Reject || t == Raser.Protocol.Kick) {
                     p.text = Raser.Wire.ReadText(r)
                 } else if (t == Raser.Protocol.Bye) {
@@ -246,17 +455,10 @@ namespace Raser {
                     p.time = r.Varint()
                     p.admin = r.Byte() != 0
                     p.name = Raser.Wire.ReadText(r)
+                    p.rate = r.Varint()
+                    p.tick = r.Varint()
                 } else if (t == Raser.Protocol.Snapshot) {
-                    p.time = r.Varint()
-                    p.region = r.Varint()
-                    int n = r.Varint()
-                    if (n > Raser.Protocol.MaxPlayers) { throw new Raser.ProtocolException("Zu viele Spieler im Snapshot (" + n + ").") }
-                    for (int i = 0; i < n; i++) {
-                        var q = new Raser.Packet(Raser.Protocol.State)
-                        q.id = r.Varint()
-                        Raser.Wire.ReadPlace(r, q)
-                        p.players.Add(take q)
-                    }
+                    Raser.Wire.ReadSnapshot(r, p)
                 } else if (t == Raser.Protocol.Join) {
                     p.id = r.Varint()
                     p.admin = r.Byte() != 0
@@ -278,6 +480,22 @@ namespace Raser {
                     p.east = r.SignedVarint() / 100.0
                     p.north = r.SignedVarint() / 100.0
                     p.heading = Raser.Wire.Degrees(r.Varint())
+                } else if (t == Raser.Protocol.InvSet) {
+                    p.seq = r.Varint()
+                    p.ok = r.Byte() != 0
+                    for (int i = 0; i < 7; i++) { p.invIds[i] = r.Varint() }
+                    int n = r.Varint()
+                    if (n > Raser.Protocol.MaxContainers) { throw new Raser.ProtocolException("Zu viele Behälter (" + n + ").") }
+                    for (int i = 0; i < n; i++) {
+                        var c = Raser.Container.Read(r)
+                        p.containers.Add(take c)
+                    }
+                } else if (t == Raser.Protocol.Event) {
+                    p.kind = r.Byte()
+                    p.id = r.Varint()
+                    p.other = r.Varint()
+                    p.east = r.SignedVarint() / 100.0
+                    p.north = r.SignedVarint() / 100.0
                 } else {
                     throw new Raser.ProtocolException("Unbekannte Art " + t + ".")
                 }
@@ -286,6 +504,132 @@ namespace Raser {
             }
             if (!r.AtEnd) { throw new Raser.ProtocolException("Nach der Nachricht stehen noch " + (data.length - r.position) + " Bytes.") }
             return p
+        }
+
+        // Eine Eingabe: Gas, Bremse (je 1 Byte), Lenkung, Gehen, Drehen (ZigZag), Flags.
+        static undefined WriteControls(Raser.ByteWriter w, Raser.Controls c) {
+            if (!c.Valid()) { throw new Raser.ProtocolException("Eine Eingabe außerhalb der Grenzen.") }
+            w.Byte(c.throttle)
+            w.Byte(c.brake)
+            w.SignedVarint(c.steer)
+            w.SignedVarint(c.forward)
+            w.SignedVarint(c.turn)
+            w.Byte(c.flags)
+        }
+
+        static Raser.Controls ReadControls(Raser.ByteReader r, defined int seq) {
+            var c = new Raser.Controls(seq)
+            c.throttle = r.Byte()
+            c.brake = r.Byte()
+            c.steer = r.SignedVarint()
+            c.forward = r.SignedVarint()
+            c.turn = r.SignedVarint()
+            c.flags = r.Byte()
+            if (!c.Valid()) { throw new Raser.ProtocolException("Eine Eingabe außerhalb der Grenzen.") }
+            return c
+        }
+
+        // Snapshot v2: Takt, Zeit, Region, die letzte gerechnete Eingabe; der eigene Spieler (bitgenau); die Entitäten; die verschwundenen.
+        static undefined WriteSnapshot(Raser.ByteWriter w, Raser.Packet p) {
+            w.Varint(p.tick)
+            w.Varint(p.time)
+            w.Varint(p.region)
+            w.Varint(p.ack)
+            if (p.self == undefined) { w.Byte(0) } else {
+                int flags = 1
+                if (p.self.useHeld) { flags = flags | 2 }
+                if (p.selfVehicle != undefined) { flags = flags | 4 }
+                w.Byte(flags)
+                w.Varint(p.self.vehicle)
+                var k = p.self.walker
+                w.Float64(k.east)
+                w.Float64(k.north)
+                w.Float64(k.heading)
+                w.Float64(k.speed)
+                w.Float64(k.stride)
+                w.Float64(k.load)
+                if (p.selfVehicle != undefined) {
+                    var v = p.selfVehicle
+                    w.Byte(Raser.Protocol.KindOf(v.kind, false))
+                    w.Byte(Raser.Wire.Flag(v.sliding))
+                    foreach (x in [v.east, v.north, v.heading, v.speed, v.steerAngle, v.pushE, v.pushN, v.lean, v.health, v.fuel, v.grip]) { w.Float64(x) }
+                }
+            }
+            if (p.entities.Count > Raser.Protocol.MaxEntities) { throw new Raser.ProtocolException("Zu viele Entitäten (" + p.entities.Count + ").") }
+            w.Varint(p.entities.Count)
+            foreach (e in p.entities) {
+                w.Varint(e.id)
+                w.Byte(e.type)
+                w.Varint(e.variant)
+                w.Byte(e.bits)
+                w.SignedVarint(Raser.Wire.Cm(e.east))
+                w.SignedVarint(Raser.Wire.Cm(e.north))
+                w.Varint(Raser.Wire.Angle(e.heading))
+                w.SignedVarint(Raser.Wire.Cm(e.speed))
+                w.Varint(e.a)
+                w.SignedVarint(e.b)
+            }
+            w.Varint(p.gone.Count)
+            foreach (id in p.gone) { w.Varint(id) }
+        }
+
+        static undefined ReadSnapshot(Raser.ByteReader r, Raser.Packet p) {
+            p.tick = r.Varint()
+            p.time = r.Varint()
+            p.region = r.Varint()
+            p.ack = r.Varint()
+            int flags = r.Byte()
+            if ((flags & 1) != 0) {
+                var self = new Raser.Pawn(0)
+                self.useHeld = (flags & 2) != 0
+                self.vehicle = r.Varint()
+                var k = self.walker
+                k.east = r.Float64()
+                k.north = r.Float64()
+                k.heading = r.Float64()
+                k.speed = r.Float64()
+                k.stride = r.Float64()
+                k.load = r.Float64()
+                p.self = take self
+                if ((flags & 4) != 0) {
+                    int kind = r.Byte()
+                    if (kind < 1 || kind > 4) { throw new Raser.ProtocolException("Unbekannte Fahrzeugart " + kind + ".") }
+                    var v = Raser.Vehicle.Of(Raser.Protocol.VehicleOf(kind))
+                    v.sliding = r.Byte() != 0
+                    v.east = r.Float64()
+                    v.north = r.Float64()
+                    v.heading = r.Float64()
+                    v.speed = r.Float64()
+                    v.steerAngle = r.Float64()
+                    v.pushE = r.Float64()
+                    v.pushN = r.Float64()
+                    v.lean = r.Float64()
+                    v.health = r.Float64()
+                    v.fuel = r.Float64()
+                    v.grip = r.Float64()
+                    p.selfVehicle = take v
+                }
+            }
+            int n = r.Varint()
+            if (n > Raser.Protocol.MaxEntities) { throw new Raser.ProtocolException("Zu viele Entitäten im Snapshot (" + n + ").") }
+            for (int i = 0; i < n; i++) {
+                int id = r.Varint()
+                int type = r.Byte()
+                if (type < 1 || type > Raser.EntityType.Last) { throw new Raser.ProtocolException("Unbekannte Entität " + type + ".") }
+                var e = new Raser.Entity(id, type)
+                e.variant = r.Varint()
+                e.bits = r.Byte()
+                e.east = r.SignedVarint() / 100.0
+                e.north = r.SignedVarint() / 100.0
+                e.heading = Raser.Wire.Degrees(r.Varint())
+                e.speed = r.SignedVarint() / 100.0
+                e.a = r.Varint()
+                e.b = r.SignedVarint()
+                p.entities.Add(take e)
+            }
+            int g = r.Varint()
+            if (g > Raser.Protocol.MaxEntities) { throw new Raser.ProtocolException("Zu viele verschwundene Entitäten (" + g + ").") }
+            for (int i = 0; i < g; i++) { p.gone.Add(r.Varint()) }
         }
 
         static defined int Flag(defined bool b) {
