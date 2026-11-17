@@ -94,6 +94,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Fahrzeugphysik (Einspurmodell `Raser.Vehicle`) inkl. Nässe und Aquaplaning
 - [x] Aufprall: der Wagen (zwei Kreise) rutscht an Wänden entlang und dreht dabei weg, frontal prallt er zurück (`Vehicle.Collide`, `Obstacles.Push`)
 - [x] Verfolgerkamera weicht Gebäuden aus (rückt heran und höher, weich wieder hinaus)
+- [ ] Kamera dicht an der Wand (unter 1 m, v. a. Zweiräder): sie steckt dann fast im Fahrer, das Fahrzeug ist nicht zu sehen - besser seitlich ausweichen
 - [x] Schaden aus der Wucht des Aufpralls (`Vehicle.health`, `DamageOf`: bis 7 km/h nichts, 50 km/h frontal 39 %; kaputt fährt nichts), Anzeige „Zustand“
 - [ ] Glätte; Bordsteine; Laternen und Schilder umfahren
 - [x] Fahrzeugklassen (`Vehicle.Of`): Auto, Transporter, Motorrad, Fahrrad - eigene Fahrwerte, Modelle, Kamera; die anderen Klassen stehen am Start geparkt, der Spieler steigt ins nächste ein; Fahrzeuge halten einander auf
@@ -104,7 +105,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Fahrzeuge: Akku statt Tank für E-Fahrzeuge, Tankstellen; angestoßene Fahrzeuge drehen sich; Parkplätze in allen Kacheln (beim Nachladen), Parkplatzflächen aus OSM
 - [x] Streaming gemessen (`raser --live 60 [--speed 50]`: Autopilot, 30 Bilder je s): über Kachelgrenzen hinweg fehlt unter dem Wagen und 60 m voraus nie eine Stufe (50 km/h, nah 1, fern 5)
 - [x] Die fernen Stufen baut ein eigener Worker (vorher das Hauptprogramm), Modelle entstehen Netz für Netz im Zeitbudget
-- [ ] Ruckler beim Nachladen (einzelne Bilder 0,3 bis 1,3 s): Natives sperren einander über Threads hinweg - Befund in docs/FIRE.md, liegt bei fire
+- [x] Ruckler beim Nachladen kleiner (fire a9d8598d: Natives sperren einander nicht mehr; Netze als Byte-Puffer durch den Kanal; Worker `dedicated`): 24 statt 15 Bilder je s, das längste Bild 0,25 bis 0,55 statt 0,8 bis 1,3 s
+- [ ] Rest-Ruckler: das Abholen eines Ergebnisses der Worker dauert im Spiel oft 40 bis 175 ms, ohne Nachbau (docs/FIRE.md)
 - [ ] Vorausladen gezielt in Fahrtrichtung (heute: Ringe um einen Punkt voraus); Kacheln in Obstacles/Ground bei langen Fahrten wieder freigeben
 - [ ] LOD für weite Sichtweiten
 

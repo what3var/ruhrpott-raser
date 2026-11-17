@@ -487,7 +487,7 @@ class Game {
         float live = options.Get("live", "0").ToFloat()
         if (live > 0.0) {
             float want = options.Get("speed", "50").ToFloat() / 3.6
-            for (int i = 0; i < 12; i++) { view.spent[i] = 0 }
+            for (int i = 0; i < 14; i++) { view.spent[i] = 0 }
             int began = DateTime.Now.Ticks
             int last = began
             int frames = 0
@@ -550,6 +550,7 @@ class Game {
             print("je Bild: Autopilot " + (pilotTicks / frames / 10000) + " ms, Nachladen " + (updateTicks / frames / 10000) + " ms, Rendern " + (renderTicks / frames / 10000) + " ms, Rest mit Autopilot " + (otherTicks / frames / 10000) + " ms")
             string parts = ""
             for (int i = 0; i < 6; i++) { parts = parts + " " + (view.spent[i] / frames / 10000.0) + "/" + (view.spent[i + 6] / 10000) }
+            print("längstes TryReceive " + (view.spent[12] / 10000) + " ms, längstes FromArrays " + (view.spent[13] / 10000) + " ms")
             print("Nachladen je Abschnitt (Mittel/längstes ms: Speicher, Anordnen, fern, Ergebnisse, nah bestellen, voraus):" + parts)
             string liveShot = options.Get("shot", "")
             if (liveShot != "") { IO.File.WriteAllBytes(liveShot, fb.ToPng()) }
