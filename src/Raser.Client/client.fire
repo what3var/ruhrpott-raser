@@ -390,8 +390,9 @@ class Obstacles {
     }
 }
 
-// Licht und Wetter (Raser.Weather): Sonne (gerichtet, mit Schatten, wenn sie scheint) oder Mond, Himmel als Hintergrund, Umgebungslicht, Dunst
-// bzw. Nebel, Regen als Striche um die Kamera. Nachts leuchten alle Laternen in der Nähe als Punktlichter mit Ende.
+// Licht und Wetter (Raser.Weather): Sonne (gerichtet, mit Schatten, wenn sie scheint) oder Mond, der Himmel dahinter (Sky), Umgebungslicht, Dunst
+// bzw. Nebel in der Farbe des Horizonts, Regen als Striche um die Kamera. Nachts leuchten alle Laternen in der Nähe als Punktlichter mit Ende.
+// Gerendert wird mit Render (statt cam.Render): die Welt, dann der Himmel hinter ihr.
 class Atmosphere {
     Raser.Weather weather
     Scene scene
@@ -400,6 +401,8 @@ class Atmosphere {
     Raser.FileTileStore store
     Light sun
     Light moon
+    Sky sky
+    defined bool drawSky                    // false: nur die Welt (zum Messen)
     Dictionary<string, List<Light>> tileLights   // je Kachel die Punktlichter ihrer Laternen
     defined bool lit                        // die Laternen sind an
     Emitter rain
@@ -434,6 +437,8 @@ class Atmosphere {
         this.lastE = 1.0e30
         this.lastN = 1.0e30
         scene.ShadowResolution = 2048
+        this.sky = new Sky(weather, scene, cam)
+        this.drawSky = true
     }
 
     static defined int Rgb(defined int c) { return S3D.Rgb((c >> 16) & 255, (c >> 8) & 255, c & 255) }
@@ -443,8 +448,12 @@ class Atmosphere {
         var w = this.weather
         this.scene.AmbientColor = Atmosphere.Rgb(w.ambientColor)
         this.scene.AmbientIntensity = w.ambientIntensity
-        this.cam.Background = Atmosphere.Rgb(w.skyColor)
+        // der Hintergrund durchsichtig (Alpha 0): dort kommt der Himmel hin (Sky.Draw); der Nebel in der Farbe des Horizonts (Sky.Follow)
+        this.cam.Background = Atmosphere.Rgb(w.skyColor) & 0xFFFFFF
         this.scene.Fog(Atmosphere.Rgb(w.skyColor), w.hazeStart * 1m, w.hazeEnd * 1m)
+        this.sky.Apply()
+        this.sky.fogColor = -1
+        this.sky.Follow()
         // Szene: x = Ost, y = oben, z = -Nord; das Licht läuft von der Sonne weg
         this.sun.Direction(-w.sunX, -w.sunZ, w.sunY)
         this.sun.Color = Atmosphere.Rgb(w.sunColor)
@@ -453,6 +462,14 @@ class Atmosphere {
         this.scene.Shadows = w.shadows
         // nachts der Mond (schwach, bläulich), in der Dämmerung ausgeblendet
         this.moon.Intensity = Math.Clamp((-w.elevation - 2.0) / 8.0, 0.0, 1.0) * 0.12 * (1.0 - 0.7 * w.clouds)
+        // steht er am Himmel, kommt sein Licht von dort, nach seiner Phase (sonst bleibt das schwache Licht der Nacht von schräg oben)
+        if (w.moonElevation > 5.0) {
+            this.moon.Direction(-w.moonX, -w.moonZ, w.moonY)
+            this.moon.Intensity = this.moon.Intensity * (0.5 + 0.7 * w.moonLit)
+        } else {
+            this.moon.Direction(0.3, -1.0, 0.5)
+            this.moon.Intensity = this.moon.Intensity * 0.5
+        }
         this.moon.Enabled = this.moon.Intensity > 0.005
         this.rain.Running = w.rain > 0.0
         this.rain.Rate = 2000.0 + 10000.0 * w.rain
@@ -467,6 +484,7 @@ class Atmosphere {
     // rechnet nur die Lichter, die es erreichen - hunderte sind so bezahlbar). Neu verteilt, wenn die Kamera ein Stück weiter ist.
     undefined Update(defined float e, defined float n, defined float dt) {
         this.rain.SetPosition(this.cam.X, this.cam.Y + 7m, this.cam.Z)
+        this.sky.Advance(dt)
         bool burning = this.weather.lampsOn
         if (burning == this.lit && (e - this.lastE) * (e - this.lastE) + (n - this.lastN) * (n - this.lastN) < 400.0) { return }
         this.lit = burning
@@ -498,6 +516,13 @@ class Atmosphere {
             bool keep = burning && wanted.Contains(pair.Key)
             foreach (l in pair.Value) { l.Enabled = keep }
         }
+    }
+
+    // Ein Bild: der Nebel in der Farbe des Horizonts in Blickrichtung, die Welt, dahinter der Himmel.
+    undefined Render() {
+        if (this.drawSky) { this.sky.Follow() }
+        this.cam.Render()
+        if (this.drawSky) { this.sky.Draw() }
     }
 
     // Die Laternenköpfe einer Kachel (Ost, Nord, Höhe in der Welt): der Mast 4,9 m hoch, der Kopf 0,7 m zur Straße (wie Raser.Props.Lamp).

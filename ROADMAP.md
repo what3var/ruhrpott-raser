@@ -79,7 +79,9 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Pfützen ab Regen: dunkle, glatte Flecken auf den Belägen (dritte Textur mit flachem Relief) - `docs/images/viewer-pfuetzen.png`
 - [ ] Pfützen in Senken statt nach Rauschen, mit stärkerer Spiegelung; Gewitter, Schnee, Wind; Wetter, das sich mit der Zeit ändert; Spiegelungen auch auf der GPU
 - [ ] Ingame-Uhr in Echtzeit (deutsche Ortszeit, echter Sonnenstand), Zeitfaktor als Server-Einstellung
-- [ ] Mondphase/-stand astronomisch korrekt, Wolken mit orangem Stadtlicht-Himmel
+- [x] Mondphase/-stand astronomisch korrekt (Meeus, gekürzt: etwa ein Grad), Wolken mit orangem Stadtlicht-Himmel
+- [x] Himmel (Raser.SkyLook, Sky): Verlauf nach Sonnenstand, Dämmerung und blaue Stunde, Sonne mit Schein, Mond in seiner Phase, wenige Sterne, Wolkenschicht nach Bedeckung (zieht langsam), Nebel in der Farbe des Horizonts
+- [ ] Himmel: Wolken mit Volumen bzw. Schichten in mehreren Höhen, Regen vor dem Himmel (die Striche fallen dort heute weg), Mond und Sonne am Horizont abgeflacht
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos
 - [ ] Referenzszene: Zechensiedlung in nebliger Nacht
 - [ ] Mood-Akzente pro Viertel, Render-Profile pro Gebiet
@@ -109,7 +111,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Rest-Ruckler beim Nachladen: die alten Arrays der Netze hingen nach `Pack` weiter am Netz (ein auf `undefined` gesetztes Feld gibt fire absichtlich nicht frei) - mit `delete`: 28,8 Bilder je s, das längste Bild 0,29 s, Abholen höchstens 4 ms
 - [x] Vorausladen in Fahrtrichtung: die nahe Stufe gilt um das Fahrzeug und entlang seines Wegs (Tempo x 4 s, höchstens 250 m), bestellt in der Reihenfolge der Fahrt (`WorldView.SetMotion`/`Want`); die Worker bauen auch die Modelle - Geisterfahrt (`--live 25 --ghost 1 --speed 100`): ohne nahe Stufe unter dem Wagen 0 statt 95 Bilder, 30 m voraus 2 statt 236
 - [x] Lange Fahrten: Hindernisse und Gelände geben Kacheln weiter als eine Kachel wieder frei (`Trim`), Fahrzeuge weiter als 400 m werden nicht nachgesetzt
-- [ ] Rendern wartet auf die Sperre von scene3d, während ein Worker ein Modell baut (Netze dafür auf 6000 Vierecke begrenzt); beim Messen lief parallel ein Build - neu messen auf ruhiger Maschine
+- [ ] Netze auf 6000 statt 16 000 Vierecke begrenzt (ein Worker hält die Sperre von scene3d beim Bauen eines Modells kürzer) - ob das Rendern davon etwas merkt, ist nicht gemessen: `--live` ohne `--render` rendert nicht ("Rendern" ist dort die Wartezeit bis zum nächsten Bild)
 - [ ] LOD für weite Sichtweiten
 
 ### Detail und Abwechslung

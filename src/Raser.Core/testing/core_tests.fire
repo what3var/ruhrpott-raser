@@ -589,3 +589,109 @@ class WalkerTests {
         Testing.Assert.IsTrue(r.north > 6.0 && r.east > 0.5)
     }
 }
+
+class SkyTests {
+    [Test "Himmel mittags: zum Zenit blauer und dunkler als am Horizont, um die Sonne hell"]
+    undefined Noon() {
+        var w = new Raser.Weather()
+        w.day = Raser.Weather.DayOf(7, 1)
+        w.hour = 13.5
+        w.Preset("klar")
+        var sky = new Raser.SkyLook(w)
+        int zenith = sky.At(89.0, 0.0)
+        int horizon = sky.At(1.0, w.azimuth + 180.0)
+        Testing.Assert.IsTrue(SkyTests.Sum(zenith) < SkyTests.Sum(horizon))
+        Testing.Assert.IsTrue((zenith & 255) - ((zenith >> 16) & 255) > (horizon & 255) - ((horizon >> 16) & 255))
+        Testing.Assert.IsTrue((zenith & 255) > ((zenith >> 16) & 255) + 80)
+        int nearSun = sky.At(w.elevation - 2.0, w.azimuth)
+        print("Zenit " + zenith + ", Horizont " + horizon + ", bei der Sonne " + nearSun)
+        Testing.Assert.IsTrue(SkyTests.Sum(nearSun) > SkyTests.Sum(horizon))
+    }
+
+    [Test "Himmel abends: der Horizont zur Sonne orange, gegenüber kühler; nachts dunkel mit oranger Stadtglocke; bedeckt fast gleichmäßig grau"]
+    undefined Evening() {
+        var w = new Raser.Weather()
+        w.day = Raser.Weather.DayOf(7, 1)
+        w.hour = 21.6
+        w.Preset("klar")
+        Testing.Assert.IsTrue(w.elevation > -3.0 && w.elevation < 3.0)
+        var sky = new Raser.SkyLook(w)
+        int toward = sky.At(1.0, w.azimuth)
+        int away = sky.At(1.0, w.azimuth + 180.0)
+        Testing.Assert.IsTrue(((toward >> 16) & 255) > (toward & 255) + 60)
+        Testing.Assert.IsTrue(((toward >> 16) & 255) - (toward & 255) > ((away >> 16) & 255) - (away & 255))
+        w.hour = 1.0
+        w.Update()
+        var night = new Raser.SkyLook(w)
+        int top = night.At(89.0, 0.0)
+        int low = night.At(1.0, 0.0)
+        Testing.Assert.IsTrue(SkyTests.Sum(top) < 90)
+        Testing.Assert.IsTrue(((low >> 16) & 255) > (low & 255) + 15)
+        w.hour = 13.0
+        w.Preset("bedeckt")
+        var grey = new Raser.SkyLook(w)
+        int a = grey.At(60.0, 0.0)
+        int b = grey.At(5.0, 180.0)
+        Testing.Assert.IsTrue(Math.Abs(SkyTests.Sum(a) - SkyTests.Sum(b)) < 90)
+        Testing.Assert.IsTrue(Math.Abs((a & 255) - ((a >> 16) & 255)) < 30)
+    }
+
+    [Test "Mond: Vollmond am 25.1.2024, Neumond bei der Sonnenfinsternis am 8.4.2024 dicht bei der Sonne"]
+    undefined Moon() {
+        var w = new Raser.Weather()
+        w.year = 2024
+        w.day = Raser.Weather.DayOf(1, 25)
+        w.hour = 18.9                       // 17:54 UTC
+        w.Update()
+        Testing.Assert.IsTrue(w.moonLit > 0.97)
+        w.day = Raser.Weather.DayOf(4, 8)
+        w.hour = 20.35                      // 18:21 UTC, Sommerzeit
+        w.Update()
+        Testing.Assert.IsTrue(w.moonLit < 0.02)
+        float near = w.moonX * w.sunX + w.moonY * w.sunY + w.moonZ * w.sunZ
+        Testing.Assert.IsTrue(near > Math.Cos(3.0 * Math.PI / 180.0))
+        // eine Woche später zunehmend, etwa halb
+        w.day = Raser.Weather.DayOf(4, 15)
+        w.Update()
+        Testing.Assert.IsTrue(w.moonLit > 0.35 && w.moonLit < 0.75)
+    }
+
+    [Test "Wolken: klar fast frei, bedeckt fast ganz zu; Rauschen fest"]
+    undefined Clouds() {
+        var w = new Raser.Weather()
+        w.day = Raser.Weather.DayOf(7, 1)
+        w.hour = 14.0
+        Testing.Assert.AreEqual(Raser.SkyLook.Fbm(3.2, -7.5, 0.0), Raser.SkyLook.Fbm(3.2, -7.5, 0.0))
+        w.Preset("klar")
+        float clear = SkyTests.Cover(new Raser.SkyLook(w))
+        w.Preset("wolkig")
+        float some = SkyTests.Cover(new Raser.SkyLook(w))
+        w.Preset("bedeckt")
+        float full = SkyTests.Cover(new Raser.SkyLook(w))
+
+        print("Bedeckung klar " + clear + ", wolkig " + some + ", bedeckt " + full)
+        Testing.Assert.IsTrue(clear < 0.2)
+        Testing.Assert.IsTrue(some > 0.25 && some < 0.75)
+        Testing.Assert.IsTrue(full > 0.85)
+    }
+
+    // die Deckkraft der Wolken über 5° Höhe, gemittelt über die Fläche der Wolkenschicht (bis gut 18 km weit)
+    static defined float Cover(Raser.SkyLook sky) {
+        byte data[] = sky.CloudRgba(128, 64)
+        float sum = 0.0
+        float all = 0.0
+        for (int j = 0; j < 64; j++) {
+            float el = Raser.SkyLook.ElevationOf((j + 0.5) / 64.0) * Math.PI / 180.0
+            if (el < 5.0 * Math.PI / 180.0) { continue }
+            float step = Raser.SkyLook.ElevationOf((j + 1.0) / 64.0) - Raser.SkyLook.ElevationOf(j / 64.0)
+            float area = step / Math.Tan(el) / (Math.Sin(el) * Math.Sin(el))
+            for (int i = 0; i < 128; i++) {
+                sum = sum + data[(j * 128 + i) * 4 + 3] / 255.0 * area
+                all = all + area
+            }
+        }
+        return sum / all
+    }
+
+    static defined int Sum(defined int c) { return ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255) }
+}
