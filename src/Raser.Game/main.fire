@@ -1,7 +1,7 @@
 // Raser.Game: das Spiel (Roadmap M3: Fahren) - ein Auto durch die Voxel-Welt fahren.
 //
 //   raser [--world world] [--vehicle auto|transporter|motorrad|fahrrad] [--at ost,nord] [--date 07-01] [--time 14:00] [--weather klar|regen|...] [--size 960x600] [--gpu 1]
-//         [--near 1] [--far 5] [--workers 3]
+//         [--near 1] [--far 5] [--workers 3] [--parked 8]
 //   raser ... --auto 20 [--steer 0.2] [--back 1] --shot bild.png     ohne Fenster: so viele Sekunden Vollgas (mit festem Lenkeinschlag, auch
 //                                                       rückwärts), dann ein Bild
 //
@@ -286,6 +286,66 @@ class Game {
         return result
     }
 
+    // Parkplätze am Straßenrand: auf Straßen für Autos (ab 5 m breit) der Startkachel, je Abschnitt (ab 10 m) in der Mitte rechts am Rand der
+    // Fahrbahn, in Fahrtrichtung - 20 bis 200 m vom Start, je mindestens 25 m auseinander, die nächsten zuerst; nicht in Gebäuden, an Bäumen,
+    // Laternen und Ampeln. Gibt je Platz Ost, Nord, Richtung.
+    static List<float> Parking(Raser.FileTileStore store, Obstacles obstacles, defined float e, defined float n, defined int count) {
+        var found = new List<float>()
+        var key = Raser.TileKey.Of(e, n)
+        var tile = store.Load(key)
+        if (tile == undefined || count <= 0) { return found }
+        var cand = new List<float>()
+        foreach (r in tile.data.roads) {
+            if (!Raser.Props.IsCarRoad(r) || r.width < 5.0) { continue }
+            for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                float ex = r.points[k + 2] - r.points[k]
+                float ey = r.points[k + 3] - r.points[k + 1]
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len < 10.0) { continue }
+                // rechts ist (dy, -dx) bei der Richtung (dx, dy); 1,1 m vom Rand der Fahrbahn
+                float side = r.width / 2.0 - 1.1
+                float pe = key.East + r.points[k] + ex / 2.0 + ey / len * side
+                float pn = key.North + r.points[k + 1] + ey / 2.0 - ex / len * side
+                float d = Math.Sqrt((pe - e) * (pe - e) + (pn - n) * (pn - n))
+                if (d < 20.0 || d > 200.0) { continue }
+                cand.Add(d)
+                cand.Add(pe)
+                cand.Add(pn)
+                cand.Add(Math.Atan2(-ex, ey) * 180.0 / Math.PI)
+            }
+        }
+        // die nächsten zuerst
+        while (found.Count < count * 3) {
+            int best = -1
+            for (int i = 0; i < cand.Count; i = i + 4) {
+                if (cand[i] < 0.0) { continue }
+                if (best < 0 || cand[i] < cand[best]) { best = i }
+            }
+            if (best < 0) { break }
+            float pe = cand[best + 1]
+            float pn = cand[best + 2]
+            float ph = cand[best + 3]
+            cand[best] = -1.0
+            bool free = true
+            for (int j = 0; j < found.Count && free; j = j + 3) {
+                if ((found[j] - pe) * (found[j] - pe) + (found[j + 1] - pn) * (found[j + 1] - pn) < 25.0 * 25.0) { free = false }
+            }
+            // ein Wagen (2,6 m lang zwischen den Kreismitten, Transporter 3,4 m): vorn, Mitte, hinten frei
+            float h = ph * Math.PI / 180.0
+            foreach (along in [-2.0, 0.0, 2.0]) {
+                if (!free) { break }
+                float ce = pe - Math.Sin(h) * along
+                float cn = pn + Math.Cos(h) * along
+                if (obstacles.Blocked(ce, cn, 1.2) || obstacles.Push(ce, cn, 1.2)) { free = false }
+            }
+            if (!free) { continue }
+            found.Add(pe)
+            found.Add(pn)
+            found.Add(ph)
+        }
+        return found
+    }
+
     static defined int Main(string items[]) {
         var options = new Options(items)
         string world = options.Get("world", "world")
@@ -355,6 +415,20 @@ class Game {
                 vehicles.Add(take v)
                 models.Add(take m)
             }
+        }
+        // dazu Fahrzeuge am Straßenrand in der Nähe (--parked 8)
+        var spots = Game.Parking(store, obstacles, start[0], start[1], options.Get("parked", "8").ToInt())
+        string parkKinds[] = ["auto", "transporter", "auto", "motorrad", "auto", "fahrrad", "auto", "transporter"]
+        int parkColors[] = [S3D.Rgb(30, 30, 35), S3D.Rgb(200, 200, 60), S3D.Rgb(170, 175, 180), S3D.Rgb(160, 30, 30), S3D.Rgb(30, 60, 120), S3D.Rgb(200, 120, 30), S3D.Rgb(240, 240, 240), S3D.Rgb(60, 100, 60)]
+        for (int k = 0; k * 3 < spots.Count; k++) {
+            string kind = parkKinds[k % parkKinds.length]
+            var v = Raser.Vehicle.Of(kind)
+            v.east = spots[k * 3]
+            v.north = spots[k * 3 + 1]
+            v.heading = spots[k * 3 + 2]
+            var m = new CarModel(scene, kind, parkColors[k % parkColors.length])
+            vehicles.Add(take v)
+            models.Add(take m)
         }
         var car = vehicles[0]
         var model = models[0]
