@@ -1,33 +1,37 @@
-// Raser.Game: das Spiel am Server (--server host:7481 --token ... --user name) - die anderen Spieler als Figuren und Fahrzeuge in der Szene, Chat
-// und Konsole, Uhr und Wetter des Servers. Ohne --server bleibt alles wie offline (Online.session ist dann undefined).
+// Raser.Game: das Spiel am Server (--server host:7481 --token ... --user name) - Protokoll v2: der Server rechnet, das Spiel schickt je Takt
+// die Tasten und sagt den eigenen Spieler voraus (NetSession, Raser.Prediction); die anderen Spieler und alle Fahrzeuge kommen aus den
+// Snapshots, ~100 ms in der Vergangenheit interpoliert (Raser.Interpolator). Dazu Chat und Konsole, Uhr und Wetter des Servers, das Inventar
+// über den Server. Ohne --server bleibt alles wie offline (Online.session ist dann undefined).
 #import "scene3d"
 #import "windows"
 #import "time"
 #import "raser.core"
 #import "raser.net"
+#import "raser.sim"
 #import "raser.client"
 
-// Ein anderer Spieler in der Szene: Figur (zu Fuß, auf dem Zweirad) und Fahrzeug, weich zur Lage des Snapshots gezogen.
+// Eine Entität in der Szene: ein Spieler zu Fuß (Figur) oder ein Fahrzeug (mit der Figur obenauf, wenn ein Zweirad einen Fahrer hat).
 class Avatar {
     defined int id
-    defined int kind                // Raser.Protocol.KindOf (0 zu Fuß)
+    defined int type                // Raser.EntityType
+    defined int kind                // Fahrzeug: Raser.Protocol.KindOf
     CarModel car
     PersonModel person
-    defined float east
-    defined float north
-    defined float heading
     defined float stride
+    defined float lastE
+    defined float lastN
     defined bool fresh
 
-    construct(Scene scene, defined int id, defined int kind) {
+    construct(Scene scene, defined int id, defined int type, defined int kind) {
         this.id = id
+        this.type = type
         this.kind = kind
         this.person = new PersonModel(scene)
         this.person.Show(false)
         this.car = undefined
-        if (kind > 0) {
-            // je Spieler eine Farbe aus seiner ID
-            int colors[] = [S3D.Rgb(200, 160, 30), S3D.Rgb(120, 40, 140), S3D.Rgb(30, 150, 160), S3D.Rgb(220, 90, 30), S3D.Rgb(90, 90, 95)]
+        if (type == Raser.EntityType.Vehicle) {
+            // je Fahrzeug eine Farbe aus seiner ID
+            int colors[] = [S3D.Rgb(200, 160, 30), S3D.Rgb(120, 40, 140), S3D.Rgb(30, 150, 160), S3D.Rgb(220, 90, 30), S3D.Rgb(90, 90, 95), S3D.Rgb(190, 40, 35), S3D.Rgb(230, 230, 225)]
             this.car = new CarModel(scene, Raser.Protocol.VehicleOf(kind), colors[(id & 1023) % colors.length])
         }
         this.fresh = true
@@ -43,42 +47,29 @@ class Avatar {
         }
     }
 
-    // Weich zur Lage r (dt s), dann in die Szene.
-    undefined Follow(RemotePlayer r, defined float dt, Ground terrain, WorldView view, defined bool lamps) {
-        // ein Stück voraus nach dem Tempo (der Snapshot ist bis zu 0,1 s alt), dann weich hin
-        float h = r.heading * Math.PI / 180.0
-        float te = r.east - Math.Sin(h) * r.speed * 0.05
-        float tn = r.north + Math.Cos(h) * r.speed * 0.05
-        float k = Math.Min(1.0, dt * 10.0)
-        if (this.fresh || (te - this.east) * (te - this.east) + (tn - this.north) * (tn - this.north) > 400.0) {
-            k = 1.0
-            this.fresh = false
-        }
-        float e0 = this.east
-        float n0 = this.north
-        this.east = this.east + (te - this.east) * k
-        this.north = this.north + (tn - this.north) * k
-        float turn = r.heading - this.heading
-        while (turn > 180.0) { turn = turn - 360.0 }
-        while (turn < -180.0) { turn = turn + 360.0 }
-        this.heading = this.heading + turn * k
-        this.stride = this.stride + Math.Sqrt((this.east - e0) * (this.east - e0) + (this.north - n0) * (this.north - n0))
+    // In die Szene an (e, n), Richtung h (Grad), Schräglage lean; rider: ein Fahrer sitzt darauf (Zweirad).
+    undefined Show(defined float e, defined float n, defined float h, defined float lean, defined bool rider, Ground terrain, WorldView view, defined bool lamps) {
+        if (!this.fresh) { this.stride = this.stride + Math.Sqrt((e - this.lastE) * (e - this.lastE) + (n - this.lastN) * (n - this.lastN)) }
+        this.fresh = false
+        this.lastE = e
+        this.lastN = n
         float y = 0.0
-        any g = terrain.At(this.east, this.north)
+        any g = terrain.At(e, n)
         if (g != undefined) { y = g - view.originZ }
-        float x = this.east - view.originE
-        float z = -(this.north - view.originN)
+        float x = e - view.originE
+        float z = -(n - view.originN)
         if (this.car == undefined) {
-            this.person.Place(x, y, z, this.heading, this.stride)
+            this.person.Place(x, y, z, h, this.stride)
             this.person.Show(true)
             return
         }
-        this.car.Place(x, y, z, this.heading, 0.0)
-        this.car.beam.Enabled = lamps
-        if (this.kind == 3 || this.kind == 4) {
+        this.car.Place(x, y, z, h, lean)
+        this.car.beam.Enabled = lamps && rider
+        if (rider && (this.kind == 3 || this.kind == 4)) {
+            float r = h * Math.PI / 180.0
             float seat = 0.94
             if (this.kind == 4) { seat = 1.0 }
-            this.person.Sit(x + Math.Sin(h) * 0.3, y, z + Math.Cos(h) * 0.3, this.heading, seat, 0.0)
+            this.person.Sit(x + Math.Sin(r) * 0.3, y, z + Math.Cos(r) * 0.3, h, seat, lean)
             this.person.Show(true)
         } else { this.person.Show(false) }
     }
@@ -90,6 +81,9 @@ class Online {
     List<Avatar> avatars
     defined float weatherCheck
     string appliedPreset
+    Gear gear                       // das Inventar des Spiels (an die Sitzung gehängt)
+    defined int seenInv
+    defined int lastOpened
 
     construct() {
         this.session = undefined
@@ -97,54 +91,147 @@ class Online {
         this.avatars = new List<Avatar>()
         this.weatherCheck = 0.0
         this.appliedPreset = ""
+        this.gear = undefined
+        this.seenInv = -1
+        this.lastOpened = 0
     }
 
-    // Verbindet, wenn --server gegeben ist (sonst offline wie bisher).
+    // Verbindet, wenn --server gegeben ist (sonst offline wie bisher): mit dem Fahrzeug von --vehicle (oder --on-foot 1) am Startpunkt --at.
     static Online Start(Options options) {
         var online = new Online()
         string server = options.Get("server", "")
         if (server == "") { return online }
         var s = new NetSession()
-        if (s.Connect(server, options.Get("token", ""), options.Get("user", ""), "raser-game 0.1.0")) {
+        var at = options.Get("at", "376117,5705005").Split(",")
+        int kind = Raser.Protocol.KindOf(options.Get("vehicle", "auto"), options.Get("on-foot", "") != "")
+        if (s.Connect(server, options.Get("token", ""), options.Get("user", ""), "raser-game 0.2.0", kind, at[0].ToFloat(), at[1].ToFloat(), new Raser.Obstacles(options.Get("world", "world")))) {
             print("Server " + server + ": " + s.status)
         } else { print("Server " + server + ": " + s.status + " - weiter offline") }
         online.session = take s
         return online
     }
 
+    // Rechnet der Server (verbunden)? Dann fährt und geht das Spiel nur über Control.
+    defined bool Authoritative { get { return this.session != undefined && this.session.Online } }
+
+    // Nach dem Verbinden: die eigenen Fahrzeuge des Spiels verstecken (die Fahrzeuge kommen vom Server) und das Inventar an die Sitzung hängen.
+    undefined Attach(Gear gear, List<CarModel> models) {
+        if (!this.Authoritative) { return }
+        foreach (m in models) {
+            foreach (o in m.parts) { o.Visible = false }
+        }
+        var s = this.session
+        gear.store = s.store
+        gear.drops = s.drops
+        gear.inv = s.inv
+        gear.screen.inv = s.inv
+        gear.seen = -1
+        this.gear = gear
+    }
+
     // Ein Ereignis für Chat oder Konsole? (true: verbraucht)
     defined bool Handle(any ev) { return this.overlay.Handle(ev, this.session) }
 
-    // Ein Bild: eigene Lage schicken, die anderen setzen, Uhr und Wetter übernehmen, Teleport des Servers. Gibt true, wenn der Server die
-    // eigene Lage gesetzt hat (dann stehen sie in session.teleportEast/North/Heading).
-    defined bool Frame(defined float dt, defined float east, defined float north, defined float heading, defined float speed, defined int kind, Scene scene, Ground terrain, WorldView view, Raser.Weather weather, Atmosphere atmosphere) {
+    // Ein Bild mit dem Server: die Tasten in Takte (vorhergesagt, an den Server), dann die Lage der Vorhersage in car bzw. walker (die zeigt das
+    // Spiel, die Kamera folgt). use: E gedrückt. Gibt zurück, ob der Spieler zu Fuß ist.
+    defined bool Control(defined float dt, defined bool gas, defined bool brake, defined bool left, defined bool right, defined bool handbrake, defined bool sprint, defined bool use, Raser.Vehicle car, Raser.Walker walker) {
         var s = this.session
-        if (s == undefined) { return false }
-        s.Update(east, north, heading, speed, kind)
-        // die anderen: wer weg ist, raus; wer die Art wechselt, neu
+        s.Control(dt, gas, brake, left, right, handbrake, sprint, use)
+        this.Sync()
+        var pred = s.pred
+        if (pred == undefined || !pred.ready) { return false }
+        float shown[] = s.Display()
+        var mine = pred.Car()
+        float load = walker.load
+        Raser.Physics.CopyWalker(pred.pawn.walker, walker)
+        walker.load = load
+        if (mine != undefined) {
+            Raser.Physics.CopyState(mine, car)
+            car.east = shown[0]
+            car.north = shown[1]
+            car.heading = shown[2]
+            return false
+        }
+        walker.east = shown[0]
+        walker.north = shown[1]
+        walker.heading = shown[2]
+        return true
+    }
+
+    // Das Inventar mit dem Server abgleichen: was das Fenster getan hat, geht an den Server; ein geöffneter Rucksack am Boden auch.
+    undefined Sync() {
+        var s = this.session
+        if (this.gear == undefined || !s.Online) { return }
+        var done = this.gear.screen.done
+        foreach (op in done) { s.SendOp(op) }
+        done.Clear()
+        if (s.invVersion != this.seenInv) {
+            this.seenInv = s.invVersion
+            this.lastOpened = s.inv.opened
+        } else if (s.inv.opened != this.lastOpened) {
+            this.lastOpened = s.inv.opened
+            if (s.inv.opened != 0) { s.SendOpen(s.inv.openedDrop) } else { s.SendClose() }
+        }
+    }
+
+    // Ein Bild: die anderen setzen (interpoliert), das eigene Fahrzeug an die vorhergesagte Lage, Uhr und Wetter übernehmen.
+    undefined Drive(defined float dt, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, Scene scene, Ground terrain, WorldView view, Raser.Weather weather, Atmosphere atmosphere) {
+        var s = this.session
+        if (s == undefined) { return }
+        if (!s.Online) { s.Poll() }
+        float e0 = walker.east
+        float n0 = walker.north
+        if (!onFoot) {
+            e0 = car.east
+            n0 = car.north
+        }
+        // wer weg ist oder die Art wechselt, raus
+        int own = 0
+        if (s.pred != undefined) { own = s.pred.pawn.vehicle }
         int i = 0
         while (i < this.avatars.Count) {
             var a = this.avatars[i]
-            var r = s.Find(a.id)
-            if (r == undefined || r.kind != a.kind) {
+            bool keep = a.id == own && own != 0
+            if (!keep && s.entities.ContainsKey(a.id)) {
+                var r = s.entities[a.id]
+                keep = r.type == a.type && (r.type != Raser.EntityType.Vehicle || r.variant == a.kind) && (r.type != Raser.EntityType.Player || (r.bits & Raser.EntityType.InVehicle) == 0)
+            }
+            if (!keep) {
                 a.Remove(scene)
                 this.avatars.RemoveAt(i)
             } else { i++ }
         }
-        foreach (r in s.players) {
-            if (!r.placed) { continue }
-            float de = r.east - east
-            float dn = r.north - north
-            if (de * de + dn * dn > 600.0 * 600.0) { continue }
-            Avatar a = undefined
-            foreach (b in this.avatars) { if (b.id == r.id) { a = b } }
-            if (a == undefined) {
-                this.avatars.Add(new Avatar(scene, r.id, r.kind))
-                a = this.avatars[this.avatars.Count - 1]
-            }
-            a.Follow(r, dt, terrain, view, weather.lampsOn)
+        float t = s.RenderTime()
+        foreach (pair in s.entities) {
+            var r = pair.Value
+            if (r.type != Raser.EntityType.Player && r.type != Raser.EntityType.Vehicle) { continue }
+            if (r.type == Raser.EntityType.Player && (r.bits & Raser.EntityType.InVehicle) != 0) { continue }
+            if (r.id == own) { continue }
+            if (!r.path.Sample(t)) { continue }
+            var ip = r.path
+            if ((ip.east - e0) * (ip.east - e0) + (ip.north - n0) * (ip.north - n0) > 600.0 * 600.0) { continue }
+            var a = this.AvatarOf(scene, r.id, r.type, r.variant)
+            a.Show(ip.east, ip.north, ip.heading, ip.lean, r.a != 0, terrain, view, weather.lampsOn)
         }
-        // Uhr und Wetter des Servers (je s geprüft; neu gesetzt bei anderem Wetter oder 3 min Abstand)
+        // das eigene Fahrzeug: an der vorhergesagten Lage
+        if (own != 0 && s.pred.Car() != undefined) {
+            var mine = s.pred.Car()
+            var a = this.AvatarOf(scene, own, Raser.EntityType.Vehicle, Raser.Protocol.KindOf(mine.kind, false))
+            // (sitzt der Spieler auf dem Zweirad, zeigt ihn das Spiel selbst)
+            a.Show(car.east, car.north, car.heading, car.lean, false, terrain, view, false)
+        }
+        this.Weather(dt, weather, atmosphere)
+    }
+
+    Avatar AvatarOf(Scene scene, defined int id, defined int type, defined int kind) {
+        foreach (b in this.avatars) { if (b.id == id) { return b } }
+        this.avatars.Add(new Avatar(scene, id, type, kind))
+        return this.avatars[this.avatars.Count - 1]
+    }
+
+    // Uhr und Wetter des Servers (je s geprüft; neu gesetzt bei anderem Wetter oder 3 min Abstand).
+    undefined Weather(defined float dt, Raser.Weather weather, Atmosphere atmosphere) {
+        var s = this.session
         this.weatherCheck = this.weatherCheck + dt
         if (s.hasWeather && (this.weatherCheck > 1.0 || this.appliedPreset != s.weatherPreset)) {
             this.weatherCheck = 0.0
@@ -162,40 +249,6 @@ class Online {
                 atmosphere.Apply()
             }
         }
-        if (s.teleport) {
-            s.teleport = false
-            return true
-        }
-        return false
-    }
-
-    // Ein Bild für das Spiel (main.fire): die eigene Lage (Wagen oder zu Fuß) schicken, die anderen setzen, ein Teleport des Servers setzt Wagen
-    // bzw. Spieler.
-    undefined Drive(defined float dt, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, Scene scene, Ground terrain, WorldView view, Raser.Weather weather, Atmosphere atmosphere) {
-        if (this.session == undefined) { return }
-        float e = car.east
-        float n = car.north
-        float h = car.heading
-        float v = car.speed
-        if (onFoot) {
-            e = walker.east
-            n = walker.north
-            h = walker.heading
-            v = walker.speed
-        }
-        if (!this.Frame(dt, e, n, h, v, Raser.Protocol.KindOf(car.kind, onFoot), scene, terrain, view, weather, atmosphere)) { return }
-        var s = this.session
-        if (onFoot) {
-            walker.east = s.teleportEast
-            walker.north = s.teleportNorth
-            walker.heading = s.teleportHeading
-            walker.speed = 0.0
-        } else {
-            car.east = s.teleportEast
-            car.north = s.teleportNorth
-            car.heading = s.teleportHeading
-            car.speed = 0.0
-        }
     }
 
     // Chat und Konsole über das Bild (nach der Anzeige).
@@ -209,43 +262,171 @@ class Online {
     }
 }
 
-// Ein Spieler ohne Welt und Fenster, für Tests (raser-game --server 127.0.0.1:7481 --token ... --user name --bot 10): verbindet, fährt einen
-// Kreis um --at, sagt --say (Zeilen mit ; getrennt, je eine pro Sekunde ab der 2. Sekunde), druckt, was ankommt, und hört nach so vielen s auf.
+// Ein Spieler ohne Fenster, für Tests (raser-game --server 127.0.0.1:7481 --token ... --user name --bot 10): verbindet, spielt mit Eingaben je
+// Takt (wie das Spiel, mit Vorhersage und Abgleich) nach --plan, sagt --say (Zeilen mit ; getrennt, je eine pro Sekunde ab der 2. Sekunde),
+// druckt, was ankommt, und hört nach so vielen s auf. --world: die Hindernisse für die Vorhersage (ohne: keine).
+//   --plan kreis    im Fahrzeug im Kreis (Vollgas, halb links)
+//   --plan ablegen  4 s im Kreis, anhalten, aussteigen, den Rucksack (mit Inhalt) absetzen, weggehen
+//   --plan aufheben zu Fuß (--vehicle fuss): den eigenen Rucksack absetzen, auf einen fremden warten, hingehen, aufheben, den Inhalt drucken
+//   --plan schummeln doppelt so viele Eingaben wie erlaubt mit Vollgas, dann eine Lage wie in v1 (der Server wirft hinaus)
 class NetBot {
     static defined int Run(Options options) {
         float seconds = options.Get("bot", "10").ToFloat()
         string user = options.Get("user", "bot")
+        string plan = options.Get("plan", "kreis")
         var at = options.Get("at", "376117,5705005").Split(",")
-        float e0 = at[0].ToFloat()
-        float n0 = at[1].ToFloat()
+        string vehicle = options.Get("vehicle", "auto")
+        int kind = Raser.Protocol.KindOf(vehicle, vehicle == "fuss")
         var s = new NetSession()
         s.echo = true
-        if (!s.Connect(options.Get("server", "127.0.0.1:7481"), options.Get("token", ""), user, "raser-bot 0.1.0")) {
+        if (!s.Connect(options.Get("server", "127.0.0.1:7481"), options.Get("token", ""), user, "raser-bot 0.2.0", kind, at[0].ToFloat(), at[1].ToFloat(), new Raser.Obstacles(options.Get("world", "")))) {
             print("[" + user + "] nicht verbunden: " + s.status)
             return 1
         }
-        print("[" + user + "] " + s.status + ", id " + Raser.Ids.Format(s.id))
+        print("[" + user + "] " + s.status + ", id " + Raser.Ids.Format(s.id) + ", " + s.rate + " Takte je s")
         string lines[] = []
         string say = options.Get("say", "")
         if (say != "") { lines = say.Split(";") }
         int next = 0
         int began = DateTime.UtcNow.Ticks
+        int last = began
         int lastPrint = 0
         string seen = ""
+        int snaps = 0
+        // für die Pläne
+        string phase = "start"
+        float phaseAt = 0.0
+        var mine = new HashSet<int>()
+        int target = 0
+        float startE = 0.0
+        float startN = 0.0
+        float cheatOwn = 0.0
+        int cheatSeq = 0
+        float cheatAcc = 0.0
+        int sentBytes0 = 0
+        int recvBytes0 = 0
         while (s.Online || s.link.IsOpen) {
-            float t = (DateTime.UtcNow.Ticks - began) / 10000000.0
+            int now = DateTime.UtcNow.Ticks
+            float t = (now - began) / 10000000.0
             if (t >= seconds) { break }
-            // ein Kreis mit 15 m Radius, eine Runde in 20 s
-            float a = t * 2.0 * Math.PI / 20.0
-            float east = e0 + Math.Cos(a) * 15.0
-            float north = n0 + Math.Sin(a) * 15.0
-            float heading = a * 180.0 / Math.PI
-            s.Update(east, north, heading, 4.7, 1)
-            if (s.teleport) {
-                s.teleport = false
-                print("[" + user + "] Teleport nach " + s.teleportEast + ", " + s.teleportNorth)
-                e0 = s.teleportEast - 15.0
-                n0 = s.teleportNorth
+            float dt = (now - last) / 10000000.0
+            last = now
+            bool gas = false
+            bool brake = false
+            bool left = false
+            bool right = false
+            bool use = false
+            var pred = s.pred
+            var car = pred.Car()
+            float place[] = pred.world.PlaceOf(pred.pawn)
+            if (plan == "kreis" || (plan == "ablegen" && t < 4.0)) {
+                gas = car != undefined
+                left = true
+            } else if (plan == "ablegen") {
+                if (phase == "start" && car != undefined) {
+                    // anhalten, dann aussteigen
+                    if (Math.Abs(car.speed) > 0.3) { brake = car.speed > 0.0 } else {
+                        use = true
+                        phase = "aussteigen"
+                    }
+                } else if (phase == "aussteigen" && car == undefined && s.hasInventory) {
+                    int water = s.Carried(Raser.Items.Wasser)
+                    var op = s.inv.DropAll(s.inv.backpackSlot, 0)
+                    s.SendOp(op)
+                    print("[" + user + "] Rucksack abgesetzt bei " + Math.Round(place[0]) + ", " + Math.Round(place[1]) + " (darin " + water + " Wasser)")
+                    phase = "weg"
+                    phaseAt = t
+                } else if (phase == "weg" && t - phaseAt > 1.0 && t - phaseAt < 3.0) { gas = true }
+            } else if (plan == "aufheben") {
+                if (phase == "start" && s.hasInventory && t > 1.0) {
+                    s.SendOp(s.inv.DropAll(s.inv.backpackSlot, 0))
+                    phase = "eigener"
+                    phaseAt = t
+                } else if (phase == "eigener" && t - phaseAt > 1.0) {
+                    // der eigene liegt jetzt da: merken (den nicht aufheben)
+                    foreach (r in s.OfType(Raser.EntityType.Item)) { mine.Add(r.id) }
+                    print("[" + user + "] eigener Rucksack abgesetzt, warte auf einen fremden")
+                    phase = "warten"
+                } else if (phase == "warten") {
+                    foreach (r in s.OfType(Raser.EntityType.Item)) {
+                        var type = Raser.Items.Get(r.variant)
+                        if (!mine.Contains(r.id) && type != undefined && type.IsBackpack) { target = r.id }
+                    }
+                    if (target != 0) {
+                        print("[" + user + "] sehe einen fremden Rucksack (" + Raser.Ids.Format(target) + ")")
+                        phase = "hin"
+                    }
+                } else if (phase == "hin") {
+                    if (!s.entities.ContainsKey(target)) { phase = "warten"; target = 0 } else {
+                        var r = s.entities[target]
+                        float de = r.east - place[0]
+                        float dn = r.north - place[1]
+                        float d = Math.Sqrt(de * de + dn * dn)
+                        if (d < 1.2) {
+                            var op = new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)
+                            op.drop = target
+                            bool local = s.inv.Apply(op)
+                            s.SendOp(op)
+                            print("[" + user + "] hebe ihn auf (vorhergesagt: " + local + ")")
+                            phase = "aufgehoben"
+                            phaseAt = t
+                        } else {
+                            float want = Math.Atan2(-de, dn) * 180.0 / Math.PI
+                            float diff = Raser.Prediction.Turn(want - pred.pawn.walker.heading)
+                            left = diff > 4.0
+                            right = diff < -4.0
+                            gas = Math.Abs(diff) < 60.0
+                        }
+                    }
+                } else if (phase == "aufgehoben" && t - phaseAt > 1.0 && s.pendingOps.Count == 0) {
+                    var bp = s.inv.Backpack()
+                    string what = "nichts"
+                    if (bp != undefined) {
+                        what = ""
+                        for (int k = 0; k < bp.Size; k++) {
+                            if (bp.Empty(k)) { continue }
+                            what = what + " " + Raser.Items.Get(bp.Item(k)).name + " x" + bp.Amount(k)
+                        }
+                    }
+                    print("[" + user + "] Rucksack auf dem Ruecken: " + Raser.Items.Get(s.inv.BackpackItem()).name + ", Inhalt:" + what)
+                    phase = "fertig"
+                }
+            }
+            if (plan == "schummeln") {
+                if (t < 4.0) {
+                    if (cheatSeq == 0) {
+                        startE = s.selfEast
+                        startN = s.selfNorth
+                        cheatSeq = pred.seq
+                    }
+                    // doppelt so viele Eingaben wie Takte: Vollgas (die eigene Rechnung fährt doppelt so schnell)
+                    s.Poll()
+                    cheatAcc = cheatAcc + dt
+                    while (cheatAcc >= 1.0 / 30.0) {
+                        cheatAcc = cheatAcc - 1.0 / 30.0
+                        for (int k = 0; k < 2; k++) {
+                            var c = pred.Keys(true, false, false, false, false, false, false)
+                            s.SendControls(c)
+                        }
+                    }
+                    var mc = pred.Car()
+                    if (mc != undefined) { cheatOwn = Math.Sqrt((mc.east - startE) * (mc.east - startE) + (mc.north - startN) * (mc.north - startN)) }
+                } else if (phase == "start") {
+                    float server = Math.Sqrt((s.selfEast - startE) * (s.selfEast - startE) + (s.selfNorth - startN) * (s.selfNorth - startN))
+                    print("[" + user + "] Schummler: Server-Strecke " + Math.Round(server * 10.0) / 10.0 + " m in 4 s, eigene Rechnung " + Math.Round(cheatOwn * 10.0) / 10.0 + " m")
+                    // eine Lage wie in v1: 5 km weiter
+                    var lie = Raser.Packet.Moved(1, s.selfEast + 5000.0, s.selfNorth, 0.0, 0.0, 1)
+                    s.link.Send(lie)
+                    print("[" + user + "] schicke eine Lage 5 km weiter (v1)")
+                    phase = "gelogen"
+                }
+                s.Poll()
+            } else {
+                s.Control(dt, gas, brake, left, right, false, false, use)
+            }
+            if (s.pred.snaps > snaps) {
+                snaps = s.pred.snaps
+                print("[" + user + "] Teleport nach " + Math.Round(s.selfEast) + ", " + Math.Round(s.selfNorth))
             }
             if (next < lines.length && t >= 2.0 + next) {
                 print("[" + user + "] sagt: " + lines[next])
@@ -254,15 +435,24 @@ class NetBot {
             }
             if (t - lastPrint >= 1.0) {
                 lastPrint = Math.Floor(t)!int
-                string now = ""
-                foreach (r in s.players) { now = now + " " + r.name + "(" + Math.Round(r.east) + "," + Math.Round(r.north) + ")" }
-                if (now != seen) {
-                    print("[" + user + "] sieht:" + now)
-                    seen = now
+                if (lastPrint == 1) {
+                    sentBytes0 = s.link.sentBytes
+                    recvBytes0 = s.link.receivedBytes
+                }
+                string now2 = ""
+                foreach (r in s.OfType(Raser.EntityType.Player)) { now2 = now2 + " " + r.name + "(" + Math.Round(r.east) + "," + Math.Round(r.north) + ")" }
+                if (now2 != seen) {
+                    print("[" + user + "] sieht:" + now2)
+                    seen = now2
                 }
             }
-            Sleep(50ms)
+            Sleep(10ms)
         }
+        var p = s.pred
+        float span = Math.Max(1.0, (DateTime.UtcNow.Ticks - began) / 10000000.0 - 1.0)
+        print("[" + user + "] Server-Lage " + Math.Round(s.selfEast * 10.0) / 10.0 + ", " + Math.Round(s.selfNorth * 10.0) / 10.0 + ", " + Math.Round(Math.Sqrt((s.selfEast - at[0].ToFloat()) * (s.selfEast - at[0].ToFloat()) + (s.selfNorth - at[1].ToFloat()) * (s.selfNorth - at[1].ToFloat()))) + " m vom Start; " + s.OfType(Raser.EntityType.Vehicle).Count + " Fahrzeuge in Sicht")
+        print("[" + user + "] Vorhersage: " + p.reconciled + " Abgleiche, " + p.corrected + " mit Fehler, max Korrektur " + Math.Round(p.maxCorrection * 1000.0) / 1000.0 + " m, im Mittel " + Math.Round(p.sumCorrection / Math.Max(1, p.reconciled) * 10000.0) / 10000.0 + " m, Spruenge " + p.snaps + ", offen " + p.pending.Count)
+        print("[" + user + "] Bandbreite: empfangen " + Math.Round((s.link.receivedBytes - recvBytes0) / span) + " B/s, gesendet " + Math.Round((s.link.sentBytes - sentBytes0) / span) + " B/s")
         print("[" + user + "] Ende: " + s.snapshots + " Snapshots, " + s.status + ", Uhr " + Math.Round(s.Hour() * 100.0) / 100.0 + " h, Wetter " + s.weatherPreset)
         s.Close()
         return 0

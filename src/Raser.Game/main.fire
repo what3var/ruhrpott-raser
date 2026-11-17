@@ -600,6 +600,8 @@ class Game {
         }
 
         var online = Online.Start(options)
+        online.Attach(gear, models)
+        bool useKey = false
         var win = new Window(fb, "Ruhrpott-Raser")
         win.EnableEvents()
         bool gas = false
@@ -631,8 +633,9 @@ class Game {
                     else if (key == 32) { handbrake = pressed }
                     else if (key == 1073742049 || key == 1073742053) { sprint = pressed }
                     else if (pressed && key == 101) {
-                        // E: aussteigen (im Stand) bzw. einsteigen (am Wagen)
-                        if (onFoot) {
+                        // E: aussteigen (im Stand) bzw. einsteigen (am Wagen); am Server entscheidet der (online.fire)
+                        if (online.Authoritative) { useKey = true }
+                        else if (onFoot) {
                             int at = Game.Nearest(vehicles, walker)
                             if (at >= 0) {
                                 car = vehicles[at]
@@ -687,12 +690,18 @@ class Game {
             float steer = 0.0
             if (left) { steer = 1.0 }
             if (right) { steer = -1.0 }
+            // am Server: der rechnet, das Spiel sagt nur voraus (online.fire) - Wagen und Spieler stehen danach in car und walker
+            bool authority = online.Authoritative
+            if (authority) {
+                onFoot = online.Control(dt, gas, brake, left, right, handbrake, sprint, useKey, car, walker)
+                useKey = false
+            }
             if (onFoot) {
                 // der Wagen steht (rollt aus), der Spieler geht: W/S vor und zurück, A/D drehen, Umschalt rennt
                 float forward = 0.0
                 if (gas) { forward = 1.0 }
                 if (brake) { forward = -1.0 }
-                Game.Walk(walker, vehicles, obstacles, dt, forward, steer, sprint)
+                if (!authority) { Game.Walk(walker, vehicles, obstacles, dt, forward, steer, sprint) }
                 float diff = walker.heading - camHeading
                 camHeading = camHeading + diff * Math.Min(1.0, dt * 6.0)
                 Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
@@ -702,7 +711,7 @@ class Game {
                 view.Update(walker.east, walker.north, 12.0)
                 atmosphere.Update(walker.east, walker.north, dt)
             } else {
-                Game.Advance(car, vehicles, obstacles, dt, throttle, braking, steer, reverse, weather.wetness)
+                if (!authority) { Game.Advance(car, vehicles, obstacles, dt, throttle, braking, steer, reverse, weather.wetness) }
                 // die Kamera dreht dem Wagen weich nach
                 float diff = car.heading - camHeading
                 camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
@@ -718,7 +727,7 @@ class Game {
             // die abgestellten Fahrzeuge rollen aus
             Raser.Vehicle driven = car
             if (onFoot) { driven = undefined }
-            Game.Parked(driven, vehicles, obstacles, dt, weather.wetness)
+            if (!authority) { Game.Parked(driven, vehicles, obstacles, dt, weather.wetness) }
             for (int i = 0; i < vehicles.Count; i++) {
                 models[i].beam.Enabled = weather.lampsOn && !onFoot && vehicles[i] == car
             }

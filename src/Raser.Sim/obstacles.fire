@@ -64,6 +64,14 @@ namespace Raser {
             list.TakeTo(this.boxes)
         }
 
+        // Die Kachel unter (e, n) (geladen, wenn nötig); undefined: keine.
+        Raser.Tile TileAt(defined float e, defined float n) {
+            var key = Raser.TileKey.Of(e, n)
+            string name = key + ""
+            this.Need(key, name)
+            return this.tiles[name]
+        }
+
         // Ein Kreis (Radius bis 1,9 m) um (e, n) gegen die Gebäude: true, wenn er in einer Wand steckt - dann zeigt (pushX, pushY) aus der Wand
         // heraus und depth sagt, wie weit er hinaus muss (die tiefste Berührung). Durchfahrten sind frei.
         defined float pushX

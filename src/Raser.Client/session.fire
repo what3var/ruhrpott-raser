@@ -1,33 +1,41 @@
-// Raser.Client: die Verbindung zum Server (docs/SERVER.md) - anmelden, die eigene Lage 10-mal je s schicken, die anderen Spieler, Chat, Antworten
-// auf Befehle, Uhr und Wetter des Servers. Alles im Takt des Spiels, ohne zu warten (Raser.Link liest nur, was da ist).
+// Raser.Client: die Verbindung zum Server (docs/SERVER.md, Protokoll v2) - anmelden, je Takt (30 je s) die Eingaben schicken und den eigenen
+// Spieler vorhersagen (Raser.Prediction), die Snapshots abgleichen, die anderen Entitäten etwas in der Vergangenheit zeigen (Raser.Interpolator),
+// das Inventar über den Server (vorhergesagt, abgeglichen), Chat, Antworten auf Befehle, Uhr und Wetter des Servers. Alles im Takt des Spiels,
+// ohne zu warten (Raser.Link liest nur, was da ist).
 #import "time"
 #import "raser.core"
 #import "raser.net"
+#import "raser.sim"
 
-// Ein anderer Spieler, so wie ihn der letzte Snapshot zeigt.
-class RemotePlayer {
+// Eine andere Entität (Spieler, Fahrzeug, NPC, Gegenstand am Boden), so wie die Snapshots sie zeigen.
+class RemoteEntity {
     defined int id
-    string name
-    defined bool admin
+    defined int type                // Raser.EntityType
+    defined int variant
+    defined int bits
+    defined int a
+    defined int b
+    string name                     // Spieler: der Name
+    Raser.Interpolator path
+    // der letzte Stand (ohne Interpolation)
     defined float east
     defined float north
     defined float heading
     defined float speed
-    defined int kind
-    defined int seenAt              // Ticks des letzten Snapshots mit ihm
-    defined bool placed
 
-    construct(defined int id, string name) {
+    construct(defined int id, defined int type) {
         this.id = id
-        this.name = name
-        this.admin = false
+        this.type = type
+        this.variant = 0
+        this.bits = 0
+        this.a = 0
+        this.b = 0
+        this.name = ""
+        this.path = new Raser.Interpolator()
         this.east = 0.0
         this.north = 0.0
         this.heading = 0.0
         this.speed = 0.0
-        this.kind = 0
-        this.seenAt = 0
-        this.placed = false
     }
 }
 
@@ -45,6 +53,8 @@ class ChatLine {
 }
 
 class NetSession {
+    static readonly defined float Delay = 0.1       // so weit (s) in der Vergangenheit zeigt der Client die anderen
+
     Raser.Link link
     string user
     defined int id                  // die eigene Spieler-ID (0: nicht angemeldet)
@@ -52,11 +62,27 @@ class NetSession {
     defined int region
     string status                   // was zuletzt passiert ist ("verbunden", der Grund einer Ablehnung ...)
     Dictionary<int, string> names   // alle Spieler (Join/Leave)
-    List<RemotePlayer> players      // die in der Nähe (Snapshots)
+    Dictionary<int, RemoteEntity> entities  // was die Snapshots zeigen (ohne den eigenen Spieler)
     List<ChatLine> chat
     List<ChatLine> console
-    defined int seq
-    defined int sentAt
+    // Vorhersage und Takt
+    Raser.Prediction pred           // undefined bis zum Welcome
+    Raser.Obstacles obstacles       // (bis zum Welcome; dann gehört es der Vorhersage)
+    Raser.ServerClock clock
+    defined float rate              // Takte je s (vom Server)
+    defined float accumulator       // Zeit seit dem letzten Takt (s)
+    defined bool useLatch           // E gedrückt, der nächste Takt nimmt es mit
+    defined int serverTick
+    defined int began               // Ticks beim Welcome
+    // das Inventar (der Server führt es; hier vorhergesagt)
+    Raser.ContainerStore store
+    Raser.ItemDrops drops
+    Raser.Inventory inv
+    defined bool hasInventory
+    List<Raser.Packet> pendingOps   // geschickt, noch nicht bestätigt (InvOp mit seq)
+    defined int opSeq
+    defined int opsRejected
+    defined int invVersion          // zählt jedes InvSet
     // das Wetter des Servers (gilt ab weatherAt; die Uhr läuft mit scale weiter)
     defined bool hasWeather
     defined int weatherYear
@@ -65,13 +91,12 @@ class NetSession {
     defined float weatherScale
     string weatherPreset
     defined int weatherAt
-    // ein Teleport des Servers, den das Spiel noch übernehmen muss
-    defined bool teleport
-    defined float teleportEast
-    defined float teleportNorth
-    defined float teleportHeading
     // zählt, was ankam (für den Bot)
     defined int snapshots
+    defined int events
+    defined float selfEast          // der eigene Spieler laut letztem Snapshot (Server)
+    defined float selfNorth
+    defined bool selfKnown
     defined bool echo               // jede Zeile auch auf die Ausgabe (Bot)
 
     construct() {
@@ -82,23 +107,46 @@ class NetSession {
         this.region = 0
         this.status = "offline"
         this.names = new Dictionary<int, string>()
-        this.players = new List<RemotePlayer>()
+        this.entities = new Dictionary<int, RemoteEntity>()
         this.chat = new List<ChatLine>()
         this.console = new List<ChatLine>()
-        this.seq = 0
-        this.sentAt = 0
+        this.pred = undefined
+        this.obstacles = undefined
+        this.rate = 30.0
+        this.clock = new Raser.ServerClock(30.0)
+        this.accumulator = 0.0
+        this.useLatch = false
+        this.serverTick = 0
+        this.began = 0
+        this.store = new Raser.ContainerStore()
+        this.drops = new Raser.ItemDrops()
+        this.inv = new Raser.Inventory(this.store, this.drops, 0, 0)
+        this.hasInventory = false
+        this.pendingOps = new List<Raser.Packet>()
+        this.opSeq = 0
+        this.opsRejected = 0
+        this.invVersion = 0
         this.hasWeather = false
         this.weatherPreset = ""
-        this.teleport = false
         this.snapshots = 0
+        this.events = 0
+        this.selfEast = 0.0
+        this.selfNorth = 0.0
+        this.selfKnown = false
         this.echo = false
     }
 
     defined bool Online { get { return this.link != undefined && this.link.IsOpen && this.id != 0 } }
 
-    // Verbindet zu "host:port" und meldet sich an (wartet höchstens 5 s auf das Welcome). false: nicht geklappt, der Grund steht in status.
-    defined bool Connect(string address, string token, string user, string client) {
+    // Die Sekunden des Clients (für die Uhr des Servers).
+    static defined float Seconds() { return DateTime.UtcNow.Ticks / 10000000.0 }
+
+    // Verbindet zu "host:port" und meldet sich an (wartet höchstens 5 s auf das Welcome). kind: das Fahrzeug, mit dem er anfängt (0 zu Fuß),
+    // (east, north): wo; obstacles: die Hindernisse für die Vorhersage (dieselben Kacheln wie der Server; ohne Welt: Raser.Obstacles("")).
+    // false: nicht geklappt, der Grund steht in status.
+    defined bool Connect(string address, string token, string user, string client, defined int kind, defined float east, defined float north, Raser.Obstacles obstacles) {
         this.user = user
+        this.obstacles = try take obstacles
         string host = address
         int port = 7481
         int colon = address.LastIndexOf(":")
@@ -112,7 +160,7 @@ class NetSession {
             this.status = "keine Verbindung zu " + address + ": " + e.message
             return false
         }
-        this.link.Send(Raser.Packet.Hello(token, user, client))
+        this.link.Send(Raser.Packet.Hello(token, user, client, kind, east, north))
         int until = DateTime.UtcNow.Ticks + 50000000
         while (DateTime.UtcNow.Ticks < until && this.id == 0 && this.link.IsOpen) {
             var p = this.link.Wait(100)
@@ -123,7 +171,7 @@ class NetSession {
             this.link.Close()
             return false
         }
-        // was gleich danach kam (Wetter, Joins, Begrüßung)
+        // was gleich danach kam (Wetter, Joins, Inventar, Begrüßung)
         this.Poll()
         return true
     }
@@ -148,26 +196,70 @@ class NetSession {
         this.id = 0
         this.status = "getrennt: " + why
         this.Note("Verbindung getrennt: " + why, Raser.Protocol.Error)
-        this.players.Clear()
+        this.entities.Clear()
         this.link.Close()
     }
 
-    // Ein Takt: lesen, und die eigene Lage schicken (höchstens 10-mal je s). kind: Raser.Protocol.KindOf.
-    undefined Update(defined float east, defined float north, defined float heading, defined float speed, defined int kind) {
+    // Ein Bild (dt s): lesen, dann so viele feste Takte, wie die Zeit hergibt (höchstens 5) - je Takt eine Eingabe aus den Tasten, sofort
+    // vorhergesagt und an den Server. use: E wurde gedrückt (geht mit dem nächsten Takt). Gibt die Zahl der Takte.
+    defined int Control(defined float dt, defined bool gas, defined bool brake, defined bool left, defined bool right, defined bool handbrake, defined bool sprint, defined bool use) {
         this.Poll()
-        if (!this.Online) { return }
-        int now = DateTime.UtcNow.Ticks
-        if (now - this.sentAt >= 1000000) {
-            this.sentAt = now
-            this.seq++
-            this.link.Send(Raser.Packet.Moved(this.seq, east, north, heading, Math.Clamp(speed, -99.0, 99.0), kind))
+        if (use) { this.useLatch = true }
+        if (!this.Online || this.pred == undefined) { return 0 }
+        float tick = 1.0 / this.rate
+        this.accumulator = Math.Min(this.accumulator + dt, tick * 5.0)
+        int n = 0
+        while (this.accumulator >= tick) {
+            this.accumulator = this.accumulator - tick
+            if (this.hasInventory) { this.pred.pawn.walker.load = this.inv.SpeedFactor() }
+            var c = this.pred.Keys(gas, brake, left, right, handbrake, sprint, this.useLatch)
+            this.useLatch = false
+            this.SendControls(c)
+            n++
         }
-        // wer 1,5 s in keinem Snapshot war, ist außer Sicht
-        int i = 0
-        while (i < this.players.Count) {
-            if (now - this.players[i].seenAt > 15000000) { this.players.RemoveAt(i) } else { i++ }
-        }
+        this.pred.Decay(dt)
+        this.Place()
+        return n
     }
+
+    // Eine fertige Eingabe (Bots): vorhergesagt und an den Server.
+    undefined SendControls(Raser.Controls c) {
+        var list = new List<Raser.Controls>()
+        list.Add(c.Clone())
+        this.link.Send(Raser.Packet.Inputs(list))
+    }
+
+    // Die Lage des Spielers fürs Inventar (Reichweite beim Aufheben).
+    undefined Place() {
+        if (this.pred == undefined) { return }
+        float place[] = this.pred.world.PlaceOf(this.pred.pawn)
+        this.inv.east = place[0]
+        this.inv.north = place[1]
+    }
+
+    // Die Lage zum Anzeigen (geglättet): Ost, Nord, Richtung.
+    float[] Display() { return this.pred.Display(this.accumulator * this.rate) }
+
+    // Die Uhr, nach der die anderen gezeigt werden (Server-Sekunden, Delay in der Vergangenheit).
+    defined float RenderTime() { return this.clock.Now(NetSession.Seconds()) - NetSession.Delay }
+
+    // Eine Operation am Inventar: schon angewandt (vorhergesagt), geht an den Server; der antwortet mit dem echten Stand.
+    undefined SendOp(Raser.InvOp op) {
+        if (op == undefined || !this.Online) { return }
+        this.opSeq++
+        var p = Raser.Packet.Op(this.opSeq, op)
+        this.link.Send(p)
+        this.pendingOps.Add(take p)
+    }
+
+    // Einen Rucksack am Boden öffnen bzw. den geöffneten schließen (der Inhalt kommt vom Server).
+    undefined SendOpen(defined int dropId) {
+        var op = new Raser.InvOp(Raser.Protocol.OpOpen, 0, 0, 0, 0, 0)
+        op.drop = dropId
+        this.SendOp(op)
+    }
+
+    undefined SendClose() { this.SendOp(new Raser.InvOp(Raser.Protocol.OpClose, 0, 0, 0, 0, 0)) }
 
     // Eine Zeile aus Chat oder Konsole: mit / ein Befehl, sonst Chat.
     undefined Say(string text) {
@@ -221,6 +313,13 @@ class NetSession {
             this.admin = p.admin
             this.region = p.region
             this.user = p.name
+            if (p.rate > 0) { this.rate = p.rate }
+            this.clock = new Raser.ServerClock(this.rate)
+            var obstacles = this.obstacles
+            if (obstacles == undefined) { obstacles = new Raser.Obstacles("") }
+            this.pred = new Raser.Prediction(take obstacles, p.id)
+            this.obstacles = undefined
+            this.began = DateTime.UtcNow.Ticks
             string role = ""
             if (p.admin) { role = " als Admin" }
             this.status = "verbunden als " + p.name + role
@@ -230,33 +329,23 @@ class NetSession {
             this.status = what + ": " + p.text
             this.Note("Vom Server " + what + ": " + p.text, Raser.Protocol.Error)
         } else if (t == Raser.Protocol.Snapshot) {
-            this.snapshots++
-            int now = DateTime.UtcNow.Ticks
-            foreach (q in p.players) {
-                var r = this.Find(q.id)
-                if (r == undefined) {
-                    this.players.Add(new RemotePlayer(q.id, this.NameOf(q.id)))
-                    r = this.players[this.players.Count - 1]
-                }
-                r.name = this.NameOf(q.id)
-                r.east = q.east
-                r.north = q.north
-                r.heading = q.heading
-                r.speed = q.speed
-                r.kind = q.kind
-                r.seenAt = now
-                r.placed = true
+            this.Snapshot(p)
+        } else if (t == Raser.Protocol.InvSet) {
+            this.Inventory(p)
+        } else if (t == Raser.Protocol.Event) {
+            this.events++
+            if (p.kind == Raser.Protocol.KnockedDown) {
+                string who = this.NameOf(p.id)
+                if (p.id == this.id) { who = "Du" }
+                string by = ""
+                if (p.other != 0) { by = " (von " + this.NameOf(p.other) + ")" }
+                this.Note(who + " umgehauen" + by, Raser.Protocol.FromSystem)
             }
         } else if (t == Raser.Protocol.Join) {
             this.names[p.id] = p.name
         } else if (t == Raser.Protocol.Leave) {
             this.names.Remove(p.id)
-            for (int i = 0; i < this.players.Count; i++) {
-                if (this.players[i].id == p.id) {
-                    this.players.RemoveAt(i)
-                    break
-                }
-            }
+            this.entities.Remove(p.id)
         } else if (t == Raser.Protocol.Said) {
             string line = p.text
             if (p.kind == Raser.Protocol.FromPlayer) { line = "<" + p.name + "> " + p.text }
@@ -269,16 +358,122 @@ class NetSession {
             this.weatherScale = p.scale
             this.weatherPreset = p.text
             this.weatherAt = DateTime.UtcNow.Ticks
-        } else if (t == Raser.Protocol.Teleport) {
-            this.teleport = true
-            this.teleportEast = p.east
-            this.teleportNorth = p.north
-            this.teleportHeading = p.heading
+        }
+        // (Teleport: v2 setzt der Server die Lage selbst, der nächste Snapshot zeigt sie)
+    }
+
+    // Ein Snapshot: die Uhr, die Entitäten (neu, geändert, verschwunden), die Gegenstände am Boden, der Abgleich der Vorhersage.
+    undefined Snapshot(Raser.Packet p) {
+        this.snapshots++
+        this.serverTick = p.tick
+        this.clock.Observe(p.tick, NetSession.Seconds())
+        float at = p.tick / this.rate
+        foreach (id in p.gone) { this.entities.Remove(id) }
+        foreach (e in p.entities) {
+            if (e.id == this.id) { continue }
+            RemoteEntity r = undefined
+            if (this.entities.ContainsKey(e.id)) { r = this.entities[e.id] }
+            if (r == undefined || r.type != e.type) {
+                var made = new RemoteEntity(e.id, e.type)
+                this.entities[e.id] = made
+                made.TakeTo(this.entities)
+                r = this.entities[e.id]
+            }
+            r.variant = e.variant
+            r.bits = e.bits
+            r.a = e.a
+            r.b = e.b
+            r.east = e.east
+            r.north = e.north
+            r.heading = e.heading
+            r.speed = e.speed
+            if (e.type == Raser.EntityType.Player) { r.name = this.NameOf(e.id) }
+            r.path.Add(at, e.east, e.north, e.heading, e.speed, e.b / 10.0)
+        }
+        // was sich nicht geändert hat, steht weiter da: ein Punkt zur Zeit dieses Snapshots (sonst liefe die Interpolation voraus)
+        foreach (pair in this.entities) {
+            var r = pair.Value
+            var path = r.path
+            if (path.Count > 0 && path.samples[path.samples.Count - 6] < at && r.speed == 0.0) { path.Add(at, r.east, r.north, r.heading, 0.0, r.b / 10.0) }
+        }
+        // die Gegenstände am Boden: genau die Entitäten der Art Item
+        this.drops.all.Clear()
+        foreach (pair in this.entities) {
+            var r = pair.Value
+            if (r.type != Raser.EntityType.Item) { continue }
+            this.drops.all.Add(new Raser.ItemDrop(r.id, r.east, r.north, r.variant, r.a, r.b))
+        }
+        this.drops.changes++
+        if (p.self != undefined) {
+            this.selfKnown = true
+            this.selfEast = p.self.walker.east
+            this.selfNorth = p.self.walker.north
+            if (p.selfVehicle != undefined) {
+                this.selfEast = p.selfVehicle.east
+                this.selfNorth = p.selfVehicle.north
+            }
+        }
+        if (this.pred != undefined) {
+            this.pred.Reconcile(p)
+            this.Place()
         }
     }
 
-    RemotePlayer Find(defined int id) {
-        foreach (r in this.players) { if (r.id == id) { return r } }
-        return undefined
+    // Der echte Stand des Inventars vom Server: Behälter ersetzen, IDs übernehmen, die noch offenen Operationen noch einmal anwenden.
+    undefined Inventory(Raser.Packet p) {
+        foreach (c in p.containers) {
+            for (int i = 0; i < this.store.all.Count; i++) {
+                if (this.store.all[i].id == c.id) {
+                    this.store.all.RemoveAt(i)
+                    break
+                }
+            }
+            var fresh = Raser.Container.Read(new Raser.ByteReader(NetSession.Bytes(c)))
+            this.store.all.Add(take fresh)
+        }
+        var inv = this.inv
+        inv.pockets = p.invIds[0]
+        inv.hands = p.invIds[1]
+        inv.backpackSlot = p.invIds[2]
+        inv.phoneSlot = p.invIds[3]
+        inv.cursor = p.invIds[4]
+        inv.opened = p.invIds[5]
+        inv.openedDrop = p.invIds[6]
+        this.hasInventory = true
+        this.invVersion++
+        if (!p.ok && p.seq > 0) {
+            this.opsRejected++
+            this.Note("Der Server lehnt das ab (Inventar zurückgesetzt).", Raser.Protocol.Error)
+        }
+        while (this.pendingOps.Count > 0 && this.pendingOps[0].seq <= p.seq) { this.pendingOps.RemoveAt(0) }
+        foreach (q in this.pendingOps) {
+            if (q.op.kind == Raser.Protocol.OpOpen) { inv.Open(q.op.drop) } else if (q.op.kind == Raser.Protocol.OpClose) { inv.CloseOpened() } else { inv.Apply(q.op) }
+        }
+        this.drops.changes++
+    }
+
+    static byte[] Bytes(Raser.Container c) {
+        var w = new Raser.ByteWriter(64)
+        c.Write(w)
+        return w.ToBytes()
+    }
+
+    // Alle Entitäten einer Art.
+    List<RemoteEntity> OfType(defined int type) {
+        var list = new List<RemoteEntity>()
+        foreach (pair in this.entities) { if (pair.Value.type == type) { list.Add(pair.Value) } }
+        return list
+    }
+
+    // Die Zahl der Stück einer Art in allem, was der Spieler trägt (mit dem Rucksack auf dem Rücken).
+    defined int Carried(defined int item) {
+        int n = 0
+        foreach (id in [this.inv.pockets, this.inv.hands, this.inv.backpackSlot, this.inv.phoneSlot, this.inv.cursor]) {
+            var c = this.store.Find(id)
+            if (c != undefined) { n = n + c.CountOf(item) }
+        }
+        var bp = this.inv.Backpack()
+        if (bp != undefined) { n = n + bp.CountOf(item) }
+        return n
     }
 }

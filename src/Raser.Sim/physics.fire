@@ -7,10 +7,12 @@
 namespace Raser {
     class Physics {
         // Der Startpunkt: auf der nächsten Straße für Autos (bis 80 m), in ihrer Richtung; sonst der Punkt selbst nach Norden. Gibt Ost, Nord, Richtung.
-        static float[] Start(Raser.FileTileStore store, defined float e, defined float n) {
+        static float[] Start(Raser.FileTileStore store, defined float e, defined float n) { return Raser.Physics.StartIn(store.Load(Raser.TileKey.Of(e, n)), e, n) }
+
+        // Dasselbe mit der schon geladenen Kachel unter (e, n) (undefined: keine).
+        static float[] StartIn(Raser.Tile tile, defined float e, defined float n) {
             float result[] = [e, n, 0.0]
             var key = Raser.TileKey.Of(e, n)
-            var tile = store.Load(key)
             if (tile == undefined) { return result }
             float x = e - key.East
             float y = n - key.North
@@ -43,10 +45,12 @@ namespace Raser {
         // Parkplätze am Straßenrand: auf Straßen für Autos (ab 5 m breit) der Startkachel, je Abschnitt (ab 10 m) in der Mitte rechts am Rand der
         // Fahrbahn, in Fahrtrichtung - 20 bis 200 m vom Start, je mindestens 25 m auseinander, die nächsten zuerst; nicht in Gebäuden, an Bäumen,
         // Laternen und Ampeln. Gibt je Platz Ost, Nord, Richtung.
-        static List<float> Parking(Raser.FileTileStore store, Raser.Obstacles obstacles, defined float e, defined float n, defined int count) {
+        static List<float> Parking(Raser.FileTileStore store, Raser.Obstacles obstacles, defined float e, defined float n, defined int count) { return Raser.Physics.ParkingIn(store.Load(Raser.TileKey.Of(e, n)), obstacles, e, n, count) }
+
+        // Dasselbe mit der schon geladenen Kachel unter (e, n) (undefined: keine).
+        static List<float> ParkingIn(Raser.Tile tile, Raser.Obstacles obstacles, defined float e, defined float n, defined int count) {
             var found = new List<float>()
             var key = Raser.TileKey.Of(e, n)
-            var tile = store.Load(key)
             if (tile == undefined || count <= 0) { return found }
             var cand = new List<float>()
             foreach (r in tile.data.roads) {

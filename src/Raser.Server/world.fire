@@ -6,6 +6,7 @@
 #import "time"
 #import "raser.core"
 #import "raser.net"
+#import "raser.sim"
 
 // Eine Region: ein Rechteck aus ganzen Kacheln (min .. max, einschließlich) und der Server, der für sie zuständig ist.
 class Region {
@@ -115,58 +116,406 @@ class WorldClock {
     }
 }
 
-// Der Regionsserver: die Spieler einer Region, Interesse je Kachel, Snapshots.
+// Der Regionsserver (Protokoll v2): rechnet seine Region im festen Takt (30 je s, Raser.SimWorld) - die Eingaben der Spieler mit derselben
+// Physik wie der Client (Raser.Physics: Fahrzeuge, Aufprall an Gebäuden und Pfosten aus den Kacheln, Stöße zwischen Fahrzeugen, Gehen), die
+// Fahrzeuge der Region (eigene der Spieler und geparkte, mit IDs), die Inventare (Behälter und Gegenstände am Boden) - und schickt jedem
+// Spieler 15-mal je s, was in seiner Nähe ist (seine Kachel und die 8 Nachbarn), nur was sich geändert hat.
 class RegionServer {
+    static readonly defined int Burst = 8               // so viele Eingaben darf ein Spieler aufholen (nach einer Lücke)
+    static readonly defined int Backlog = 32            // so viele warten höchstens (mehr: die ältesten weg)
+    static readonly defined int Refresh = 60            // eine unveränderte Entität geht trotzdem alle so viele Takte (2 s)
+    static readonly defined int ParkedPerTile = 6       // geparkte Fahrzeuge je Kachel (beim ersten Besuch)
+    static readonly defined float KnockSpeed = 5.0      // ab diesem Tempo (m/s) haut ein Fahrzeug einen Spieler um
+    static readonly defined int LyingTicks = 90         // so lange (Takte) liegt er
+
     Region region
     List<Player> players            // (Verweise: die Spieler gehören dem Gateway)
+    Raser.IdAllocator ids           // Spieler, Fahrzeuge, Behälter, Gegenstände am Boden
+    Raser.SimWorld sim
+    Raser.ContainerStore store
+    Raser.ItemDrops drops
+    HashSet<string> parked          // Kacheln, auf denen schon geparkt wurde
+    defined int tick
+    defined float defaultEast
+    defined float defaultNorth
 
-    construct(Region region) {
+    // world: das Verzeichnis der Welt (Kacheln unter world/tiles); "": ohne Hindernisse.
+    construct(Region region, string world) {
         this.region = region
         this.players = new List<Player>()
+        this.ids = new Raser.IdAllocator(region.server)
+        this.sim = new Raser.SimWorld(new Raser.Obstacles(world))
+        this.store = new Raser.ContainerStore()
+        this.store.ids = this.ids
+        this.drops = new Raser.ItemDrops()
+        this.drops.ids = this.ids
+        this.parked = new HashSet<string>()
+        this.tick = 0
+        this.defaultEast = 376117.0
+        this.defaultNorth = 5705005.0
     }
 
+    // Ein Spieler kommt in die Region: an den gewünschten Startpunkt (auf die nächste Straße), mit einem Fahrzeug der gewünschten Art (0: zu
+    // Fuß) und dem Inventar für den Anfang.
     undefined Enter(Player p) {
         p.region = this.region.id
         this.players.Add(p)
+        float e = p.wantEast
+        float n = p.wantNorth
+        var tile = Raser.TileKey.Of(e, n)
+        if ((e == 0.0 && n == 0.0) || !this.region.Contains(tile.x, tile.y)) {
+            e = this.defaultEast
+            n = this.defaultNorth
+        }
+        float start[] = [e, n, 0.0]
+        if (this.sim.obstacles.store != undefined) { start = Raser.Physics.StartIn(this.sim.obstacles.TileAt(e, n), e, n) }
+        var pawn = new Raser.Pawn(p.id)
+        pawn.walker.east = start[0]
+        pawn.walker.north = start[1]
+        pawn.walker.heading = start[2]
+        p.pawn = take pawn
+        if (p.wantKind > 0) {
+            var v = this.sim.Add(this.ids.Next(Raser.IdKind.Vehicle), Raser.Protocol.VehicleOf(p.wantKind), start[0], start[1], start[2])
+            v.owner = p.id
+            v.driver = p.id
+            p.pawn.vehicle = v.id
+        } else {
+            // zu Fuß: 3 m neben die Straße
+            float h = start[2] * Math.PI / 180.0
+            p.pawn.walker.east = start[0] - Math.Cos(h) * 3.0
+            p.pawn.walker.north = start[1] - Math.Sin(h) * 3.0
+        }
+        var inv = new Raser.Inventory(this.store, this.drops, 5, 4)
+        p.inv = take inv
+        RegionServer.Starter(p.inv)
+        p.placed = true
+        this.Follow(p)
+        this.Park(p)
+    }
+
+    // Was jeder am Anfang dabeihat (wie offline): Handy, Schlüssel, Kleingeld, Brötchen, Zigaretten, ein Rucksack mit Wasser, Lampe, Werkzeug.
+    static undefined Starter(Raser.Inventory inv) {
+        inv.Give(Raser.Items.Handy, 1)
+        inv.Give(Raser.Items.Schluessel, 1)
+        inv.Give(Raser.Items.Geld, 23)
+        inv.Give(Raser.Items.Broetchen, 3)
+        inv.Give(Raser.Items.Zigaretten, 7)
+        inv.Give(Raser.Items.Rucksack, 1)
+        inv.Give(Raser.Items.Wasser, 2)
+        inv.Give(Raser.Items.Taschenlampe, 1)
+        inv.Give(Raser.Items.Werkzeug, 1)
     }
 
     undefined Leave(Player p) {
         for (int i = 0; i < this.players.Count; i++) {
             if (this.players[i] == p) {
                 this.players.RemoveAt(i)
-                return
+                break
+            }
+        }
+        if (p.pawn == undefined) { return }
+        // sein Fahrzeug bleibt stehen; das für ihn erzeugte verschwindet, wenn niemand darin sitzt
+        var car = this.sim.Find(p.pawn.vehicle)
+        if (car != undefined && car.driver == p.id) { car.driver = 0 }
+        var mine = new List<int>()
+        foreach (v in this.sim.vehicles) { if (v.owner == p.id && v.driver == 0) { mine.Add(v.id) } }
+        foreach (id in mine) { this.sim.Remove(id) }
+        // (später: Inventar und Lage in die Datenbank; jetzt bleiben die Behälter im Speicher der Region)
+    }
+
+    defined int Count { get { return this.players.Count } }
+
+    // Eingaben des Clients in die Warteschlange (nur neuere; bei zu vielen die ältesten weg).
+    undefined Queue(Player p, Raser.Packet m) {
+        foreach (c in m.controls) {
+            if (c.seq <= p.lastSeq) { continue }
+            p.lastSeq = c.seq
+            p.inputs.Add(c.Clone())
+        }
+        while (p.inputs.Count > RegionServer.Backlog) {
+            p.inputs.RemoveAt(0)
+            p.dropped++
+        }
+    }
+
+    // Setzt den Spieler an eine Lage (Befehl /tp): sein Fahrzeug mit, sonst er selbst.
+    undefined Place(Player p, defined float e, defined float n, defined float heading) {
+        if (p.pawn == undefined) { return }
+        var car = this.sim.Find(p.pawn.vehicle)
+        if (car != undefined) {
+            car.body.east = e
+            car.body.north = n
+            car.body.heading = heading
+            car.body.speed = 0.0
+            car.body.pushE = 0.0
+            car.body.pushN = 0.0
+        }
+        p.pawn.walker.east = e
+        p.pawn.walker.north = n
+        p.pawn.walker.heading = heading
+        p.pawn.walker.speed = 0.0
+        this.Follow(p)
+    }
+
+    // Die Felder des Spielers (Kachel, Lage für Befehle und Interesse) aus der Welt.
+    undefined Follow(Player p) {
+        float place[] = this.sim.PlaceOf(p.pawn)
+        p.east = place[0]
+        p.north = place[1]
+        p.heading = place[2]
+        p.speed = place[3]
+        p.kind = 0
+        var car = this.sim.Find(p.pawn.vehicle)
+        if (car != undefined) { p.kind = Raser.Protocol.KindOf(car.body.kind, false) }
+        var tile = Raser.TileKey.Of(p.east, p.north)
+        p.tileX = tile.x
+        p.tileY = tile.y
+        p.seq = p.pawn.seq
+        p.inv.east = p.east
+        p.inv.north = p.north
+    }
+
+    // Geparkte Fahrzeuge auf der Kachel des Spielers, wenn dort noch keine stehen (am Straßenrand um die Mitte der Kachel).
+    undefined Park(Player p) {
+        string name = p.tileX + "_" + p.tileY
+        if (this.parked.Contains(name) || this.sim.obstacles.store == undefined) { return }
+        this.parked.Add(name)
+        string kinds[] = ["auto", "transporter", "auto", "motorrad", "auto", "fahrrad"]
+        float ce = p.tileX * 256.0 + 128.0
+        float cn = p.tileY * 256.0 + 128.0
+        var spots = Raser.Physics.ParkingIn(this.sim.obstacles.TileAt(ce, cn), this.sim.obstacles, ce, cn, RegionServer.ParkedPerTile)
+        for (int k = 0; k * 3 < spots.Count; k++) {
+            this.sim.Add(this.ids.Next(Raser.IdKind.Vehicle), kinds[k % kinds.length], spots[k * 3], spots[k * 3 + 1], spots[k * 3 + 2])
+        }
+    }
+
+    // Ein Takt der Region: die Eingaben der Spieler (je Takt eine, nach einer Lücke bis Burst auf einmal - schneller als die Uhr geht keiner),
+    // Spieler gegen Fahrzeuge, der Verkehr, die Fahrzeuge ohne Fahrer; alle 2 Takte die Snapshots.
+    undefined Step(defined int time) {
+        this.tick++
+        foreach (p in this.players) {
+            if (p.pawn == undefined) { continue }
+            p.credit = Math.Min(p.credit + 1.0, RegionServer.Burst * 1.0)
+            while (p.credit >= 1.0 && p.inputs.Count > 0) {
+                var c = p.inputs[0]
+                // umgehauen: er liegt, die Eingaben zählen nicht (nur ihre Nummer)
+                if (this.tick < p.lyingUntil) {
+                    p.pawn.seq = c.seq
+                } else {
+                    p.pawn.walker.load = p.inv.SpeedFactor()
+                    this.sim.Control(p.pawn, c)
+                }
+                p.inputs.RemoveAt(0)
+                p.credit = p.credit - 1.0
+            }
+            this.Follow(p)
+        }
+        this.Knocks()
+        this.Npcs()
+        this.sim.Coast()
+        foreach (p in this.players) { if (p.pawn != undefined) { this.Park(p) } }
+        // alle 10 s: die Kacheln vergessen, auf denen niemand ist (Hindernisse werden bei Bedarf neu geladen)
+        if (this.tick % 300 == 0) {
+            var keep = new HashSet<string>()
+            foreach (p in this.players) {
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) { keep.Add((p.tileX + dx) + "_" + (p.tileY + dy)) }
+                }
+            }
+            this.sim.obstacles.Keep(keep)
+        }
+        if (this.tick % Raser.Protocol.SnapshotEvery == 0) { this.SendSnapshots(time) }
+    }
+
+    // Haken für den Verkehr (NPC-Autos und Fußgänger, eigene Bibliothek): hier rechnet später Traffic.Step(dt, Spieler ...) seine NPCs, Spieler
+    // gegen NPC entscheidet der Server (Knocks), und NpcEntities gibt sie in die Snapshots.
+    undefined Npcs() { }
+
+    // Haken für den Verkehr: die NPCs in der Nähe von p als Entitäten (EntityType.NpcCar, EntityType.Pedestrian).
+    undefined NpcEntities(Player p, List<Raser.Entity> into) { }
+
+    // Spieler gegen Fahrzeuge: wer zu Fuß von einem Fahrzeug mit mehr als KnockSpeed erwischt wird, ist umgehauen (der Fahrer ist der
+    // Verursacher). Den Stoß aus dem Weg rechnet schon Raser.Physics.Walk.
+    undefined Knocks() {
+        foreach (v in this.sim.vehicles) {
+            var b = v.body
+            if (Math.Abs(b.speed) < RegionServer.KnockSpeed) { continue }
+            float h = b.heading * Math.PI / 180.0
+            foreach (q in this.players) {
+                if (q.pawn == undefined || !q.pawn.OnFoot || this.tick < q.lyingUntil) { continue }
+                var w = q.pawn.walker
+                bool hit = false
+                foreach (part in [1.0, 0.0, -1.0]) {
+                    float de = w.east - (b.east - Math.Sin(h) * b.spread * part)
+                    float dn = w.north - (b.north + Math.Cos(h) * b.spread * part)
+                    if (de * de + dn * dn < (b.radius + 0.45) * (b.radius + 0.45)) { hit = true }
+                }
+                if (hit) { this.KnockedDown(q, v.driver, b) }
             }
         }
     }
 
-    defined int Count { get { return this.players.Count } }
+    // Ereignis "Spieler umgehauen" (victim, Verursacher: Spieler-ID, 0: niemand). Hier entscheidet später der Server, was er verliert
+    // (Inventar zu Boden, Kleingeld, kaputte Teile - die Regeln kommen aus Raser.Core); jetzt: er liegt LyingTicks lang, alle in der Nähe
+    // bekommen das Ereignis.
+    undefined KnockedDown(Player victim, defined int causer, Raser.Vehicle by) {
+        victim.lyingUntil = this.tick + RegionServer.LyingTicks
+        victim.pawn.walker.speed = 0.0
+        Gateway.Log(victim.name + " umgehauen (von " + Raser.Ids.Format(causer) + ", " + Math.Round(Math.Abs(by.speed) * 3.6) + " km/h)")
+        var ev = new Raser.Packet(Raser.Protocol.Event)
+        ev.kind = Raser.Protocol.KnockedDown
+        ev.id = victim.id
+        ev.other = causer
+        ev.east = victim.east
+        ev.north = victim.north
+        byte frame[] = Raser.Wire.Frame(ev)
+        foreach (p in this.players) { if (RegionServer.Near(p, victim)) { p.link.SendFrame(frame) } }
+    }
 
     // Sieht p den Spieler q? Gleiche Kachel oder eine der 8 Nachbarn.
     static defined bool Near(Player p, Player q) {
         return Math.Abs(p.tileX - q.tileX) <= 1 && Math.Abs(p.tileY - q.tileY) <= 1
     }
 
-    // Der Snapshot für p: alle anderen mit Lage in seiner Nähe.
+    static defined bool InSight(Player p, defined float e, defined float n) {
+        var t = Raser.TileKey.Of(e, n)
+        return Math.Abs(p.tileX - t.x) <= 1 && Math.Abs(p.tileY - t.y) <= 1
+    }
+
+    // Was p jetzt sehen kann: die anderen Spieler, die Fahrzeuge (ohne sein eigenes: das rechnet er voraus), die Gegenstände am Boden, die NPCs.
+    List<Raser.Entity> EntitiesFor(Player p) {
+        var list = new List<Raser.Entity>()
+        foreach (q in this.players) {
+            if (q == p || q.pawn == undefined || !RegionServer.Near(p, q)) { continue }
+            var e = new Raser.Entity(q.id, Raser.EntityType.Player)
+            e.east = q.east
+            e.north = q.north
+            e.heading = q.heading
+            e.speed = q.speed
+            if (!q.pawn.OnFoot) {
+                e.bits = Raser.EntityType.InVehicle
+                e.a = q.pawn.vehicle
+            }
+            if (this.tick < q.lyingUntil) { e.bits = e.bits | Raser.EntityType.Lying }
+            list.Add(take e)
+        }
+        foreach (v in this.sim.vehicles) {
+            if (v.id == p.pawn.vehicle || !RegionServer.InSight(p, v.body.east, v.body.north)) { continue }
+            list.Add(Raser.Entity.OfVehicle(v))
+        }
+        foreach (d in this.drops.all) {
+            if (!RegionServer.InSight(p, d.east, d.north)) { continue }
+            var e = new Raser.Entity(d.id, Raser.EntityType.Item)
+            e.variant = d.item
+            e.east = d.east
+            e.north = d.north
+            e.a = d.count
+            e.b = d.data
+            list.Add(take e)
+        }
+        this.NpcEntities(p, list)
+        return list
+    }
+
+    // Der Snapshot für p: sein Zustand, die letzte gerechnete Eingabe, die neuen und geänderten Entitäten (unverändert: nur alle 2 s), die
+    // verschwundenen.
     Raser.Packet SnapshotFor(Player p, defined int time) {
         var s = new Raser.Packet(Raser.Protocol.Snapshot)
         s.time = time
+        s.tick = this.tick
         s.region = this.region.id
-        foreach (q in this.players) {
-            if (q == p || !q.placed || !RegionServer.Near(p, q)) { continue }
-            if (s.players.Count >= Raser.Protocol.MaxPlayers) { break }
-            var e = Raser.Packet.Moved(0, q.east, q.north, q.heading, q.speed, q.kind)
-            e.id = q.id
-            s.players.Add(take e)
+        s.ack = p.pawn.seq
+        var car = this.sim.Find(p.pawn.vehicle)
+        Raser.Vehicle body = undefined
+        if (car != undefined) { body = car.body }
+        s.SetSelf(p.pawn, body)
+        var all = this.EntitiesFor(p)
+        var seen = new HashSet<int>()
+        foreach (e in all) {
+            seen.Add(e.id)
+            int h = e.Hash()
+            if (p.known.ContainsKey(e.id) && p.known[e.id] == h && this.tick - p.knownAt[e.id] < RegionServer.Refresh) { continue }
+            if (s.entities.Count >= Raser.Protocol.MaxEntities) { break }
+            p.known[e.id] = h
+            p.knownAt[e.id] = this.tick
+            s.entities.Add(e.Clone())
+        }
+        var gone = new List<int>()
+        foreach (id in p.known.Keys) { if (!seen.Contains(id)) { gone.Add(id) } }
+        foreach (id in gone) {
+            p.known.Remove(id)
+            p.knownAt.Remove(id)
+            if (s.gone.Count < Raser.Protocol.MaxEntities) { s.gone.Add(id) }
         }
         return s
     }
 
-    // Allen ihren Snapshot (10-mal je Sekunde).
+    // Allen ihren Snapshot (15-mal je Sekunde).
     undefined SendSnapshots(defined int time) {
         foreach (p in this.players) {
-            if (!p.placed) { continue }
+            if (p.pawn == undefined) { continue }
             var s = this.SnapshotFor(p, time)
             p.link.Send(s)
         }
+    }
+
+    // Eine Operation am Inventar: mit demselben Inventory.Apply geprüft (Lage und Reichweite aus dem Stand des Servers); Ablegen, Aufheben und
+    // Öffnen nur zu Fuß. Die Antwort ist immer der echte Stand der Behälter (InvSet); wer denselben Rucksack offen hat, bekommt ihn auch.
+    undefined Operate(Player p, Raser.Packet m) {
+        if (p.inv == undefined) { return }
+        var op = m.op
+        this.Follow(p)
+        bool ok = false
+        bool onFoot = p.pawn.OnFoot && this.tick >= p.lyingUntil
+        int touched = op.source
+        if (op.kind == Raser.Protocol.OpOpen) {
+            ok = onFoot && p.inv.Open(op.drop)
+        } else if (op.kind == Raser.Protocol.OpClose) {
+            p.inv.CloseOpened()
+            ok = true
+        } else if (op.kind == Raser.InvOp.Drop || op.kind == Raser.InvOp.PickUp) {
+            if (op.kind == Raser.InvOp.PickUp) {
+                var d = this.drops.Find(op.drop)
+                if (d != undefined) { touched = d.data }
+            }
+            ok = onFoot && p.inv.Apply(op)
+        } else {
+            ok = p.inv.Apply(op)
+        }
+        p.opSeq = m.seq
+        this.SendInventory(p, m.seq, ok)
+        // die anderen, die einen der Behälter offen haben
+        foreach (q in this.players) {
+            if (q == p || q.inv == undefined || q.inv.opened == 0) { continue }
+            if (q.inv.opened == touched || q.inv.opened == op.target || q.inv.opened == op.source) {
+                q.inv.Settle()
+                if (q.inv.opened != 0 && this.drops.Find(q.inv.openedDrop) == undefined) { q.inv.CloseOpened() }
+                this.SendInventory(q, q.opSeq, true)
+            }
+        }
+    }
+
+    // Der echte Stand des Inventars an p: die IDs, alle Behälter, an die er kommt (die eigenen, der Rucksack auf dem Rücken, der geöffnete).
+    undefined SendInventory(Player p, defined int seq, defined bool ok) {
+        if (p.inv == undefined) { return }
+        var inv = p.inv
+        var s = new Raser.Packet(Raser.Protocol.InvSet)
+        s.seq = seq
+        s.ok = ok
+        int ids[] = [inv.pockets, inv.hands, inv.backpackSlot, inv.phoneSlot, inv.cursor, inv.opened, inv.openedDrop]
+        for (int i = 0; i < 7; i++) { s.invIds[i] = ids[i] }
+        var send = new List<int>()
+        foreach (id in [inv.pockets, inv.hands, inv.backpackSlot, inv.phoneSlot, inv.cursor]) { send.Add(id) }
+        var bp = inv.Backpack()
+        if (bp != undefined) { send.Add(bp.id) }
+        if (inv.opened != 0) { send.Add(inv.opened) }
+        foreach (id in send) {
+            var c = this.store.Find(id)
+            if (c == undefined) { continue }
+            var w = new Raser.ByteWriter(64)
+            c.Write(w)
+            s.containers.Add(Raser.Container.Read(new Raser.ByteReader(w.ToBytes())))
+        }
+        p.link.Send(s)
     }
 }
