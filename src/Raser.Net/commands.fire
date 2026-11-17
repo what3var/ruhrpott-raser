@@ -1,0 +1,184 @@
+// Raser.Net: die Befehle (/help, /kick, ...) - lesen, Rechte prüfen, Argumente prüfen. Ausgeführt werden sie auf dem Server (CommandRunner);
+// hier steht, was jeder darf, damit Server, Client und Tests dieselbe Liste haben.
+namespace Raser {
+    // Ein gelesener Befehl: Name (klein, ohne /), Argument (der Rest der Zeile), oder ein Fehler (dann gilt nur error).
+    class Command {
+        string name
+        string args
+        string error                    // "" wenn er so ausgeführt werden darf
+        defined float hour              // /time: die Uhrzeit (Stunden)
+
+        construct(string name, string args) {
+            this.name = name
+            this.args = args
+            this.error = ""
+            this.hour = -1.0
+        }
+
+        defined bool Ok { get { return this.error == "" } }
+    }
+
+    class Commands {
+        // Alle Befehle: Name, nur für Admins, Argument, Hilfe.
+        static string[] Table() {
+            return ["help", "0", "", "zeigt die Befehle",
+                    "players", "0", "", "wer da ist",
+                    "kick", "1", "<name>", "wirft einen Spieler hinaus",
+                    "say", "1", "<text>", "Systemnachricht an alle",
+                    "time", "1", "<HH:MM>", "stellt die Uhr der Welt",
+                    "weather", "1", "<wetter>", "stellt das Wetter",
+                    "tp", "1", "<name>", "springt zu einem Spieler",
+                    "admin", "1", "<name>", "macht ein Konto zum Admin"]
+        }
+
+        // Die Wetter, die /weather kennt (Raser.Weather.Preset).
+        static string[] Presets() { return ["klar", "wolkig", "bedeckt", "niesel", "regen", "starkregen", "dunst", "nebel", "dichter-nebel"] }
+
+        static defined bool IsPreset(string name) {
+            foreach (p in Raser.Commands.Presets()) { if (p == name) { return true } }
+            return false
+        }
+
+        // -1: kein Befehl; 0: für alle; 1: nur für Admins.
+        static defined int Level(string name) {
+            var t = Raser.Commands.Table()
+            for (int i = 0; i < t.length; i = i + 4) {
+                if (t[i] == name) { return t[i + 1].ToInt() }
+            }
+            return -1
+        }
+
+        // Liest eine Zeile ("/kick Bob") und prüft Rechte und Argument. Keine Zeile mit / am Anfang: error.
+        static Raser.Command Parse(string line, defined bool admin) {
+            string s = ""
+            if (line != undefined) { s = line.Trim() }
+            if (!s.StartsWith("/")) {
+                var none = new Raser.Command("", s)
+                none.error = "Befehle beginnen mit / (/help zeigt sie)."
+                return none
+            }
+            string name = s.Substring(1)
+            string args = ""
+            int space = name.IndexOf(" ")
+            if (space >= 0) {
+                args = name.Substring(space + 1).Trim()
+                name = name.Substring(0, space)
+            }
+            name = name.ToLower()
+            var c = new Raser.Command(name, args)
+            int level = Raser.Commands.Level(name)
+            if (level < 0) {
+                c.error = "Unbekannter Befehl /" + name + " - /help zeigt die Befehle."
+                return c
+            }
+            if (level > 0 && !admin) {
+                c.error = "/" + name + " dürfen nur Admins."
+                return c
+            }
+            if (name == "kick" || name == "tp" || name == "admin") {
+                if (!Raser.Commands.ValidName(args)) { c.error = "/" + name + " braucht einen Namen: /" + name + " <name>" }
+            } else if (name == "say") {
+                if (args == "") { c.error = "/say braucht einen Text." }
+            } else if (name == "time") {
+                c.hour = Raser.Commands.Clock(args)
+                if (c.hour < 0.0) { c.error = "/time braucht eine Uhrzeit: /time 14:30" }
+            } else if (name == "weather") {
+                args = args.ToLower()
+                c.args = args
+                if (!Raser.Commands.IsPreset(args)) { c.error = "/weather kennt: " + Raser.Commands.Join(Raser.Commands.Presets(), ", ") }
+            }
+            return c
+        }
+
+        // Die Hilfe: die Befehle, die man selbst darf, je Zeile einer.
+        static List<string> Help(defined bool admin) {
+            var lines = new List<string>()
+            var t = Raser.Commands.Table()
+            for (int i = 0; i < t.length; i = i + 4) {
+                if (t[i + 1] == "1" && !admin) { continue }
+                string usage = "/" + t[i]
+                if (t[i + 2] != "") { usage = usage + " " + t[i + 2] }
+                lines.Add(usage + " - " + t[i + 3])
+            }
+            return lines
+        }
+
+        // "14:30" -> 14.5; -1 wenn es keine Uhrzeit ist (00:00 bis 23:59).
+        static defined float Clock(string text) {
+            if (text == undefined) { return -1.0 }
+            var parts = text.Trim().Split(":")
+            if (parts.length != 2) { return -1.0 }
+            int h = Raser.Commands.Digits(parts[0])
+            int m = Raser.Commands.Digits(parts[1])
+            if (h < 0 || h > 23 || m < 0 || m > 59 || parts[1].Length != 2) { return -1.0 }
+            return h + m / 60.0
+        }
+
+        // Eine Zahl aus 1 bis 2 Ziffern, sonst -1.
+        static defined int Digits(string text) {
+            if (text.Length < 1 || text.Length > 2) { return -1 }
+            int v = 0
+            for (int i = 0; i < text.Length; i++) {
+                int d = text[i].ToInt() - 48
+                if (d < 0 || d > 9) { return -1 }
+                v = v * 10 + d
+            }
+            return v
+        }
+
+        // Ein Kontoname: 3 bis 16 Zeichen aus A-Z, a-z, 0-9, _ und -.
+        static defined bool ValidName(string name) {
+            if (name == undefined || name.Length < 3 || name.Length > 16) { return false }
+            for (int i = 0; i < name.Length; i++) {
+                int c = name[i].ToInt()
+                bool ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 45
+                if (!ok) { return false }
+            }
+            return true
+        }
+
+        static string Join(string items[], string by) {
+            string s = ""
+            for (int i = 0; i < items.length; i++) {
+                if (i > 0) { s = s + by }
+                s = s + items[i]
+            }
+            return s
+        }
+    }
+
+    // Texte von Spielern: ohne Steuerzeichen, getrimmt, gekürzt.
+    class Texts {
+        static string Clean(string text, defined int max) {
+            if (text == undefined) { return "" }
+            string s = ""
+            int n = 0
+            for (int i = 0; i < text.Length && n < max; i++) {
+                int c = text[i].ToInt()
+                if (c < 32 || c == 127 || (c >= 128 && c < 160)) { continue }
+                s = s + text[i]
+                n = n + 1
+            }
+            return s.Trim()
+        }
+
+        // Für die Schrift der Anzeige (sie kennt keine Umlaute und kein ß): ä -> ae, ß -> ss, andere Zeichen über 126 -> ?.
+        static string Plain(string text) {
+            if (text == undefined) { return "" }
+            string s = ""
+            for (int i = 0; i < text.Length; i++) {
+                int c = text[i].ToInt()
+                if (c < 127) { s = s + text[i] }
+                else if (c == 228) { s = s + "ae" }
+                else if (c == 246) { s = s + "oe" }
+                else if (c == 252) { s = s + "ue" }
+                else if (c == 196) { s = s + "Ae" }
+                else if (c == 214) { s = s + "Oe" }
+                else if (c == 220) { s = s + "Ue" }
+                else if (c == 223) { s = s + "ss" }
+                else { s = s + "?" }
+            }
+            return s
+        }
+    }
+}

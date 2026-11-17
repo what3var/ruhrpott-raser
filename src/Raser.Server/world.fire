@@ -1,0 +1,172 @@
+// Raser.Server: Koordinator, Regionsserver und die Uhr der Welt (docs/SERVER.md).
+//
+// Der Koordinator teilt die Karte in Regionen aus ganzen Kacheln und weiß, welcher Regionsserver wofür zuständig ist; jetzt gibt es eine Region
+// für alles. Der Regionsserver hält die Spieler seiner Region und schickt jedem, was in seiner Nähe ist (seine Kachel und die 8 Nachbarn).
+// Die Uhr ist ein globaler Dienst: Datum, Uhrzeit (mit Zeitraffer) und Wetter, maßgeblich für alle Clients.
+#import "time"
+#import "raser.core"
+#import "raser.net"
+
+// Eine Region: ein Rechteck aus ganzen Kacheln (min .. max, einschließlich) und der Server, der für sie zuständig ist.
+class Region {
+    defined int id
+    string name
+    defined int server              // Server-Nummer (Raser.IdAllocator)
+    defined int minX
+    defined int minY
+    defined int maxX
+    defined int maxY
+
+    construct(defined int id, string name, defined int server, defined int minX, defined int minY, defined int maxX, defined int maxY) {
+        this.id = id
+        this.name = name
+        this.server = server
+        this.minX = minX
+        this.minY = minY
+        this.maxX = maxX
+        this.maxY = maxY
+    }
+
+    defined bool Contains(defined int tileX, defined int tileY) {
+        return tileX >= this.minX && tileX <= this.maxX && tileY >= this.minY && tileY <= this.maxY
+    }
+}
+
+class Coordinator {
+    List<Region> regions
+
+    construct() {
+        this.regions = new List<Region>()
+        // vorerst eine Region für ganz NRW (und alles drumherum)
+        this.regions.Add(new Region(1, "ruhr-1", 1, -1000000, -1000000, 1000000, 1000000))
+    }
+
+    // Die Region einer Kachel (undefined: keine - dann bleibt der Spieler, wo er ist).
+    Region RegionOf(defined int tileX, defined int tileY) {
+        foreach (r in this.regions) {
+            if (r.Contains(tileX, tileY)) { return r }
+        }
+        return undefined
+    }
+}
+
+// Die Uhr und das Wetter der Welt.
+class WorldClock {
+    Raser.Weather weather
+    string preset
+    defined float scale             // Spielsekunden je Sekunde
+    defined float seconds           // Uhrzeit (s am Tag)
+    defined int changes             // zählt jede Änderung von Hand (für das sofortige Senden)
+
+    construct(defined float hour, string preset, defined float scale) {
+        this.weather = new Raser.Weather()
+        var today = DateTime.Now
+        this.weather.year = today.Year
+        this.weather.day = Raser.Weather.DayOf(today.Month, today.Day)
+        this.seconds = hour * 3600.0
+        this.scale = scale
+        this.preset = "klar"
+        this.changes = 0
+        this.SetPreset(preset)
+    }
+
+    // dt Sekunden weiter (mit Zeitraffer); nach Mitternacht der nächste Tag.
+    undefined Advance(defined float dt) {
+        this.seconds = this.seconds + dt * this.scale
+        while (this.seconds >= 86400.0) {
+            this.seconds = this.seconds - 86400.0
+            this.weather.day = this.weather.day + 1
+            if (this.weather.day > 365) {
+                this.weather.day = 1
+                this.weather.year = this.weather.year + 1
+            }
+        }
+        this.weather.hour = this.seconds / 3600.0
+    }
+
+    undefined SetHour(defined float hour) {
+        this.seconds = Math.Clamp(hour, 0.0, 23.999) * 3600.0
+        this.weather.hour = hour
+        this.weather.Update()
+        this.changes = this.changes + 1
+    }
+
+    undefined SetPreset(string name) {
+        if (!Raser.Commands.IsPreset(name)) { name = "klar" }
+        this.preset = name
+        this.weather.hour = this.seconds / 3600.0
+        this.weather.Preset(name)
+        this.changes = this.changes + 1
+    }
+
+    string Clock() {
+        int minutes = Math.Floor(this.seconds / 60.0)!int
+        return Accounts.Two(minutes / 60) + ":" + Accounts.Two(minutes % 60)
+    }
+
+    Raser.Packet Packet() {
+        var p = new Raser.Packet(Raser.Protocol.Weather)
+        p.year = this.weather.year
+        p.day = this.weather.day
+        p.seconds = Math.Floor(this.seconds)!int % 86400
+        p.scale = this.scale
+        p.text = this.preset
+        return p
+    }
+}
+
+// Der Regionsserver: die Spieler einer Region, Interesse je Kachel, Snapshots.
+class RegionServer {
+    Region region
+    List<Player> players            // (Verweise: die Spieler gehören dem Gateway)
+
+    construct(Region region) {
+        this.region = region
+        this.players = new List<Player>()
+    }
+
+    undefined Enter(Player p) {
+        p.region = this.region.id
+        this.players.Add(p)
+    }
+
+    undefined Leave(Player p) {
+        for (int i = 0; i < this.players.Count; i++) {
+            if (this.players[i] == p) {
+                this.players.RemoveAt(i)
+                return
+            }
+        }
+    }
+
+    defined int Count { get { return this.players.Count } }
+
+    // Sieht p den Spieler q? Gleiche Kachel oder eine der 8 Nachbarn.
+    static defined bool Near(Player p, Player q) {
+        return Math.Abs(p.tileX - q.tileX) <= 1 && Math.Abs(p.tileY - q.tileY) <= 1
+    }
+
+    // Der Snapshot für p: alle anderen mit Lage in seiner Nähe.
+    Raser.Packet SnapshotFor(Player p, defined int time) {
+        var s = new Raser.Packet(Raser.Protocol.Snapshot)
+        s.time = time
+        s.region = this.region.id
+        foreach (q in this.players) {
+            if (q == p || !q.placed || !RegionServer.Near(p, q)) { continue }
+            if (s.players.Count >= Raser.Protocol.MaxPlayers) { break }
+            var e = Raser.Packet.Moved(0, q.east, q.north, q.heading, q.speed, q.kind)
+            e.id = q.id
+            s.players.Add(take e)
+        }
+        return s
+    }
+
+    // Allen ihren Snapshot (10-mal je Sekunde).
+    undefined SendSnapshots(defined int time) {
+        foreach (p in this.players) {
+            if (!p.placed) { continue }
+            var s = this.SnapshotFor(p, time)
+            p.link.Send(s)
+        }
+    }
+}

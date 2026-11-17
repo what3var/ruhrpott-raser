@@ -1,0 +1,270 @@
+// Raser.Game: das Spiel am Server (--server host:7481 --token ... --user name) - die anderen Spieler als Figuren und Fahrzeuge in der Szene, Chat
+// und Konsole, Uhr und Wetter des Servers. Ohne --server bleibt alles wie offline (Online.session ist dann undefined).
+#import "scene3d"
+#import "windows"
+#import "time"
+#import "raser.core"
+#import "raser.net"
+#import "raser.client"
+
+// Ein anderer Spieler in der Szene: Figur (zu Fuß, auf dem Zweirad) und Fahrzeug, weich zur Lage des Snapshots gezogen.
+class Avatar {
+    defined int id
+    defined int kind                // Raser.Protocol.KindOf (0 zu Fuß)
+    CarModel car
+    PersonModel person
+    defined float east
+    defined float north
+    defined float heading
+    defined float stride
+    defined bool fresh
+
+    construct(Scene scene, defined int id, defined int kind) {
+        this.id = id
+        this.kind = kind
+        this.person = new PersonModel(scene)
+        this.person.Show(false)
+        this.car = undefined
+        if (kind > 0) {
+            // je Spieler eine Farbe aus seiner ID
+            int colors[] = [S3D.Rgb(200, 160, 30), S3D.Rgb(120, 40, 140), S3D.Rgb(30, 150, 160), S3D.Rgb(220, 90, 30), S3D.Rgb(90, 90, 95)]
+            this.car = new CarModel(scene, Raser.Protocol.VehicleOf(kind), colors[(id & 1023) % colors.length])
+        }
+        this.fresh = true
+        this.stride = 0.0
+    }
+
+    // Nimmt die Teile aus der Szene.
+    undefined Remove(Scene scene) {
+        foreach (o in this.person.parts) { scene.Remove(o) }
+        if (this.car != undefined) {
+            foreach (o in this.car.parts) { scene.Remove(o) }
+            scene.Remove(this.car.beam)
+        }
+    }
+
+    // Weich zur Lage r (dt s), dann in die Szene.
+    undefined Follow(RemotePlayer r, defined float dt, Ground terrain, WorldView view, defined bool lamps) {
+        // ein Stück voraus nach dem Tempo (der Snapshot ist bis zu 0,1 s alt), dann weich hin
+        float h = r.heading * Math.PI / 180.0
+        float te = r.east - Math.Sin(h) * r.speed * 0.05
+        float tn = r.north + Math.Cos(h) * r.speed * 0.05
+        float k = Math.Min(1.0, dt * 10.0)
+        if (this.fresh || (te - this.east) * (te - this.east) + (tn - this.north) * (tn - this.north) > 400.0) {
+            k = 1.0
+            this.fresh = false
+        }
+        float e0 = this.east
+        float n0 = this.north
+        this.east = this.east + (te - this.east) * k
+        this.north = this.north + (tn - this.north) * k
+        float turn = r.heading - this.heading
+        while (turn > 180.0) { turn = turn - 360.0 }
+        while (turn < -180.0) { turn = turn + 360.0 }
+        this.heading = this.heading + turn * k
+        this.stride = this.stride + Math.Sqrt((this.east - e0) * (this.east - e0) + (this.north - n0) * (this.north - n0))
+        float y = 0.0
+        any g = terrain.At(this.east, this.north)
+        if (g != undefined) { y = g - view.originZ }
+        float x = this.east - view.originE
+        float z = -(this.north - view.originN)
+        if (this.car == undefined) {
+            this.person.Place(x, y, z, this.heading, this.stride)
+            this.person.Show(true)
+            return
+        }
+        this.car.Place(x, y, z, this.heading, 0.0)
+        this.car.beam.Enabled = lamps
+        if (this.kind == 3 || this.kind == 4) {
+            float seat = 0.94
+            if (this.kind == 4) { seat = 1.0 }
+            this.person.Sit(x + Math.Sin(h) * 0.3, y, z + Math.Cos(h) * 0.3, this.heading, seat, 0.0)
+            this.person.Show(true)
+        } else { this.person.Show(false) }
+    }
+}
+
+class Online {
+    NetSession session              // undefined: offline
+    ChatOverlay overlay
+    List<Avatar> avatars
+    defined float weatherCheck
+    string appliedPreset
+
+    construct() {
+        this.session = undefined
+        this.overlay = new ChatOverlay()
+        this.avatars = new List<Avatar>()
+        this.weatherCheck = 0.0
+        this.appliedPreset = ""
+    }
+
+    // Verbindet, wenn --server gegeben ist (sonst offline wie bisher).
+    static Online Start(Options options) {
+        var online = new Online()
+        string server = options.Get("server", "")
+        if (server == "") { return online }
+        var s = new NetSession()
+        if (s.Connect(server, options.Get("token", ""), options.Get("user", ""), "raser-game 0.1.0")) {
+            print("Server " + server + ": " + s.status)
+        } else { print("Server " + server + ": " + s.status + " - weiter offline") }
+        online.session = take s
+        return online
+    }
+
+    // Ein Ereignis für Chat oder Konsole? (true: verbraucht)
+    defined bool Handle(any ev) { return this.overlay.Handle(ev, this.session) }
+
+    // Ein Bild: eigene Lage schicken, die anderen setzen, Uhr und Wetter übernehmen, Teleport des Servers. Gibt true, wenn der Server die
+    // eigene Lage gesetzt hat (dann stehen sie in session.teleportEast/North/Heading).
+    defined bool Frame(defined float dt, defined float east, defined float north, defined float heading, defined float speed, defined int kind, Scene scene, Ground terrain, WorldView view, Raser.Weather weather, Atmosphere atmosphere) {
+        var s = this.session
+        if (s == undefined) { return false }
+        s.Update(east, north, heading, speed, kind)
+        // die anderen: wer weg ist, raus; wer die Art wechselt, neu
+        int i = 0
+        while (i < this.avatars.Count) {
+            var a = this.avatars[i]
+            var r = s.Find(a.id)
+            if (r == undefined || r.kind != a.kind) {
+                a.Remove(scene)
+                this.avatars.RemoveAt(i)
+            } else { i++ }
+        }
+        foreach (r in s.players) {
+            if (!r.placed) { continue }
+            float de = r.east - east
+            float dn = r.north - north
+            if (de * de + dn * dn > 600.0 * 600.0) { continue }
+            Avatar a = undefined
+            foreach (b in this.avatars) { if (b.id == r.id) { a = b } }
+            if (a == undefined) {
+                this.avatars.Add(new Avatar(scene, r.id, r.kind))
+                a = this.avatars[this.avatars.Count - 1]
+            }
+            a.Follow(r, dt, terrain, view, weather.lampsOn)
+        }
+        // Uhr und Wetter des Servers (je s geprüft; neu gesetzt bei anderem Wetter oder 3 min Abstand)
+        this.weatherCheck = this.weatherCheck + dt
+        if (s.hasWeather && (this.weatherCheck > 1.0 || this.appliedPreset != s.weatherPreset)) {
+            this.weatherCheck = 0.0
+            float hour = s.Hour()
+            float diff = Math.Abs(hour - weather.hour)
+            if (diff > 12.0) { diff = 24.0 - diff }
+            if (this.appliedPreset != s.weatherPreset || diff > 0.05 || weather.day != s.weatherDay) {
+                weather.year = s.weatherYear
+                weather.day = s.weatherDay
+                weather.hour = hour
+                if (this.appliedPreset != s.weatherPreset) {
+                    weather.Preset(s.weatherPreset)
+                    this.appliedPreset = s.weatherPreset
+                } else { weather.Update() }
+                atmosphere.Apply()
+            }
+        }
+        if (s.teleport) {
+            s.teleport = false
+            return true
+        }
+        return false
+    }
+
+    // Ein Bild für das Spiel (main.fire): die eigene Lage (Wagen oder zu Fuß) schicken, die anderen setzen, ein Teleport des Servers setzt Wagen
+    // bzw. Spieler.
+    undefined Drive(defined float dt, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, Scene scene, Ground terrain, WorldView view, Raser.Weather weather, Atmosphere atmosphere) {
+        if (this.session == undefined) { return }
+        float e = car.east
+        float n = car.north
+        float h = car.heading
+        float v = car.speed
+        if (onFoot) {
+            e = walker.east
+            n = walker.north
+            h = walker.heading
+            v = walker.speed
+        }
+        if (!this.Frame(dt, e, n, h, v, Raser.Protocol.KindOf(car.kind, onFoot), scene, terrain, view, weather, atmosphere)) { return }
+        var s = this.session
+        if (onFoot) {
+            walker.east = s.teleportEast
+            walker.north = s.teleportNorth
+            walker.heading = s.teleportHeading
+            walker.speed = 0.0
+        } else {
+            car.east = s.teleportEast
+            car.north = s.teleportNorth
+            car.heading = s.teleportHeading
+            car.speed = 0.0
+        }
+    }
+
+    // Chat und Konsole über das Bild (nach der Anzeige).
+    undefined Draw(Renderer hud, defined int width, defined int height) {
+        if (this.session == undefined && !this.overlay.Active) { return }
+        this.overlay.Draw(hud, width, height, this.session)
+    }
+
+    undefined Close() {
+        if (this.session != undefined) { this.session.Close() }
+    }
+}
+
+// Ein Spieler ohne Welt und Fenster, für Tests (raser-game --server 127.0.0.1:7481 --token ... --user name --bot 10): verbindet, fährt einen
+// Kreis um --at, sagt --say (Zeilen mit ; getrennt, je eine pro Sekunde ab der 2. Sekunde), druckt, was ankommt, und hört nach so vielen s auf.
+class NetBot {
+    static defined int Run(Options options) {
+        float seconds = options.Get("bot", "10").ToFloat()
+        string user = options.Get("user", "bot")
+        var at = options.Get("at", "376117,5705005").Split(",")
+        float e0 = at[0].ToFloat()
+        float n0 = at[1].ToFloat()
+        var s = new NetSession()
+        s.echo = true
+        if (!s.Connect(options.Get("server", "127.0.0.1:7481"), options.Get("token", ""), user, "raser-bot 0.1.0")) {
+            print("[" + user + "] nicht verbunden: " + s.status)
+            return 1
+        }
+        print("[" + user + "] " + s.status + ", id " + Raser.Ids.Format(s.id))
+        string lines[] = []
+        string say = options.Get("say", "")
+        if (say != "") { lines = say.Split(";") }
+        int next = 0
+        int began = DateTime.UtcNow.Ticks
+        int lastPrint = 0
+        string seen = ""
+        while (s.Online || s.link.IsOpen) {
+            float t = (DateTime.UtcNow.Ticks - began) / 10000000.0
+            if (t >= seconds) { break }
+            // ein Kreis mit 15 m Radius, eine Runde in 20 s
+            float a = t * 2.0 * Math.PI / 20.0
+            float east = e0 + Math.Cos(a) * 15.0
+            float north = n0 + Math.Sin(a) * 15.0
+            float heading = a * 180.0 / Math.PI
+            s.Update(east, north, heading, 4.7, 1)
+            if (s.teleport) {
+                s.teleport = false
+                print("[" + user + "] Teleport nach " + s.teleportEast + ", " + s.teleportNorth)
+                e0 = s.teleportEast - 15.0
+                n0 = s.teleportNorth
+            }
+            if (next < lines.length && t >= 2.0 + next) {
+                print("[" + user + "] sagt: " + lines[next])
+                s.Say(lines[next])
+                next++
+            }
+            if (t - lastPrint >= 1.0) {
+                lastPrint = Math.Floor(t)!int
+                string now = ""
+                foreach (r in s.players) { now = now + " " + r.name + "(" + Math.Round(r.east) + "," + Math.Round(r.north) + ")" }
+                if (now != seen) {
+                    print("[" + user + "] sieht:" + now)
+                    seen = now
+                }
+            }
+            Sleep(50ms)
+        }
+        print("[" + user + "] Ende: " + s.snapshots + " Snapshots, " + s.status + ", Uhr " + Math.Round(s.Hour() * 100.0) / 100.0 + " h, Wetter " + s.weatherPreset)
+        s.Close()
+        return 0
+    }
+}

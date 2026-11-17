@@ -351,6 +351,8 @@ class Game {
 
     static defined int Main(string items[]) {
         var options = new Options(items)
+        // --bot s: ein Spieler ohne Welt und Fenster am Server (online.fire)
+        if (options.Get("bot", "") != "") { return NetBot.Run(options) }
         string world = options.Get("world", "world")
         var store = new Raser.FileTileStore(world)
         var at = options.Get("at", "376117,5705005").Split(",")
@@ -683,6 +685,7 @@ class Game {
             return 0
         }
 
+        var online = Online.Start(options)
         var win = new Window(fb, "Ruhrpott-Raser")
         win.EnableEvents()
         bool gas = false
@@ -699,6 +702,11 @@ class Game {
         while (win.Tick()) {
             any ev = win.NextEvent()
             while (ev != undefined) {
+                // Chat und Konsole bekommen die Tasten zuerst (online.fire)
+                if (online.Handle(ev)) {
+                    ev = win.NextEvent()
+                    continue
+                }
                 if (ev[0] == EventType.KeyDown || ev[0] == EventType.KeyUp) {
                     bool pressed = ev[0] == EventType.KeyDown
                     int key = ev[1]
@@ -806,10 +814,13 @@ class Game {
                 obstacles.Trim(car.east, car.north)
                 terrain.Trim(car.east, car.north)
             }
+            online.Drive(dt, car, walker, onFoot, scene, terrain, view, weather, atmosphere)
             scene.Advance(dt * 1s)
             atmosphere.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
+            online.Draw(hud, width, height)
         }
+        online.Close()
         view.Close()
         return 0
     }

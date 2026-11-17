@@ -1,0 +1,102 @@
+// Raser.Server: der Server (docs/SERVER.md) - jetzt ein Prozess mit Koordinator, einem Regionsserver und den globalen Diensten.
+//
+//   raser-server [--data data] [--release release] [--admin name] [--host ""] [--http 7480] [--game 7481] [--time 14:00] [--weather klar]
+//                [--timescale 1] [--rounds 20000]
+//
+// Die Launcher-API läuft in einem eigenen Thread (`fire dedicated`: sie wartet im Netz), das Spiel im Hauptthread mit 20 Takten je s
+// (Snapshots 10-mal je s, das Wetter alle 10 s und bei jeder Änderung).
+#import "time"
+#import "filesystem"
+#import "http"
+#import "raser.core"
+#import "raser.net"
+
+// Die Optionen der Kommandozeile (--name wert).
+class ServerOptions {
+    Dictionary<string, string> values
+
+    construct(string items[]) {
+        this.values = new Dictionary<string, string>()
+        int i = 0
+        while (i < items.length) {
+            string a = items[i]
+            if (a.StartsWith("--") && i + 1 < items.length && !items[i + 1].StartsWith("--")) {
+                this.values[a.Substring(2)] = items[i + 1]
+                i = i + 2
+            } else {
+                if (a.StartsWith("--")) { this.values[a.Substring(2)] = "true" }
+                i = i + 1
+            }
+        }
+    }
+
+    string Get(string name, string fallback) { return this.values.Get(name, fallback) }
+}
+
+class Server {
+    static defined int Main(string items[]) {
+        var options = new ServerOptions(items)
+        string data = options.Get("data", "data")
+        string release = options.Get("release", "")
+        string admin = options.Get("admin", "")
+        string host = options.Get("host", "")
+        int httpPort = options.Get("http", "7480").ToInt()
+        int gamePort = options.Get("game", "7481").ToInt()
+        int rounds = options.Get("rounds", "20000").ToInt()
+        if (!IO.Directory.Exists(data)) { IO.Directory.CreateDirectory(data) }
+        string dbPath = IO.Path.Combine(data, "raser.db")
+        ServerStatus.started = Accounts.Now()
+
+        // globale Dienste: Konten, Uhr und Wetter
+        var accounts = new Accounts(dbPath, admin, rounds)
+        accounts.PromoteConfigured()
+        var clock = new WorldClock(Raser.Commands.Clock(options.Get("time", "14:00")), options.Get("weather", "klar"), options.Get("timescale", "1").ToFloat())
+        // Koordinator und Regionsserver
+        var coordinator = new Coordinator()
+        var region = new RegionServer(coordinator.regions[0])
+        ServerStatus.region = region.region.name
+        var gateway = new Gateway(host, gamePort, accounts, coordinator, region, clock)
+        Gateway.Log("Spielprotokoll v" + Raser.Protocol.Version + " auf Port " + gamePort + ", Region " + region.region.name + ", " + accounts.Count() + " Konten in " + dbPath)
+
+        // die Launcher-API im eigenen Thread
+        fire dedicated taking dbPath taking admin taking release taking data taking host taking httpPort taking rounds {
+            try {
+                var api = new LauncherApi(dbPath, admin, release, data)
+                api.accounts.rounds = rounds
+                var http = new Http.Server(host, httpPort, 32)
+                http.Fallback(func (Http.Request r) on api => Handle(r))
+                Gateway.Log("Launcher-API auf Port " + httpPort + ", Release " + api.version + " mit " + api.files.Count + " Dateien")
+                http.Run()
+            } catch (Exception e) {
+                Gateway.Log("Launcher-API: " + e.message)
+                terminate(1)
+            }
+        }
+
+        // das Spiel: 20 Takte je s
+        int tick = 0
+        int last = DateTime.UtcNow.Ticks
+        int lastWeather = 0
+        int changes = clock.changes
+        while (true) {
+            int start = DateTime.UtcNow.Ticks
+            float dt = (start - last) / 10000000.0
+            last = start
+            clock.Advance(dt)
+            gateway.Tick()
+            tick++
+            if (tick % 2 == 0) { region.SendSnapshots(Gateway.Millis()) }
+            if (clock.changes != changes || start - lastWeather > 100000000) {
+                changes = clock.changes
+                lastWeather = start
+                gateway.Broadcast(clock.Packet(), undefined)
+            }
+            ServerStatus.players = gateway.Online()
+            int rest = (500000 - (DateTime.UtcNow.Ticks - start)) / 10000
+            if (rest > 0) { Sleep(rest * 1ms) }
+        }
+        return 0
+    }
+}
+
+Environment.Exit(Server.Main(Environment.Args))

@@ -1,0 +1,182 @@
+// Raser.Server: die HTTP-Schnittstelle für den Launcher (Port 7480, docs/SERVER.md) - Konten, Version und Dateien des Client-Builds, News, Status.
+// Läuft in einem eigenen Thread mit eigener Datenbankverbindung; die Zahl der Spieler liest sie aus ServerStatus (das Spiel schreibt sie).
+#import "http"
+#import "json"
+#import "hash"
+#import "filesystem"
+#import "raser.net"
+
+// Was das Spiel für /api/status meldet (geschrieben vom Hauptthread, gelesen von der Launcher-API).
+class ServerStatus {
+    static int players = 0
+    static string region = "ruhr-1"
+    static int started = 0
+}
+
+// Eine Datei des Release: Pfad (relativ, mit /), Größe, SHA-256.
+class ReleaseFile {
+    string path
+    string full
+    defined int size
+    string sha256
+
+    construct(string path, string full, defined int size, string sha256) {
+        this.path = path
+        this.full = full
+        this.size = size
+        this.sha256 = sha256
+    }
+}
+
+class LauncherApi {
+    Accounts accounts
+    string release                  // das Verzeichnis des Client-Builds ("" keins)
+    string data
+    string version
+    string notes
+    List<ReleaseFile> files
+    string filesJson
+
+    construct(string dbPath, string adminName, string release, string data) {
+        this.accounts = new Accounts(dbPath, adminName)
+        this.release = release
+        this.data = data
+        this.version = "0.0.0"
+        this.notes = ""
+        this.files = new List<ReleaseFile>()
+        this.Index()
+    }
+
+    // Liest das Release: alle Dateien darunter mit Größe und SHA-256, dazu version.txt (erste Zeile: Version, der Rest: Hinweise).
+    undefined Index() {
+        if (this.release == "" || !IO.Directory.Exists(this.release)) {
+            this.filesJson = "[]"
+            return
+        }
+        string root = IO.Path.GetFullPath(this.release)
+        var all = IO.Directory.GetFiles(root, "*", IO.SearchOption.AllDirectories)
+        var names = new List<string>()
+        foreach (f in all) {
+            string full = IO.Path.GetFullPath(f)
+            if (!full.StartsWith(root)) { continue }
+            string rel = full.Substring(root.Length).Replace("\\", "/")
+            while (rel.StartsWith("/")) { rel = rel.Substring(1) }
+            names.Add(rel)
+        }
+        names.Sort()
+        string json = "["
+        foreach (rel in names) {
+            string full = IO.Path.Combine(root, rel)
+            var stream = IO.File.OpenRead(full)
+            string sha = new Hash.Sha256().UpdateStream(stream).FinishHex()
+            stream.Close()
+            int size = IO.File.Size(full)
+            if (json != "[") { json = json + ", " }
+            json = json + "{\"path\": " + Json.Serialize(rel) + ", \"size\": " + size + ", \"sha256\": " + Json.Serialize(sha) + "}"
+            this.files.Add(new ReleaseFile(rel, full, size, sha))
+        }
+        this.filesJson = json + "]"
+        string vfile = IO.Path.Combine(root, "version.txt")
+        if (IO.File.Exists(vfile)) {
+            var lines = IO.File.ReadAllLines(vfile)
+            if (lines.Count > 0) { this.version = ("" + lines[0]).Trim() }
+            string notes = ""
+            for (int i = 1; i < lines.Count; i++) {
+                if (notes != "") { notes = notes + "\n" }
+                notes = notes + lines[i]
+            }
+            this.notes = notes.Trim()
+        }
+    }
+
+    static Http.Response Json(defined int status, string body) {
+        var r = Http.Response.FromJson(body, status)
+        r.headers.Set("Content-Type", "application/json; charset=utf-8")
+        r.headers.Set("Cache-Control", "no-store")
+        return r
+    }
+
+    static Http.Response Error(defined int status, string message) { return LauncherApi.Json(status, "{\"error\": " + Json.Serialize(message) + "}") }
+
+    // Beantwortet eine Anfrage (Http.Server.Fallback).
+    Http.Response Handle(Http.Request r) {
+        try {
+            string path = r.path
+            bool get = r.method == "GET" || r.method == "HEAD"
+            if (path == "/api/register" || path == "/api/login") {
+                if (r.method != "POST") { return LauncherApi.Error(405, "Nur POST.") }
+                return this.Auth(r, path == "/api/register")
+            }
+            if (path == "/api/version") {
+                if (!get) { return LauncherApi.Error(405, "Nur GET.") }
+                return LauncherApi.Json(200, "{\"version\": " + Json.Serialize(this.version) + ", \"notes\": " + Json.Serialize(this.notes) + ", \"files\": " + this.filesJson + "}")
+            }
+            if (path == "/api/news") {
+                if (!get) { return LauncherApi.Error(405, "Nur GET.") }
+                return LauncherApi.Json(200, this.News())
+            }
+            if (path == "/api/status") {
+                if (!get) { return LauncherApi.Error(405, "Nur GET.") }
+                int uptime = Accounts.Now() - ServerStatus.started
+                return LauncherApi.Json(200, "{\"players\": " + ServerStatus.players + ", \"region\": " + Json.Serialize(ServerStatus.region) + ", \"uptime\": " + uptime + "}")
+            }
+            if (path.StartsWith("/files/")) {
+                if (!get) { return LauncherApi.Error(405, "Nur GET.") }
+                return this.File(path.Substring(7))
+            }
+            return LauncherApi.Error(404, "Unbekannt: " + path)
+        } catch (Exception e) {
+            print("http: Fehler bei " + r.method + " " + r.path + ": " + e.message)
+            return LauncherApi.Error(500, "Interner Fehler.")
+        }
+        return LauncherApi.Error(500, "Interner Fehler.")
+    }
+
+    Http.Response Auth(Http.Request r, defined bool register) {
+        any body = undefined
+        try { body = Json.Parse(r.Text()) } catch (Exception e) { return LauncherApi.Error(400, "Der Inhalt ist kein JSON.") }
+        if (body == undefined || !(body is of JsonObject)) { return LauncherApi.Error(400, "Erwartet: {\"user\": \"...\", \"password\": \"...\"}") }
+        any user = body.Get("user")
+        any password = body.Get("password")
+        if (!(user is of string) || !(password is of string)) { return LauncherApi.Error(400, "Erwartet: {\"user\": \"...\", \"password\": \"...\"}") }
+        AuthResult result = undefined
+        if (register) { result = this.accounts.Register(user, password) } else { result = this.accounts.Login(user, password) }
+        if (result.status != 200) {
+            print("http: " + r.path + " " + user + " -> " + result.status)
+            return LauncherApi.Error(result.status, result.error)
+        }
+        string admin = "false"
+        if (result.admin) { admin = "true" }
+        print("http: " + r.path + " " + result.user + " ok (admin " + admin + ")")
+        return LauncherApi.Json(200, "{\"token\": " + Json.Serialize(result.token) + ", \"user\": " + Json.Serialize(result.user) + ", \"admin\": " + admin + ", \"expires\": " + Json.Serialize(Accounts.Iso(result.expires)) + "}")
+    }
+
+    // Eine Datei des Release - nur eine, die im Index steht (also kein .., kein Pfad außerhalb).
+    Http.Response File(string rel) {
+        if (rel.Contains("..") || rel.Contains("\\") || rel.StartsWith("/")) { return LauncherApi.Error(404, "Keine solche Datei.") }
+        foreach (f in this.files) {
+            if (f.path == rel) {
+                var r = new Http.Response(200, IO.File.ReadAllBytes(f.full))
+                r.headers.Set("Content-Type", "application/octet-stream")
+                return r
+            }
+        }
+        return LauncherApi.Error(404, "Keine solche Datei.")
+    }
+
+    // news.json aus dem Release oder dem Datenverzeichnis (ein JSON-Array), sonst [].
+    string News() {
+        foreach (dir in [this.release, this.data]) {
+            if (dir == "") { continue }
+            string file = IO.Path.Combine(dir, "news.json")
+            if (!IO.File.Exists(file)) { continue }
+            string text = IO.File.ReadAllText(file)
+            try {
+                any parsed = Json.Parse(text)
+                if (text.Trim().StartsWith("[") && parsed != undefined) { return text.Trim() }
+            } catch (Exception e) { }
+            print("http: " + file + " ist kein JSON-Array")
+        }
+        return "[]"
+    }
+}

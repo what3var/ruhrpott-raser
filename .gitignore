@@ -4,3 +4,8 @@ obj/
 *.obj
 *.mtl
 /data/raw/
+/data/
+/release/
+*.db
+*.db-wal
+*.db-shm

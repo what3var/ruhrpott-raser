@@ -13,6 +13,7 @@ Gleichzeitig der **Extremtest für die Programmiersprache [fire](https://github.
 - [Konzept](docs/KONZEPT.md): Architektur, Weltpipeline, Rendering, Gameplay
 - [Roadmap](ROADMAP.md): Meilensteine und offene Fragen
 - [Weltpipeline](docs/PIPELINE.md): Stand von M1, Projekte, Formate, Messwerte
+- [Server](docs/SERVER.md): Stand von M4, Prozesse, Ports, Launcher-API, Spielprotokoll, Konten
 - [Was das Projekt in fire findet](docs/FIRE.md): Fehler, Lücken und Umwege
 - [Override-Layer](overrides/README.md)
 
