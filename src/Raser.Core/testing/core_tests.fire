@@ -183,6 +183,27 @@ class ShapeTests {
         Testing.Assert.IsFalse(Raser.Materials.IsSolid(Raser.Material.Water!int))
         Testing.Assert.AreEqual(0x9A3B2A, Raser.Palette.Rgb(Raser.Palette.Brick))
     }
+
+    [Test "Palette: Fassaden-Bänke mit Dreckstufen"]
+    undefined FacadeBanks() {
+        Testing.Assert.IsTrue(Raser.Palette.IsFacade(Raser.Palette.PlasterPink))
+        Testing.Assert.IsTrue(Raser.Palette.IsFacade(Raser.Palette.Clinker + 3))
+        Testing.Assert.IsFalse(Raser.Palette.IsFacade(Raser.Palette.SignRed))
+        Testing.Assert.IsFalse(Raser.Palette.IsFacade(Raser.Palette.DoorGreen))
+        // Dreckstufen: in den Bänken die nächsten drei Einträge, sonst + 32 je Stufe; höchstens 3
+        Testing.Assert.AreEqual(Raser.Palette.BrickCross + 2, Raser.Palette.Dirty(Raser.Palette.BrickCross, 2))
+        Testing.Assert.AreEqual(Raser.Palette.BrickCross + 3, Raser.Palette.Dirty(Raser.Palette.BrickCross + 2, 5))
+        Testing.Assert.AreEqual(Raser.Palette.BrickCross, Raser.Palette.BaseOf(Raser.Palette.BrickCross + 2))
+        Testing.Assert.AreEqual(2, Raser.Palette.DirtOf(Raser.Palette.BrickCross + 2))
+        Testing.Assert.AreEqual(Raser.Palette.Plaster + 64, Raser.Palette.Dirty(Raser.Palette.Plaster + 32, 1))
+        Testing.Assert.AreEqual(Raser.Palette.SignRed, Raser.Palette.Dirty(Raser.Palette.SignRed, 2))
+        // jede Stufe dunkler als die davor
+        for (int l = 1; l < 4; l++) {
+            int a = Raser.Palette.Rgb(Raser.Palette.PlasterOchre + l - 1)
+            int b = Raser.Palette.Rgb(Raser.Palette.PlasterOchre + l)
+            Testing.Assert.IsTrue(((b >> 8) & 255) < ((a >> 8) & 255))
+        }
+    }
 }
 
 class BytesTests {

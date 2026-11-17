@@ -182,7 +182,7 @@ class VoxelizerTests {
         bool openFound = false
         for (int y = 21; y < 54; y++) {
             for (int z = 46; z < 64; z++) {
-                if (low.MaterialAt(10, y, z) == Raser.Material.Brick!int && low.MaterialAt(11, y, z) == Raser.Material.Brick!int) { wallFound = true }
+                if (VoxelizerTests.IsWall(low.MaterialAt(10, y, z)) && VoxelizerTests.IsWall(low.MaterialAt(11, y, z))) { wallFound = true }
                 if (low.MaterialAt(10, y, z) == 0 && low.MaterialAt(11, y, z) == 0) { openFound = true }
                 Testing.Assert.IsTrue(low.MaterialAt(10, y, z) != Raser.Material.Glass!int)
             }
@@ -207,6 +207,9 @@ class VoxelizerTests {
         Testing.Assert.IsTrue(high.CountShaped() > 0)
     }
 
+    // Wandmaterial nach dem Aussehen des Hauses (Raser.HouseStyle): Ziegel, Putz, Stein ...
+    static defined bool IsWall(defined int m) { return m == Raser.Material.Brick!int || m == Raser.Material.Plaster!int || m == Raser.Material.Rock!int || m == Raser.Material.Wood!int }
+
     [Test "Keller: Gelände ausgehoben, Wand läuft hinunter"]
     undefined Cellar() {
         var set = new Raser.OverrideSet()
@@ -218,7 +221,7 @@ class VoxelizerTests {
         Testing.Assert.AreEqual(0, c.MaterialAt(30, 37, 32))
         Testing.Assert.AreEqual(0, c.MaterialAt(30, 37, 44))
         Testing.Assert.AreEqual(Raser.Material.Concrete!int, c.MaterialAt(30, 37, 45))
-        Testing.Assert.AreEqual(Raser.Material.Brick!int, c.MaterialAt(10, 37, 35))
+        Testing.Assert.IsTrue(VoxelizerTests.IsWall(c.MaterialAt(10, 37, 35)))
         // daneben bleibt das Gelände
         Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(5, 37, 35))
     }
@@ -882,5 +885,70 @@ class StoreTests {
         Testing.Assert.AreEqual(hash, back.DataHash())
         Testing.Assert.AreEqual(1, store.Keys().Count)
         IO.Directory.Delete(root, true)
+    }
+}
+
+class HouseStyleTests {
+    static Raser.Building House(string source, float footprint[], defined float eaves, defined float ridge, string function) {
+        var b = new Raser.Building()
+        b.source = source
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = footprint
+        b.ground = 60.0
+        b.eaves = eaves
+        b.ridge = ridge
+        b.roofType = Raser.RoofType.Gable
+        b.function = function
+        return b
+    }
+
+    [Test "Aussehen: Bautyp aus den Daten, je Haus stabil, Teile wie das Hauptgebäude"]
+    undefined Styles() {
+        var models = new List<Raser.RoofModel>()
+        // ein Siedlungshaus (6 m Traufe), ein Zeilenbau (40 x 10 m, 11 m), ein Hochhaus (30 m), ein kleiner Anbau am Siedlungshaus, eine Garage
+        var small = HouseStyleTests.House("test:klein", [0.0, 0.0, 9.0, 0.0, 9.0, 8.0, 0.0, 8.0], 66.0, 70.0, "alkis=31001_1000")
+        var row = HouseStyleTests.House("test:zeile", [20.0, 0.0, 60.0, 0.0, 60.0, 10.0, 20.0, 10.0], 71.0, 74.0, "alkis=31001_1000")
+        var high = HouseStyleTests.House("test:hoch", [80.0, 0.0, 100.0, 0.0, 100.0, 20.0, 80.0, 20.0], 90.0, 90.0, "alkis=31001_1000")
+        high.roofType = Raser.RoofType.Flat
+        var part = HouseStyleTests.House("test:anbau", [9.0, 2.0, 12.0, 2.0, 12.0, 6.0, 9.0, 6.0], 63.0, 63.0, "alkis=31001_1000")
+        part.roofType = Raser.RoofType.Flat
+        var garage = HouseStyleTests.House("test:garage", [0.0, 20.0, 3.0, 20.0, 3.0, 26.0, 0.0, 26.0], 62.5, 62.5, "alkis=31001_2463")
+        garage.roofType = Raser.RoofType.Flat
+        models.Add(new Raser.RoofModel(small, 1))
+        models.Add(new Raser.RoofModel(row, 1))
+        models.Add(new Raser.RoofModel(high, 1))
+        models.Add(new Raser.RoofModel(part, 1))
+        models.Add(new Raser.RoofModel(garage, 1))
+        Raser.HouseStyle.Assign(models, 376000.0, 5705000.0, 1)
+        Testing.Assert.AreEqual(Raser.HouseStyle.Small, models[0].houseType)
+        Testing.Assert.AreEqual(Raser.HouseStyle.Row, models[1].houseType)
+        Testing.Assert.AreEqual(Raser.HouseStyle.High, models[2].houseType)
+        Testing.Assert.AreEqual(Raser.HouseStyle.Shed, models[4].houseType)
+        // der Anbau sieht aus wie das Haus, an das er stößt
+        Testing.Assert.AreEqual(models[0].wallColor, models[3].wallColor)
+        Testing.Assert.AreEqual(models[0].frameColor, models[3].frameColor)
+        // flache Dächer bleiben flach, Steildächer haben eine Ziegel- oder Schieferfarbe mit Kachel
+        Testing.Assert.AreEqual(Raser.Palette.RoofFlat, Raser.Palette.BaseOf(models[2].roofColor))
+        Testing.Assert.IsTrue(Raser.Palette.BaseOf(models[0].roofColor) != Raser.Palette.RoofFlat)
+        // jede Wand- und Dachfarbe ist benannt (hat eine Kachel im Atlas) und hat ein passendes Material
+        foreach (m in models) {
+            int w = Raser.Palette.BaseOf(m.wallColor)
+            Testing.Assert.IsTrue((w > 0 && w < 32) || Raser.Palette.IsFacade(w))
+            Testing.Assert.IsTrue(Raser.Materials.IsSolid(m.wallMaterial))
+            Testing.Assert.IsFalse(Raser.Materials.table[m.wallMaterial].transparent)
+        }
+        // stabil: dieselbe Wahl in einer anderen Reihenfolge (jede Kachel wählt für sich)
+        var again = new List<Raser.RoofModel>()
+        again.Add(new Raser.RoofModel(row, 1))
+        again.Add(new Raser.RoofModel(small, 1))
+        Raser.HouseStyle.Assign(again, 376000.0, 5705000.0, 1)
+        Testing.Assert.AreEqual(models[1].wallColor, again[0].wallColor)
+        Testing.Assert.AreEqual(models[1].roofColor, again[0].roofColor)
+        Testing.Assert.AreEqual(models[0].wallColor, again[1].wallColor)
+        // Häuser derselben Art in derselben Gegend teilen das Dach der Siedlung (Zeilenbau: ein Dach für alle)
+        var row2 = HouseStyleTests.House("test:zeile2", [20.0, 20.0, 60.0, 20.0, 60.0, 30.0, 20.0, 30.0], 71.0, 74.0, "alkis=31001_1000")
+        again.Add(new Raser.RoofModel(row2, 1))
+        Raser.HouseStyle.Assign(again, 376000.0, 5705000.0, 1)
+        Testing.Assert.AreEqual(Raser.Palette.BaseOf(again[0].roofColor), Raser.Palette.BaseOf(again[2].roofColor))
     }
 }

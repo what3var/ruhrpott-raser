@@ -28,6 +28,7 @@ namespace Raser {
                 if (b.footprint == undefined || b.footprint.length < 6 || b.ridge <= b.ground) { continue }
                 this.models.Add(new Raser.RoofModel(b, seed))
             }
+            Raser.HouseStyle.Assign(this.models, tile.key.x * 256.0, tile.key.y * 256.0, seed)
             this.areaBoxes = new List<Box2>()
             foreach (a in tile.data.areas) { this.areaBoxes.Add(Raser.Box2.Of(a.ring)) }
             this.roadBoxes = new List<Box2>()
@@ -346,8 +347,11 @@ namespace Raser {
                 if (kind == Raser.Facade.Lancet) {
                     int tones[] = [Raser.Palette.StainedBlue, Raser.Palette.StainedRed, Raser.Palette.StainedAmber, Raser.Palette.StainedBlue]
                     color = tones[slot % 4]
-                } else if (kind == Raser.Facade.Portal || kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
+                } else if (kind == Raser.Facade.Portal) {
                     color = Raser.Palette.Wood + 64
+                    material = Raser.Material.Wood!int
+                } else if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
+                    color = m.doorColor
                     material = Raser.Material.Wood!int
                 } else if (kind == Raser.Facade.Louvre) {
                     color = Raser.Palette.Wood + 96
@@ -363,7 +367,103 @@ namespace Raser {
                     if (Raser.Props.Rand(m.building.id, slot, storey) < chance) { color = Raser.Palette.WindowLit }
                 }
                 part.Quad(ax + ox, ay + oy, z0, bx + ox, by + oy, z0, bx + ox, by + oy, z1, ax + ox, ay + oy, z1, nx, ny, 0.0, color, Raser.Material.Concrete!int)
+                if (m.balconyColor != 0 && kind == Raser.Facade.Window && Raser.FarMesher.HasBalcony(m, slot, storey)) {
+                    Raser.FarMesher.Balcony(part, ax, ay, bx, by, dx / len, dy / len, nx, ny, z0 - 1.0, m.balconyColor, true)
+                }
             }
+        }
+
+        // Hat das Fenster (Platz slot = Lauf * 4096 + Nummer, Geschoss) einen Balkon davor? Ab dem ersten Obergeschoss, auf Läufen ab 8 m mit
+        // mindestens drei Fenstern jedes dritte (das zweite, fünfte ...), in allen Geschossen übereinander; Hochhäuser jedes zweite.
+        static defined bool HasBalcony(RoofModel m, defined int slot, defined int storey) {
+            if (storey < 1 || m.facade == undefined) { return false }
+            int r = slot / 4096
+            int i = slot % 4096
+            if (r >= m.facade.runs.Count) { return false }
+            var fr = m.facade.runs[r]
+            if (fr.length < 8.0 || fr.upper.Count < 3) { return false }
+            // Zeilen und Altbauten: zur Gartenseite, wenn es eine gibt (sonst überall)
+            if (m.houseType != Raser.HouseStyle.High && fr.street) {
+                foreach (o in m.facade.runs) {
+                    if (!o.street && o.length >= 8.0 && o.upper.Count >= 3) { return false }
+                }
+            }
+            if (m.houseType == Raser.HouseStyle.High) { return i % 2 == 1 }
+            return i % 3 == 1
+        }
+
+        // Eine Fensterbank unter der Scheibe von a nach b (die Scheibe sitzt 20 cm in der Laibung; Normale n nach außen).
+        static undefined Sill(MeshPart part, defined float ax, defined float ay, defined float bx, defined float by, defined float ux, defined float uy, defined float nx, defined float ny, defined float z0, defined int color) {
+            float px = ax - ux * 0.06
+            float py = ay - uy * 0.06
+            float qx = bx + ux * 0.06
+            float qy = by + uy * 0.06
+            float ox = nx * 0.26
+            float oy = ny * 0.26
+            float zb = z0 - 0.05
+            int mat = Raser.Material.Concrete!int
+            part.Quad(px, py, z0, qx, qy, z0, qx + ox, qy + oy, z0, px + ox, py + oy, z0, 0.0, 0.0, 1.0, color, mat)
+            part.Quad(px + ox, py + oy, zb, qx + ox, qy + oy, zb, qx + ox, qy + oy, z0, px + ox, py + oy, z0, nx, ny, 0.0, color, mat)
+            part.Quad(px, py, zb, qx, qy, zb, qx + ox, qy + oy, zb, px + ox, py + oy, zb, 0.0, 0.0, -1.0, color, mat)
+            part.Quad(px, py, zb, px + ox, py + oy, zb, px + ox, py + oy, z0, px, py, z0, -ux, -uy, 0.0, color, mat)
+            part.Quad(qx, qy, zb, qx + ox, qy + oy, zb, qx + ox, qy + oy, z0, qx, qy, z0, ux, uy, 0.0, color, mat)
+        }
+
+        // Fensterläden links und rechts der Öffnung, aufgeklappt auf der Wand (je die halbe Breite, 3 cm vor der Wand), mit zwei dunkleren Querleisten.
+        static undefined Shutters(MeshPart part, defined float ax, defined float ay, defined float bx, defined float by, defined float ux, defined float uy, defined float nx, defined float ny, defined float z0, defined float z1, defined float len, defined int color) {
+            float ox = nx * 0.23
+            float oy = ny * 0.23
+            float w = len / 2.0
+            int mat = Raser.Material.Wood!int
+            for (int side = 0; side < 2; side++) {
+                float sx = ax - ux * (w + 0.02) + ox
+                float sy = ay - uy * (w + 0.02) + oy
+                if (side == 1) {
+                    sx = bx + ux * 0.02 + ox
+                    sy = by + uy * 0.02 + oy
+                }
+                part.Quad(sx, sy, z0, sx + ux * w, sy + uy * w, z0, sx + ux * w, sy + uy * w, z1, sx, sy, z1, nx, ny, 0.0, color, mat)
+                for (int k = 1; k < 3; k++) {
+                    float zq = z0 + (z1 - z0) * k / 3.0
+                    float ex = sx + nx * 0.01
+                    float ey = sy + ny * 0.01
+                    part.Quad(ex, ey, zq - 0.03, ex + ux * w, ey + uy * w, zq - 0.03, ex + ux * w, ey + uy * w, zq + 0.03, ex, ey, zq + 0.03, nx, ny, 0.0, Raser.Palette.Metal + 96, mat)
+                }
+            }
+        }
+
+        // Ein Balkon vor der Scheibe von a nach b auf der Höhe fl (Boden des Geschosses): Platte aus Beton (1,2 m tief, 50 cm breiter als das
+        // Fenster auf jeder Seite) und eine geschlossene Brüstung (1 m hoch) in der Farbe color. simple: nur die Seiten, die man von weitem sieht.
+        static undefined Balcony(MeshPart part, defined float ax, defined float ay, defined float bx, defined float by, defined float ux, defined float uy, defined float nx, defined float ny, defined float fl, defined int color, defined bool simple) {
+            float px = ax - ux * 0.5 + nx * 0.2
+            float py = ay - uy * 0.5 + ny * 0.2
+            float qx = bx + ux * 0.5 + nx * 0.2
+            float qy = by + uy * 0.5 + ny * 0.2
+            float d = 1.2
+            float ox = nx * d
+            float oy = ny * d
+            float t = 0.08
+            float zs = fl - 0.15
+            float zt = fl + 0.05
+            float zr = fl + 1.0
+            int slab = Raser.Palette.Concrete
+            int mat = Raser.Material.Concrete!int
+            // die Platte: unten und vorn (oben liegt die Brüstung bzw. man sieht sie nicht)
+            part.Quad(px, py, zs, qx, qy, zs, qx + ox, qy + oy, zs, px + ox, py + oy, zs, 0.0, 0.0, -1.0, slab, mat)
+            part.Quad(px + ox, py + oy, zs, qx + ox, qy + oy, zs, qx + ox, qy + oy, zt, px + ox, py + oy, zt, nx, ny, 0.0, slab, mat)
+            // die Brüstung: vorn, oben, die Seiten außen
+            part.Quad(px + ox, py + oy, zt, qx + ox, qy + oy, zt, qx + ox, qy + oy, zr, px + ox, py + oy, zr, nx, ny, 0.0, color, mat)
+            part.Quad(px + ox - nx * t, py + oy - ny * t, zr, qx + ox - nx * t, qy + oy - ny * t, zr, qx + ox, qy + oy, zr, px + ox, py + oy, zr, 0.0, 0.0, 1.0, color, mat)
+            part.Quad(px, py, zs, px + ox, py + oy, zs, px + ox, py + oy, zr, px, py, zr, -ux, -uy, 0.0, color, mat)
+            part.Quad(qx, qy, zs, qx + ox, qy + oy, zs, qx + ox, qy + oy, zr, qx, qy, zr, ux, uy, 0.0, color, mat)
+            if (simple) { return }
+            // innen: die Platte oben, die Brüstung innen und die Seiten innen mit ihrer Oberkante
+            part.Quad(px + ux * t, py + uy * t, zt, qx - ux * t, qy - uy * t, zt, qx - ux * t + ox - nx * t, qy - uy * t + oy - ny * t, zt, px + ux * t + ox - nx * t, py + uy * t + oy - ny * t, zt, 0.0, 0.0, 1.0, slab, mat)
+            part.Quad(px + ox - nx * t, py + oy - ny * t, zt, qx + ox - nx * t, qy + oy - ny * t, zt, qx + ox - nx * t, qy + oy - ny * t, zr, px + ox - nx * t, py + oy - ny * t, zr, -nx, -ny, 0.0, color, mat)
+            part.Quad(px + ux * t, py + uy * t, zt, px + ux * t + ox, py + uy * t + oy, zt, px + ux * t + ox, py + uy * t + oy, zr, px + ux * t, py + uy * t, zr, ux, uy, 0.0, color, mat)
+            part.Quad(qx - ux * t, qy - uy * t, zt, qx - ux * t + ox, qy - uy * t + oy, zt, qx - ux * t + ox, qy - uy * t + oy, zr, qx - ux * t, qy - uy * t, zr, -ux, -uy, 0.0, color, mat)
+            part.Quad(px, py, zr, px + ux * t, py + uy * t, zr, px + ux * t + ox, py + uy * t + oy, zr, px + ox, py + oy, zr, 0.0, 0.0, 1.0, color, mat)
+            part.Quad(qx - ux * t, qy - uy * t, zr, qx, qy, zr, qx + ox, qy + oy, zr, qx - ux * t + ox, qy - uy * t + oy, zr, 0.0, 0.0, 1.0, color, mat)
         }
 
         // Die eingehängten Bogenstücke der Gebäude im Block (nahe Stufe): über Türen, Kirchenfenstern und Portalen (Raser.Facade.Arches, 40 cm tief
@@ -526,10 +626,13 @@ namespace Raser {
                         continue
                     }
                     if (kind == Raser.Facade.Door || kind == Raser.Facade.RaisedDoor) {
-                        // das Türblatt (Holz, mit Rahmen in Wandfarbe dunkler), darüber das Oberlicht im Bogen
-                        opaque.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, Raser.Palette.Wood + 64, Raser.Material.Wood!int)
+                        // das Türblatt (Farbe je Haus: Holz, Zechengrün, Ochsenblut ...), darin eine Füllung, darüber das Oberlicht im Bogen
+                        int dc = m.doorColor
+                        int inner = Raser.Palette.Dirty(dc, 1)
+                        if (dc == Raser.Palette.Wood + 64) { inner = Raser.Palette.Wood + 32 }
+                        opaque.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, dc, Raser.Material.Wood!int)
                         float inset = 0.12
-                        opaque.Quad(ax + ux * inset + nx * 0.03, ay + uy * inset + ny * 0.03, z0 + inset, bx - ux * inset + nx * 0.03, by - uy * inset + ny * 0.03, z0 + inset, bx - ux * inset + nx * 0.03, by - uy * inset + ny * 0.03, z1 - inset, ax + ux * inset + nx * 0.03, ay + uy * inset + ny * 0.03, z1 - inset, nx, ny, 0.0, Raser.Palette.Wood + 32, Raser.Material.Wood!int)
+                        opaque.Quad(ax + ux * inset + nx * 0.03, ay + uy * inset + ny * 0.03, z0 + inset, bx - ux * inset + nx * 0.03, by - uy * inset + ny * 0.03, z0 + inset, bx - ux * inset + nx * 0.03, by - uy * inset + ny * 0.03, z1 - inset, ax + ux * inset + nx * 0.03, ay + uy * inset + ny * 0.03, z1 - inset, nx, ny, 0.0, inner, Raser.Material.Wood!int)
                         glass.Quad(ax, ay, z1, bx, by, z1, bx, by, z1 + 0.4, ax, ay, z1 + 0.4, nx, ny, 0.0, Raser.Palette.Glass, Raser.Material.Glass!int)
                         continue
                     }
@@ -547,8 +650,16 @@ namespace Raser {
                     int fc = Raser.Palette.Metal + 64
                     int fm = Raser.Material.Metal!int
                     if (kind == Raser.Facade.Window || kind == Raser.Facade.Large) {
-                        fc = Raser.Palette.Plaster
+                        fc = m.frameColor
                         fm = Raser.Material.Wood!int
+                    }
+                    // Fensterbank (5 cm dick, 6 cm vor der Wand, seitlich 6 cm in die Laibung), Fensterläden, Balkone
+                    if (m.sillColor != 0 && (kind == Raser.Facade.Window || kind == Raser.Facade.Large || kind == Raser.Facade.Ribbon)) {
+                        Raser.FarMesher.Sill(opaque, ax, ay, bx, by, ux, uy, nx, ny, z0, m.sillColor)
+                    }
+                    if (m.shutterColor != 0 && kind == Raser.Facade.Window) { Raser.FarMesher.Shutters(opaque, ax, ay, bx, by, ux, uy, nx, ny, z0, z1, len, m.shutterColor) }
+                    if (m.balconyColor != 0 && kind == Raser.Facade.Window && Raser.FarMesher.HasBalcony(m, slot, storey)) {
+                        Raser.FarMesher.Balcony(opaque, ax, ay, bx, by, ux, uy, nx, ny, z0 - 1.0, m.balconyColor, false)
                     }
                     float w = 0.1
                     float ox = nx * 0.02
@@ -964,7 +1075,7 @@ namespace Raser {
             int n = fp.length / 2
             bool ccw = Raser.Geo.Area(fp) > 0.0
             float g = b.ground
-            int wall = b.wall!int
+            int wall = m.wallMaterial
             for (int k = 0; k < n; k++) {
                 int ia = k
                 int ib = (k + 1) % n
@@ -998,6 +1109,18 @@ namespace Raser {
                     float tp = m.RoofAt(px - onx * 0.05, py - ony * 0.05)
                     float tq = m.RoofAt(qx - onx * 0.05, qy - ony * 0.05)
                     part.Quad(px, py, g, qx, qy, g, qx, qy, tq, px, py, tp, onx, ony, 0.0, m.wallColor, wall)
+                }
+                // Sockel und Gesims wie in den Voxeln (Raser.HouseStyle), knapp vor der Wand
+                float fl = m.groundVoxel * 0.2
+                float ex = onx * 0.02
+                float ey = ony * 0.02
+                if (m.plinthVoxels > 0) {
+                    float zp = fl + m.plinthVoxels * 0.2
+                    part.Quad(ax + ex, ay + ey, g - 0.4, bx + ex, by + ey, g - 0.4, bx + ex, by + ey, zp, ax + ex, ay + ey, zp, onx, ony, 0.0, m.plinthColor, wall)
+                }
+                if (m.trimColor != 0 && b.eaves > fl + 3.4) {
+                    float zt = fl + Raser.Voxelizer.StoreyHeight
+                    part.Quad(ax + ex, ay + ey, zt, bx + ex, by + ey, zt, bx + ex, by + ey, zt + 0.2, ax + ex, ay + ey, zt + 0.2, onx, ony, 0.0, m.trimColor, wall)
                 }
             }
             Raser.FarMesher.Roof(part, m)
