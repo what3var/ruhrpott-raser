@@ -50,7 +50,9 @@ namespace Raser {
     }
 
     // Die Palette: 256 Farben (0xRRGGBB). Die ersten 32 Einträge sind benannt; 32 .. 127 sind dieselben Farben in Dreckstufen 1 .. 3 (Index + 32 *
-    // Stufe: dunkler, grauer - das Muster der Textur bringt Flecken und Laufspuren dazu, Raser.Atlas); der Rest ist frei für Pinsel und Spieler.
+    // Stufe: dunkler, grauer - das Muster der Textur bringt Flecken und Laufspuren dazu, Raser.Atlas).
+    // Fassaden und Dächer (Generator 30) in zwei weiteren Bänken: 128 .. 159 und 180 .. 255, je Farbe vier Einträge hintereinander (Grundfarbe,
+    // dann Dreckstufen 1 .. 3). 160 .. 179 sind Schilder, Licht und Türen ohne Kachel; frei bleiben 248 .. 255.
     class Palette {
         static readonly defined int None = 0
         static readonly defined int Soil = 1
@@ -102,6 +104,35 @@ namespace Raser {
         static readonly defined int StainedRed = 174
         static readonly defined int StainedAmber = 175
         static readonly defined int ClockFace = 176       // Zifferblatt einer Turmuhr
+        static readonly defined int DoorGreen = 177       // Haustüren und Fensterläden (flach): Zechengrün, Ochsenblut, Taubenblau
+        static readonly defined int DoorRed = 178
+        static readonly defined int DoorBlue = 179
+        // Fassaden und Dächer (je vier Einträge: + 1 .. 3 die Dreckstufen)
+        static readonly defined int RoofOrange = 128      // neue Tonziegel, hell rotorange (Zechensiedlungen)
+        static readonly defined int RoofAnthracite = 132  // Betondachstein anthrazit
+        static readonly defined int RoofBrown = 136       // Ziegel braun
+        static readonly defined int RoofSlate = 140       // Schieferdach (kleine Schuppen)
+        static readonly defined int Sandstone = 144       // Ruhrsandstein, Quader (öffentliche Bauten, Sockel)
+        static readonly defined int StoneGrey = 148       // grauer Werkstein (Rathaus)
+        static readonly defined int Timber = 152          // Fachwerk: dunkle Balken
+        static readonly defined int Clinker = 156         // dunkler Klinker (Sockel)
+        static readonly defined int PlasterBeige = 180    // Putz sandbeige
+        static readonly defined int PlasterOchre = 184    // Putz ocker
+        static readonly defined int PlasterGreen = 188    // Putz pastellgrün (50er)
+        static readonly defined int PlasterPink = 192     // Putz lachs/rosa
+        static readonly defined int PlasterBlue = 196     // Putz hellblau-grau
+        static readonly defined int PlasterTaupe = 200    // Kratzputz graubraun (alte Zechenhäuser)
+        static readonly defined int PlasterSilver = 204   // Putz hellgrau
+        static readonly defined int BrickYellow = 208     // gelber Ziegel
+        static readonly defined int BrickBrown = 212      // brauner Klinker (60er)
+        static readonly defined int BrickCross = 216      // dunkelroter Ziegel im Kreuzverband, Binder dunkler (Gründerzeit)
+        static readonly defined int Slate = 220           // Schieferverkleidung (Giebel, Wetterseite)
+        static readonly defined int Eternit = 224         // Faserzementplatten grau
+        static readonly defined int WashedConcrete = 228  // Waschbeton (Platten mit Kieseln)
+        static readonly defined int ConcretePanel = 232   // helle Betonplatten (Hochhaus)
+        static readonly defined int CurtainDark = 236     // Vorhangfassade aus dunklem Glas und Metall (70er Rathaus)
+        static readonly defined int MetalRibbed = 240     // Trapezblech hellgrau (Hallen)
+        static readonly defined int MetalBlue = 244       // Trapezblech blaugrau
 
         static int colors[] = Raser.Palette.Build()
 
@@ -157,11 +188,44 @@ namespace Raser {
             c[174] = 0x8C3A3A
             c[175] = 0xB08A3C
             c[176] = 0xEDE8D8
+            c[177] = 0x2E4A34
+            c[178] = 0x6A2620
+            c[179] = 0x2C3C58
+            c[128] = 0xA8452E
+            c[132] = 0x3A3B3E
+            c[136] = 0x5E3A2A
+            c[140] = 0x434851
+            c[144] = 0xB9A27A
+            c[148] = 0x9C978C
+            c[152] = 0x3B2B22
+            c[156] = 0x553730
+            c[180] = 0xDCCDAA
+            c[184] = 0xD4AE66
+            c[188] = 0xBCC9A4
+            c[192] = 0xDDB4A4
+            c[196] = 0xB3C3CE
+            c[200] = 0x9E8C74
+            c[204] = 0xCBC9C2
+            c[208] = 0xC7A666
+            c[212] = 0x6E4A36
+            c[216] = 0x843426
+            c[220] = 0x3F444C
+            c[224] = 0x8D9193
+            c[228] = 0xA89C88
+            c[232] = 0xC6C2B8
+            c[236] = 0x3A3834
+            c[240] = 0xA3A8AA
+            c[244] = 0x5E7182
             for (int level = 1; level < 4; level++) {
                 for (int i = 1; i < 32; i++) { c[i + 32 * level] = Raser.Palette.Soiled(c[i], level) }
+                for (int i = 128; i < 160; i = i + 4) { c[i + level] = Raser.Palette.Soiled(c[i], level) }
+                for (int i = 180; i < 248; i = i + 4) { c[i + level] = Raser.Palette.Soiled(c[i], level) }
             }
             return c
         }
+
+        // Liegt c in einer der Fassaden-Bänke (128 .. 159, 180 .. 247)?
+        static defined bool IsFacade(defined int c) { return (c >= 128 && c < 160) || (c >= 180 && c < 248) }
 
         static defined int Rgb(defined int index) { return Raser.Palette.colors[index & 255] }
 
@@ -175,19 +239,24 @@ namespace Raser {
             return (r << 16) | (gr << 8) | b
         }
 
-        // Der Index einer benannten Farbe (unter 32) in der Dreckstufe level; andere Farben bleiben.
+        // Der Index einer benannten Farbe (unter 32 oder aus einer Fassaden-Bank) in der Dreckstufe level (dazu gezählt, höchstens 3); andere
+        // Farben bleiben.
         static defined int Dirty(defined int index, defined int level) {
-            if (index <= 0 || index >= 32 || level <= 0) { return index }
-            return index + 32 * Math.Min(level, 3)
+            if (level <= 0) { return index }
+            if (Raser.Palette.IsFacade(index)) { return Raser.Palette.BaseOf(index) + Math.Min(Raser.Palette.DirtOf(index) + level, 3) }
+            if (index <= 0 || index >= 128 || index % 32 == 0) { return index }
+            return index % 32 + 32 * Math.Min(index / 32 + level, 3)
         }
 
         // Die benannte Grundfarbe und die Dreckstufe eines Index.
         static defined int BaseOf(defined int index) {
             if (index < 128) { return index % 32 }
+            if (Raser.Palette.IsFacade(index)) { return index - index % 4 }
             return index
         }
         static defined int DirtOf(defined int index) {
             if (index < 128) { return index / 32 }
+            if (Raser.Palette.IsFacade(index)) { return index % 4 }
             return 0
         }
     }
