@@ -6,6 +6,7 @@
 //                                                       rückwärts), dann ein Bild; --look 30 dreht die Kamera, --pitch 20 hebt sie (Grad),
 //                                                       --sun 1 / --moon 1 blickt zur Sonne bzw. zum Mond; --no-sky 1: ohne Himmel (zum Messen)
 //   --date 2026-07-01 (auch 07-01): das Jahr zählt nur für den Mond
+//   --traffic 24 --people 30: höchstens so viele Autos und Fußgänger um den Spieler (0: keine; npcs.fire), --warm s: vorher s Sekunden Verkehr
 //
 // W/S oder Pfeile: Gas und Bremse (im Stand: Rückwärtsgang), A/D: lenken, Leertaste: Handbremse, C: Kamera (hinter dem Wagen / Haube),
 // E: aussteigen (im Stand) und am Wagen wieder einsteigen; zu Fuß: W/S gehen, A/D drehen, Umschalt rennen, C: aus den Augen des Spielers.
@@ -21,6 +22,7 @@
 #import "raser.world"
 #import "raser.mesh"
 #import "raser.client"
+#import "raser.traffic"
 #import "raser.sim"
 
 // Das Auto in der Szene: Karosserie, Kabine, vier Räder, Lichter - aus Quadern, an Lage und Richtung des Fahrzeugs gesetzt.
@@ -368,6 +370,9 @@ class Game {
         bool onFoot = false
         Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, 0.0)
         view.Fill(car.east, car.north)
+        // der Verkehr: Autos und Fußgänger (npcs.fire)
+        var npcs = new TrafficView(scene, options)
+        npcs.Warm(options.Get("warm", "0").ToFloat(), car, walker, vehicles, obstacles, terrain, view, weather.wetness)
         // Inventar, Gegenstände am Boden und Karte (items.fire)
         var gear = new Gear(scene, obstacles, car)
 
@@ -460,6 +465,7 @@ class Game {
                     if (Game.Advance(car, vehicles, obstacles, dt, pilot[0], pilot[1], pilot[2], false, weather.wetness)) { hits++ }
                     Game.Parked(car, vehicles, obstacles, dt, weather.wetness)
                 }
+                npcs.Update(dt, car, walker, false, vehicles, obstacles, terrain, view, weather.wetness)
                 way = way + Math.Sqrt((car.east - e0) * (car.east - e0) + (car.north - n0) * (car.north - n0))
                 float diff = car.heading - camHeading
                 camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
@@ -492,6 +498,8 @@ class Game {
             }
             atmosphere.Render()
             Game.Hud(hud, ink, shade, car, weather, height, false, "")
+            npcs.Draw(hud, ink, shade, width)
+            print(npcs.Report())
             float seconds = (DateTime.Now.Ticks - began) / 10000000.0
             print("Fahrt " + Math.Round(seconds) + " s, " + Math.Round(way) + " m, " + frames + " Bilder (" + (Math.Round(frames / seconds * 10.0) / 10.0) + " je s, längstes " + (worst / 10000) + " ms), " + hits + " Aufpralle")
             print("ohne nahe Stufe unter dem Wagen: " + noNear + " Bilder, ohne jede Stufe 60 m voraus: " + noAhead + ", 150 m voraus: " + noFar + ", ohne nahe Stufe 30 m voraus: " + noNearAhead + " Bilder; gebaut " + view.nearBuilt + " nah, " + view.farBuilt + " fern, verworfen " + view.dropped + ", zu spät " + view.late + ", Kacheln freigegeben " + trimmed + ", geladen " + obstacles.tiles.Count + "; ein naher Block im Worker im Mittel " + (view.nearTicks / Math.Max(1, view.nearBuilt) / 10000) + " ms (mit Modellen), ein ferner " + (view.farTicks / Math.Max(1, view.farBuilt) / 10000) + " ms")
@@ -519,6 +527,7 @@ class Game {
             for (float t = 0.0; t < auto; t = t + dt) {
                 if (Game.Advance(car, vehicles, obstacles, dt, 1.0, 0.0, steer, back, weather.wetness)) { hits++ }
                 Game.Parked(car, vehicles, obstacles, dt, weather.wetness)
+                npcs.Update(dt, car, walker, false, vehicles, obstacles, terrain, view, weather.wetness)
                 top = Math.Max(top, car.speed)
             }
             camHeading = car.heading + options.Get("look", "0").ToFloat()
@@ -558,6 +567,9 @@ class Game {
                 print("Mond: Höhe " + weather.moonElevation + "°, Azimut " + weather.moonAzimuth + "°, beleuchtet " + weather.moonLit)
             }
             if (pitch != 0.0) { cam.RotationX = cam.RotationX + pitch * 1deg }
+            // --overview 40: die Kamera so hoch über dem Wagen, Blick schräg hinab (der Verkehr von oben)
+            float over = options.Get("overview", "0").ToFloat()
+            if (over > 0.0) { npcs.Overview(cam, terrain, view, car.east, car.north, car.heading + options.Get("look", "0").ToFloat(), over) }
             view.lead = Math.Abs(car.speed) * 2.5
             view.Fill(car.east, car.north)
             atmosphere.Update(car.east, car.north, 0.0)
@@ -566,8 +578,11 @@ class Game {
                 for (int k = 0; k < 30; k++) { scene.Advance(0.1s) }
             }
             gear.Update(walker, onFoot, car, person, terrain, view, weather)
+            npcs.Update(0.0, car, walker, onFoot, vehicles, obstacles, terrain, view, weather.wetness)
             atmosphere.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
+            npcs.Draw(hud, ink, shade, width)
+            print(npcs.Report())
             gear.Shot(options, hud, fb, width, height, car, walker, onFoot, vehicles)
             print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Tank " + Math.Round(car.fuel * 1000.0) / 10.0 + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m, " + Math.Round(chase.swing) + "°")
             for (int i = 1; i < vehicles.Count; i++) {
@@ -727,7 +742,10 @@ class Game {
             // die abgestellten Fahrzeuge rollen aus
             Raser.Vehicle driven = car
             if (onFoot) { driven = undefined }
-            if (!authority) { Game.Parked(driven, vehicles, obstacles, dt, weather.wetness) }
+            if (!authority) { 
+              Game.Parked(driven, vehicles, obstacles, dt, weather.wetness) 
+              npcs.Update(dt, car, walker, onFoot, vehicles, obstacles, terrain, view, weather.wetness)
+            }
             for (int i = 0; i < vehicles.Count; i++) {
                 models[i].beam.Enabled = weather.lampsOn && !onFoot && vehicles[i] == car
             }
@@ -744,6 +762,7 @@ class Game {
             scene.Advance(dt * 1s)
             atmosphere.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
+            npcs.Draw(hud, ink, shade, width)
             gear.Draw(hud, width, height, car, walker, onFoot, vehicles)
             online.Draw(hud, width, height)
         }

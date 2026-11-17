@@ -1,0 +1,181 @@
+// Raser.Traffic: der Zustand eines NPCs, wie ihn die Darstellung braucht - aus der eigenen Simulation (offline) oder aus den Snapshots des
+// Servers (Mehrspieler). Die Ansicht im Spiel liest nur diesen Zustand, nie die Simulation selbst.
+//
+// Je NPC: ID (global eindeutig je Simulation), Art (0 Auto, 1 Transporter, 2 Fußgänger), Aussehen (Auto: Farbe; Fußgänger: Hemd, Hose, Haare,
+// Haut, Größe), Lage (Ost, Nord), Richtung, Tempo, Zustand (0 normal, 1 steht/wartet, 2 Unfall, 3 kaputt, 4 liegt, 5 springt zur Seite),
+// hupt. Im Netz (Encode/Decode, wie das Spielprotokoll: Raser.ByteWriter, Varints, ZigZag): Lage in cm (UTM 32), Richtung in 1/100 Grad,
+// Tempo in cm/s, Farben als 0xRRGGBB, Größe in cm - ein Auto etwa 16 Byte, ein Fußgänger etwa 24.
+#import "raser.core"
+
+namespace Raser {
+    class NpcState {
+        defined int id
+        defined int kind              // 0 Auto, 1 Transporter, 2 Fußgänger
+        defined int color             // Auto: Lack; Fußgänger: Hemd (0xRRGGBB)
+        defined int legs              // Fußgänger: Hose
+        defined int hair
+        defined int skin
+        defined float height          // Fußgänger: Größe (m)
+        defined float east
+        defined float north
+        defined float heading         // Grad (vorwärts ist (-sin, cos), wie Raser.Vehicle)
+        defined float speed           // m/s
+        defined int state             // 0 normal, 1 steht/wartet, 2 Unfall, 3 kaputt, 4 liegt, 5 springt zur Seite
+        defined bool honk
+        defined float stride          // Fußgänger: der gelaufene Weg (m; für die Schritte - der Client zählt ihn selbst weiter)
+
+        static readonly defined int Car = 0
+        static readonly defined int Van = 1
+        static readonly defined int Person = 2
+
+        defined bool IsPerson { get { return this.kind == 2 } }
+        string Model { get { if (this.kind == 1) { return "transporter" } return "auto" } }
+
+        undefined Set(NpcState o) {
+            this.id = o.id
+            this.kind = o.kind
+            this.color = o.color
+            this.legs = o.legs
+            this.hair = o.hair
+            this.skin = o.skin
+            this.height = o.height
+            this.east = o.east
+            this.north = o.north
+            this.heading = o.heading
+            this.speed = o.speed
+            this.state = o.state
+            this.honk = o.honk
+            this.stride = o.stride
+        }
+
+        undefined Encode(ByteWriter w) {
+            w.Varint(this.id)
+            w.Byte(this.kind + this.state * 4 + (this.honk ? 128 : 0))
+            w.SignedVarint(Math.Round(this.east * 100.0)!int)
+            w.SignedVarint(Math.Round(this.north * 100.0)!int)
+            float h = this.heading % 360.0
+            if (h < 0.0) { h = h + 360.0 }
+            w.Varint(Math.Round(h * 100.0)!int)
+            w.SignedVarint(Math.Round(this.speed * 100.0)!int)
+            w.Varint(this.color)
+            if (this.kind == 2) {
+                w.Varint(this.legs)
+                w.Varint(this.hair)
+                w.Varint(this.skin)
+                w.Varint(Math.Round(this.height * 100.0)!int)
+            }
+        }
+
+        static NpcState Decode(ByteReader r) {
+            var s = new Raser.NpcState()
+            s.id = r.Varint()
+            int b = r.Byte()
+            s.kind = b % 4
+            s.state = (b / 4) % 32
+            s.honk = b >= 128
+            s.east = r.SignedVarint() / 100.0
+            s.north = r.SignedVarint() / 100.0
+            s.heading = r.Varint() / 100.0
+            s.speed = r.SignedVarint() / 100.0
+            s.color = r.Varint()
+            if (s.kind == 2) {
+                s.legs = r.Varint()
+                s.hair = r.Varint()
+                s.skin = r.Varint()
+                s.height = r.Varint() / 100.0
+            }
+            return s
+        }
+    }
+
+    // Auf dem Client im Mehrspieler: die NPCs aus den Snapshots des Servers, zwischen zwei Snapshots gleitend (Lage linear, Richtung auf dem
+    // kürzeren Weg). Push(zeit, liste) mit der Serverzeit des Snapshots, Sample(zeit, out) für die Zeit des Bildes (etwa 100 ms hinter der
+    // neuesten: dann liegen meist zwei Snapshots darum). Wer im neueren fehlt, ist weg; wer neu kommt, erscheint dort. Den Schritt der
+    // Fußgänger zählt der Client aus der Bewegung selbst weiter.
+    class NpcBuffer {
+        List<NpcState> older
+        List<NpcState> newer
+        defined float olderTime
+        defined float newerTime
+        Dictionary<int, int> olderIndex
+        Dictionary<int, float> strides
+        Dictionary<int, float> lastE
+        Dictionary<int, float> lastN
+        List<NpcState> pool
+
+        construct() {
+            this.older = new List<NpcState>(Owns.Values)
+            this.newer = new List<NpcState>(Owns.Values)
+            this.olderIndex = new Dictionary<int, int>()
+            this.strides = new Dictionary<int, float>()
+            this.lastE = new Dictionary<int, float>()
+            this.lastN = new Dictionary<int, float>()
+            this.pool = new List<NpcState>(Owns.Values)
+        }
+
+        // Ein Snapshot (Serverzeit in s): der bisher neuere wird der ältere.
+        undefined Push(defined float time, List<NpcState> states) {
+            var swap = this.older
+            this.older = this.newer
+            this.newer = swap
+            this.olderTime = this.newerTime
+            this.newerTime = time
+            this.olderIndex.Clear()
+            for (int i = 0; i < this.older.Count; i++) { this.olderIndex[this.older[i].id] = i }
+            for (int i = 0; i < states.Count; i++) {
+                if (i >= this.newer.Count) { this.newer.Add(new Raser.NpcState()) }
+                this.newer[i].Set(states[i])
+            }
+            while (this.newer.Count > states.Count) { this.newer.RemoveAt(this.newer.Count - 1) }
+        }
+
+        // Die NPCs zur Zeit time nach out (die Objekte gehören dem Puffer und gelten bis zum nächsten Sample).
+        undefined Sample(defined float time, List<NpcState> out) {
+            out.Clear()
+            float span = this.newerTime - this.olderTime
+            float f = 1.0
+            if (span > 0.0001) { f = Math.Clamp((time - this.olderTime) / span, 0.0, 1.5) }
+            for (int i = 0; i < this.newer.Count; i++) {
+                if (i >= this.pool.Count) { this.pool.Add(new Raser.NpcState()) }
+                var s = this.pool[i]
+                var b = this.newer[i]
+                s.Set(b)
+                if (this.olderIndex.ContainsKey(b.id)) {
+                    var a = this.older[this.olderIndex[b.id]]
+                    s.east = a.east + (b.east - a.east) * f
+                    s.north = a.north + (b.north - a.north) * f
+                    float dh = ((b.heading - a.heading) % 360.0 + 540.0) % 360.0 - 180.0
+                    s.heading = a.heading + dh * f
+                    s.speed = a.speed + (b.speed - a.speed) * Math.Min(f, 1.0)
+                }
+                // der Schritt aus dem gegangenen Weg
+                float stride = this.strides.Get(s.id, 0.0)
+                if (this.lastE.ContainsKey(s.id)) {
+                    float de = s.east - this.lastE[s.id]
+                    float dn = s.north - this.lastN[s.id]
+                    float d = Math.Sqrt(de * de + dn * dn)
+                    if (d < 5.0) { stride = stride + d }
+                }
+                this.strides[s.id] = stride
+                this.lastE[s.id] = s.east
+                this.lastN[s.id] = s.north
+                s.stride = stride
+                out.Add(s)
+            }
+            // vergessen, wer nicht mehr da ist
+            if (this.strides.Count > out.Count * 2 + 64) {
+                var keep = new HashSet<int>()
+                foreach (s in out) { keep.Add(s.id) }
+                var gone = new List<int>()
+                foreach (pair in this.strides) {
+                    if (!keep.Contains(pair.Key)) { gone.Add(pair.Key) }
+                }
+                foreach (id in gone) {
+                    this.strides.Remove(id)
+                    this.lastE.Remove(id)
+                    this.lastN.Remove(id)
+                }
+            }
+        }
+    }
+}
