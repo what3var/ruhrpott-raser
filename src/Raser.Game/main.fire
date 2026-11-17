@@ -395,6 +395,7 @@ class Game {
         var atmosphere = new Atmosphere(weather, scene, cam, view, world)
         atmosphere.Apply()
         atmosphere.drawSky = options.Get("no-sky", "") == ""
+        if (!atmosphere.drawSky) { atmosphere.sky.Show(false) }
         var obstacles = new Obstacles(world)
 
         // die Fahrzeuge: das eigene (--vehicle auto|transporter|motorrad|fahrrad) am Start, die anderen Klassen dahinter am Rand geparkt
@@ -657,29 +658,22 @@ class Game {
                 print(shot)
             }
             if (options.Get("gpu", "") != "") { print("GPU: '" + S3D.HardwareName() + "', gezeichnet von " + cam.LastRenderer + ", Fehler: '" + S3D.HardwareError() + "', Objekte " + view.objects + ", Dreiecke " + view.triangles) }
-            // --bench-sky n: so oft die Welt und den Himmel rendern, getrennt gemessen
+            // --bench-sky n: so oft mit und ohne Himmel rendern (er ist Teil der Szene: der Unterschied ist sein Preis)
             int benchSky = options.Get("bench-sky", "0").ToInt()
             if (benchSky > 0) {
-                int worldTicks = 0
-                int skyTicks = 0
-                for (int i = 0; i < benchSky; i++) {
-                    int b0 = DateTime.Now.Ticks
-                    cam.Render()
-                    int b1 = DateTime.Now.Ticks
-                    atmosphere.sky.Follow()
-                    atmosphere.sky.Draw()
-                    skyTicks = skyTicks + (DateTime.Now.Ticks - b1)
-                    worldTicks = worldTicks + (b1 - b0)
-                }
+                int b0 = DateTime.Now.Ticks
+                for (int i = 0; i < benchSky; i++) { atmosphere.Render() }
+                int b1 = DateTime.Now.Ticks
+                atmosphere.sky.Show(false)
+                for (int i = 0; i < benchSky; i++) { cam.Render() }
                 int b2 = DateTime.Now.Ticks
-                for (int i = 0; i < benchSky; i++) { atmosphere.sky.eye.Render() }
-                int b3 = DateTime.Now.Ticks
+                atmosphere.sky.Show(true)
                 // die Texturen neu (wie nach einer Änderung des Wetters)
                 atmosphere.sky.made = ""
                 atmosphere.sky.madeClouds = ""
                 atmosphere.Apply()
-                print("Himmel neu (alle Texturen): " + ((DateTime.Now.Ticks - b3) / 10000.0) + " ms")
-                print("je Bild: Welt " + (worldTicks / benchSky / 10000.0) + " ms, Himmel " + (skyTicks / benchSky / 10000.0) + " ms (davon seine Szene " + ((b3 - b2) / benchSky / 10000.0) + " ms)")
+                print("Himmel neu (alle Texturen): " + ((DateTime.Now.Ticks - b2) / 10000.0) + " ms")
+                print("je Bild: mit Himmel " + ((b1 - b0) / benchSky / 10000.0) + " ms, ohne " + ((b2 - b1) / benchSky / 10000.0) + " ms")
             }
             view.Close()
             return 0

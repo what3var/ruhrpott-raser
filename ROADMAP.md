@@ -81,7 +81,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Ingame-Uhr in Echtzeit (deutsche Ortszeit, echter Sonnenstand), Zeitfaktor als Server-Einstellung
 - [x] Mondphase/-stand astronomisch korrekt (Meeus, gekürzt: etwa ein Grad), Wolken mit orangem Stadtlicht-Himmel
 - [x] Himmel (Raser.SkyLook, Sky): Verlauf nach Sonnenstand, Dämmerung und blaue Stunde, Sonne mit Schein, Mond in seiner Phase, wenige Sterne, Wolkenschicht nach Bedeckung (zieht langsam), Nebel in der Farbe des Horizonts
-- [ ] Himmel: Wolken mit Volumen bzw. Schichten in mehreren Höhen, Regen vor dem Himmel (die Striche fallen dort heute weg), Mond und Sonne am Horizont abgeflacht
+- [ ] Himmel: Wolken mit Volumen bzw. Schichten in mehreren Höhen, Mond und Sonne am Horizont abgeflacht
 - [ ] Volumetrischer Nebel mit Lichtkegeln/Halos
 - [ ] Referenzszene: Zechensiedlung in nebliger Nacht
 - [ ] Mood-Akzente pro Viertel, Render-Profile pro Gebiet
@@ -114,7 +114,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Netze auf 6000 statt 16 000 Vierecke begrenzt (ein Worker hält die Sperre von scene3d beim Bauen eines Modells kürzer) - ob das Rendern davon etwas merkt, ist nicht gemessen: `--live` ohne `--render` rendert nicht ("Rendern" ist dort die Wartezeit bis zum nächsten Bild)
 - [ ] LOD für weite Sichtweiten
 - [x] GPU (`--gpu 1`, getestet mit lavapipe: `FIRE_S3D_GPU=cpu`): die Welt erscheint (undurchsichtige Netze mit `AlphaCutoff`), Nebel/Lichtkacheln/Spiegelungen kommen aus fire 74a2c16d
-- [ ] Himmel nativ in scene3d (`Object.Background`: zuerst gezeichnet, ohne Tiefe und Nebel) - dann Regen vor dem Himmel und Himmel auf der GPU
+- [x] Himmel nativ in scene3d (`Object.Background`, fire-Zweig `native-c`: zuerst gezeichnet, ohne Tiefe und Nebel): Regen und Glas vor dem Himmel, Himmel auf der GPU, keine Blits mehr
 
 ### Detail und Abwechslung
 - [ ] Fahrzeuge detaillierter: echte Modelle statt Quadern (Karosserieformen, Scheiben, Räder mit Felgen, Spiegel, Kennzeichen, Lichter), mehrere Modelle je Klasse (Kleinwagen, Kombi, SUV, Taxi, Bus, Lieferwagen, Roller, Rennrad ...), Farben und Zustand sichtbar (Beulen, Schmutz)

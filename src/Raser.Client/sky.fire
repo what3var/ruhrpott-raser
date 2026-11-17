@@ -1,10 +1,10 @@
 // Raser.Client: der Himmel hinter der Welt (Farben und Bilder aus Raser.SkyLook).
 //
-// Eine eigene kleine Szene ohne Nebel, mit einer eigenen Kamera, die der Kamera der Welt folgt (in ihrer Mitte, nur die Drehung): die Kuppel
-// (Verlauf, Dämmerung, Lichtglocke; 1000 m), die Sterne (950 m), Sonne und Mond als Billboards (900 m) und die Wolkenschicht (800 m), alle
-// unbeleuchtet. Die Welt wird mit durchsichtigem Hintergrund gerendert (Alpha 0: der Nebel färbt nur Rot, Grün und Blau, deckende Dreiecke
-// setzen Alpha 255); danach kommt der Himmel in zwei Blits hinter sie. Der Nebel der Welt nimmt die Farbe des Horizonts in Blickrichtung an,
-// so verschwinden ferne Gebäude im Himmel. Die Texturen werden nur neu gemacht, wenn sich Wetter, Sonne oder Mond merklich ändern.
+// In der Szene der Welt als Hintergrund (scene3d Object.Background: zuerst gezeichnet, ohne Tiefe und ohne Nebel, in der Reihenfolge des
+// Hinzufügens): die Kuppel (Verlauf, Dämmerung, Lichtglocke; 1000 m), die Sterne (950 m), Sonne und Mond als Billboards (900 m) und die
+// Wolkenschicht (800 m), alle unbeleuchtet und mit der Kamera mitgeführt (Follow). Was danach kommt - die Welt, Glas, Regen -, liegt davor; so
+// geht es in Software und auf der GPU gleich. Der Nebel der Welt nimmt die Farbe des Horizonts in Blickrichtung an, so verschwinden ferne
+// Gebäude im Himmel. Die Texturen werden nur neu gemacht, wenn sich Wetter, Sonne oder Mond merklich ändern.
 // Szene: x = Ost, y = oben, z = -Nord.
 class Sky {
     static readonly defined int Segments = 48          // Teile rundherum
@@ -14,10 +14,6 @@ class Sky {
     Raser.Weather weather
     Camera world                    // die Kamera der Welt
     Scene worldScene
-    Scene scene
-    Camera eye
-    Renderer back                   // zeichnet ins Bild des Himmels
-    Renderer front                  // zeichnet ins Bild der Welt
     Model shell
     Model starModel
     Object dome
@@ -31,36 +27,35 @@ class Sky {
     string made                     // wofür die Texturen gemacht sind
     string madeClouds
     defined int fogColor
+    // Sonne und Mond: ihre Lage zur Kamera (Szene, m)
+    defined float sunDX
+    defined float sunDY
+    defined float sunDZ
+    defined float moonDX
+    defined float moonDY
+    defined float moonDZ
 
     construct(Raser.Weather weather, Scene worldScene, Camera world) {
         this.weather = weather
         this.world = world
         this.worldScene = worldScene
-        this.scene = new Scene()
-        this.scene.Shadows = false
-        this.scene.Threads = worldScene.Threads
-        this.eye = new Camera(new Framebuffer(world.Framebuffer.Width(), world.Framebuffer.Height()))
-        this.eye.Near = 1m
-        this.eye.Far = 2000m
-        this.scene.Add(this.eye)
-        this.back = new Renderer(this.eye.Framebuffer)
-        this.front = new Renderer(world.Framebuffer)
         this.horizon = new int[72]
         this.made = ""
         this.madeClouds = ""
         this.shell = Sky.Shell()
+        // (von fern nach nah: der Hintergrund wird in der Reihenfolge des Hinzufügens gezeichnet)
         this.dome = Sky.Part(this.shell, 1000.0)
-        this.scene.Add(this.dome)
+        worldScene.Add(this.dome)
         this.starModel = Sky.StarField()
         this.stars = Sky.Part(this.starModel, 950.0)
-        this.scene.Add(this.stars)
+        worldScene.Add(this.stars)
         // Sonne und Mond: Billboards (zeigen zur Kamera, oben bleibt oben)
         this.sun = Sky.Disc(2.0 * 900.0 * Math.Tan(9.0 * Math.PI / 180.0))
-        this.scene.Add(this.sun)
+        worldScene.Add(this.sun)
         this.moon = Sky.Disc(2.0 * 900.0 * Math.Tan(0.86 * Math.PI / 180.0))
-        this.scene.Add(this.moon)
+        worldScene.Add(this.moon)
         this.clouds = Sky.Part(this.shell, 800.0)
-        this.scene.Add(this.clouds)
+        worldScene.Add(this.clouds)
     }
 
     // Ein Teil des Himmels: unbeleuchtet, ohne Schatten, von beiden Seiten sichtbar (die Kamera ist innen), um die Kamera herum.
@@ -88,6 +83,7 @@ class Sky {
         o.Lit = false
         o.CastShadows = false
         o.ReceiveShadows = false
+        o.Background = true
         o.Material = new Material(0.0, 32.0, true, true)
     }
 
@@ -217,7 +213,9 @@ class Sky {
             var old = this.sun.Texture
             this.sun.Texture = new Texture(128, 128, data)
             if (old != undefined) { delete old }
-            this.sun.SetPosition(w.sunX * 900m, w.sunZ * 900m, -w.sunY * 900m)
+            this.sunDX = w.sunX * 900.0
+            this.sunDY = w.sunZ * 900.0
+            this.sunDZ = -w.sunY * 900.0
         }
         // der Mond: nachts hell, am Tag blass; seine Phase aus dem Licht der Sonne
         float moonVis = Math.Clamp((w.moonElevation + 1.0) / 2.0, 0.0, 1.0) * (1.0 - overcast) * (1.0 - fogged) * (0.55 + 0.45 * this.look.night + 0.3 * (1.0 - this.look.daylight))
@@ -244,7 +242,9 @@ class Sky {
             var old = this.moon.Texture
             this.moon.Texture = new Texture(64, 64, data)
             if (old != undefined) { delete old }
-            this.moon.SetPosition(mx * 900m, mz * 900m, -my * 900m)
+            this.moonDX = mx * 900.0
+            this.moonDY = mz * 900.0
+            this.moonDZ = -my * 900.0
         }
         // die Sterne: nur in klaren Nächten, und auch dann wenige (die Stadt ist hell)
         float starVis = Math.Clamp((-w.elevation - 7.0) / 5.0, 0.0, 1.0) * Math.Clamp(1.0 - w.clouds * 1.1, 0.0, 1.0) * (1.0 - Math.Clamp(w.fog * 3.0, 0.0, 1.0))
@@ -279,8 +279,17 @@ class Sky {
         this.clouds.RotationY = this.drift * 1deg
     }
 
-    // Vor dem Rendern der Welt: der Nebel nimmt die Farbe des Horizonts in Blickrichtung an (Azimut = -Drehung der Kamera um y).
+    // Vor dem Rendern der Welt: der Himmel an die Kamera (er hat keinen Ort, nur Richtungen), und der Nebel nimmt die Farbe des Horizonts in
+    // Blickrichtung an (Azimut = -Drehung der Kamera um y).
     undefined Follow() {
+        float cx = this.world.X / 1m
+        float cy = this.world.Y / 1m
+        float cz = this.world.Z / 1m
+        this.dome.SetPosition(cx * 1m, cy * 1m, cz * 1m)
+        this.stars.SetPosition(cx * 1m, cy * 1m, cz * 1m)
+        this.clouds.SetPosition(cx * 1m, cy * 1m, cz * 1m)
+        this.sun.SetPosition((cx + this.sunDX) * 1m, (cy + this.sunDY) * 1m, (cz + this.sunDZ) * 1m)
+        this.moon.SetPosition((cx + this.moonDX) * 1m, (cy + this.moonDY) * 1m, (cz + this.moonDZ) * 1m)
         if (this.look == undefined) { return }
         float azimuth = -(this.world.RotationY / 1deg)
         int c = this.HorizonAt(azimuth)
@@ -290,15 +299,20 @@ class Sky {
         }
     }
 
-    // Nach dem Rendern der Welt: der Himmel aus derselben Richtung, die Welt darüber (wo sie Alpha 0 hat, bleibt der Himmel), zurück ins Bild.
-    undefined Draw() {
-        if (this.look == undefined || this.world.LastRenderer != RenderMode.Software) { return }
-        this.eye.RotationX = this.world.RotationX
-        this.eye.RotationY = this.world.RotationY
-        this.eye.RotationZ = this.world.RotationZ
-        this.eye.FieldOfView = this.world.FieldOfView
-        this.eye.Render()
-        this.back.Blit(this.world.Framebuffer, 0, 0, BlitMode.Transparent!int)
-        this.front.Blit(this.eye.Framebuffer, 0, 0, BlitMode.Copy!int)
+    // Nach dem Rendern der Welt: nichts mehr zu tun (der Himmel ist Teil der Szene; früher kam er hier per Blit hinter die Welt).
+    undefined Draw() { }
+
+    // Sichtbar oder nicht (zum Messen ohne Himmel).
+    undefined Show(defined bool visible) {
+        this.dome.Visible = visible
+        this.clouds.Visible = visible
+        if (!visible) {
+            this.stars.Visible = false
+            this.sun.Visible = false
+            this.moon.Visible = false
+        } else {
+            this.made = ""
+            this.Apply()
+        }
     }
 }

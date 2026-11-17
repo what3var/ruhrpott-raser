@@ -448,8 +448,9 @@ class Atmosphere {
         var w = this.weather
         this.scene.AmbientColor = Atmosphere.Rgb(w.ambientColor)
         this.scene.AmbientIntensity = w.ambientIntensity
-        // der Hintergrund durchsichtig (Alpha 0): dort kommt der Himmel hin (Sky.Draw); der Nebel in der Farbe des Horizonts (Sky.Follow)
-        this.cam.Background = Atmosphere.Rgb(w.skyColor) & 0xFFFFFF
+        // der Hintergrund: der Himmel (Sky, Hintergrund-Objekte der Szene); die Farbe nur, wo er nicht deckt. Der Nebel in der Farbe des
+        // Horizonts (Sky.Follow)
+        this.cam.Background = Atmosphere.Rgb(w.skyColor)
         this.scene.Fog(Atmosphere.Rgb(w.skyColor), w.hazeStart * 1m, w.hazeEnd * 1m)
         this.sky.Apply()
         this.sky.fogColor = -1
