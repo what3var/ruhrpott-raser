@@ -4,8 +4,9 @@
 // - Bautyp aus den Daten: Nutzung (ALKIS-Funktion, POI), Höhe, Geschosse, Dachform, Grundfläche und Streckung des Grundrisses:
 //   Siedlungshaus (bis zwei Geschosse, Steildach), Zeilenbau der 50er/60er (lang und schmal, flaches Satteldach), Altbau (Blockrand,
 //   Gründerzeit und Wiederaufbau), Hochhaus, Gewerbe, öffentlicher Bau, Kirche, Nebengebäude.
-// - Viertel: ein Raster von 150 m in der Welt. Je Zelle und Bautyp eine Familie von Farben (eine Siedlung in Ziegel, eine verputzt in Pastell,
-//   ein Dach für alle) - Nachbarn in einer Straße sehen verwandt aus; jedes Haus nimmt aus der Familie seine Farbe nach seiner ID.
+// - Familie: je Straße (die nächste bis 35 m, sonst ein Raster von 150 m in der Welt) und Bautyp eine Familie von Farben (eine Siedlung in
+//   Ziegel, eine verputzt in Pastell, ein Dach für alle) - Nachbarn in einer Straße sehen verwandt aus; jedes Haus nimmt aus der Familie seine
+//   Farbe nach seiner ID, jedes fünfte Altbau- und Siedlungshaus aus einer anderen.
 // - Teile: kleine Gebäude, die an ein großes stoßen (LoD2-Gebäudeteile, Anbauten, Treppenhäuser), sehen aus wie dieses.
 // - Dazu je Haus: Sockel (Klinker, Putz, Stein), Gesims, Giebel mit Schiefer oder Faserzement, Fachwerk, Rahmen, Fensterbänke, Haustür,
 //   Fensterläden, Balkone - und die Dreckstufe für Wand und Dach.
@@ -26,7 +27,7 @@ namespace Raser {
 
         // Ein Wert in [0, 1) aus Zahlen und einem Salz.
         static defined float Rand(defined int a, defined int b, defined int salt) {
-            int h = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), a), b), salt)
+            int h = Raser.Fnv.Mix(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), a), b), salt))
             return ((h >> 20) & 65535) / 65536.0
         }
 
@@ -56,18 +57,18 @@ namespace Raser {
             return Raser.HouseStyle.Old
         }
 
-        // Wählt das Aussehen aller Gebäude einer Kachel (Ursprung der Kachel in der Welt: e0, n0 in m).
-        static undefined Assign(List<RoofModel> models, defined float e0, defined float n0, defined int seed) {
+        // Wählt das Aussehen aller Gebäude einer Kachel (Ursprung der Kachel in der Welt: e0, n0 in m; roads: ihre Straßen).
+        static undefined Assign(List<RoofModel> models, List<Road> roads, defined float e0, defined float n0, defined int seed) {
             int n = models.Count
             defined float areas[n]
             for (int i = 0; i < n; i++) {
                 var m = models[i]
                 areas[i] = Math.Abs(Raser.Geo.Area(m.building.footprint))
-                Raser.HouseStyle.Choose(m, areas[i], e0, n0, seed)
+                Raser.HouseStyle.Choose(m, areas[i], Raser.HouseStyle.Neighbourhood(m, roads, e0, n0), seed)
             }
-            // Teile sehen aus wie das große Gebäude, an das sie stoßen
+            // Teile sehen aus wie das große Gebäude, an das sie stoßen (nicht an der Kachelgrenze: die Nachbarkachel kennt das große vielleicht nicht)
             for (int i = 0; i < n; i++) {
-                if (areas[i] >= 90.0) { continue }
+                if (areas[i] >= 90.0 || Raser.HouseStyle.OnEdge(models[i])) { continue }
                 int best = -1
                 for (int j = 0; j < n; j++) {
                     if (j == i || areas[j] < areas[i] * 2.0 || areas[j] < 60.0) { continue }
@@ -77,6 +78,30 @@ namespace Raser {
                 if (best >= 0) { Raser.HouseStyle.Follow(models[i], models[best]) }
             }
         }
+
+        // Wozu ein Haus gehört: zur nächsten Straße (bis 35 m; ihre ID ist über Kachelgrenzen gleich) - eine Siedlung, eine Zeile, ein Block an
+        // einer Straße sehen verwandt aus; sonst zur Zelle des Viertels (150 m in der Welt).
+        static defined int Neighbourhood(RoofModel m, List<Road> roads, defined float e0, defined float n0) {
+            float cx = (m.box.minX + m.box.maxX) / 2.0
+            float cy = (m.box.minY + m.box.maxY) / 2.0
+            float best = 35.0
+            int key = Math.Floor((cx + e0) / Raser.HouseStyle.Cell)!int * 100003 + Math.Floor((cy + n0) / Raser.HouseStyle.Cell)!int
+            // ein Haus über der Kachelgrenze steht auch in der Nachbarkachel, die andere Straßen kennt: dort nur nach der Zelle (beide wählen gleich)
+            if (roads == undefined || Raser.HouseStyle.OnEdge(m)) { return key }
+            foreach (r in roads) {
+                if (r.kind == undefined || !r.kind.StartsWith("highway=") || r.layer != 0 || r.points == undefined || r.points.length < 4) { continue }
+                if (r.kind == "highway=footway" || r.kind == "highway=path" || r.kind == "highway=cycleway" || r.kind == "highway=steps" || r.kind == "highway=service") { continue }
+                float d = Raser.Geo.DistanceToLine(r.points, cx, cy)
+                if (d < best) {
+                    best = d
+                    key = r.id
+                }
+            }
+            return key
+        }
+
+        // Reicht das Haus (fast) über den Rand der Kachel?
+        static defined bool OnEdge(RoofModel m) { return m.box.minX < 0.5 || m.box.minY < 0.5 || m.box.maxX > 255.5 || m.box.maxY > 255.5 }
 
         // Berühren sich die Grundrisse (bis 30 cm)?
         static defined bool Touches(RoofModel a, RoofModel b) {
@@ -112,6 +137,7 @@ namespace Raser {
             part.doorColor = main.doorColor
             part.shutterColor = main.shutterColor
             part.balconyColor = 0
+            part.dormers = false
             if (part.pitched == main.pitched) { part.roofColor = main.roofColor }
         }
 
@@ -132,16 +158,15 @@ namespace Raser {
         static defined int Of(int options[], defined int h, defined int salt) { return options[Raser.HouseStyle.Pick(h, 0, salt, options.length)] }
 
         // Das Aussehen eines Gebäudes für sich.
-        static undefined Choose(RoofModel m, defined float area, defined float e0, defined float n0, defined int seed) {
+        static undefined Choose(RoofModel m, defined float area, defined int place, defined int seed) {
             Building b = m.building
             int type = Raser.HouseStyle.TypeOf(m, area)
             m.houseType = type
-            // die Familie: je Zelle des Viertels und Bautyp; das Haus: nach seiner ID
-            float cx = (m.box.minX + m.box.maxX) / 2.0 + e0
-            float cy = (m.box.minY + m.box.maxY) / 2.0 + n0
-            int cell = Math.Floor(cx / Raser.HouseStyle.Cell)!int * 100003 + Math.Floor(cy / Raser.HouseStyle.Cell)!int
-            int fam = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), cell), type), seed)
+            // die Familie: je Straße (oder Zelle des Viertels) und Bautyp; das Haus: nach seiner ID. Jedes fünfte Altbau- oder Siedlungshaus
+            // tanzt aus der Reihe (eine andere Familie)
             int id = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), b.id), seed)
+            int fam = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), place), type), seed)
+            if ((type == Raser.HouseStyle.Old || type == Raser.HouseStyle.Small) && Raser.HouseStyle.Rand(id, 0, 14) < 0.2) { fam = Raser.Fnv.AddInt(fam, id) }
             m.wallColor = Raser.Palette.Plaster
             m.roofColor = Raser.Palette.RoofTiles
             m.plinthColor = 0
@@ -154,6 +179,7 @@ namespace Raser {
             m.sillColor = 0
             m.shutterColor = 0
             m.balconyColor = 0
+            m.dormers = false
             m.doorColor = Raser.HouseStyle.Of([Raser.Palette.Wood + 64, Raser.Palette.Wood + 32, Raser.Palette.DoorGreen, Raser.Palette.DoorRed, Raser.Palette.Plaster, Raser.Palette.DoorBlue, Raser.Palette.Metal + 64, Raser.Palette.Wood + 64], id, 11)
             if (type == Raser.HouseStyle.Small) { Raser.HouseStyle.SmallHouse(m, fam, id) }
             else if (type == Raser.HouseStyle.Row) { Raser.HouseStyle.RowHouse(m, fam, id) }
@@ -177,7 +203,14 @@ namespace Raser {
                 float r = Raser.HouseStyle.Rand(id, 0, 12)
                 if (r < 0.1) { m.frameColor = Raser.Palette.Metal + 64 } else if (r < 0.16) { m.frameColor = Raser.Palette.Wood + 64 }
             }
-            // ein Sockel in Wandfarbe ist keiner
+            // Gauben: auf Siedlungshäusern und Altbauten mit genug Dach (Zechensiedlungen fast immer)
+            float rise = b.ridge - b.eaves
+            if (m.pitched && rise >= 2.6 && b.roofType != Raser.RoofType.Flat) {
+                // (Siedlungshäuser je Siedlung gleich, Altbauten je Haus)
+                if (type == Raser.HouseStyle.Small) { m.dormers = Raser.HouseStyle.Rand(fam, 0, 13) < 0.6 }
+                if (type == Raser.HouseStyle.Old) { m.dormers = Raser.HouseStyle.Rand(id, 0, 13) < 0.4 }
+            }
+                        // ein Sockel in Wandfarbe ist keiner
             if (Raser.Palette.BaseOf(m.plinthColor) == Raser.Palette.BaseOf(m.wallColor)) { m.plinthColor = 0 }
             if (m.plinthColor == 0) { m.plinthVoxels = 0 }
             if (!m.pitched) {
@@ -284,7 +317,8 @@ namespace Raser {
 
         // Altbau: Gründerzeit verputzt oder Backstein, Wiederaufbau schlicht; Steinsockel, Gesims, Läden unten verkleidet.
         static undefined OldHouse(RoofModel m, defined int fam, defined int id, defined float area) {
-            int family = Raser.HouseStyle.Pick(fam, 0, 1, 4)
+            // verputzt doppelt so oft wie die anderen (die Innenstädte sind nach dem Krieg meist verputzt wieder aufgebaut)
+            int family = Math.Max(Raser.HouseStyle.Pick(fam, 0, 1, 5) - 1, 0)
             if (family == 0) {
                 m.wallColor = Raser.HouseStyle.Of([Raser.Palette.PlasterCream, Raser.Palette.PlasterYellow, Raser.Palette.Plaster, Raser.Palette.PlasterBeige, Raser.Palette.PlasterPink, Raser.Palette.PlasterGreen, Raser.Palette.PlasterSilver, Raser.Palette.PlasterOchre], id, 2)
             } else if (family == 1) {

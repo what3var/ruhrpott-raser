@@ -195,7 +195,7 @@ namespace Raser {
 
         // Ein Wert in [0, 1) aus zwei Zahlen und einem Salz.
         static defined float Hash(defined int x, defined int y, defined int salt) {
-            int h = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), x), y), salt)
+            int h = Raser.Fnv.Mix(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), x), y), salt))
             return ((h >> 20) & 65535) / 65536.0
         }
 
@@ -301,7 +301,7 @@ namespace Raser {
             float stain = Math.Min(0.0, Raser.Atlas.Smooth(x, y, 16, c + 800, 128) + 0.2) * 0.07 * dirt
             float streak = 0.0
             float column = Raser.Atlas.Hash(x / 2, 0, c + 900)
-            if (column > 0.78) { streak = -(column - 0.78) * 0.5 * dirt * (0.6 + 0.4 * Raser.Atlas.Smooth(x, y, 32, c + 950, 128)) }
+            if (column > 0.78) { streak = -(column - 0.78) * 0.35 * dirt * (0.6 + 0.4 * Raser.Atlas.Smooth(x, y, 32, c + 950, 128)) }
             return f + stain + streak
         }
 
@@ -518,7 +518,7 @@ namespace Raser {
                     continue
                 }
                 int n = 64 * Raser.Atlas.TileScale(c)
-                float[32] f[] = new float[n * n]
+                float f[] = new float[n * n]
                 for (int vy = 0; vy < n; vy++) {
                     for (int vx = 0; vx < n; vx++) { f[vx + vy * n] = Raser.Atlas.Shade(c, vx, vy) }
                 }

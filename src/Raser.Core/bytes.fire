@@ -161,6 +161,16 @@ namespace Raser {
             return h
         }
 
+        // Mischt alle Bits eines Hashs durcheinander (der Abschluss von MurmurHash3): FNV allein verteilt kleine Unterschiede in den letzten
+        // Zahlen kaum in die oberen Bits - Muster aus Hash(x, y) hingen sonst fast nur an x.
+        static defined int Mix(defined int h) {
+            h = h # (h >> 33)
+            h = h * -49064778989728563
+            h = h # (h >> 33)
+            h = h * -4265267296055464877
+            return h # (h >> 33)
+        }
+
         static defined int AddText(defined int h, string s) {
             for (int i = 0; i < s.length; i++) {
                 int c = s[i].ToInt()

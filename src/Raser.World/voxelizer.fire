@@ -39,6 +39,7 @@ namespace Raser {
         defined int doorColor       // Haustüren
         defined int shutterColor    // Fensterläden (0: keine)
         defined int balconyColor    // Brüstung der Balkone (0: keine Balkone)
+        defined bool dormers        // Gauben auf dem Steildach (nur im Netz, Raser.FarMesher.Dormers)
         float eaveRing[]        // Steildach: der Grundriss um den Dachüberstand nach außen versetzt (undefined: kein Überstand)
         List<float> passages    // Durchfahrten (Torbögen): je Stück ax, ay, bx, by, halbe Breite, lichte Höhe, Stich des Bogens
         float planes[]          // je Dachfläche: a, b, c (z = a x + b y + c), gültig (1) oder senkrecht (0)
@@ -274,7 +275,7 @@ namespace Raser {
                 Raser.Voxelizer.PlanFacade(model, tile.data.roads)
                 this.models.Add(take model)
             }
-            Raser.HouseStyle.Assign(this.models, tile.key.x * 256.0, tile.key.y * 256.0, seed)
+            Raser.HouseStyle.Assign(this.models, tile.data.roads, tile.key.x * 256.0, tile.key.y * 256.0, seed)
             this.roadBoxes = new List<Box2>()
             foreach (r in tile.data.roads) {
                 var box = Raser.Box2.Of(r.points)

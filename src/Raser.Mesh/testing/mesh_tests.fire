@@ -265,10 +265,12 @@ class FarTests {
         int extra = 0
         if (m.plinthVoxels > 0) { extra = extra + 4 }
         if (m.trimColor != 0 && m.building.eaves > m.groundVoxel * 0.2 + 3.4) { extra = extra + 4 }
-        Testing.Assert.AreEqual(256 + 18 + extra + 2 + 12, part.Count)
+        // (die Wandstücke sind dazu an den Chunk-Grenzen geteilt: mindestens so viele)
+        Testing.Assert.IsTrue(part.Count >= 256 + 18 + extra + 2 + 12)
+        Testing.Assert.IsTrue(part.Count <= 256 + 3 * 18 + extra + 2 + 12)
         // Giebel: die Wand an der Schmalseite (x = 10) reicht in der Mitte (y = 14) bis fast zum First
         float top = 0.0
-        for (int q = 256; q < 256 + 18 + extra; q++) {
+        for (int q = 256; q < part.Count; q++) {
             for (int c = 0; c < 4; c++) {
                 float x = part.positions[q * 12 + c * 3]
                 float z = part.positions[q * 12 + c * 3 + 2]

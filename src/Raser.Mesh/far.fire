@@ -28,7 +28,7 @@ namespace Raser {
                 if (b.footprint == undefined || b.footprint.length < 6 || b.ridge <= b.ground) { continue }
                 this.models.Add(new Raser.RoofModel(b, seed))
             }
-            Raser.HouseStyle.Assign(this.models, tile.key.x * 256.0, tile.key.y * 256.0, seed)
+            Raser.HouseStyle.Assign(this.models, tile.data.roads, tile.key.x * 256.0, tile.key.y * 256.0, seed)
             this.areaBoxes = new List<Box2>()
             foreach (a in tile.data.areas) { this.areaBoxes.Add(Raser.Box2.Of(a.ring)) }
             this.roadBoxes = new List<Box2>()
@@ -371,6 +371,115 @@ namespace Raser {
                     Raser.FarMesher.Balcony(part, ax, ay, bx, by, dx / len, dy / len, nx, ny, z0 - 1.0, m.balconyColor, true)
                 }
             }
+            Raser.FarMesher.Dormers(part, undefined, m, 0.0, 0.0, -1.0)
+        }
+
+        // Gauben auf Steildächern (RoofModel.dormers, Raser.HouseStyle): über jedem zweiten Fenster des obersten Geschosses einer Traufseite eine
+        // Giebelgaube - Front in Wandfarbe 50 cm hinter der Wand, Fenster mit Rahmen, Wangen bis zur Dachfläche, ein kleines Satteldach in
+        // Dachfarbe bis zum Hauptdach. Nur im Netz (das Voxeldach darunter bleibt). Eine Gaube gehört dem Block, in dem ihre Front liegt
+        // (x0, y0, size; size <= 0: alle); glass undefined: das Fenster als Fläche der fernen Stufe.
+        static undefined Dormers(MeshPart opaque, MeshPart glass, RoofModel m, defined float x0, defined float y0, defined float size) {
+            if (!m.dormers || m.facade == undefined) { return }
+            Building b = m.building
+            var f = m.facade
+            for (int r = 0; r < f.runs.Count; r++) {
+                var fr = f.runs[r]
+                var slots = fr.upper
+                if (slots.Count == 0) { slots = fr.ground }
+                if (fr.length < 5.0 || slots.Count < 2) { continue }
+                // eine Traufseite: das Dach steigt von der Wand nach innen
+                f.PointOn(r, fr.length / 2.0)
+                float z1 = m.RoofAt(f.px - f.pnx * 0.3, f.py - f.pny * 0.3)
+                float z2 = m.RoofAt(f.px - f.pnx * 2.3, f.py - f.pny * 2.3)
+                if (z2 - z1 < 1.0 || z1 > b.eaves + 1.0) { continue }
+                for (int i = 0; i < slots.Count; i++) {
+                    if (slots.Count >= 3 && i % 2 == 1) { continue }
+                    if (slots.Count == 2 && i == 1) { continue }
+                    f.PointOn(r, slots[i].center)
+                    float px = f.px
+                    float py = f.py
+                    float nx = f.pnx
+                    float ny = f.pny
+                    float ux = -ny
+                    float uy = nx
+                    float fx = px - nx * 0.5
+                    float fy = py - ny * 0.5
+                    if (size > 0.0 && (fx < x0 || fy < y0 || fx >= x0 + size || fy >= y0 + size)) { continue }
+                    float zf = m.RoofAt(fx, fy)
+                    float zt = zf + 1.7
+                    float zr = zt + 0.7
+                    if (zr > b.ridge - 0.2) { continue }
+                    // wo das Hauptdach die Traufe und den First der Gaube erreicht
+                    float d1 = -1.0
+                    float d2 = -1.0
+                    for (float d = 0.6; d < 8.0; d = d + 0.2) {
+                        float zh = m.RoofAt(px - nx * d, py - ny * d)
+                        if (d1 < 0.0 && zh >= zt) { d1 = d }
+                        if (zh >= zr) {
+                            d2 = d
+                            break
+                        }
+                    }
+                    if (d1 < 0.0 || d2 < 0.0) { continue }
+                    float w = 0.75
+                    float ov = 0.15
+                    int wall = m.wallMaterial
+                    int roof = b.roof!int
+                    int wc = m.wallColor
+                    // Front und Giebeldreieck
+                    opaque.Quad(fx - ux * w, fy - uy * w, zf - 0.1, fx + ux * w, fy + uy * w, zf - 0.1, fx + ux * w, fy + uy * w, zt, fx - ux * w, fy - uy * w, zt, nx, ny, 0.0, wc, wall)
+                    opaque.Quad(fx - ux * w, fy - uy * w, zt, fx + ux * w, fy + uy * w, zt, fx, fy, zr, fx, fy, zr, nx, ny, 0.0, wc, wall)
+                    // die Wangen: Dreiecke von der Front bis zur Dachfläche
+                    float bx = px - nx * d1
+                    float by = py - ny * d1
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float sx = ux * w * side
+                        float sy = uy * w * side
+                        opaque.Quad(fx + sx, fy + sy, zf - 0.1, fx + sx, fy + sy, zt, bx + sx, by + sy, zt, bx + sx, by + sy, zt, ux * side, uy * side, 0.0, wc, wall)
+                    }
+                    // das Satteldach der Gaube, vorn 15 cm über die Front
+                    float ex = px - nx * (0.5 - ov)
+                    float ey = py - ny * (0.5 - ov)
+                    float cx = px - nx * d2
+                    float cy = py - ny * d2
+                    float ww = w + ov
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float sx = ux * ww * side
+                        float sy = uy * ww * side
+                        opaque.Quad(ex + sx, ey + sy, zt - 0.1, ex, ey, zr, cx, cy, zr, bx + sx, by + sy, zt - 0.1, ux * side * 0.6, uy * side * 0.6, 0.8, m.roofColor, roof)
+                        // die Stirn des Dachs vorn
+                        opaque.Quad(ex + sx, ey + sy, zt - 0.22, ex, ey, zr - 0.12, ex, ey, zr, ex + sx, ey + sy, zt - 0.1, nx, ny, 0.0, m.roofColor, roof)
+                    }
+                    // das Fenster: Glas (nah) bzw. eine Fläche (fern) 2 cm vor der Front, Rahmen ringsum
+                    float gw = 0.45
+                    float g0 = zf + 0.35
+                    float g1 = zt - 0.2
+                    float ox = fx + nx * 0.02
+                    float oy = fy + ny * 0.02
+                    bool lit = Raser.Props.Rand(b.id, 9000 + r * 64 + i, 0) < 0.35
+                    if (glass == undefined) {
+                        int wcol = Raser.Palette.Window
+                        if (lit) { wcol = Raser.Palette.WindowLit }
+                        opaque.Quad(ox - ux * gw, oy - uy * gw, g0, ox + ux * gw, oy + uy * gw, g0, ox + ux * gw, oy + uy * gw, g1, ox - ux * gw, oy - uy * gw, g1, nx, ny, 0.0, wcol, Raser.Material.Concrete!int)
+                        continue
+                    }
+                    int tint = Raser.Palette.Glass
+                    if (lit) { tint = Raser.Palette.GlassLit }
+                    // dahinter dunkel (die Front ist zu)
+                    opaque.Quad(fx - ux * gw, fy - uy * gw, g0, fx + ux * gw, fy + uy * gw, g0, fx + ux * gw, fy + uy * gw, g1, fx - ux * gw, fy - uy * gw, g1, nx, ny, 0.0, Raser.Palette.Window, Raser.Material.Concrete!int)
+                    glass.Quad(ox - ux * gw, oy - uy * gw, g0, ox + ux * gw, oy + uy * gw, g0, ox + ux * gw, oy + uy * gw, g1, ox - ux * gw, oy - uy * gw, g1, nx, ny, 0.0, tint, Raser.Material.Glass!int)
+                    float t = 0.08
+                    float qx = ox + nx * 0.01
+                    float qy = oy + ny * 0.01
+                    int fc = m.frameColor
+                    int fm = Raser.Material.Wood!int
+                    opaque.Quad(qx - ux * gw, qy - uy * gw, g0, qx + ux * gw, qy + uy * gw, g0, qx + ux * gw, qy + uy * gw, g0 + t, qx - ux * gw, qy - uy * gw, g0 + t, nx, ny, 0.0, fc, fm)
+                    opaque.Quad(qx - ux * gw, qy - uy * gw, g1 - t, qx + ux * gw, qy + uy * gw, g1 - t, qx + ux * gw, qy + uy * gw, g1, qx - ux * gw, qy - uy * gw, g1, nx, ny, 0.0, fc, fm)
+                    opaque.Quad(qx - ux * gw, qy - uy * gw, g0, qx - ux * (gw - t), qy - uy * (gw - t), g0, qx - ux * (gw - t), qy - uy * (gw - t), g1, qx - ux * gw, qy - uy * gw, g1, nx, ny, 0.0, fc, fm)
+                    opaque.Quad(qx + ux * (gw - t), qy + uy * (gw - t), g0, qx + ux * gw, qy + uy * gw, g0, qx + ux * gw, qy + uy * gw, g1, qx + ux * (gw - t), qy + uy * (gw - t), g1, nx, ny, 0.0, fc, fm)
+                    opaque.Quad(qx - ux * 0.03, qy - uy * 0.03, g0, qx + ux * 0.03, qy + uy * 0.03, g0, qx + ux * 0.03, qy + uy * 0.03, g1, qx - ux * 0.03, qy - uy * 0.03, g1, nx, ny, 0.0, fc, fm)
+                }
+            }
         }
 
         // Hat das Fenster (Platz slot = Lauf * 4096 + Nummer, Geschoss) einen Balkon davor? Ab dem ersten Obergeschoss, auf Läufen ab 8 m mit
@@ -563,6 +672,7 @@ namespace Raser {
                 if (m.facade == undefined) { Raser.Voxelizer.PlanFacade(m, this.tile.data.roads) }
                 panes.Clear()
                 m.facade.Panes(m.building, m.groundVoxel, panes)
+                Raser.FarMesher.Dormers(opaque, glass, m, x0, y0, size)
                 for (int k = 0; k + 8 < panes.Count; k = k + 9) {
                     float ax = panes[k]
                     float ay = panes[k + 1]
@@ -1097,10 +1207,18 @@ namespace Raser {
                     Raser.FarMesher.FacadeWall(part, m, ax, ay, bx, by, onx, ony, vx0, vy0)
                     continue
                 }
+                // Stücke von höchstens 2 m, dazu geteilt an den Chunk-Grenzen (alle 12,8 m in x, y und z): so liegt jedes in einer Kachel des Atlas
+                // und bekommt das Muster seiner Farbe
+                var cuts = new List<float>()
                 int pieces = Math.Max(1, Math.Ceiling(len / 2.0)!int)
-                for (int p = 0; p < pieces; p++) {
-                    float t0 = p * 1.0 / pieces
-                    float t1 = (p + 1) * 1.0 / pieces
+                for (int p = 0; p <= pieces; p++) { cuts.Add(p * 1.0 / pieces) }
+                Raser.FarMesher.GridCuts(ax, dx, cuts)
+                Raser.FarMesher.GridCuts(ay, dy, cuts)
+                cuts.Sort()
+                for (int p = 0; p + 1 < cuts.Count; p++) {
+                    float t0 = cuts[p]
+                    float t1 = cuts[p + 1]
+                    if (t1 - t0 < 0.0001) { continue }
                     float px = ax + dx * t0
                     float py = ay + dy * t0
                     float qx = ax + dx * t1
@@ -1108,7 +1226,14 @@ namespace Raser {
                     // knapp innen nach der Dachhöhe fragen (auf dem Rand liegt die Traufe)
                     float tp = m.RoofAt(px - onx * 0.05, py - ony * 0.05)
                     float tq = m.RoofAt(qx - onx * 0.05, qy - ony * 0.05)
-                    part.Quad(px, py, g, qx, qy, g, qx, qy, tq, px, py, tp, onx, ony, 0.0, m.wallColor, wall)
+                    float top = Math.Max(tp, tq)
+                    for (float z0 = Math.Floor(g / 12.8) * 12.8; z0 < top; z0 = z0 + 12.8) {
+                        float zb = Math.Max(g, z0)
+                        float zp = Math.Max(Math.Min(tp, z0 + 12.8), zb)
+                        float zq = Math.Max(Math.Min(tq, z0 + 12.8), zb)
+                        if (zp <= zb && zq <= zb) { continue }
+                        part.Quad(px, py, zb, qx, qy, zb, qx, qy, zq, px, py, zp, onx, ony, 0.0, m.wallColor, wall)
+                    }
                 }
                 // Sockel und Gesims wie in den Voxeln (Raser.HouseStyle), knapp vor der Wand
                 float fl = m.groundVoxel * 0.2
@@ -1125,6 +1250,14 @@ namespace Raser {
             }
             Raser.FarMesher.Roof(part, m)
             Raser.FarMesher.Eaves(part, m)
+        }
+
+        // Die Stellen t (0 .. 1) auf a + t * d, an denen die Koordinate ein Vielfaches von 12,8 m (eine Chunk-Grenze) ist.
+        static undefined GridCuts(defined float a, defined float d, List<float> cuts) {
+            if (Math.Abs(d) < 0.0001) { return }
+            float lo = Math.Min(a, a + d)
+            float hi = Math.Max(a, a + d)
+            for (float g = Math.Floor(lo / 12.8) * 12.8 + 12.8; g < hi; g = g + 12.8) { cuts.Add((g - a) / d) }
         }
 
         // Der Dachüberstand (wie in den Voxeln, RoofModel.eaveRing): je Kante ein Band von der Wand bis zur versetzten Kante auf der fortgesetzten
