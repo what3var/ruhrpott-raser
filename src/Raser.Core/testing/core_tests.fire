@@ -509,6 +509,33 @@ class VehicleTests {
         Testing.Assert.IsTrue(bike.fuel == 1.0 && bike.speed > 5.0)
     }
 
+    [Test "Stoß: ein angefahrenes Fahrzeug rutscht los und bleibt stehen, Wände halten es auf"]
+    undefined Shove() {
+        // mit 10 m/s nach Norden frontal auf ein gleich schweres, das nördlich steht: beide gut 5 m/s
+        var car = new Raser.Vehicle()
+        var other = new Raser.Vehicle()
+        other.north = 4.2
+        car.speed = 10.0
+        float into = car.Collide(1.2, 0.0, -1.0, 0.1)
+        car.Shove(other, 0.0, -1.0, into)
+        Testing.Assert.IsTrue(Math.Abs(other.pushN - 5.0) < 0.001 && Math.Abs(other.pushE) < 0.001)
+        Testing.Assert.IsTrue(car.speed > 2.0 && car.speed < 4.0)
+        Testing.Assert.IsTrue(other.health < 1.0)
+        // es rutscht 5² / (2 x 7) = 1,8 m (in Schritten etwas mehr) und steht
+        for (int i = 0; i < 40; i++) { other.Step(0.05, 0.0, 1.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(other.pushN == 0.0 && Math.Abs(other.north - 4.2 - 1.85) < 0.15)
+        // ein Fahrrad fliegt fast mit dem ganzen Tempo davon, ein Transporter kaum
+        var bike = Raser.Vehicle.Of("fahrrad")
+        var van = Raser.Vehicle.Of("transporter")
+        var c2 = new Raser.Vehicle()
+        c2.Shove(bike, 0.0, -1.0, 10.0)
+        c2.Shove(van, 0.0, -1.0, 10.0)
+        Testing.Assert.IsTrue(bike.pushN > 9.5 && van.pushN < 4.0)
+        // rutscht es gegen eine Wand im Norden, hört das Rutschen dorthin auf
+        van.Collide(1.7, 0.0, -1.0, 0.05)
+        Testing.Assert.IsTrue(van.pushN == 0.0)
+    }
+
     static defined float BrakeDistance(defined float wetness) {
         var car = new Raser.Vehicle()
         car.speed = 30.0

@@ -2,7 +2,8 @@
 //
 //   raser [--world world] [--vehicle auto|transporter|motorrad|fahrrad] [--at ost,nord] [--date 07-01] [--time 14:00] [--weather klar|regen|...] [--size 960x600] [--gpu 1]
 //         [--near 1] [--far 5] [--workers 3]
-//   raser ... --auto 20 [--steer 0.2] --shot bild.png     ohne Fenster: so viele Sekunden Vollgas (mit festem Lenkeinschlag), dann ein Bild
+//   raser ... --auto 20 [--steer 0.2] [--back 1] --shot bild.png     ohne Fenster: so viele Sekunden Vollgas (mit festem Lenkeinschlag, auch
+//                                                       rückwärts), dann ein Bild
 //
 // W/S oder Pfeile: Gas und Bremse (im Stand: Rückwärtsgang), A/D: lenken, Leertaste: Handbremse, C: Kamera (hinter dem Wagen / Haube),
 // E: aussteigen (im Stand) und am Wagen wieder einsteigen; zu Fuß: W/S gehen, A/D drehen, Umschalt rennen, C: aus den Augen des Spielers.
@@ -440,6 +441,7 @@ class Game {
                 float e0 = car.east
                 float n0 = car.north
                 if (Game.Advance(car, vehicles, obstacles, dt, pilot[0], pilot[1], pilot[2], false, weather.wetness)) { hits++ }
+                Game.Parked(car, vehicles, obstacles, dt, weather.wetness)
                 way = way + Math.Sqrt((car.east - e0) * (car.east - e0) + (car.north - n0) * (car.north - n0))
                 float diff = car.heading - camHeading
                 camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
@@ -486,11 +488,14 @@ class Game {
         string shot = options.Get("shot", "")
         if (auto > 0.0 || shot != "") {
             float steer = options.Get("steer", "0").ToFloat()
+            // --back 1: im Rückwärtsgang (auf die dahinter geparkten Fahrzeuge zu)
+            bool back = options.Get("back", "") != ""
             float dt = 1.0 / 30.0
             int hits = 0
             float top = 0.0
             for (float t = 0.0; t < auto; t = t + dt) {
-                if (Game.Advance(car, vehicles, obstacles, dt, 1.0, 0.0, steer, false, weather.wetness)) { hits++ }
+                if (Game.Advance(car, vehicles, obstacles, dt, 1.0, 0.0, steer, back, weather.wetness)) { hits++ }
+                Game.Parked(car, vehicles, obstacles, dt, weather.wetness)
                 top = Math.Max(top, car.speed)
             }
             camHeading = car.heading + options.Get("look", "0").ToFloat()
@@ -529,6 +534,9 @@ class Game {
             cam.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
             print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Tank " + Math.Round(car.fuel * 1000.0) / 10.0 + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m")
+            for (int i = 1; i < vehicles.Count; i++) {
+                print(vehicles[i].name + " bei " + vehicles[i].east + ", " + vehicles[i].north + ", Zustand " + Math.Round(vehicles[i].health * 100.0) + " %")
+            }
             if (shot != "") {
                 IO.File.WriteAllBytes(shot, fb.ToPng())
                 print(shot)
@@ -643,8 +651,10 @@ class Game {
                 atmosphere.Update(car.east, car.north, dt)
             }
             // die abgestellten Fahrzeuge rollen aus
+            Raser.Vehicle driven = car
+            if (onFoot) { driven = undefined }
+            Game.Parked(driven, vehicles, obstacles, dt, weather.wetness)
             for (int i = 0; i < vehicles.Count; i++) {
-                if (onFoot || vehicles[i] != car) { Game.Advance(vehicles[i], vehicles, obstacles, dt, 0.0, 1.0, 0.0, false, weather.wetness) }
                 models[i].beam.Enabled = weather.lampsOn && !onFoot && vehicles[i] == car
             }
             Game.PlaceAll(vehicles, models, terrain, view)
@@ -686,9 +696,11 @@ class Game {
         return result
     }
 
-    // Ein Schritt des Wagens mit Aufprall an Gebäuden (in Teilschritten von höchstens 0,5 m): der Wagen rutscht an Wänden entlang. true: aufgeprallt.
+    // Ein Schritt des Wagens mit Aufprall an Gebäuden und Fahrzeugen (in Teilschritten von höchstens 0,5 m): der Wagen rutscht an Wänden entlang,
+    // angefahrene Fahrzeuge stößt er an. true: aufgeprallt.
     static defined bool Advance(Raser.Vehicle car, List<Raser.Vehicle> all, Obstacles obstacles, defined float dt, defined float throttle, defined float brake, defined float steer, defined bool reverse, defined float wetness) {
-        int parts = Math.Max(1, Math.Ceiling(Math.Abs(car.speed) * dt / 0.5)!int)
+        float pace = Math.Abs(car.speed) + Math.Abs(car.pushE) + Math.Abs(car.pushN)
+        int parts = Math.Max(1, Math.Ceiling(pace * dt / 0.5)!int)
         bool hit = false
         for (int i = 0; i < parts; i++) {
             float e0 = car.east
@@ -703,7 +715,7 @@ class Game {
                 if (obstacles.Push(ce, cn, car.radius)) {
                     if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
                 }
-                // die anderen Fahrzeuge (sie bleiben stehen)
+                // die anderen Fahrzeuge: angefahren rutschen sie los (Vehicle.Shove)
                 foreach (other in all) {
                     if (other == car) { continue }
                     float oh = other.heading * Math.PI / 180.0
@@ -714,13 +726,24 @@ class Game {
                         float d = Math.Sqrt(dx * dx + dy * dy)
                         float deep = car.radius + other.radius - d
                         if (deep > 0.0 && d > 0.0001) {
-                            if (car.Collide(offset, dx / d, dy / d, deep) > 0.5) { hit = true }
+                            float into = car.Collide(offset, dx / d, dy / d, deep)
+                            car.Shove(other, dx / d, dy / d, into)
+                            if (into > 0.5) { hit = true }
                         }
                     }
                 }
             }
         }
         return hit
+    }
+
+    // Die abgestellten Fahrzeuge (alle außer driven; undefined: alle) rollen und rutschen aus, gebremst.
+    static undefined Parked(Raser.Vehicle driven, List<Raser.Vehicle> vehicles, Obstacles obstacles, defined float dt, defined float wetness) {
+        foreach (v in vehicles) {
+            if (v == driven) { continue }
+            if (v.speed == 0.0 && v.pushE == 0.0 && v.pushN == 0.0) { continue }
+            Game.Advance(v, vehicles, obstacles, dt, 0.0, 1.0, 0.0, false, wetness)
+        }
     }
 
     // Der Wagen in die Szene, auf das Gelände.

@@ -17,6 +17,8 @@ namespace Raser {
         defined float grip              // der Grip des letzten Schritts
         defined float health            // der Zustand: 1 heil, 0 kaputt (fährt nicht mehr)
         defined float fuel              // der Tank: 1 voll, 0 leer (fährt nicht mehr)
+        defined float pushE             // angestoßen: so schnell rutscht das Fahrzeug quer zu allem (m/s nach Osten, Norden), bis die Reifen es halten
+        defined float pushN
         defined float lean              // Grad, nach links positiv: so weit legt sich ein Zweirad in die Kurve (Autos: 0)
         // das Fahrzeug
         defined float wheelbase
@@ -24,6 +26,7 @@ namespace Raser {
         defined float power             // Beschleunigung aus dem Stand (m/s²)
         defined float brakes            // Verzögerung bei vollem Bremsen und Grip 1 (m/s²)
         defined float maxSteer          // Grad im Stand
+        defined float mass              // kg (für den Stoß zwischen Fahrzeugen)
         defined float tank              // so viel Antrieb fasst ein voller Tank (Gas x power x s, also m/s); 0: braucht keinen (Fahrrad)
         // die Klasse und die Maße (für Modell und Aufprall: zwei Kreise mit radius, je spread m vor und hinter der Mitte)
         string kind                     // "auto", "transporter", "motorrad", "fahrrad"
@@ -43,6 +46,7 @@ namespace Raser {
             this.health = 1.0
             this.fuel = 1.0
             this.tank = 3300.0         // 10 min Vollgas
+            this.mass = 1300.0
             this.kind = "auto"
             this.name = "Auto"
             this.Size(4.2, 1.8)
@@ -67,6 +71,7 @@ namespace Raser {
                 v.brakes = 7.5
                 v.maxSteer = 30.0
                 v.tank = 3200.0            // gut 16 min Vollgas
+                v.mass = 2100.0
                 v.Size(5.6, 2.0)
             }
             if (kind == "motorrad") {
@@ -77,6 +82,7 @@ namespace Raser {
                 v.power = 8.5
                 v.maxSteer = 28.0
                 v.tank = 2550.0            // 5 min Vollgas
+                v.mass = 220.0
                 v.Size(2.1, 0.7)
             }
             if (kind == "fahrrad") {
@@ -88,6 +94,7 @@ namespace Raser {
                 v.brakes = 6.0
                 v.maxSteer = 40.0
                 v.tank = 0.0
+                v.mass = 20.0
                 v.Size(1.8, 0.5)
             }
             return v
@@ -156,6 +163,15 @@ namespace Raser {
             float h = this.heading * Math.PI / 180.0
             this.east = this.east - Math.Sin(h) * this.speed * dt
             this.north = this.north + Math.Cos(h) * this.speed * dt
+            // angestoßen: es rutscht weiter, die Reifen bremsen es mit 7 m/s² (x Grip)
+            float push = Math.Sqrt(this.pushE * this.pushE + this.pushN * this.pushN)
+            if (push > 0.0) {
+                this.east = this.east + this.pushE * dt
+                this.north = this.north + this.pushN * dt
+                float keep = Math.Max(0.0, push - 7.0 * g * dt) / push
+                this.pushE = this.pushE * keep
+                this.pushN = this.pushN * keep
+            }
         }
 
         // Eine Berührung mit einer Wand: der Punkt offset m vor (hinter: negativ) der Mitte steckt depth m tief, (nx, ny) zeigt aus der Wand heraus.
@@ -171,6 +187,12 @@ namespace Raser {
             float side = -(nx * Math.Cos(h) + ny * Math.Sin(h)) * depth
             if (Math.Abs(offset) > 0.1) {
                 this.heading = this.heading + Math.Clamp(side / offset, -0.35, 0.35) * 180.0 / Math.PI
+            }
+            // das Rutschen in die Wand hinein hört auf
+            float pin = -(this.pushE * nx + this.pushN * ny)
+            if (pin > 0.0) {
+                this.pushE = this.pushE + nx * pin
+                this.pushN = this.pushN + ny * pin
             }
             float into = -(fx * nx + fy * ny) * this.speed          // > 0: der Wagen fährt in die Wand
             if (into <= 0.0) { return 0.0 }
@@ -193,6 +215,19 @@ namespace Raser {
         static defined float DamageOf(defined float into) {
             float over = Math.Max(0.0, into - 2.0) / 19.0
             return Math.Min(1.0, over * over)
+        }
+
+        // Ein Stoß gegen ein anderes Fahrzeug, nach Collide: dieses fuhr mit into m/s hinein, (nx, ny) zeigt vom anderen weg zu diesem. Beide
+        // bekommen das gemeinsame Tempo eines unelastischen Stoßes (into x eigene Masse / beide Massen): das andere rutscht los (pushE, pushN),
+        // dieses behält davon den Teil entlang seiner Richtung. Das andere nimmt Schaden wie dieses.
+        undefined Shove(Raser.Vehicle other, defined float nx, defined float ny, defined float into) {
+            if (into <= 0.0) { return }
+            float dv = into * this.mass / (this.mass + other.mass)
+            other.pushE = other.pushE - nx * dv
+            other.pushN = other.pushN - ny * dv
+            other.health = Math.Max(0.0, other.health - Raser.Vehicle.DamageOf(into))
+            float h = this.heading * Math.PI / 180.0
+            this.speed = this.speed + dv * (Math.Sin(h) * nx - Math.Cos(h) * ny)
         }
 
         // Ein Aufprall: zurück an die alte Stelle, das Tempo zum Teil umgekehrt.
