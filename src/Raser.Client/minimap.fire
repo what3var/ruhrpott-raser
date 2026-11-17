@@ -1,0 +1,421 @@
+// Raser.Client: die Karte oben rechts - rund, mit dem Spieler in der Mitte, mit ihm gedreht (der Pfeil zeigt nach oben, N wandert am Rand) oder
+// genordet. Straßen für Autos (Hauptstraßen gelb, die anderen weiß), Wege, Gleise, Gebäude, Grün und Wasser aus den Kacheln; dazu Fahrzeuge und
+// Gegenstände in der Nähe.
+//
+// Billig je Bild: jede Kachel (256 x 256 m) wird einmal als Bild mit 1 Pixel je Meter gezeichnet (höchstens eine neue je Bild) und gemerkt; die
+// 3 x 3 Kacheln um den Spieler liegen als ein Mosaik (768 x 768) bereit, das nur beim Wechsel in eine andere Kachel neu entsteht. Je Bild wird nur
+// der runde Ausschnitt (168 x 168) aus dem Mosaik abgetastet (gedreht, gut 3 ms) - und das auch nur, wenn sich Lage oder Richtung merklich
+// geändert haben, beim Fahren jedes zweite Bild.
+//
+// M: gedreht -> genordet -> aus; + und -: Zoom (0,5 / 1 / 2 m je Pixel). Farben: 0xAABBGGRR (wie die Pinsel; als Int32 gelesen die Bytes R, G, B, A).
+#import "graphics"
+#import "windows"
+#import "time"
+#import "raser.core"
+#import "raser.world"
+
+class Minimap {
+    static readonly defined int Tile = 256              // Pixel je Kachel (1 je m)
+    static readonly defined int Span = 768              // das Mosaik: 3 x 3 Kacheln
+    static readonly defined int Back = 0xFFD6E2E6       // der Grund (ohne Fläche)
+
+    Obstacles obstacles             // lädt die Kacheln (dieselben wie für Wände und Bäume)
+    Dictionary<string, Framebuffer> tiles
+    Framebuffer mosaic
+    byte mosaicPx[]
+    defined int centerX             // die Kachel in der Mitte des Mosaiks
+    defined int centerY
+    defined bool dirty              // das Mosaik muss neu (eine Kachel kam dazu)
+    defined bool built              // das Mosaik gibt es schon
+    Framebuffer view
+    byte viewPx[]
+    defined int size                // Durchmesser (Pixel)
+    defined int mode                // 0 gedreht, 1 genordet, 2 aus
+    defined int zoom                // 0: 0,5 m je Pixel, 1: 1 m, 2: 2 m
+    defined float lastE
+    defined float lastN
+    defined float lastH
+    defined int lastZoom
+    defined int lastMode
+    defined bool composed
+    defined int waited              // so viele Bilder ist das Abtasten schon ausgesetzt
+    defined int spentTicks          // Zeit im letzten Draw (Ticks; zum Messen)
+    SolidBrush paint
+    Pen pen
+
+    construct(Obstacles obstacles) {
+        this.obstacles = obstacles
+        this.tiles = new Dictionary<string, Framebuffer>(Owns.Values)
+        this.mosaic = new Framebuffer(Minimap.Span, Minimap.Span)
+        this.mosaicPx = new byte[Minimap.Span * Minimap.Span * 4]
+        this.centerX = 0
+        this.centerY = 0
+        this.dirty = true
+        this.built = false
+        this.size = 168
+        this.view = new Framebuffer(this.size, this.size)
+        this.viewPx = new byte[this.size * this.size * 4]
+        this.viewPx.Fill(0)
+        this.mode = 0
+        this.zoom = 1
+        this.composed = false
+        this.waited = 0
+        this.spentTicks = 0
+        this.paint = new SolidBrush(0xFFFFFFFF)
+        this.pen = new Pen(0xFF000000, 2)
+    }
+
+    defined float MetersPerPixel {
+        get {
+            if (this.zoom == 0) { return 0.5 }
+            if (this.zoom == 2) { return 2.0 }
+            return 1.0
+        }
+    }
+
+    // Eine Taste (KeyDown); true: verbraucht.
+    defined bool Key(defined int key) {
+        if (key == 109) {
+            this.mode = (this.mode + 1) % 3
+            return true
+        }
+        if (key == 43 || key == 61 || key == 1073741911) {
+            this.zoom = Math.Max(0, this.zoom - 1)
+            return true
+        }
+        if (key == 45 || key == 1073741910) {
+            this.zoom = Math.Min(2, this.zoom + 1)
+            return true
+        }
+        return false
+    }
+
+    // ---- Kacheln als Bild ----
+
+    static defined int AreaColor(string kind) {
+        if (kind == undefined) { return 0 }
+        if (kind == "natural=water" || kind == "landuse=reservoir" || kind == "landuse=basin") { return 0xFFE6B48C }
+        if (kind == "landuse=forest" || kind == "natural=wood") { return 0xFF82BE94 }
+        if (kind == "landuse=grass" || kind.StartsWith("leisure=") || kind == "landuse=meadow" || kind == "landuse=allotments" || kind == "landuse=cemetery") { return 0xFF9AD3B4 }
+        if (kind == "amenity=parking") { return 0xFFD2CDCD }
+        if (kind == "landuse=commercial" || kind == "landuse=retail") { return 0xFFD2D6E8 }
+        if (kind == "landuse=industrial" || kind == "landuse=railway") { return 0xFFDAD0D6 }
+        if (kind == "landuse=construction") { return 0xFFB0CDD8 }
+        if (kind == "place=square") { return 0xFFE0E9ED }
+        return 0
+    }
+
+    // Das Bild einer Kachel (undefined: es gibt sie nicht).
+    Framebuffer Paint(Raser.TileKey key) {
+        string name = key.ToString()
+        this.obstacles.Need(key, name)
+        var tile = this.obstacles.tiles[name]
+        if (tile == undefined) { return undefined }
+        int t = Minimap.Tile
+        var fb = new Framebuffer(t, t)
+        var r = new Renderer(fb)
+        r.ClearTo(Minimap.Back)
+        var paint = this.paint
+        // Flächen, die mit niedriger Priorität zuerst
+        var order = new List<Raser.Area>()
+        foreach (a in tile.data.areas) {
+            if (Minimap.AreaColor(a.kind) == 0) { continue }
+            int at = order.Count
+            while (at > 0 && order[at - 1].priority > a.priority) { at-- }
+            order.Insert(at, a)
+        }
+        foreach (a in order) {
+            paint.Color = Minimap.AreaColor(a.kind)
+            r.FillPolygon(Minimap.Flip(a.ring, t), paint)
+        }
+        // Wege und Gleise (schmal), dann die Straßen: erst der Rand, dann die Fahrbahn darüber
+        foreach (road in tile.data.roads) {
+            if (road.layer < 0 || road.kind == undefined) { continue }
+            if (Raser.Props.IsCarRoad(road)) { continue }
+            int color = 0xFF7AA0C8
+            float width = 1.6
+            if (road.kind == "highway=pedestrian") {
+                color = 0xFFE6EEF2
+                width = Math.Max(2.0, road.width)
+            } else if (road.kind == "railway=rail") {
+                color = 0xFF807A7A
+                width = 2.0
+            } else if (road.kind.StartsWith("railway=")) {
+                color = 0xFF8A8A9A
+                width = 1.2
+            } else if (road.kind == "highway=steps") { color = 0xFF6888B0 }
+            if (!road.kind.StartsWith("highway=") && !road.kind.StartsWith("railway=")) { continue }
+            paint.Color = color
+            Minimap.Band(r, road.points, width, t, paint)
+        }
+        foreach (pass in [0, 1]) {
+            foreach (road in tile.data.roads) {
+                if (!Raser.Props.IsCarRoad(road)) { continue }
+                string k = road.kind.Substring(8)
+                bool major = k.StartsWith("primary") || k.StartsWith("secondary") || k.StartsWith("tertiary") || k.StartsWith("trunk") || k.StartsWith("motorway")
+                float width = Math.Max(3.0, road.width)
+                if (pass == 0) {
+                    paint.Color = 0xFFA0A0A0
+                    if (major) { paint.Color = 0xFF489AC0 }
+                    Minimap.Band(r, road.points, width + 2.0, t, paint)
+                } else {
+                    paint.Color = 0xFFFFFFFF
+                    if (major) { paint.Color = 0xFF72D8FA }
+                    Minimap.Band(r, road.points, width, t, paint)
+                }
+            }
+        }
+        // Gebäude mit dunklerem Rand
+        var edge = new Pen(0xFF78828C, 1)
+        foreach (b in tile.data.buildings) {
+            float pts[] = Minimap.Flip(b.footprint, t)
+            paint.Color = 0xFFA8B4BE
+            r.FillPolygon(pts, paint)
+            r.DrawPolygon(pts, edge, true)
+        }
+        return fb
+    }
+
+    // Kachel-lokale Punkte (y nach Norden) in Pixel des Bilds (y nach unten).
+    static float[] Flip(float points[], defined int t) {
+        var out = new float[points.length]
+        for (int i = 0; i + 1 < points.length; i = i + 2) {
+            out[i] = points[i]
+            out[i + 1] = t - points[i + 1]
+        }
+        return out
+    }
+
+    // Eine Linie mit Breite (m = Pixel): je Abschnitt ein Viereck, an den Knicken ein Kreis.
+    static undefined Band(Renderer r, float points[], defined float width, defined int t, Brush brush) {
+        float hw = width / 2.0
+        for (int k = 0; k + 3 < points.length; k = k + 2) {
+            float ax = points[k]
+            float ay = t - points[k + 1]
+            float bx = points[k + 2]
+            float by = t - points[k + 3]
+            float dx = bx - ax
+            float dy = by - ay
+            float len = Math.Sqrt(dx * dx + dy * dy)
+            if (len < 0.01) { continue }
+            float nx = -dy / len * hw
+            float ny = dx / len * hw
+            r.FillPolygon([ax + nx, ay + ny, bx + nx, by + ny, bx - nx, by - ny, ax - nx, ay - ny], brush)
+            if (hw >= 1.5) { r.FillCircle(Math.Round(bx)!int, Math.Round(by)!int, Math.Round(hw)!int, brush) }
+        }
+        if (hw >= 1.5 && points.length >= 2) { r.FillCircle(Math.Round(points[0])!int, Math.Round(t - points[1])!int, Math.Round(hw)!int, brush) }
+    }
+
+    // Sorgt für die Bilder der 3 x 3 Kacheln um (e, n) und das Mosaik. budget: so viele Kacheln dürfen neu gezeichnet werden (je Bild 1).
+    undefined Prepare(defined float e, defined float n, defined int budget) {
+        var key = Raser.TileKey.Of(e, n)
+        if (!this.built || key.x != this.centerX || key.y != this.centerY) {
+            this.centerX = key.x
+            this.centerY = key.y
+            this.dirty = true
+            this.built = true
+            // fern gerückte Kachelbilder freigeben
+            var names = new List<string>()
+            foreach (k in this.tiles.Keys) { names.Add(k) }
+            foreach (k in names) {
+                var tk = Raser.TileKey.Parse(k)
+                if (tk == undefined || Math.Abs(tk.x - key.x) > 2 || Math.Abs(tk.y - key.y) > 2) { this.tiles.Remove(k) }
+            }
+        }
+        int left = budget
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                var k = new Raser.TileKey(this.centerX + dx, this.centerY + dy)
+                string name = k.ToString()
+                if (this.tiles.ContainsKey(name)) { continue }
+                if (left <= 0) { continue }
+                left--
+                var fb = this.Paint(k)
+                this.tiles[name] = fb
+                this.dirty = true
+            }
+        }
+        if (!this.dirty) { return }
+        this.dirty = false
+        var r = new Renderer(this.mosaic)
+        r.ClearTo(Minimap.Back)
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                var k = new Raser.TileKey(this.centerX + dx, this.centerY + dy)
+                var fb = this.tiles.Get(k.ToString())
+                if (fb == undefined) { continue }
+                r.Blit(fb, (dx + 1) * Minimap.Tile, (1 - dy) * Minimap.Tile)
+            }
+        }
+        replace this.mosaicPx = this.mosaic.ReadBytes()
+        this.composed = false
+    }
+
+    // Tastet den runden Ausschnitt um (e, n) ab (gedreht nach heading, Grad, wenn mode 0).
+    undefined Compose(defined float e, defined float n, defined float heading) {
+        int s = this.size
+        float radius = s / 2.0
+        float mpp = this.MetersPerPixel
+        // Spalte nach rechts und Zeile nach unten in Ost und Nord
+        float h = 0.0
+        if (this.mode == 0) { h = heading * Math.PI / 180.0 }
+        float rightE = Math.Cos(h) * mpp
+        float rightN = Math.Sin(h) * mpp
+        float downE = Math.Sin(h) * mpp
+        float downN = -Math.Cos(h) * mpp
+        // das Mosaik: Westkante und Nordkante
+        var key = new Raser.TileKey(this.centerX - 1, this.centerY + 1)
+        float west = key.East
+        float north = key.North + Minimap.Tile
+        int span = Minimap.Span
+        byte src[] = this.mosaicPx
+        byte dst[] = this.viewPx
+        int back = Minimap.Back
+        // in Festkomma (1/65536 Pixel des Mosaiks): je Spalte um (stepE, stepN) weiter; außerhalb des Kreises bleibt alles durchsichtig
+        int stepE = Math.Round(rightE * 65536.0)!int
+        int stepN = Math.Round(-rightN * 65536.0)!int
+        int limit = span * 65536
+        for (int y = 0; y < s; y++) {
+            float cy = y + 0.5 - radius
+            float half = radius * radius - cy * cy
+            if (half <= 0.0) { continue }
+            int x0 = Math.Max(0, Math.Floor(radius - Math.Sqrt(half))!int)
+            int x1 = Math.Min(s - 1, Math.Ceiling(radius + Math.Sqrt(half))!int - 1)
+            // der Punkt der ersten Spalte (Mosaik: x nach Osten, y nach Süden)
+            float cx0 = x0 + 0.5 - radius
+            int pe = Math.Floor((e + rightE * cx0 + downE * cy - west) * 65536.0)!int
+            int pn = Math.Floor((north - (n + rightN * cx0 + downN * cy)) * 65536.0)!int
+            int at = (y * s + x0) * 4
+            for (int x = x0; x <= x1; x++) {
+                if (pe >= 0 && pn >= 0 && pe < limit && pn < limit) { dst.WriteInt32(at, src.ReadInt32(((pn >> 16) * span + (pe >> 16)) * 4)) }
+                else { dst.WriteInt32(at, back) }
+                pe = pe + stepE
+                pn = pn + stepN
+                at = at + 4
+            }
+        }
+        this.view.WriteBytes(dst)
+        this.composed = true
+    }
+
+    // Ein Weltpunkt als Lage auf der Karte (relativ zur Mitte, Pixel); false: außerhalb des Kreises.
+    defined float sx
+    defined float sy
+    defined bool Project(defined float e, defined float n, defined float pe, defined float pn, defined float heading) {
+        float mpp = this.MetersPerPixel
+        float de = (e - pe) / mpp
+        float dn = (n - pn) / mpp
+        float h = 0.0
+        if (this.mode == 0) { h = heading * Math.PI / 180.0 }
+        this.sx = de * Math.Cos(h) + dn * Math.Sin(h)
+        this.sy = -(-de * Math.Sin(h) + dn * Math.Cos(h))
+        float r = this.size / 2.0 - 4.0
+        return this.sx * this.sx + this.sy * this.sy <= r * r
+    }
+
+    // Ein Pfeil mit Kerbe um (cx, cy) in Richtung (fx, fy) (Pixel, Länge 1), k: Größe.
+    undefined Arrow(Renderer r, defined int cx, defined int cy, defined float fx, defined float fy, defined float k) {
+        float rx = -fy
+        float ry = fx
+        int tx = cx + Math.Round(fx * 9.0 * k)!int
+        int ty = cy + Math.Round(fy * 9.0 * k)!int
+        int nx = cx - Math.Round(fx * 2.5 * k)!int
+        int ny = cy - Math.Round(fy * 2.5 * k)!int
+        int ax = cx + Math.Round((-fx * 6.0 + rx * 6.0) * k)!int
+        int ay = cy + Math.Round((-fy * 6.0 + ry * 6.0) * k)!int
+        int bx = cx + Math.Round((-fx * 6.0 - rx * 6.0) * k)!int
+        int by = cy + Math.Round((-fy * 6.0 - ry * 6.0) * k)!int
+        r.FillTriangle(tx, ty, ax, ay, nx, ny, this.paint)
+        r.FillTriangle(tx, ty, nx, ny, bx, by, this.paint)
+    }
+
+    // Zeichnet die Karte oben rechts: (e, n) die Lage des Spielers, heading seine Richtung (Grad); dazu die Fahrzeuge (driven: das gefahrene,
+    // undefined zu Fuß) und die Gegenstände auf dem Boden.
+    undefined Draw(Renderer r, defined int width, defined float e, defined float n, defined float heading, List<Raser.Vehicle> vehicles, Raser.Vehicle driven, Raser.ItemDrops drops) {
+        if (this.mode == 2) { return }
+        int t0 = DateTime.Now.Ticks
+        this.Prepare(e, n, 1)
+        float moved = Math.Abs(e - this.lastE) + Math.Abs(n - this.lastN)
+        float turned = Math.Abs(heading - this.lastH)
+        if (this.mode == 1) { turned = 0.0 }
+        // neu abtasten (gut 3 ms), wenn er sich bewegt hat - beim Fahren jedes zweite Bild
+        bool changed = !this.composed || this.zoom != this.lastZoom || this.mode != this.lastMode
+        bool moving = moved > this.MetersPerPixel * 0.4 || turned > 0.4
+        if (moving && !changed && this.waited < 1) { this.waited++ }
+        else if (moving || changed) {
+            this.waited = 0
+            this.Compose(e, n, heading)
+            this.lastE = e
+            this.lastN = n
+            this.lastH = heading
+            this.lastZoom = this.zoom
+            this.lastMode = this.mode
+        }
+        int s = this.size
+        int x0 = width - s - 14
+        int y0 = 14
+        int cx = x0 + s / 2
+        int cy = y0 + s / 2
+        // Schatten, Bild, Rand
+        this.paint.Color = 0x60000000
+        r.FillCircle(cx + 2, cy + 3, s / 2 + 3, this.paint)
+        r.Blit(this.view, x0, y0, BlitMode.Blend)
+        this.pen.Color = 0xFF2E2A2A
+        this.pen.Width = 4
+        r.DrawCircle(cx, cy, s / 2, this.pen)
+        this.pen.Color = 0xFFD8D8D8
+        this.pen.Width = 1
+        r.DrawCircle(cx, cy, s / 2 - 2, this.pen)
+        // Gegenstände (gelb), Fahrzeuge (das eigene rot, die anderen blau)
+        if (drops != undefined) {
+            foreach (d in drops.all) {
+                if (!this.Project(d.east, d.north, e, n, heading)) { continue }
+                this.paint.Color = 0xFF202020
+                r.FillCircle(cx + Math.Round(this.sx)!int, cy + Math.Round(this.sy)!int, 3, this.paint)
+                this.paint.Color = 0xFF20D0FF
+                r.FillCircle(cx + Math.Round(this.sx)!int, cy + Math.Round(this.sy)!int, 2, this.paint)
+            }
+        }
+        if (vehicles != undefined) {
+            foreach (v in vehicles) {
+                if (v == driven) { continue }
+                if (!this.Project(v.east, v.north, e, n, heading)) { continue }
+                int px = cx + Math.Round(this.sx)!int
+                int py = cy + Math.Round(this.sy)!int
+                this.paint.Color = 0xFF202020
+                r.FillRect(px - 3, py - 3, 7, 7, this.paint)
+                this.paint.Color = 0xFFDC783C
+                r.FillRect(px - 2, py - 2, 5, 5, this.paint)
+            }
+        }
+        // der Spieler: ein Pfeil in der Mitte (gedreht: nach oben)
+        float ah = 0.0
+        if (this.mode == 1) { ah = heading * Math.PI / 180.0 }
+        float fx = -Math.Sin(ah)
+        float fy = -Math.Cos(ah)
+        this.paint.Color = 0xFF202020
+        this.Arrow(r, cx, cy, fx, fy, 1.45)
+        this.paint.Color = 0xFF2030E0
+        if (driven == undefined) { this.paint.Color = 0xFFE0A020 }
+        this.Arrow(r, cx, cy, fx, fy, 1.0)
+        // Norden am Rand
+        float nh = 0.0
+        if (this.mode == 0) { nh = heading * Math.PI / 180.0 }
+        int nx = cx + Math.Round(Math.Sin(nh) * (s / 2.0 - 1.0))!int
+        int ny = cy - Math.Round(Math.Cos(nh) * (s / 2.0 - 1.0))!int
+        this.paint.Color = 0xFF2E2A2A
+        r.FillCircle(nx, ny, 9, this.paint)
+        this.paint.Color = 0xFFFFFFFF
+        r.DrawText(nx - r.TextWidth("N") / 2, ny - r.TextHeight() / 2, "N", this.paint)
+        // der Maßstab unten
+        string scale = "50 m"
+        int bar = Math.Round(50.0 / this.MetersPerPixel)!int
+        int by = y0 + s + 8
+        this.paint.Color = 0xA0000000
+        r.FillRect(x0 + s - bar - 46, by - 2, bar + 44, r.TextHeight() + 4, this.paint)
+        this.paint.Color = 0xFFFFFFFF
+        r.FillRect(x0 + s - bar - 4, by + r.TextHeight() / 2, bar, 2, this.paint)
+        r.DrawText(x0 + s - bar - 42, by, scale, this.paint)
+        this.spentTicks = DateTime.Now.Ticks - t0
+    }
+}

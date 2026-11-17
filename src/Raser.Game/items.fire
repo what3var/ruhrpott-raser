@@ -1,0 +1,346 @@
+// Raser.Game: Inventar und Karte im Spiel - das Inventar des Spielers (Raser.Inventory), die Gegenstände auf dem Boden als kleine Kisten in der
+// Szene, der Rucksack auf dem Rücken der Figur, das Fenster (InventoryScreen) und die Karte (Minimap). main.fire ruft nur Handle, Update, Draw
+// und Shot.
+//
+// Tasten: I/Tab Inventar, F aufheben (ein Rucksack: auf den Rücken, wenn der frei ist, sonst öffnen), B den Rucksack absetzen, H Handy,
+// M Karte gedreht/genordet/aus, +/- Zoom der Karte.
+#import "scene3d"
+#import "graphics"
+#import "time"
+#import "filesystem"
+#import "windows"
+#import "raser.core"
+#import "raser.client"
+
+class Gear {
+    Raser.ContainerStore store
+    Raser.ItemDrops drops
+    Raser.Inventory inv
+    InventoryScreen screen
+    Minimap map
+    Scene scene
+    List<Object> parts              // die Kisten der Gegenstände auf dem Boden (wiederverwendet; überzählige versteckt)
+    defined int seen                // drops.changes beim letzten Abgleich
+    List<Object> bag                // der Rucksack auf dem Rücken: Körper und Deckel
+    string hint                     // was F gerade täte ("": nichts)
+
+    construct(Scene scene, Obstacles obstacles, Raser.Vehicle car) {
+        this.scene = scene
+        this.store = new Raser.ContainerStore()
+        this.drops = new Raser.ItemDrops()
+        this.inv = new Raser.Inventory(this.store, this.drops, 5, 4)
+        this.screen = new InventoryScreen(this.inv)
+        this.map = new Minimap(obstacles)
+        this.parts = new List<Object>()
+        this.seen = -1
+        this.bag = new List<Object>()
+        foreach (k in [0, 1]) {
+            var o = new Object(Template.Box, 0m, 0m, 0m, 1m, 1m, 1m)
+            o.Visible = false
+            this.bag.Add(o)
+            scene.Add(take o)
+        }
+        this.hint = ""
+        this.Starter()
+        this.Scatter(obstacles, car)
+    }
+
+    // Was der Spieler am Anfang dabeihat: Handy, Schlüssel, Kleingeld, Brötchen, Zigaretten - und einen Rucksack mit Wasser, Lampe, Werkzeug.
+    undefined Starter() {
+        var inv = this.inv
+        inv.Give(Raser.Items.Handy, 1)
+        inv.Give(Raser.Items.Schluessel, 1)
+        inv.Give(Raser.Items.Geld, 23)
+        inv.Give(Raser.Items.Broetchen, 3)
+        inv.Give(Raser.Items.Zigaretten, 7)
+        inv.Give(Raser.Items.Rucksack, 1)
+        inv.Give(Raser.Items.Wasser, 2)
+        inv.Give(Raser.Items.Taschenlampe, 1)
+        inv.Give(Raser.Items.Werkzeug, 1)
+    }
+
+    // Zum Ausprobieren liegen links neben dem Wagen ein Turnbeutel (mit Pommes und Wasser), ein leerer Trekkingrucksack, ein Kanister, Münzen und
+    // Brötchen - je 2 bis 10 m vom Startpunkt, nicht in Gebäuden.
+    undefined Scatter(Obstacles obstacles, Raser.Vehicle car) {
+        int kinds[] = [Raser.Items.Turnbeutel, Raser.Items.Trekkingrucksack, Raser.Items.Kanister, Raser.Items.Geld, Raser.Items.Broetchen, Raser.Items.Pommes]
+        int counts[] = [1, 1, 1, 50, 4, 1]
+        float along[] = [1.0, 4.0, -2.0, 6.5, -4.5, 9.0]
+        float h = car.heading * Math.PI / 180.0
+        float fe = -Math.Sin(h)
+        float fn = Math.Cos(h)
+        // links ist (-cos, -sin): dort steigt der Spieler aus
+        float le = -Math.Cos(h)
+        float ln = -Math.Sin(h)
+        for (int i = 0; i < kinds.length; i++) {
+            foreach (side in [2.6, 3.6, 1.8, 4.6, -2.6]) {
+                float e = car.east + fe * along[i] + le * side
+                float n = car.north + fn * along[i] + ln * side
+                if (obstacles.Blocked(e, n, 0.3)) { continue }
+                int data = this.store.DataFor(kinds[i])
+                this.drops.Add(e, n, kinds[i], counts[i], data)
+                if (kinds[i] == Raser.Items.Turnbeutel) {
+                    var c = this.store.Find(data)
+                    c.Add(Raser.Items.Pommes, 1, 0)
+                    c.Add(Raser.Items.Wasser, 3, 0)
+                    c.Add(Raser.Items.Zigaretten, 10, 0)
+                }
+                break
+            }
+        }
+    }
+
+    defined bool Busy { get { return this.screen.open } }
+
+    // Ein Ereignis des Fensters (nach Chat und Konsole); true: verbraucht.
+    defined bool Handle(any ev, defined bool onFoot, Raser.Walker walker) {
+        if (this.screen.Handle(ev)) { return true }
+        if (ev[0] != EventType.KeyDown) { return false }
+        int key = ev[1]
+        if (this.map.Key(key)) { return true }
+        if (key == 102) {
+            if (onFoot) { this.Interact() }
+            return true
+        }
+        if (key == 98) {
+            // B: den Rucksack absetzen (mit Inhalt)
+            if (!onFoot) { return true }
+            if (this.inv.BackpackItem() == 0) { this.screen.Say("Kein Rucksack auf dem Ruecken") } else { this.screen.Record(this.inv.DropAll(this.inv.backpackSlot, 0)) }
+            return true
+        }
+        return false
+    }
+
+    // F: den nächsten Gegenstand aufheben - ein Rucksack kommt auf den Rücken, wenn der frei ist; sonst wird er geöffnet.
+    undefined Interact() {
+        var d = this.drops.Nearest(this.inv.east, this.inv.north, this.inv.reach)
+        if (d == undefined) { return }
+        var t = Raser.Items.Get(d.item)
+        if (t.IsBackpack && this.inv.BackpackItem() != 0) {
+            if (this.inv.Open(d.id)) { this.screen.Show() }
+            return
+        }
+        var op = new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)
+        op.drop = d.id
+        if (this.inv.Apply(op)) {
+            this.screen.Say(t.name + " aufgehoben")
+            this.screen.Record(op)
+        } else { this.screen.Say("Kein Platz fuer " + t.name) }
+    }
+
+    // Je Bild: die Lage des Spielers fürs Inventar, das Tempo aus der Last, die Kisten am Boden, der Rucksack auf dem Rücken, der Hinweis für F.
+    undefined Update(Raser.Walker walker, defined bool onFoot, Raser.Vehicle car, PersonModel person, Ground terrain, WorldView view, Raser.Weather weather) {
+        if (onFoot) {
+            this.inv.east = walker.east
+            this.inv.north = walker.north
+        } else {
+            this.inv.east = car.east
+            this.inv.north = car.north
+        }
+        walker.load = this.inv.SpeedFactor()
+        this.screen.clockMinutes = Math.Floor(weather.hour * 60.0)!int
+        if (this.seen != this.drops.changes) {
+            this.seen = this.drops.changes
+            this.Sync(terrain, view)
+        }
+        this.PlaceBag(walker, onFoot, person, terrain, view)
+        this.hint = ""
+        if (onFoot && !this.screen.open) {
+            var d = this.drops.Nearest(this.inv.east, this.inv.north, this.inv.reach)
+            if (d != undefined) {
+                var t = Raser.Items.Get(d.item)
+                if (t.IsBackpack && this.inv.BackpackItem() != 0) { this.hint = "F: " + t.name + " oeffnen" } else { this.hint = "F: " + t.name + " aufheben" }
+            }
+        }
+    }
+
+    // Die Farbe der Kiste eines Gegenstands (wie sein Symbol; shade < 1: dunkler).
+    static defined int ColorOf(defined int item, defined float shade) {
+        int colors[] = [0xC800C8, 0x3278C8, 0xE1B93C, 0xEBC346, 0xCD8C3C, 0xF5F5F5, 0x78B4E6, 0xB9BEC8, 0xC83228, 0xC3231E, 0xC81E23, 0x3C6EBE, 0x46783C, 0xDC6E1E]
+        int c = colors[0]
+        if (item > 0 && item < colors.length) { c = colors[item] }
+        return S3D.Rgb(Math.Floor(((c >> 16) & 255) * shade)!int, Math.Floor(((c >> 8) & 255) * shade)!int, Math.Floor((c & 255) * shade)!int)
+    }
+
+    // Die Kisten der Gegenstände am Boden: je Gegenstand eine (Rucksäcke: Körper und Deckel), auf das Gelände gestellt.
+    undefined Sync(Ground terrain, WorldView view) {
+        int used = 0
+        foreach (d in this.drops.all) {
+            var t = Raser.Items.Get(d.item)
+            if (t == undefined) { continue }
+            float y = 0.0
+            any g = terrain.At(d.east, d.north)
+            if (g != undefined) { y = g - view.originZ }
+            float x = d.east - view.originE
+            float z = -(d.north - view.originN)
+            float turn = (d.id * 47) % 360
+            if (t.IsBackpack) {
+                // groß nach Art: Turnbeutel flach, Trekkingrucksack hoch
+                float w = 0.34
+                float hh = 0.42
+                float dd = 0.2
+                if (d.item == Raser.Items.Turnbeutel) {
+                    w = 0.36
+                    hh = 0.3
+                    dd = 0.08
+                }
+                if (d.item == Raser.Items.Trekkingrucksack) {
+                    w = 0.38
+                    hh = 0.62
+                    dd = 0.26
+                }
+                this.Part(used, x, y + hh / 2.0, z, w, hh, dd, Gear.ColorOf(d.item, 1.0), turn)
+                used++
+                this.Part(used, x, y + hh * 0.86, z, w * 1.04, hh * 0.28, dd * 1.15, Gear.ColorOf(d.item, 0.6), turn)
+                used++
+            } else {
+                float s = 0.18
+                if (t.size == 2) { s = 0.26 }
+                if (t.size == 3) { s = 0.4 }
+                this.Part(used, x, y + s / 2.0, z, s, s, s, Gear.ColorOf(d.item, 1.0), turn)
+                used++
+            }
+        }
+        for (int i = used; i < this.parts.Count; i++) { this.parts[i].Visible = false }
+    }
+
+    undefined Part(defined int index, defined float x, defined float y, defined float z, defined float w, defined float h, defined float d, defined int color, defined float turn) {
+        while (this.parts.Count <= index) {
+            var o = new Object(Template.Box, 0m, 0m, 0m, 1m, 1m, 1m)
+            this.parts.Add(o)
+            this.scene.Add(take o)
+        }
+        var o = this.parts[index]
+        o.SetPosition(x * 1m, y * 1m, z * 1m)
+        o.SetSize(w * 1m, h * 1m, d * 1m)
+        o.RotationY = turn * 1deg
+        o.Color = color
+        o.Visible = true
+    }
+
+    // Der Rucksack auf dem Rücken der Figur (zu Fuß, wenn die Figur zu sehen ist).
+    undefined PlaceBag(Raser.Walker walker, defined bool onFoot, PersonModel person, Ground terrain, WorldView view) {
+        int item = this.inv.BackpackItem()
+        bool show = onFoot && item != 0 && person.visible && !person.sitting
+        foreach (o in this.bag) { o.Visible = show }
+        if (!show) { return }
+        float y = 0.0
+        any g = terrain.At(walker.east, walker.north)
+        if (g != undefined) { y = g - view.originZ }
+        float h = walker.heading * Math.PI / 180.0
+        // hinten ist (sin, -cos) in (Ost, Nord)
+        float w = 0.34
+        float hh = 0.44
+        float dd = 0.16
+        float up = 1.14
+        if (item == Raser.Items.Turnbeutel) {
+            w = 0.32
+            hh = 0.36
+            dd = 0.06
+            up = 1.2
+        }
+        if (item == Raser.Items.Trekkingrucksack) {
+            w = 0.4
+            hh = 0.72
+            dd = 0.24
+            up = 1.16
+        }
+        float back = 0.12 + dd / 2.0
+        float e = walker.east + Math.Sin(h) * back
+        float n = walker.north - Math.Cos(h) * back
+        this.bag[0].SetPosition((e - view.originE) * 1m, (y + up) * 1m, -(n - view.originN) * 1m)
+        this.bag[0].SetSize(w * 1m, hh * 1m, dd * 1m)
+        this.bag[0].RotationY = walker.heading * 1deg
+        this.bag[0].Color = Gear.ColorOf(item, 1.0)
+        this.bag[1].SetPosition((e - view.originE) * 1m, (y + up + hh * 0.36) * 1m, -(n - view.originN) * 1m)
+        this.bag[1].SetSize(w * 1.04 * 1m, hh * 0.28 * 1m, dd * 1.2 * 1m)
+        this.bag[1].RotationY = walker.heading * 1deg
+        this.bag[1].Color = Gear.ColorOf(item, 0.6)
+    }
+
+    // Nach der Anzeige: die Karte, der Hinweis für F, Schnellleiste bzw. Fenster.
+    undefined Draw(Renderer hud, defined int width, defined int height, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, List<Raser.Vehicle> vehicles) {
+        float e = car.east
+        float n = car.north
+        float h = car.heading
+        Raser.Vehicle driven = car
+        if (onFoot) {
+            e = walker.east
+            n = walker.north
+            h = walker.heading
+            driven = undefined
+        }
+        this.map.Draw(hud, width, e, n, h, vehicles, driven, this.drops)
+        if (this.hint != "") {
+            int w = hud.TextWidth(this.hint) + 16
+            this.screen.Fill(hud, (width - w) / 2, height - 48 - InventoryScreen.Size - 30, w, hud.TextHeight() + 8, 0xA0000000)
+            this.screen.Shadowed(hud, (width - w) / 2 + 8, height - 48 - InventoryScreen.Size - 26, this.hint, 0xFFFFFFFF)
+        }
+        this.screen.Draw(hud, width, height)
+    }
+
+    // Ohne Fenster (--shot): mit --minimap 1 Karte und Schnellleiste ins Bild (--minimap north: genordet, --map-zoom 0|1|2); --inventory-shot bild.png: dazu ein zweites Bild mit offenem
+    // Inventar - neben dem Turnbeutel am Boden (geöffnet), drei Brötchen an der Maus über dem Rucksack.
+    undefined Shot(Options options, Renderer hud, Framebuffer fb, defined int width, defined int height, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, List<Raser.Vehicle> vehicles) {
+        string path = options.Get("inventory-shot", "")
+        if (options.Get("minimap", "") == "" && path == "") { return }
+        // --minimap north: genordet; --map-zoom 0|1|2
+        if (options.Get("minimap", "") == "north") { this.map.mode = 1 }
+        this.map.zoom = Math.Clamp(options.Get("map-zoom", "1").ToInt(), 0, 2)
+        int p0 = DateTime.Now.Ticks
+        this.map.Prepare(car.east, car.north, 9)
+        if (onFoot) { this.map.Prepare(walker.east, walker.north, 9) }
+        print("Karte: " + this.map.tiles.Count + " Kacheln gezeichnet in " + ((DateTime.Now.Ticks - p0) / 10000.0) + " ms")
+        // die Karte messen: 20-mal neu abgetastet (wie bei jeder Bewegung)
+        int b0 = DateTime.Now.Ticks
+        for (int i = 0; i < 20; i++) { this.map.Compose(car.east + i * 0.5, car.north, car.heading + i) }
+        print("Karte abtasten: " + ((DateTime.Now.Ticks - b0) / 20 / 10000.0) + " ms je Bild")
+        if (path == "") {
+            this.Draw(hud, width, height, car, walker, onFoot, vehicles)
+            print("Karte: " + (this.map.spentTicks / 10000.0) + " ms")
+            return
+        }
+        // der Kanister: daneben stellen und aufheben (in die Hände: das Tempo sinkt); der Turnbeutel: daneben stellen und öffnen; die Brötchen an
+        // die Maus
+        var all = new List<int>()
+        foreach (d in this.drops.all) { if (d.item == Raser.Items.Kanister) { all.Add(d.id) } }
+        foreach (id in all) {
+            var k = this.drops.Find(id)
+            this.inv.east = k.east
+            this.inv.north = k.north
+            var pick = new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)
+            pick.drop = id
+            print("Kanister aufgehoben: " + this.inv.Apply(pick) + ", Tempo " + this.inv.SpeedFactor())
+        }
+        foreach (d in this.drops.all) {
+            if (d.item != Raser.Items.Turnbeutel) { continue }
+            this.inv.east = d.east + 0.5
+            this.inv.north = d.north
+            this.inv.Open(d.id)
+        }
+        this.screen.Show()
+        // (einmal zur Probe, für die Lage der Plätze)
+        var scratch = new Framebuffer(width, height)
+        var sr = new Renderer(scratch)
+        this.screen.Draw(sr, width, height)
+        var pockets = this.inv.Pockets()
+        for (int i = 0; i < pockets.Size; i++) {
+            if (pockets.Item(i) == Raser.Items.Broetchen) { this.inv.Click(this.inv.pockets, i, 1, false) }
+        }
+        // die Maus über einem freien Platz des Rucksacks
+        var bp = this.inv.Backpack()
+        foreach (s in this.screen.spots) {
+            if (bp != undefined && s.container == bp.id && s.slot == 5) {
+                this.screen.mouseX = s.x + 30
+                this.screen.mouseY = s.y + 26
+            }
+        }
+        this.screen.Draw(sr, width, height)
+        this.screen.pointer = true
+        this.hint = ""
+        int t0 = DateTime.Now.Ticks
+        this.Draw(hud, width, height, car, walker, onFoot, vehicles)
+        print("Inventar und Karte: " + ((DateTime.Now.Ticks - t0) / 10000.0) + " ms (Karte " + (this.map.spentTicks / 10000.0) + " ms)")
+        IO.File.WriteAllBytes(path, fb.ToPng())
+        print(path)
+    }
+}
