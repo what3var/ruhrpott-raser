@@ -7,9 +7,10 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 
 | Fund | Umweg im Projekt | Stand |
 |---|---|---|
-| Statische Felder werden in Deklarationsreihenfolge initialisiert; ein Initialisierer, der ein später deklariertes statisches Feld liest, bekommt `undefined`. | Reihenfolge der Klassen in `voxel.fire` beachten | Verhalten, nicht dokumentiert |
+| Statische Felder werden in Deklarationsreihenfolge initialisiert; ein Initialisierer, der ein später deklariertes statisches Feld liest, bekommt `undefined`. | Reihenfolge der Klassen in `voxel.fire` beachten | **muss behoben werden:** der Compiler soll zur Compilezeit ermitteln, welcher Initialisierer von welchem statischen Feld abhängt, und in dieser Reihenfolge initialisieren (ein Zyklus ist ein Fehler) |
 | Ein Ausdruck kann nicht mit `&&` auf der nächsten Zeile weitergehen (Zeilenende beendet die Anweisung). | Eine Zeile | Verhalten |
 | Ein Objekt, das einem Konstruktor übergeben und in einem Feld gespeichert wird, stirbt mit dem Aufrufer, wenn es ein Temporärwert war (`new Voxelizer(Sample.Make(), ...)`). | `try x.TakeTo(this)` in den Konstruktoren | Absicht (Besitzmodell); leicht zu vergessen, ein Hinweis des Typprüfers wäre hilfreich |
+| **Wunsch: ein Schlüsselwort `replace`** für das Überschreiben eines Felds: es löscht das bisherige Objekt (bzw. Array, Container), wenn es im Besitz des Objekts ist, und setzt dann den neuen Wert. Hintergrund: ein Feld neu zu belegen (`this.d = new Dictionary<...>()`, `this.one = take b`, `this.a = undefined`) gibt das Alte **absichtlich nicht** frei - sonst müsste fire jedes Mal sämtliche Referenzen auf das Objekt und alle seine Kinder prüfen. Das Löschen darf deshalb **niemals implizit** passieren, nur mit `replace`. | heute `delete this.f` vor dem Überschreiben (`MeshBatch.Pack`), bzw. `List` + `Clear` (`WorldView.making`) | Idee |
 
 ## scene3d
 
@@ -17,44 +18,6 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 |---|---|---|
 | Nebel auch auf der GPU (laut Doku nur Fast und Software). | Hardware-Renderer | offen |
 | Kacheln (`Scene.LightCulling`) und Spiegelungen (`Object.Reflectivity`) auch auf der GPU. | Hardware-Renderer | offen |
-
-## Speicher
-
-| Was | Umweg | Stand |
-|---|---|---|
-| **Ein neuer Container im selben Feld gibt den alten samt Inhalt nicht frei** (`this.d = new Dictionary<...>()`). Nachbau unten: 6 Runden mit je 20 Objekten à 16 MB - 2 → 1923 MB, nichts kommt zurück. | `Clear` statt eines neuen Containers | offen (a9d8598d) |
-| **Ein Array-Feld auf `undefined` setzen gibt das Array nicht frei** - es hängt weiter am Objekt und geht mit ihm durch einen Kanal: ein Objekt mit einem Byte-Puffer, dessen `float`-Feld (2 Mio. Werte) vorher auf `undefined` gesetzt wurde, braucht beim `TryReceive` 47 ms (mit `delete` vorher 0,009 ms). Im Spiel waren das die Rest-Ruckler beim Nachladen (`MeshBatch.Pack`: 40 bis 210 ms je abgeholtem Block, mit `delete` höchstens 4 ms). | `delete this.f` vor `this.f = undefined` | offen (a9d8598d) |
-| **Ein Objekt in einem Feld ersetzen gibt das alte nicht frei**: `this.one = take b` 60-mal mit je 16 MB, danach `this.one = undefined` - 1923 → 2883 MB. Im Spiel (`WorldView.making`, je Ergebnis eines Workers) wuchs der Speicher so in 48 s auf 12 GB (OOM). | das Objekt in einer `List` halten und mit `Clear` freigeben | offen (a9d8598d) |
-
-```fire
-class Big {
-    defined float a[]
-    construct() { this.a = new float[2000000] }
-}
-class Holder {
-    Dictionary<int, Big> d
-    Big one
-    construct() { }
-}
-var h = new Holder()
-float start = Environment.ProcessMemory / 1000000.0
-for (int r = 0; r < 6; r++) {
-    h.d = new Dictionary<int, Big>()
-    for (int i = 0; i < 20; i++) {
-        var b = new Big()
-        h.d[i] = b
-        b.TakeTo(h.d)
-    }
-}
-print("neuer Container im Feld: " + Math.Round(start) + " -> " + Math.Round(Environment.ProcessMemory / 1000000.0) + " MB")   // 2 -> 1923 MB
-start = Environment.ProcessMemory / 1000000.0
-for (int r = 0; r < 60; r++) {
-    var b = new Big()
-    h.one = take b
-}
-h.one = undefined
-print("Objekt im Feld ersetzt: " + Math.Round(start) + " -> " + Math.Round(Environment.ProcessMemory / 1000000.0) + " MB")    // 1923 -> 2883 MB
-```
 
 ## Threads
 
