@@ -528,7 +528,7 @@ class Game {
             }
             cam.Render()
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
-            print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Grip " + car.grip + ", Kamera " + chase.distance + " m")
+            print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m")
             if (shot != "") {
                 IO.File.WriteAllBytes(shot, fb.ToPng())
                 print(shot)
@@ -873,12 +873,13 @@ class Game {
         return vehicles[at].name
     }
 
-    // Die Anzeige: Tempo, Uhrzeit, Wetter; "rutscht", wenn die Reifen nicht halten.
+    // Die Anzeige: Tempo, Zustand des Fahrzeugs, Uhrzeit, Wetter; "rutscht", wenn die Reifen nicht halten.
     static undefined Hud(Renderer hud, Brush ink, Brush shade, Raser.Vehicle car, Raser.Weather weather, defined int height, defined bool onFoot, string atCar) {
-        hud.FillRect(12, height - 44, 330, 32, shade)
+        hud.FillRect(12, height - 44, 470, 32, shade)
         int minutes = Math.Floor(weather.hour * 60.0)!int
         string clock = (minutes / 60) + ":" + ((minutes % 60) / 10) + ((minutes % 60) % 10)
-        string text = Math.Round(Math.Abs(car.speed) * 3.6) + " km/h   " + clock
+        string text = Math.Round(Math.Abs(car.speed) * 3.6) + " km/h   Zustand " + Math.Round(car.health * 100.0) + "%   " + clock
+        if (car.health <= 0.0) { text = "kaputt   " + clock }
         // (die Schrift der Anzeige kennt kein ß)
         if (onFoot) { text = "zu Fuss   " + clock }
         if (atCar != "") { text = text + "   E: " + atCar }

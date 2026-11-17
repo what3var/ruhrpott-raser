@@ -457,6 +457,34 @@ class VehicleTests {
         Testing.Assert.IsTrue(car.lean == 0.0)
     }
 
+    [Test "Schaden aus der Wucht: kleine Stöße fast nichts, 50 km/h frontal viel, kaputt fährt nicht"]
+    undefined Damage() {
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(1.5) == 0.0)
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(5.0) < 0.05)
+        Testing.Assert.IsTrue(Raser.Vehicle.DamageOf(30.0) == 1.0)
+        // 50 km/h frontal gegen eine Wand im Norden
+        var car = new Raser.Vehicle()
+        Testing.Assert.IsTrue(car.health == 1.0)
+        car.speed = 50.0 / 3.6
+        car.Collide(1.2, 0.0, -1.0, 0.1)
+        Testing.Assert.IsTrue(car.health > 0.5 && car.health < 0.7)
+        // schräg und langsam an der Wand entlang: kaum etwas
+        var slant = new Raser.Vehicle()
+        slant.heading = -20.0
+        slant.speed = 8.0
+        slant.Collide(1.2, -1.0, 0.0, 0.05)
+        Testing.Assert.IsTrue(slant.health > 0.99)
+        // noch zweimal: hin, er fährt nicht mehr
+        for (int i = 0; i < 2; i++) {
+            car.speed = 50.0 / 3.6
+            car.Collide(1.2, 0.0, -1.0, 0.1)
+        }
+        Testing.Assert.IsTrue(car.health == 0.0)
+        car.speed = 0.0
+        for (int i = 0; i < 20; i++) { car.Step(0.05, 1.0, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(car.speed == 0.0)
+    }
+
     static defined float BrakeDistance(defined float wetness) {
         var car = new Raser.Vehicle()
         car.speed = 30.0
