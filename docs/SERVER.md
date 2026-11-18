@@ -111,7 +111,9 @@ mit 13 Bytes); der Server schickt jedem Client jeden 2. Takt einen Snapshot (**1
 (ohne das eigene - das steht bitgenau im eigenen Zustand), die Gegenstände am Boden und die NPCs des Verkehrs (bis 200 m). Der Server merkt sich je Client den
 Fingerabdruck jeder Entität (quantisiert, wie sie über die Leitung geht): Unverändertes geht nur alle 2 s noch einmal, was aus dem Interesse fällt
 (oder verschwindet), steht in der Liste der verschwundenen. Gemessen (Bots, 2–3 Spieler, ein paar geparkte Fahrzeuge): **etwa 1,4 bis 3,5 KB/s
-je Client vom Server, 0,4 KB/s zum Server**.
+je Client vom Server, 0,4 KB/s zum Server** - ohne Verkehr. Mit Welt und Verkehr (10 bis 14 Autos, gut 30 Fußgänger in Sicht, die sich fast alle
+in jedem Snapshot bewegen) sind es **etwa 21 bis 25 KB/s** je Client; da hilft später ein Delta gegen den letzten bestätigten Stand statt nur
+"geändert ja/nein".
 
 Ablauf: Der Client schickt Hello; der Server prüft Version und Token (Konto aus der Datenbank), setzt den Spieler in die Region und antwortet
 Welcome, Weather, InvSet und die Joins - oder Reject. Ein zweiter Login desselben Kontos wirft den ersten hinaus.
