@@ -129,6 +129,7 @@ class RegionServer {
     static readonly defined int ParkedPerTile = 6       // geparkte Fahrzeuge je Kachel (beim ersten Besuch)
     static readonly defined float KnockSpeed = 5.0      // ab diesem Tempo (m/s) haut ein Fahrzeug einen Spieler um
     static readonly defined int LyingTicks = 90         // so lange (Takte) liegt er
+    static readonly defined int TrafficDelay = 30       // so viele Takte nach der Bestellung wird ein neuer Straßengraph übernommen (1 s)
 
     Region region
     List<Player> players            // (Verweise: die Spieler gehören dem Gateway)
@@ -145,7 +146,11 @@ class RegionServer {
     Raser.Weather trafficWetness    // die Nässe für die Physik der Unfallwagen (das Wetter der Uhr)
     List<float> trafficPlayers
     List<Raser.NpcState> npcStates
-    HashSet<string> trafficTiles    // die Kacheln, deren Straßen im Graphen sind
+    Raser.GraphWorker trafficWorker // baut den Straßengraphen in einem eigenen Thread
+    string trafficWant              // die zuletzt bestellten Kacheln
+    defined int trafficDue          // in diesem Takt wird der bestellte Graph übernommen
+    defined int trafficWaitTicks    // so lange (Ticks) hat der Takt insgesamt auf den Worker gewartet
+    string world
     defined int builds
     defined int buildTicks
 
@@ -166,7 +171,9 @@ class RegionServer {
         this.traffic = undefined
         this.trafficPlayers = new List<float>()
         this.npcStates = new List<Raser.NpcState>()
-        this.trafficTiles = new HashSet<string>()
+        this.trafficWorker = undefined
+        this.trafficWant = ""
+        this.world = world
     }
 
     // Den Verkehr einschalten (ohne Welt: keiner - es gibt keine Straßen).
@@ -177,6 +184,7 @@ class RegionServer {
         // (die NPCs zählen von idBase hoch: dieselbe Art, derselbe Server, eigene Zahlen über dem Zähler der IDs)
         t.idBase = t.idBase + 1099511627776 / 2
         this.traffic = take t
+        this.trafficWorker = new Raser.GraphWorker(this.world)
     }
 
     // Ein Spieler kommt in die Region: an den gewünschten Startpunkt (auf die nächste Straße), mit einem Fahrzeug der gewünschten Art (0: zu
@@ -377,7 +385,7 @@ class RegionServer {
         var t = this.traffic
         if (t == undefined) { return }
         this.FeedTraffic()
-        if (t.graph.lanes.Count == 0) { return }
+        if (t.graph.lanes.Count == 0 && t.cars.Count == 0 && t.people.Count == 0) { return }
         var list = this.trafficPlayers
         list.Clear()
         foreach (p in this.players) {
@@ -415,6 +423,8 @@ class RegionServer {
         }
         // Spieler gegen NPC-Autos: abprallen (Fahrzeug) bzw. aufgehalten werden (zu Fuß)
         foreach (c in t.cars) {
+            // (Autos auf einer Brücke sind über den Spielern)
+            if (c.level != 0) { continue }
             float ch = c.heading * Math.PI / 180.0
             var cb = c.body
             foreach (v in this.sim.vehicles) {
@@ -440,8 +450,10 @@ class RegionServer {
         }
     }
 
-    // Die Straßen der 3 x 3 Kacheln um jeden Spieler in den Graphen des Verkehrs (aus den Kacheln der Hindernisse; je Takt höchstens eine neue,
-    // am Anfang alle), vergessen, was kein Spieler mehr braucht; gebaut wird, wenn alle gewünschten da sind.
+    // Die Straßen der 3 x 3 Kacheln um jeden Spieler: ändert sich die Menge, bestellt der Server beim Worker (Raser.GraphWorker, eigener
+    // Thread: Laden und Bauen halten den Takt nicht an) einen neuen Graphen; übernommen wird er genau TrafficDelay Takte nach der Bestellung -
+    // ist er dann noch nicht fertig, wartet der Takt dort auf ihn. So hängt der Verkehr nie vom Timing des Threads ab (dieselben Eingaben:
+    // derselbe Verkehr), und bis zur Übernahme fährt er auf dem alten Graphen weiter.
     undefined FeedTraffic() {
         var t = this.traffic
         var want = new List<string>()
@@ -454,36 +466,27 @@ class RegionServer {
                 }
             }
         }
-        bool first = t.graph.lanes.Count == 0
-        bool missing = false
-        int loaded = 0
-        foreach (name in want) {
-            if (this.trafficTiles.Contains(name)) { continue }
-            if (!first && loaded > 0) {
-                missing = true
-                break
-            }
-            var key = Raser.TileKey.Parse(name)
-            this.sim.obstacles.Need(key, name)
-            var tile = this.sim.obstacles.tiles[name]
-            if (tile != undefined) { t.graph.AddTile(tile) }
-            this.trafficTiles.Add(name)
-            loaded++
+        want.Sort()
+        string joined = ""
+        foreach (name in want) { joined = joined + name + ";" }
+        if (joined != this.trafficWant) {
+            this.trafficWant = joined
+            this.trafficWorker.Request(want)
+            this.trafficDue = this.tick + RegionServer.TrafficDelay
         }
-        // was keiner mehr braucht (alle 10 s)
-        if (this.tick % 300 == 0) {
-            var gone = new List<string>()
-            foreach (name in this.trafficTiles) { if (!want.Contains(name)) { gone.Add(name) } }
-            foreach (name in gone) { this.trafficTiles.Remove(name) }
-            if (gone.Count > 0) { t.graph.Keep(want) }
+        if (this.tick < this.trafficDue || !this.trafficWorker.Pending) { return }
+        int t0 = DateTime.Now.Ticks
+        if (!this.trafficWorker.Poll()) {
+            this.trafficWorker.Wait()
+            int waited = DateTime.Now.Ticks - t0
+            this.trafficWaitTicks = this.trafficWaitTicks + waited
+            Gateway.Log("Verkehr: der Takt wartet " + (waited / 10000) + " ms auf den Graphen")
         }
-        if (t.graph.dirty && !missing) {
-            int t0 = DateTime.Now.Ticks
-            t.graph.Build()
-            this.buildTicks = DateTime.Now.Ticks - t0
-            this.builds++
-            Gateway.Log("Verkehr: Graph gebaut (" + t.graph.lanes.Count + " Spuren, " + (this.buildTicks / 10000) + " ms), " + t.cars.Count + " Autos, " + t.people.Count + " Fussgaenger")
-        }
+        int ticks = this.trafficWorker.Hand(t)
+        if (ticks < 0) { return }
+        this.buildTicks = ticks
+        this.builds++
+        Gateway.Log("Verkehr: Graph übernommen (" + t.graph.lanes.Count + " Spuren, im Worker " + (ticks / 10000) + " ms), " + t.cars.Count + " Autos, " + t.people.Count + " Fussgaenger")
     }
 
     // Die NPCs bis 200 m um p als Entitäten (Raser.NpcState: EntityType.NpcCar bzw. Pedestrian, variant, bits, a, b).

@@ -10,6 +10,9 @@
 // - Gehwege: an Straßen mit Gehweg (Raser.StreetField.WalkWidth, wie im Netz gezeichnet) beidseitig auf der Mitte des Gehwegs, hinter einem
 //   Grünstreifen (Raser.Strips); dazu Fuß- und Wanderwege, Fußgängerzonen. An Knoten enden sie, wo die Fahrbahn beginnt; kurze Stücke verbinden
 //   sie an den Ecken, Überwege führen über die Fahrbahn (Fußgänger warten dort, Autos bremsen).
+// Brücken (OSM layer > 0; Tunnel nimmt der Import gar nicht erst auf) gehören dazu, auf ihrer Ebene: Knoten nur zwischen Straßen derselben
+// Ebene, außer an den Enden einer Straße (dort schließt die Rampe an) - eine Brücke über eine Straße ist keine Kreuzung. Die Spuren einer Brücke
+// haben eine Höhe (z je Punkt, absolut): zwischen dem Gelände an den Enden der Brücke, mindestens das Gelände darunter.
 // Einbahnstraßen kennt der Zwischenlayer nicht (kein oneway-Tag): lanes=1, Auffahrten (_link), Autobahnen und die Hälften zweibahniger Straßen
 // (eine gleichartige Straße in Gegenrichtung 5 .. 30 m links daneben) gelten als Einbahnstraßen.
 #import "raser.core"
@@ -46,6 +49,8 @@ namespace Raser {
         defined float limit           // das Wunschtempo (m/s)
         defined float turn            // Verbindungen: der Winkel (Grad, links positiv)
         defined float density         // Verkehr: Fahrzeuge bzw. Fußgänger je m
+        defined int level             // die Ebene (OSM layer: 0 auf dem Gelände, 1 Brücke ...)
+        float z[]                     // Brücken: die Höhe je Punkt (m über NHN); leer: auf dem Gelände
         float pts[]                   // Ost, Nord, ...
         float acc[]                   // die Länge bis zu jedem Punkt
         float vmax[]                  // das Kurventempo an jedem Punkt (m/s)
@@ -101,6 +106,7 @@ namespace Raser {
                 out.n = this.pts[1]
                 out.dx = 0.0
                 out.dy = 1.0
+                out.z = 0.0
                 out.vmax = this.limit
                 return
             }
@@ -130,6 +136,8 @@ namespace Raser {
                 out.dy = 1.0
             }
             out.vmax = this.vmax[lo] + (this.vmax[hi] - this.vmax[lo]) * f
+            out.z = 0.0
+            if (this.z != undefined && this.z.length == n) { out.z = this.z[lo] + (this.z[hi] - this.z[lo]) * f }
         }
 
         defined float EndE { get { return this.pts[this.pts.length - 2] } }
@@ -143,6 +151,7 @@ namespace Raser {
         defined float dx
         defined float dy
         defined float vmax
+        defined float z               // die Höhe der Spur (Brücke, m über NHN); 0: auf dem Gelände
     }
 
     // Was der Graph von einer Straße behält (die Kacheln können danach gehen).
@@ -155,7 +164,9 @@ namespace Raser {
         defined bool car
         defined bool foot
         defined bool oneway
+        defined int level             // OSM layer (0 auf dem Gelände, > 0 Brücke)
         float pts[]                   // global
+        float ground[]                // je Punkt die Höhe des Geländes (m über NHN; -1e9: unbekannt) - für Brücken
         float line[]                  // geglättet (wie Raser.StreetField)
         List<float> strips            // Grünstreifen: Seite (1 links, -1 rechts), s0, s1, Breite
         List<string> tiles            // die Kacheln, in denen sie steht
@@ -261,54 +272,96 @@ namespace Raser {
             return 1.0
         }
 
-        // Die Straßen einer Kachel übernehmen (Straßen über den Rand nur einmal; ihre Grünstreifen aus jeder Kachel). true: etwas ist neu (dann Build).
+        // Fährt eine Straße für Autos? (wie Raser.Props.IsCarRoad, aber auch auf Brücken)
+        static defined bool IsCar(string k) {
+            return !(k == "footway" || k == "path" || k == "cycleway" || k == "steps" || k == "pedestrian" || k == "track" || k == "bridleway" || k == "corridor" || k == "platform" || k == "proposed" || k == "construction")
+        }
+
+        // Die Straßen einer Kachel übernehmen (Straßen über den Rand nur einmal; ihre Grünstreifen und die Höhen des Geländes aus jeder Kachel).
+        // true: etwas ist neu (dann Build). Gleich Merge eines Graphen nur dieser Kachel (so baut auch der Worker, Raser.GraphWorker).
         defined bool AddTile(Tile tile) {
-            if (tile == undefined || tile.data == undefined || tile.data.roads == undefined) { return false }
+            var one = Raser.RoadGraph.OfTile(tile)
+            if (one == undefined) { return false }
+            return this.Merge(one)
+        }
+
+        // Ein Graph nur mit den Straßen einer Kachel (ungebaut); undefined: keine Kachel.
+        static RoadGraph OfTile(Tile tile) {
+            if (tile == undefined || tile.data == undefined || tile.data.roads == undefined) { return undefined }
+            var g = new Raser.RoadGraph()
             string name = tile.key.ToString()
             float east = tile.key.East
             float north = tile.key.North
-            bool changed = false
             foreach (r in tile.data.roads) {
-                if (r.kind == undefined || r.layer != 0 || !r.kind.StartsWith("highway=") || r.points == undefined || r.points.length < 4) { continue }
+                if (r.kind == undefined || r.layer < 0 || !r.kind.StartsWith("highway=") || r.points == undefined || r.points.length < 4) { continue }
                 string k = r.kind.Substring(8)
-                bool car = Raser.Props.IsCarRoad(r)
+                bool car = Raser.RoadGraph.IsCar(k)
                 bool foot = k == "footway" || k == "path" || k == "pedestrian"
                 if (!car && !foot) { continue }
-                if (!this.roads.ContainsKey(r.id)) {
-                    var info = new Raser.RoadInfo()
-                    info.id = r.id
-                    info.kind = k
-                    info.width = r.width
-                    info.lanes = r.lanes
-                    info.car = car
-                    info.foot = foot
-                    if (car && Raser.StreetField.IsStreet(r)) { info.walk = Raser.StreetField.WalkWidth(r) }
-                    info.pts = new float[r.points.length]
-                    for (int i = 0; i + 1 < r.points.length; i = i + 2) {
-                        info.pts[i] = r.points[i] + east
-                        info.pts[i + 1] = r.points[i + 1] + north
-                    }
-                    info.line = Raser.StreetField.Smooth(info.pts)
-                    try info.line.TakeTo(info)
-                    this.roads[r.id] = info
-                    changed = true
+                if (g.roads.ContainsKey(r.id)) { continue }
+                var info = new Raser.RoadInfo()
+                info.id = r.id
+                info.kind = k
+                info.width = r.width
+                info.lanes = r.lanes
+                info.car = car
+                info.foot = foot
+                info.level = r.layer
+                if (car && Raser.StreetField.IsStreet(r)) { info.walk = Raser.StreetField.WalkWidth(r) }
+                info.pts = new float[r.points.length]
+                info.ground = new float[r.points.length / 2]
+                for (int i = 0; i + 1 < r.points.length; i = i + 2) {
+                    info.pts[i] = r.points[i] + east
+                    info.pts[i + 1] = r.points[i + 1] + north
+                    // das Gelände (nur für Brücken nötig; nur Punkte in dieser Kachel)
+                    info.ground[i / 2] = -1.0e9
+                    float x = r.points[i]
+                    float y = r.points[i + 1]
+                    if (r.layer != 0 && tile.heights != undefined && x >= 0.0 && y >= 0.0 && x < 256.0 && y < 256.0) { info.ground[i / 2] = tile.heights.At(x, y) }
                 }
-                var known = this.roads[r.id]
-                if (!known.tiles.Contains(name)) { known.tiles.Add(name) }
+                info.line = Raser.StreetField.Smooth(info.pts)
+                try info.line.TakeTo(info)
+                info.tiles.Add(name)
                 // die Grünstreifen dieser Kachel an der Straße (s entlang der Linie: dieselbe in jeder Kachel)
-                if (tile.strips != undefined && known.walk > 0.0) {
+                if (tile.strips != undefined && info.walk > 0.0) {
                     foreach (st in tile.strips) {
                         if (st.road != r.id) { continue }
-                        bool seen = false
-                        for (int q = 0; q + 3 < known.strips.Count; q = q + 4) {
-                            if (known.strips[q] == st.side && Math.Abs(known.strips[q + 1] - st.s0) < 0.01 && Math.Abs(known.strips[q + 2] - st.s1) < 0.01) { seen = true }
+                        foreach (v in [st.side * 1.0, st.s0, st.s1, st.width]) { info.strips.Add(v) }
+                    }
+                }
+                g.roads[r.id] = info
+            }
+            return g
+        }
+
+        // Die Straßen eines anderen (ungebauten) Graphen dazunehmen: neue als Kopie, bekannte bekommen dessen Kacheln, Grünstreifen und
+        // Höhen dazu (was schon da ist, bleibt). Gleiche Straßen in anderer Folge geben dasselbe. true: etwas ist neu.
+        defined bool Merge(RoadGraph other) {
+            bool changed = false
+            foreach (pair in other.roads) {
+                var src = pair.Value
+                if (!this.roads.ContainsKey(src.id)) {
+                    this.roads[src.id] = copy src
+                    changed = true
+                    continue
+                }
+                var known = this.roads[src.id]
+                foreach (name in src.tiles) { if (!known.tiles.Contains(name)) { known.tiles.Add(name) } }
+                for (int q = 0; q + 3 < src.strips.Count; q = q + 4) {
+                    bool seen = false
+                    for (int k = 0; k + 3 < known.strips.Count; k = k + 4) {
+                        if (known.strips[k] == src.strips[q] && Math.Abs(known.strips[k + 1] - src.strips[q + 1]) < 0.01 && Math.Abs(known.strips[k + 2] - src.strips[q + 2]) < 0.01) { seen = true }
+                    }
+                    if (seen) { continue }
+                    for (int k = 0; k < 4; k++) { known.strips.Add(src.strips[q + k]) }
+                    changed = true
+                }
+                if (known.ground != undefined && src.ground != undefined && known.ground.length == src.ground.length) {
+                    for (int k = 0; k < src.ground.length; k++) {
+                        if (known.ground[k] < -1.0e8 && src.ground[k] > -1.0e8) {
+                            known.ground[k] = src.ground[k]
+                            changed = true
                         }
-                        if (seen) { continue }
-                        known.strips.Add(st.side)
-                        known.strips.Add(st.s0)
-                        known.strips.Add(st.s1)
-                        known.strips.Add(st.width)
-                        changed = true
                     }
                 }
             }
@@ -333,8 +386,17 @@ namespace Raser {
 
         static string Key(defined float e, defined float n) { return Math.Round(e * 20.0)!int + "_" + Math.Round(n * 20.0)!int }
 
-        defined int NodeOf(defined float e, defined float n) {
-            string k = Raser.RoadGraph.Key(e, n)
+        // Der Schlüssel eines Punkts einer Straße: an den Enden der der Ebene 0 (dort schließen Rampen an), sonst mit ihrer Ebene - so
+        // kreuzt eine Brücke keine Straße darunter.
+        static string VKey(RoadInfo r, defined int i) {
+            string k = Raser.RoadGraph.Key(r.pts[i * 2], r.pts[i * 2 + 1])
+            if (r.level == 0 || i == 0 || i == r.pts.length / 2 - 1) { return k }
+            return k + "/" + r.level
+        }
+
+        defined int NodeOf(defined float e, defined float n) { return this.NodeAtKey(Raser.RoadGraph.Key(e, n), e, n) }
+
+        defined int NodeAtKey(string k, defined float e, defined float n) {
             if (this.nodeAt.ContainsKey(k)) { return this.nodeAt[k] }
             int id = this.nodes.Count / 2
             this.nodes.Add(e)
@@ -376,7 +438,7 @@ namespace Raser {
             var allUse = new Dictionary<string, int>()
             foreach (r in this.sorted) {
                 for (int i = 0; i + 1 < r.pts.length; i = i + 2) {
-                    string k = Raser.RoadGraph.Key(r.pts[i], r.pts[i + 1])
+                    string k = Raser.RoadGraph.VKey(r, i / 2)
                     if (r.car) { carUse[k] = carUse.Get(k, 0) + 1 }
                     allUse[k] = allUse.Get(k, 0) + 1
                 }
@@ -473,9 +535,9 @@ namespace Raser {
             int startNode = this.NodeOf(r.pts[0], r.pts[1])
             if (car) { this.AddRoadAt(startNode, ri) }
             for (int i = 1; i < n; i++) {
-                string k = Raser.RoadGraph.Key(r.pts[i * 2], r.pts[i * 2 + 1])
+                string k = Raser.RoadGraph.VKey(r, i)
                 if (i < n - 1 && use.Get(k, 0) < 2) { continue }
-                int node = this.NodeOf(r.pts[i * 2], r.pts[i * 2 + 1])
+                int node = this.NodeAtKey(k, r.pts[i * 2], r.pts[i * 2 + 1])
                 if (car) { this.AddRoadAt(node, ri) }
                 if (node != startNode || i - start > 1) {
                     var p = new Raser.RoadPiece(r)
@@ -579,6 +641,7 @@ namespace Raser {
             fwd.pts = Raser.LaneMath.Cut(shifted, t0, Raser.LaneMath.Length(shifted) - t1)
             try fwd.pts.TakeTo(fwd)
             fwd.Finish()
+            this.Heights(fwd, r)
             int fi = this.AddLane(take fwd)
             if (r.oneway) { return }
             float back[] = Raser.LaneMath.Reverse(p.line)
@@ -595,9 +658,59 @@ namespace Raser {
             bwd.pts = Raser.LaneMath.Cut(bshift, t1, Raser.LaneMath.Length(bshift) - t0)
             try bwd.pts.TakeTo(bwd)
             bwd.Finish()
+            this.Heights(bwd, r)
             int bi = this.AddLane(take bwd)
             this.lanes[fi].reverse = bi
             this.lanes[bi].reverse = fi
+        }
+
+        // Die Ebene und (auf einer Brücke) die Höhe je Punkt einer Spur der Straße r: das Gelände an den Enden der Brücke, dazwischen linear,
+        // mindestens das Gelände darunter. Ohne bekanntes Gelände: keine Höhe (die Spur liegt dann auf dem Gelände).
+        undefined Heights(Lane l, RoadInfo r) {
+            l.level = r.level
+            if (r.level == 0 || r.ground == undefined) { return }
+            int m = r.ground.length
+            float g0 = r.ground[0]
+            float g1 = r.ground[m - 1]
+            if (g0 < -1.0e8 && g1 < -1.0e8) { return }
+            if (g0 < -1.0e8) { g0 = g1 }
+            if (g1 < -1.0e8) { g1 = g0 }
+            float total = Raser.LaneMath.Length(r.pts)
+            int n = l.pts.length / 2
+            l.z = new float[n]
+            for (int i = 0; i < n; i++) {
+                Raser.Strips.Probe(r.pts, l.pts[i * 2], l.pts[i * 2 + 1], this.stripProbe)
+                float s = this.stripProbe.s
+                float deck = g0 + (g1 - g0) * Math.Clamp(s / Math.Max(total, 0.01), 0.0, 1.0)
+                // das Gelände darunter (zwischen den beiden Punkten der Linie um s, nur bekannte)
+                float acc = 0.0
+                for (int k = 1; k < m; k++) {
+                    float dx = r.pts[k * 2] - r.pts[k * 2 - 2]
+                    float dy = r.pts[k * 2 + 1] - r.pts[k * 2 - 1]
+                    float len = Math.Sqrt(dx * dx + dy * dy)
+                    if (acc + len >= s - 0.01 || k == m - 1) {
+                        float ga = r.ground[k - 1]
+                        float gb = r.ground[k]
+                        float below = -1.0e9
+                        if (ga > -1.0e8 && gb > -1.0e8) { below = ga + (gb - ga) * Math.Clamp((s - acc) / Math.Max(len, 0.01), 0.0, 1.0) } else { below = Math.Max(ga, gb) }
+                        if (below > -1.0e8) { deck = Math.Max(deck, below) }
+                        break
+                    }
+                    acc = acc + len
+                }
+                l.z[i] = deck
+            }
+        }
+
+        // Eine Verbindung zwischen zwei Spuren: die Ebene der Spur davor; eine Höhe nur, wenn beide eine haben (dazwischen linear).
+        static undefined Between(Lane c, Lane a, Lane b) {
+            c.level = a.level
+            if (a.z == undefined || b.z == undefined || a.z.length == 0 || b.z.length == 0) { return }
+            int n = c.pts.length / 2
+            float z0 = a.z[a.z.length - 1]
+            float z1 = b.z[0]
+            c.z = new float[n]
+            for (int i = 0; i < n; i++) { c.z[i] = z0 + (z1 - z0) * (i * 1.0) / Math.Max(1, n - 1) }
         }
 
         // So weit (m) enden die Fahrspuren vor einem Knoten: an Kreuzungen hinter der breitesten Fahrbahn, an Stößen zweier Abschnitte kurz, in Sackgassen nicht.
@@ -649,6 +762,7 @@ namespace Raser {
             c.pts = Raser.LaneMath.Bezier(ax, ay, ax + adx * handle, ay + ady * handle, bx - bdx * handle, by - bdy * handle, bx, by, steps)
             try c.pts.TakeTo(c)
             c.Finish()
+            Raser.RoadGraph.Between(c, la, lb)
             int ci = this.AddLane(take c)
             this.lanes[ci].next.Add(b)
             la.next.Add(ci)
@@ -728,6 +842,7 @@ namespace Raser {
             a.density = density / 2.0
             a.pts = copy cut
             a.Finish()
+            this.Heights(a, r)
             int ai = this.AddLane(take a)
             var b = new Raser.Lane()
             b.kind = kind
@@ -741,6 +856,7 @@ namespace Raser {
             b.pts = Raser.LaneMath.Reverse(cut)
             try b.pts.TakeTo(b)
             b.Finish()
+            this.Heights(b, r)
             int bi = this.AddLane(take b)
             this.lanes[ai].reverse = bi
             this.lanes[bi].reverse = ai
@@ -786,6 +902,7 @@ namespace Raser {
             c.pts = pts
             try c.pts.TakeTo(c)
             c.Finish()
+            Raser.RoadGraph.Between(c, la, lb)
             int ci = this.AddLane(take c)
             this.lanes[ci].next.Add(b)
             la.next.Add(ci)

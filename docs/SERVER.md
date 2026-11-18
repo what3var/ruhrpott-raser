@@ -203,11 +203,14 @@ die Folge, in der Kacheln kommen, ändert nichts.
    `IdKind.Npc` dieses Servers (`traffic.idBase`, darüber zählt die Simulation hoch) - sie stoßen nie mit Spielern, Fahrzeugen oder
    Gegenständen zusammen. Die Höchstzahlen gelten je Spieler-Umkreis: Autos erscheinen 80 .. 250 m, Fußgänger 40 .. 150 m um *jeden*
    Spieler und verschwinden über 300 bzw. 190 m von *allen*.
-2. Kacheln (`FeedTraffic`, je Takt): die 3 x 3 Kacheln um jeden Spieler kommen aus den Kacheln der Hindernisse (`sim.obstacles.Need`, dieselbe
-   Datei wie beim Client: `<world>/tiles/<x>_<y>.json`, mit den Grünstreifen, die die Lage der Gehwege bestimmen) in
-   `traffic.graph.AddTile` - am Anfang alle, danach höchstens eine neue je Takt. Gebaut (`graph.Build`, 9 Kacheln: 100 .. 250 ms) wird erst,
-   wenn alle gewünschten da sind; alle 10 s vergisst der Graph die Kacheln, die kein Spieler mehr braucht (`graph.Keep`). Der Bau stockt den
-   Takt einmal je Kachelwechsel - später in einen eigenen Thread mit einem zweiten Graphen.
+2. Kacheln und Graph (`FeedTraffic`, je Takt): ändert sich die Menge der 3 x 3 Kacheln um alle Spieler, bestellt der Server den Graphen beim
+   Worker (`Raser.GraphWorker`, ein eigener Thread mit `fire dedicated`): der lädt die Kacheln selbst (`FileTileStore.Load`, dieselben Dateien
+   `<world>/tiles/<x>_<y>.json` mit Grünstreifen und Höhen), hält je Kachel ihre Straßen zwischengespeichert, fügt die gewünschten sortiert
+   zusammen und baut (9 Kacheln: 100 .. 400 ms im Worker). Der Takt läuft weiter; der Verkehr fährt auf dem alten Graphen. **Übernommen**
+   (`Traffic.Adopt`, dann findet jeder NPC seine Spur wieder) wird genau `TrafficDelay` = 30 Takte (1 s) nach der Bestellung - ist der Graph
+   dann noch nicht fertig, wartet der Takt dort auf ihn (das Log sagt wie lange). Damit hängt der Verkehr nicht vom Timing des Threads ab:
+   dieselben Eingaben geben denselben Verkehr. Der Graph hängt nur von der Menge der Kacheln ab (nicht von früheren Aufträgen) - derselbe wie
+   synchron (Test `WorkerTests`).
 3. Je Takt (`Npcs`, nach den Eingaben der Spieler und `Knocks`, vor `Coast`): `traffic.wetness` aus dem Wetter der Uhr, dann
    `traffic.Step(1/30 s, spieler)`. `spieler` ist eine `List<float>` mit 7 Zahlen je Eintrag: Ost, Nord, Richtung (Grad, vorwärts (-sin, cos)),
    Tempo (m/s), Radius (m), spread (m, zwei Kreise davor und dahinter wie `Raser.Vehicle`), Art (0 zu Fuß, 1 Fahrzeug mit Fahrer, 2 Fahrzeug
@@ -222,11 +225,11 @@ die Folge, in der Kacheln kommen, ändert nichts.
 
 | Feld der Entität | NPC-Auto (Art 3) | Fußgänger (Art 4) |
 |---|---|---|
-| variant | Art (0 Auto, 1 Transporter) + 4 x Lack (0xRRGGBB) | Hemd + Hose x 2^24 |
+| variant | Art (0 Auto, 1 Transporter) + 4 x Lack (0xRRGGBB) | Hemd + Hose x 2^24 + (Größe in cm - 100) x 2^48 |
 | bits | 1 hupt, 8 steht, + 16 x Zustand (0 fährt, 1 steht, 2 Unfall, 3 kaputt) | 4 liegt, 8 steht, + 16 x Zustand (0 geht, 1 wartet, 4 liegt, 5 springt zur Seite) |
 | Lage, Richtung, Tempo | wie jede Entität (cm, 1/100 Grad, cm/s) | |
 | a | 0 | Haare + Haut x 2^24 |
-| b | 0 | Größe (cm) |
+| b | auf einer Brücke die Höhe (cm über NHN), sonst 0 | ebenso |
 
    Hin und zurück: `NpcState.EntityType`, `Variant`, `Bits`, `A`, `B` und `NpcState.FromEntity` (Raser.Traffic kennt Raser.Net nicht: die Zahlen
    der Arten stehen dort noch einmal). Ein NPC kostet etwa 25 .. 35 Byte; fahrende ändern sich jeden Snapshot (15 je s): mit 24 Autos und 30
@@ -238,6 +241,14 @@ die Folge, in der Kacheln kommen, ändert nichts.
    Darstellung). Für einen anderen Transport gibt es auch `NpcState.Encode/Decode` und `Raser.NpcBuffer` (ungenutzt, mit Tests).
 7. Probe: `tools/server-smoke.sh` mit Welt lässt in Runde 3 zwei Bots am selben Ort stehen; beide drucken alle 2 s die NPCs (ID, Lage in cm)
    zum selben Takt - das Skript vergleicht sie.
+
+**Brücken:** Straßen mit OSM `layer` > 0 (Tunnel nimmt der Import nicht auf) gehören zum Graphen, auf ihrer Ebene: Knoten nur zwischen
+Straßen derselben Ebene, außer an den Enden einer Straße (Rampen) - eine Brücke über eine Straße ist keine Kreuzung. Ihre Spuren haben eine
+Höhe (zwischen dem Gelände an den Enden der Brücke, mindestens das Gelände darunter); NPCs auf einer Brücke tragen sie (`NpcState.z`,
+Entität `b` in cm) und kümmern sich nur um ihre Ebene (keine Bremsung für Autos und Spieler darunter, keine Stöße mit ihnen). Auf Brücken
+erscheint nichts, es fährt nur darüber. Die Welt zeichnet Brücken noch nicht (eine Straße mit layer > 0 liegt als Belag auf dem Gelände); solange
+stellt das Spiel die NPCs dort auf das Gelände (`TrafficView.BridgesDrawn`). Der Import behält nur `layer`, nicht `bridge=yes`: Brücken ohne
+layer-Tag sind für den Verkehr ebenerdig.
 
 ## Persistenz
 

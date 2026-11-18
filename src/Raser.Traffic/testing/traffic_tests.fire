@@ -476,3 +476,134 @@ class StateTests {
         Testing.Assert.AreEqual(0, states.Count)
     }
 }
+
+class WorkerTests {
+    static Raser.Tile West() {
+        var a = new Raser.Tile(new Raser.TileKey(0, 0))
+        a.data.roads.Add(Net.Road(1, "secondary", [0.0, 100.0, 100.0, 100.0, 300.0, 100.0], 7.0, 0, "both"))
+        a.data.roads.Add(Net.Road(2, "residential", [100.0, 0.0, 100.0, 100.0, 100.0, 200.0], 5.5, 0, "both"))
+        a.data.roads.Add(Net.Road(4, "footway", [20.0, 20.0, 60.0, 30.0], 2.0))
+        return a
+    }
+
+    static Raser.Tile East() {
+        var b = new Raser.Tile(new Raser.TileKey(1, 0))
+        b.data.roads.Add(Net.Road(1, "secondary", [-256.0, 100.0, -156.0, 100.0, 44.0, 100.0], 7.0, 0, "both"))
+        b.data.roads.Add(Net.Road(3, "residential", [44.0, 100.0, 44.0, 250.0], 5.5, 0, "right"))
+        return b
+    }
+
+    [Test "Worker: derselbe Graph wie synchron, übernommen an den Verkehr"]
+    undefined SameAsSync() {
+        var g = new Raser.RoadGraph()
+        g.AddTile(WorkerTests.West())
+        g.AddTile(WorkerTests.East())
+        g.Build()
+        var w = new Raser.GraphWorker("")
+        var tiles = new List<Raser.Tile>(Owns.Values)
+        // in anderer Folge
+        tiles.Add(WorkerTests.East())
+        tiles.Add(WorkerTests.West())
+        w.Request(new List<string>(), tiles)
+        Testing.Assert.IsTrue(w.Wait(30.0))
+        var h = w.ready.graph
+        Testing.Assert.AreEqual(g.lanes.Count, h.lanes.Count)
+        Testing.Assert.AreEqual(g.NodeCount, h.NodeCount)
+        for (int i = 0; i < g.lanes.Count; i++) {
+            var a = g.lanes[i]
+            var b = h.lanes[i]
+            Testing.Assert.AreEqual(a.kind, b.kind)
+            Testing.Assert.AreEqual(a.pts.length, b.pts.length)
+            for (int k = 0; k < a.pts.length; k++) { Testing.Assert.IsTrue(a.pts[k] == b.pts[k]) }
+            Testing.Assert.AreEqual(a.next.Count, b.next.Count)
+            for (int k = 0; k < a.next.Count; k++) { Testing.Assert.AreEqual(a.next[k], b.next[k]) }
+        }
+        // übernehmen: der Verkehr fährt auf dem neuen Graphen weiter (Rebind)
+        var t = new Raser.Traffic(4, 0, 3)
+        var players = Scene.Walker(100.0, 100.0)
+        t.Step(0.1, players)
+        Testing.Assert.AreEqual(0, t.cars.Count)
+        Testing.Assert.IsTrue(w.Hand(t) >= 0)
+        Testing.Assert.IsTrue(!w.Pending)
+        Testing.Assert.AreEqual(g.lanes.Count, t.graph.lanes.Count)
+        for (int i = 0; i < 60; i++) { t.Step(1.0 / 30.0, players) }
+        Testing.Assert.IsTrue(t.cars.Count > 0)
+        // ein zweiter Auftrag nur mit der westlichen Kachel: neuer Graph, die Autos suchen ihre Spur wieder
+        var only = new List<Raser.Tile>(Owns.Values)
+        only.Add(WorkerTests.West())
+        w.Request(new List<string>(), only)
+        Testing.Assert.IsTrue(w.Wait(30.0))
+        w.Hand(t)
+        for (int i = 0; i < 30; i++) { t.Step(1.0 / 30.0, players) }
+        Testing.Assert.IsTrue(!t.graph.roads.ContainsKey(3))
+        w.Close()
+    }
+}
+
+class BridgeTests {
+    [Test "Brücke: keine Kreuzung mit der Straße darunter, Höhe zwischen den Enden"]
+    undefined Bridge() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        // das Gelände: im Süden 60 m, im Norden 70 m, dazwischen ein Einschnitt auf 40 m
+        var raster = new Raser.HeightRaster(0.0, 0.0, 4.0, 65, 65, 40.0)
+        for (int r = 0; r < 65; r++) {
+            for (int c = 0; c < 65; c++) {
+                float y = r * 4.0
+                if (y <= 16.0) { raster.Set(c, r, 60.0) }
+                if (y >= 184.0) { raster.Set(c, r, 70.0) }
+            }
+        }
+        tile.heights = take raster
+        // unten die Straße (Ebene 0), oben die Brücke (layer 1) - sie teilen sich sogar einen Punkt (100, 100)
+        tile.data.roads.Add(Net.Road(1, "residential", [0.0, 100.0, 100.0, 100.0, 200.0, 100.0], 5.5))
+        var bridge = Net.Road(2, "residential", [100.0, 0.0, 100.0, 100.0, 100.0, 200.0], 5.5)
+        bridge.layer = 1
+        tile.data.roads.Add(take bridge)
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        // vier Enden, keine Kreuzung: jede Straße ein Abschnitt, Abbiegespuren nur zum Wenden an den Enden
+        Testing.Assert.AreEqual(4, g.NodeCount)
+        Testing.Assert.AreEqual(4, g.Count(Raser.LaneKind.Road))
+        foreach (l in g.lanes) {
+            if (l.kind != Raser.LaneKind.Turn) { continue }
+            Testing.Assert.AreEqual(g.lanes[l.source].road, g.lanes[l.target].road)
+        }
+        // die Höhe auf der Brücke: in der Mitte zwischen 60 und 70 (nicht im Einschnitt), Ebene 1
+        var p = new Raser.LanePoint()
+        int seen = 0
+        foreach (l in g.lanes) {
+            if (l.kind != Raser.LaneKind.Road) { continue }
+            l.At(l.length / 2.0, p)
+            if (l.road == 2) {
+                Testing.Assert.AreEqual(1, l.level)
+                Testing.Assert.IsTrue(Math.Abs(p.z - 65.0) < 1.0)
+                seen++
+            } else {
+                Testing.Assert.AreEqual(0, l.level)
+                Testing.Assert.IsTrue(p.z == 0.0)
+            }
+        }
+        Testing.Assert.AreEqual(2, seen)
+        // ein Auto auf der Brücke trägt seine Höhe; Autos unten bremsen nicht für es
+        var t = Scene.Of(g)
+        var up = Scene.Car(t, 98.625, 100.0, 0.0, 8.0)
+        var down = Scene.Car(t, 96.0, 98.625, -90.0, 8.0)
+        t.Step(1.0 / 30.0, Scene.Walker(300.0, 300.0))
+        Testing.Assert.IsTrue(up.z > 60.0 && up.level == 1)
+        Testing.Assert.IsTrue(down.z == 0.0 && down.level == 0)
+        Testing.Assert.IsTrue(down.accel > -0.5)
+        var states = new List<Raser.NpcState>()
+        t.States(states, 100.0, 100.0, 50.0)
+        bool found = false
+        foreach (st in states) {
+            if (st.id == up.id) {
+                found = true
+                var back = new Raser.NpcState()
+                back.FromEntity(st.id, st.EntityType, st.Variant, st.Bits, st.A, st.B)
+                Testing.Assert.IsTrue(Math.Abs(back.z - up.z) < 0.01)
+            }
+        }
+        Testing.Assert.IsTrue(found)
+    }
+}

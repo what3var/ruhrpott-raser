@@ -145,7 +145,8 @@ class TrafficView {
     List<float> players
     List<Raser.NpcState> states  // was gezeichnet wird (Verweise: gehören der Simulation bzw. dem Puffer)
     Dictionary<int, int> seenState   // je NPC sein Zustand im letzten Bild (für die Meldungen)
-    List<string> fed            // die Kacheln, deren Straßen im Graphen sind
+    Raser.GraphWorker worker    // baut den Straßengraphen in einem eigenen Thread
+    string world
     string centre               // die Kachel des Spielers beim letzten Füttern
     defined int frame
     string message
@@ -175,47 +176,37 @@ class TrafficView {
         this.players = new List<float>()
         this.states = new List<Raser.NpcState>()
         this.seenState = new Dictionary<int, int>()
-        this.fed = new List<string>()
+        this.world = options.Get("world", "world")
+        this.worker = undefined
         this.centre = ""
         this.message = ""
     }
 
+    // Zeichnet die Welt Brücken? (Noch nicht: Straßen mit layer > 0 liegen als Belag auf dem Gelände.) Solange stehen auch die NPCs auf einer
+    // Brücke auf dem Gelände - wie die Straße, die man sieht; die Simulation kennt ihre Höhe schon (NpcState.z).
+    static readonly defined bool BridgesDrawn = false
+
     static defined int Rgb(defined int c) { return S3D.Rgb((c / 65536) % 256, (c / 256) % 256, c % 256) }
 
-    // Die Straßen der Kacheln um (e, n) (3 x 3) in den Graphen: am Anfang alle, danach höchstens eine neue Kachel je Aufruf (das Laden kostet).
-    undefined Feed(Obstacles obstacles, defined float e, defined float n, defined bool all) {
+    // Die Straßen der Kacheln um (e, n) (3 x 3): wechselt die Kachel des Spielers, bestellt das Spiel beim Worker einen neuen Graphen
+    // (Raser.GraphWorker, eigener Thread: Laden und Bauen halten das Bild nicht an); ist er fertig, übernimmt ihn der Verkehr. wait: auf den
+    // ersten warten (beim Start).
+    undefined Feed(defined float e, defined float n, defined bool wait) {
+        if (this.worker == undefined) { this.worker = new Raser.GraphWorker(this.world) }
         var key = Raser.TileKey.Of(e, n)
         string name = key + ""
-        var keep = new List<string>()
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) { keep.Add(new Raser.TileKey(key.x + dx, key.y + dy) + "") }
-        }
         if (name != this.centre) {
             this.centre = name
-            for (int i = this.fed.Count - 1; i >= 0; i--) {
-                if (!keep.Contains(this.fed[i])) { this.fed.RemoveAt(i) }
+            var keep = new List<string>()
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) { keep.Add(new Raser.TileKey(key.x + dx, key.y + dy) + "") }
             }
-            this.traffic.graph.Keep(keep)
+            this.worker.Request(keep)
         }
-        int loaded = 0
-        for (int dy = -1; dy <= 1; dy++) {
-            for (int dx = -1; dx <= 1; dx++) {
-                if (!all && loaded > 0) { break }
-                var k = new Raser.TileKey(key.x + dx, key.y + dy)
-                string kn = k + ""
-                if (this.fed.Contains(kn)) { continue }
-                obstacles.Need(k, kn)
-                this.fed.Add(kn)
-                var tile = obstacles.tiles[kn]
-                if (tile != undefined) { this.traffic.graph.AddTile(tile) }
-                loaded++
-            }
-        }
-        // gebaut wird erst, wenn alle neun Kacheln da sind (ein Neubau je Kachelwechsel, nicht drei)
-        if (this.traffic.graph.dirty && this.fed.Count >= 9) {
-            int t0 = DateTime.Now.Ticks
-            this.traffic.graph.Build()
-            this.buildTicks = DateTime.Now.Ticks - t0
+        if (wait && this.traffic.graph.lanes.Count == 0) { this.worker.Wait() } else { this.worker.Poll() }
+        int ticks = this.worker.Hand(this.traffic)
+        if (ticks >= 0) {
+            this.buildTicks = ticks
             this.builds++
         }
     }
@@ -223,7 +214,7 @@ class TrafficView {
     // Vor dem Start so viele Sekunden Verkehr rechnen (--warm s), der Spieler steht.
     undefined Warm(defined float seconds, Raser.Vehicle car, Raser.Walker walker, List<Raser.Vehicle> vehicles, Obstacles obstacles, Ground terrain, WorldView view, defined float wetness) {
         if (!this.enabled) { return }
-        this.Feed(obstacles, car.east, car.north, true)
+        this.Feed(car.east, car.north, true)
         for (float t = 0.0; t < seconds; t = t + 1.0 / 15.0) { this.Simulate(1.0 / 15.0, car, walker, false, vehicles, obstacles, wetness) }
     }
 
@@ -238,7 +229,7 @@ class TrafficView {
             n = walker.north
             heading = walker.heading
         }
-        this.Feed(obstacles, e, n, this.traffic.graph.lanes.Count == 0)
+        this.Feed(e, n, false)
         int t0 = DateTime.Now.Ticks
         if (dt > 0.0) { this.Simulate(dt, car, walker, onFoot, vehicles, obstacles, wetness) }
         this.traffic.States(this.states, e, n, 320.0)
@@ -368,6 +359,7 @@ class TrafficView {
                 if (d2 > 80.0 * 80.0 && (this.frame + st.id) % 2 == 1) { continue }
                 if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
                 float fy = this.Height(f.ground, 0, terrain, view, st.east, st.north)
+                if (TrafficView.BridgesDrawn && st.z != 0.0) { fy = st.z - view.originZ }
                 if (Math.Abs(f.placedE - st.east) < 0.001 && Math.Abs(f.placedN - st.north) < 0.001 && Math.Abs(f.placedH - st.heading) < 0.01 && f.pose == (st.state == 4 ? 1 : 0) && f.placedDetail == f.detail) { continue }
                 f.placedE = st.east
                 f.placedN = st.north
@@ -387,6 +379,7 @@ class TrafficView {
             if (d2 > 80.0 * 80.0 && (this.frame + st.id) % 2 == 1) { continue }
             if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
             float y = this.Height(this.carGround, slot, terrain, view, st.east, st.north)
+            if (TrafficView.BridgesDrawn && st.z != 0.0) { y = st.z - view.originZ }
             // unverändert (steht): nichts zu tun
             int pi = slot * 4
             if (Math.Abs(this.carPlaced[pi] - st.east) < 0.001 && Math.Abs(this.carPlaced[pi + 1] - st.north) < 0.001 && Math.Abs(this.carPlaced[pi + 2] - st.heading) < 0.01 && this.carPlaced[pi + 3] == (near ? 1.0 : 0.0)) { continue }
@@ -571,6 +564,6 @@ class TrafficView {
     string Report() {
         if (!this.enabled) { return "Verkehr aus" }
         int n = Math.Max(1, this.steps)
-        return "Verkehr: " + this.traffic.cars.Count + " Autos, " + this.traffic.people.Count + " Fussgaenger (Modelle " + this.cars.Count + " + " + this.figures.Count + "), Graph " + this.traffic.graph.lanes.Count + " Spuren / " + this.traffic.graph.NodeCount + " Knoten, gebaut " + this.builds + "x (zuletzt " + (this.buildTicks / 10000) + " ms); je Bild Simulation " + (this.stepTicks / n / 10000.0) + " ms, Modelle " + (this.syncTicks / n / 10000.0) + " ms; Unfaelle " + this.traffic.crashes + ", umgefahren " + this.traffic.knocked + "; Probe: " + this.traffic.Check()
+        return "Verkehr: " + this.traffic.cars.Count + " Autos, " + this.traffic.people.Count + " Fussgaenger (Modelle " + this.cars.Count + " + " + this.figures.Count + "), Graph " + this.traffic.graph.lanes.Count + " Spuren / " + this.traffic.graph.NodeCount + " Knoten, gebaut " + this.builds + "x im Worker (zuletzt " + (this.buildTicks / 10000) + " ms); je Bild Simulation " + (this.stepTicks / n / 10000.0) + " ms, Modelle " + (this.syncTicks / n / 10000.0) + " ms; Unfaelle " + this.traffic.crashes + ", umgefahren " + this.traffic.knocked + "; Probe: " + this.traffic.Check()
     }
 }

@@ -1,0 +1,163 @@
+// Raser.Traffic: der Straßengraph aus einem eigenen Thread - Kacheln laden (JSON, bis 1 MB je Kachel) und den Graphen bauen (9 Kacheln:
+// 100 .. 400 ms) hält so weder das Bild des Spiels noch den Takt des Servers an. Die Simulation selbst bleibt im Takt.
+//
+// Request(kacheln) schickt einen Auftrag (die Namen "x_y"; für Tests auch Kacheln selbst) an den Worker (`fire dedicated`: er wartet in den
+// Natives beim Lesen der Dateien). Der lädt jede Kachel einmal, hält je Kachel einen ungebauten Graphen nur ihrer Straßen (RoadGraph.OfTile),
+// fügt für den Auftrag genau die gewünschten in sortierter Folge zusammen (RoadGraph.Merge), baut und schickt den fertigen Graphen mit `take`
+// zurück. Das Ergebnis hängt nur von der Menge der Kacheln ab - nicht von früheren Aufträgen, nicht vom Timing: derselbe Graph wie
+// synchron (AddTile je Kachel, Build). Poll holt ab, was fertig ist (nur der neueste Auftrag zählt), Wait wartet darauf; der Verkehr
+// fährt bis zur Übernahme (Traffic.Adopt) auf dem alten Graphen weiter.
+#import "time"
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    // Ein Auftrag an den Worker und seine Antwort.
+    class GraphJob {
+        defined int id
+        List<string> names            // die Kacheln ("x_y"), aus den Dateien der Welt
+        List<Tile> tiles              // dazu Kacheln selbst (Tests, ohne Dateien)
+        RoadGraph graph               // die Antwort: gebaut
+        defined int ticks             // so lange (Ticks) hat der Worker gebraucht (Laden + Bauen)
+        defined int loaded            // so viele Kacheln hat er dafür neu geladen
+
+        construct() {
+            this.names = new List<string>()
+            this.tiles = new List<Tile>(Owns.Values)
+            this.graph = undefined
+        }
+    }
+
+    class GraphWorker {
+        Channel<GraphJob> jobs
+        Channel<GraphJob> done
+        defined int last              // der zuletzt bestellte Auftrag
+        defined int made
+        defined int got               // der zuletzt fertig gewordene (ready oder schon übergeben)
+        GraphJob ready                // der neueste fertige (noch nicht übernommen), sonst undefined
+
+        // world: das Verzeichnis der Welt ("": nur Kacheln aus den Aufträgen).
+        construct(string world) {
+            this.jobs = new Channel<Raser.GraphJob>(64)
+            this.done = new Channel<Raser.GraphJob>(64)
+            this.ready = undefined
+            var jobs = this.jobs
+            var done = this.done
+            fire dedicated taking world with jobs, done { Raser.GraphWorker.Work(jobs, done, world) }
+        }
+
+        // Der Worker: Aufträge abarbeiten, bis der Kanal zu ist. Ist schon ein neuerer da, wird der ältere ohne Graph beantwortet.
+        static undefined Work(Channel<GraphJob> jobs, Channel<GraphJob> done, string world) {
+            Raser.FileTileStore store = undefined
+            if (world != "") { store = new Raser.FileTileStore(world) }
+            var cache = new Dictionary<string, RoadGraph>(Owns.Values)
+            foreach (job in jobs) {
+                if (jobs.Count > 0) {
+                    done.Send(take job)
+                    continue
+                }
+                int t0 = DateTime.Now.Ticks
+                var g = Raser.GraphWorker.Assemble(job, store, cache)
+                g.Build()
+                job.graph = take g
+                job.ticks = DateTime.Now.Ticks - t0
+                done.Send(take job)
+            }
+        }
+
+        // Die Straßen eines Auftrags zusammenfügen (sortiert nach Namen; jede Kachel aus dem Zwischenspeicher, sonst geladen). Was der Auftrag
+        // nicht braucht, fliegt aus dem Zwischenspeicher.
+        static RoadGraph Assemble(GraphJob job, FileTileStore store, Dictionary<string, RoadGraph> cache) {
+            var names = new List<string>()
+            foreach (n in job.names) { if (!names.Contains(n)) { names.Add(n) } }
+            foreach (t in job.tiles) {
+                string n = t.key.ToString()
+                if (cache.ContainsKey(n)) { cache.Remove(n) }
+                var one = Raser.RoadGraph.OfTile(t)
+                if (one != undefined) { cache[n] = take one }
+                if (!names.Contains(n)) { names.Add(n) }
+            }
+            names.Sort()
+            var g = new Raser.RoadGraph()
+            foreach (n in names) {
+                if (!cache.ContainsKey(n)) {
+                    if (store == undefined) { continue }
+                    var key = Raser.TileKey.Parse(n)
+                    if (key == undefined) { continue }
+                    var tile = store.Load(key)
+                    job.loaded++
+                    if (tile == undefined) { continue }
+                    var one = Raser.RoadGraph.OfTile(tile)
+                    delete tile
+                    if (one == undefined) { continue }
+                    cache[n] = take one
+                }
+                g.Merge(cache[n])
+            }
+            var gone = new List<string>()
+            foreach (pair in cache) { if (!names.Contains(pair.Key)) { gone.Add(pair.Key) } }
+            foreach (n in gone) { cache.Remove(n) }
+            return g
+        }
+
+        // Einen Graphen für diese Kacheln bestellen; gibt die Nummer des Auftrags. tiles: Kacheln selbst (gehen an den Worker).
+        defined int Request(List<string> names, List<Tile> tiles = undefined) {
+            this.made++
+            var job = new Raser.GraphJob()
+            job.id = this.made
+            foreach (n in names) { job.names.Add(n) }
+            if (tiles != undefined) {
+                while (tiles.Count > 0) {
+                    var t = tiles[0]
+                    job.tiles.Add(take t)
+                    tiles.RemoveAt(0)
+                }
+            }
+            this.last = job.id
+            this.jobs.Send(take job)
+            return this.last
+        }
+
+        // Holt ab, was fertig ist (ohne zu warten). true: der neueste Auftrag ist fertig (ready).
+        defined bool Poll() {
+            var j = this.done.TryReceive()
+            while (j != undefined) {
+                if (j.id == this.last && j.graph != undefined) {
+                    this.got = j.id
+                    replace this.ready = take j
+                } else { delete j }
+                j = this.done.TryReceive()
+            }
+            return this.ready != undefined
+        }
+
+        // Wartet, bis der neueste Auftrag fertig ist (höchstens seconds s). true: ready.
+        defined bool Wait(defined float seconds = 60.0) {
+            if (this.Poll()) { return true }
+            if (!this.Pending) { return false }
+            int until = DateTime.Now.Ticks + Math.Round(seconds * 10000000.0)!int
+            while (this.ready == undefined && DateTime.Now.Ticks < until) {
+                var j = this.done.Receive()
+                if (j == undefined) { return false }
+                if (j.id == this.last && j.graph != undefined) {
+                    this.got = j.id
+                    replace this.ready = take j
+                } else { delete j }
+            }
+            return this.ready != undefined
+        }
+
+        defined bool Pending { get { return this.last > this.got } }
+
+        // Den fertigen Graphen an den Verkehr geben (Traffic.Adopt). Gibt die Zeit des Workers dafür (Ticks), -1: nichts fertig.
+        defined int Hand(Traffic traffic) {
+            if (this.ready == undefined) { return -1 }
+            int ticks = this.ready.ticks
+            traffic.Adopt(this.ready.graph)
+            replace this.ready = undefined
+            return ticks
+        }
+
+        undefined Close() { this.jobs.Close() }
+    }
+}
