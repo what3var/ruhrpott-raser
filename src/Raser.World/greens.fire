@@ -1,0 +1,494 @@
+// Raser.World: Wälder, Parks und andere Grünflächen bepflanzen und möblieren (Roadmap M2) - beim Laden jeder Kachel (Raser.FileTileStore.Load),
+// deterministisch aus den Flächen (Art, ID) und der Lage in der Welt: Voxelizer, ferne Stufe, Hindernisse und Spiel sehen dieselben Props.
+//
+// Die Raster liegen in der Welt (nicht in der Kachel): eine Fläche über zwei Kacheln wird in beiden gleich bepflanzt, jede Kachel nimmt ihren Teil.
+// Frei bleiben Gebäude und alle Straßen und Wege (halbe Breite + 1 m, Raser.Region.Occupied) - Waldwege und Parkwege sind begehbar.
+// - Wald (landuse=forest, natural=wood): Bäume alle 4,5 m (verrückt im Raster), Arten in Flecken von 60 m (Buche, Eiche, Birke, Ahorn, Kiefer,
+//   Fichte), einzelne gemischt; Lichtungen aus weichem Rauschen; am Rand (bis 6 m) niedriger und mit mehr Büschen; Unterwuchs aus Büschen und
+//   Farnen. Der Boden ist Waldboden (Palette.Forest: Laub, Moos, Erde).
+// - Gebüsch und Heide (natural=scrub/heath): dichte Büsche, ein paar Birken.
+// - Park und Garten (leisure=park/garden, große Rasen ab 2500 m²): Baumgruppen und einzelne große Bäume, an den Wegen Bänke (alle 28 m, zum Weg
+//   gedreht), Mülleimer, an langen Wegen Laternen; Blumenbeete; Hecken zur Straße.
+// - Spielplatz (leisure=playground): Sandkasten, Schaukel, Rutsche, Klettergerüst, eine Bank.
+// - Sportplatz (leisure=pitch): Tore an den Enden der langen Achse (klein: Basketballkörbe).
+// - Kleingärten (landuse=allotments): Parzellen von 15 m mit Laube, Beeten, Obstbaum und Hecke.
+// - Friedhof (landuse=cemetery): Grabreihen mit Wegen dazwischen, ein paar große Bäume.
+// - Wasser (natural=water): Schilf am Ufer.
+namespace Raser {
+    class Greens {
+        // Ersetzt die bestreuten Props (Quelle "fill:" vom alten Import, "green:") durch die Bepflanzung der Flächen.
+        static undefined Build(Tile tile) {
+            if (tile == undefined || tile.data == undefined || tile.data.props == undefined) { return }
+            for (int i = tile.data.props.Count - 1; i >= 0; i--) {
+                string src = tile.data.props[i].source
+                if (src != undefined && (src.StartsWith("fill:") || src.StartsWith("green:"))) { tile.data.props.RemoveAt(i) }
+            }
+            var g = new Raser.Greens()
+            g.tile = tile
+            g.Prepare()
+            g.e0 = tile.key.x * 256.0
+            g.n0 = tile.key.y * 256.0
+            foreach (a in tile.data.areas) {
+                string k = a.kind
+                if (k == undefined) { continue }
+                float area = Math.Abs(Raser.Geo.Area(a.ring))
+                if (k == "landuse=forest" || k == "natural=wood") { g.Forest(a) }
+                else if (k == "natural=scrub" || k == "natural=heath") { g.Scrub(a) }
+                else if (k == "leisure=park" || k == "leisure=garden" || (k == "landuse=grass" && area > 2500.0)) { g.Park(a) }
+                else if (k == "landuse=grass" || k == "landuse=meadow") { g.Lawn(a) }
+                else if (k == "leisure=playground") { g.Playground(a) }
+                else if (k == "leisure=pitch") { g.Pitch(a) }
+                else if (k == "landuse=allotments") { g.Allotments(a) }
+                else if (k == "landuse=cemetery") { g.Cemetery(a) }
+                else if (k == "natural=water") { g.Shore(a) }
+            }
+        }
+
+        Tile tile
+        defined float e0
+        defined float n0
+        defined int count
+        List<Box2> buildingBoxes        // die Rechtecke der Gebäude und Straßen (mit Rand), für Occupied
+        List<Box2> roadBoxes
+
+        construct() { this.count = 0 }
+
+        undefined Prepare() {
+            this.buildingBoxes = new List<Box2>()
+            this.roadBoxes = new List<Box2>()
+            foreach (b in this.tile.data.buildings) {
+                if (b.footprint == undefined) {
+                    this.buildingBoxes.Add(new Raser.Box2(0.0, 0.0, -1.0, -1.0))
+                    continue
+                }
+                this.buildingBoxes.Add(Raser.Box2.Of(b.footprint))
+            }
+            foreach (r in this.tile.data.roads) {
+                var box = Raser.Box2.Of(r.points)
+                box.Grow(r.width / 2.0 + 1.0)
+                this.roadBoxes.Add(take box)
+            }
+        }
+
+        // Steht dort ein Gebäude oder eine Straße bzw. ein Weg (halbe Breite + 1 m)?
+        defined bool Occupied(defined float x, defined float y) {
+            var bs = this.tile.data.buildings
+            for (int i = 0; i < bs.Count; i++) {
+                if (bs[i].footprint != undefined && this.buildingBoxes[i].Contains(x, y) && Raser.Geo.Inside(bs[i].footprint, x, y)) { return true }
+            }
+            var rs = this.tile.data.roads
+            for (int i = 0; i < rs.Count; i++) {
+                if (!this.roadBoxes[i].Contains(x, y) || rs[i].points == undefined) { continue }
+                if (Raser.Geo.DistanceToLine(rs[i].points, x, y) < rs[i].width / 2.0 + 1.0) { return true }
+            }
+            return false
+        }
+
+        // Ein Wert in [0, 1) aus Zahlen (gut gemischt).
+        static defined float Rand(defined int a, defined int b, defined int c) {
+            int h = Raser.Fnv.Mix(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), a), b), c))
+            return ((h >> 20) & 65535) / 65536.0
+        }
+
+        // Weiches Rauschen in der Welt (Gitter cell m, bilinear), in [0, 1).
+        static defined float Noise(defined float e, defined float n, defined float cell, defined int salt) {
+            float gx = e / cell
+            float gy = n / cell
+            int ix = Math.Floor(gx)!int
+            int iy = Math.Floor(gy)!int
+            float fx = gx - ix
+            float fy = gy - iy
+            float a = Raser.Greens.Rand(ix, iy, salt)
+            float b = Raser.Greens.Rand(ix + 1, iy, salt)
+            float c = Raser.Greens.Rand(ix, iy + 1, salt)
+            float d = Raser.Greens.Rand(ix + 1, iy + 1, salt)
+            float top = a + (b - a) * fx
+            float bottom = c + (d - c) * fx
+            return top + (bottom - top) * fy
+        }
+
+        // Darf an (x, y) (kachel-lokal) etwas stehen: in der Kachel, in der Fläche, nicht in Gebäuden und auf Wegen, weit genug vom Rand?
+        defined bool Room(Area a, defined float x, defined float y, defined float edge) {
+            if (x < 0.0 || y < 0.0 || x >= 256.0 || y >= 256.0) { return false }
+            if (!Raser.Geo.Inside(a.ring, x, y)) { return false }
+            if (edge > 0.0 && Raser.HouseStyle.RingDistance(a.ring, x, y) < edge) { return false }
+            return !this.Occupied(x, y)
+        }
+
+        undefined Add(Area a, string kind, defined float x, defined float y, defined float height, string detail, defined float angle, defined int salt) {
+            var p = new Raser.Prop()
+            p.source = "green:" + a.kind + ":" + a.source + "/" + kind + "/" + Math.Round((x + this.e0) * 10.0)!int + "_" + Math.Round((y + this.n0) * 10.0)!int + "/" + salt
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = kind
+            p.x = x
+            p.y = y
+            p.height = height
+            p.detail = detail
+            p.angle = angle
+            this.tile.data.props.Add(take p)
+            this.count++
+        }
+
+        // Die Zellen eines Weltrasters (step m) über dem Teil der Fläche in der Kachel: je Zelle (ix, iy) ein Aufruf mit dem Punkt der Zelle
+        // (verrückt um bis zu jitter * step). Gibt die Zellen als Liste ix, iy, x, y (kachel-lokal).
+        List<float> Grid(Area a, defined float step, defined float jitter, defined int salt) {
+            var out = new List<float>()
+            var box = Raser.Box2.Of(a.ring)
+            float x0 = Math.Max(box.minX, 0.0) + this.e0
+            float y0 = Math.Max(box.minY, 0.0) + this.n0
+            float x1 = Math.Min(box.maxX, 256.0) + this.e0
+            float y1 = Math.Min(box.maxY, 256.0) + this.n0
+            for (int iy = Math.Floor(y0 / step)!int; iy * step < y1; iy++) {
+                for (int ix = Math.Floor(x0 / step)!int; ix * step < x1; ix++) {
+                    float jx = (Raser.Greens.Rand(ix, iy, salt) - 0.5) * jitter * 2.0
+                    float jy = (Raser.Greens.Rand(ix, iy, salt + 1) - 0.5) * jitter * 2.0
+                    out.Add(ix * 1.0)
+                    out.Add(iy * 1.0)
+                    out.Add((ix + 0.5 + jx) * step - this.e0)
+                    out.Add((iy + 0.5 + jy) * step - this.n0)
+                }
+            }
+            return out
+        }
+
+        // Die Art eines Waldbaums an (e, n): Flecken von 60 m, jeder fünfte Baum aus dem Fleck daneben.
+        static string Species(defined float e, defined float n, defined int ix, defined int iy) {
+            float pick = Raser.Greens.Noise(e, n, 60.0, 31)
+            if (Raser.Greens.Rand(ix, iy, 33) < 0.2) { pick = Raser.Greens.Rand(ix, iy, 34) }
+            if (pick < 0.3) { return "buche" }
+            if (pick < 0.55) { return "eiche" }
+            if (pick < 0.7) { return "birke" }
+            if (pick < 0.85) { return "ahorn" }
+            if (pick < 0.95) { return "kiefer" }
+            return "fichte"
+        }
+
+        // Die Höhe eines Baums der Art (m, ganze Meter - wenige Modelle je Kachel); edge: am Waldrand niedriger.
+        static defined float TreeHeight(string species, defined bool edge) {
+            float h = 15.0
+            if (species == "birke") { h = 12.0 }
+            if (species == "kiefer") { h = 16.0 }
+            if (species == "fichte") { h = 17.0 }
+            if (species == "eiche") { h = 14.0 }
+            if (edge) { h = Math.Round(h * 0.65) }
+            return h
+        }
+
+        undefined Forest(Area a) {
+            var cells = this.Grid(a, 4.5, 0.32, 101)
+            for (int k = 0; k + 3 < cells.Count; k = k + 4) {
+                int ix = Math.Round(cells[k])!int
+                int iy = Math.Round(cells[k + 1])!int
+                float x = cells[k + 2]
+                float y = cells[k + 3]
+                if (!this.Room(a, x, y, 0.0)) { continue }
+                float e = x + this.e0
+                float n = y + this.n0
+                bool edge = Raser.HouseStyle.RingDistance(a.ring, x, y) < 6.0
+                // Lichtungen
+                bool clearing = Raser.Greens.Noise(e, n, 35.0, 41) > 0.78
+                if (!clearing && Raser.Greens.Rand(ix, iy, 42) < 0.9) {
+                    string sp = Raser.Greens.Species(e, n, ix, iy)
+                    this.Add(a, "tree", x, y, Raser.Greens.TreeHeight(sp, edge), sp, 0.0, 0)
+                }
+                // Unterwuchs: Büsche (am Rand und auf Lichtungen mehr) und Farne, zwischen den Stämmen
+                float bush = 0.25
+                if (edge || clearing) { bush = 0.7 }
+                float bx = x + (Raser.Greens.Rand(ix, iy, 43) - 0.5) * 2.4 + 1.6
+                float by = y + (Raser.Greens.Rand(ix, iy, 44) - 0.5) * 2.4 + 1.2
+                if (Raser.Greens.Rand(ix, iy, 45) < bush && this.Room(a, bx, by, 0.0)) { this.Add(a, "bush", bx, by, 0.0, undefined, 0.0, 1) }
+                float fx = x - 1.4 + (Raser.Greens.Rand(ix, iy, 46) - 0.5) * 1.6
+                float fy = y + 1.8 + (Raser.Greens.Rand(ix, iy, 47) - 0.5) * 1.2
+                if (!edge && Raser.Greens.Rand(ix, iy, 48) < 0.35 && this.Room(a, fx, fy, 0.0)) { this.Add(a, "fern", fx, fy, 0.0, undefined, 0.0, 2) }
+            }
+        }
+
+        undefined Scrub(Area a) {
+            var cells = this.Grid(a, 2.5, 0.35, 111)
+            for (int k = 0; k + 3 < cells.Count; k = k + 4) {
+                int ix = Math.Round(cells[k])!int
+                int iy = Math.Round(cells[k + 1])!int
+                float x = cells[k + 2]
+                float y = cells[k + 3]
+                if (!this.Room(a, x, y, 0.0)) { continue }
+                float r = Raser.Greens.Rand(ix, iy, 112)
+                if (r < 0.06) { this.Add(a, "tree", x, y, 10.0, "birke", 0.0, 0) } else if (r < 0.65) { this.Add(a, "bush", x, y, 0.0, undefined, 0.0, 0) }
+            }
+        }
+
+        // Kleine Rasen: ab und zu ein Baum.
+        undefined Lawn(Area a) {
+            var cells = this.Grid(a, 18.0, 0.3, 121)
+            for (int k = 0; k + 3 < cells.Count; k = k + 4) {
+                int ix = Math.Round(cells[k])!int
+                int iy = Math.Round(cells[k + 1])!int
+                float x = cells[k + 2]
+                float y = cells[k + 3]
+                if (Raser.Greens.Rand(ix, iy, 122) < 0.3 && this.Room(a, x, y, 2.0)) { this.Add(a, "tree", x, y, 12.0, Raser.Greens.ParkSpecies(ix, iy), 0.0, 0) }
+            }
+        }
+
+        static string ParkSpecies(defined int ix, defined int iy) {
+            float r = Raser.Greens.Rand(ix, iy, 131)
+            if (r < 0.35) { return "ahorn" }
+            if (r < 0.6) { return "eiche" }
+            if (r < 0.8) { return "buche" }
+            if (r < 0.92) { return "birke" }
+            return "kiefer"
+        }
+
+        undefined Park(Area a) {
+            // Baumgruppen (1 .. 4 Bäume) und große Einzelbäume im Raster von 16 m
+            var cells = this.Grid(a, 16.0, 0.25, 141)
+            for (int k = 0; k + 3 < cells.Count; k = k + 4) {
+                int ix = Math.Round(cells[k])!int
+                int iy = Math.Round(cells[k + 1])!int
+                float x = cells[k + 2]
+                float y = cells[k + 3]
+                float r = Raser.Greens.Rand(ix, iy, 142)
+                if (r < 0.4) {
+                    int n = 1 + Math.Floor(Raser.Greens.Rand(ix, iy, 143) * 4.0)!int
+                    string sp = Raser.Greens.ParkSpecies(ix, iy)
+                    float h = 15.0
+                    if (n == 1) { h = 19.0 }
+                    for (int t = 0; t < n; t++) {
+                        float ang = t * 6.2832 / n + Raser.Greens.Rand(ix, iy, 144) * 6.2832
+                        float rad = 0.0
+                        if (n > 1) { rad = 3.6 }
+                        float tx = x + Math.Cos(ang) * rad
+                        float ty = y + Math.Sin(ang) * rad
+                        if (this.Room(a, tx, ty, 1.5)) { this.Add(a, "tree", tx, ty, h, sp, 0.0, t) }
+                    }
+                } else if (r < 0.48) {
+                    // ein Blumenbeet (3 x 2 Büsche mit Blüten)
+                    for (int bi = 0; bi < 6; bi++) {
+                        float bx = x + (bi % 3 - 1) * 1.0
+                        float by = y + (bi / 3) * 1.0
+                        if (this.Room(a, bx, by, 1.0)) { this.Add(a, "bush", bx, by, 0.0, "flowers", 0.0, bi) }
+                    }
+                }
+            }
+            // an den Wegen in der Fläche: Bänke, Mülleimer, an langen Wegen Laternen
+            var probe = new Raser.StripProbe()
+            foreach (r in this.tile.data.roads) {
+                if (r.kind != "highway=footway" && r.kind != "highway=path" && r.kind != "highway=pedestrian" && r.kind != "highway=cycleway") { continue }
+                if (r.points == undefined || r.points.length < 4) { continue }
+                float total = 0.0
+                for (int q = 0; q + 3 < r.points.length; q = q + 2) {
+                    float ex = r.points[q + 2] - r.points[q]
+                    float ey = r.points[q + 3] - r.points[q + 1]
+                    total = total + Math.Sqrt(ex * ex + ey * ey)
+                }
+                int i = 0
+                for (float at = 10.0; at < total - 2.0; at = at + 14.0) {
+                    i++
+                    int side = 1
+                    if (i % 2 == 0) { side = -1 }
+                    float off = side * (r.width / 2.0 + 1.25)
+                    Raser.Strips.PointAt(r.points, at, off, probe)
+                    float bx = probe.x
+                    float by = probe.y
+                    Raser.Strips.PointAt(r.points, at, 0.0, probe)
+                    float cx = probe.x
+                    float cy = probe.y
+                    if (bx < 0.0 || by < 0.0 || bx >= 256.0 || by >= 256.0 || !Raser.Geo.Inside(a.ring, bx, by)) { continue }
+                    float face = Math.Atan2(cy - by, cx - bx) * 180.0 / Math.PI
+                    if (i % 2 == 1 && Raser.Greens.Rand(r.id, i, 151) < 0.75) {
+                        this.Add(a, "bench", bx, by, 0.0, undefined, face, i)
+                        // daneben ein Mülleimer (jede zweite Bank)
+                        if (i % 4 == 1) {
+                            Raser.Strips.PointAt(r.points, at + 1.4, off, probe)
+                            this.Add(a, "bin", probe.x, probe.y, 0.0, undefined, 0.0, i)
+                        }
+                    } else if (total > 60.0 && i % 4 == 0) {
+                        Raser.Strips.PointAt(r.points, at, side * (r.width / 2.0 + 0.6), probe)
+                        this.Add(a, "lamp", probe.x, probe.y, 0.0, undefined, face, i)
+                    }
+                }
+            }
+            // Hecken an den Rändern, die an einer Fahrstraße liegen (1 m innen, je 2 m ein Stück)
+            this.Hedges(a, true, 141)
+        }
+
+        // Hecken entlang des Rings (1 m innen), je Stück 2 m in Richtung der Kante (auf Viertel gedreht); toRoad: nur an Fahrstraßen (bis 10 m).
+        undefined Hedges(Area a, defined bool toRoad, defined int salt) {
+            int n = a.ring.length / 2
+            float area2 = Raser.Geo.Area(a.ring)
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                float ax = a.ring[k * 2]
+                float ay = a.ring[k * 2 + 1]
+                float dx = a.ring[l * 2] - ax
+                float dy = a.ring[l * 2 + 1] - ay
+                float len = Math.Sqrt(dx * dx + dy * dy)
+                if (len < 3.0) { continue }
+                float ux = dx / len
+                float uy = dy / len
+                // nach innen: links bei einem Ring gegen den Uhrzeigersinn
+                float nx = -uy
+                float ny = ux
+                if (area2 < 0.0) {
+                    nx = uy
+                    ny = -ux
+                }
+                float angle = Math.Round(Math.Atan2(uy, ux) * 180.0 / Math.PI / 90.0) * 90.0
+                for (float s = 1.0; s < len - 1.0; s = s + 2.0) {
+                    float x = ax + ux * s + nx * 1.0
+                    float y = ay + uy * s + ny * 1.0
+                    if (toRoad && !this.NearCarRoad(x, y, 10.0)) { continue }
+                    if (!this.Room(a, x, y, 0.0)) { continue }
+                    this.Add(a, "hedge", x, y, 0.0, undefined, angle, salt)
+                }
+            }
+        }
+
+        defined bool NearCarRoad(defined float x, defined float y, defined float d) {
+            foreach (r in this.tile.data.roads) {
+                if (!Raser.Props.IsCarRoad(r)) { continue }
+                if (Raser.Geo.DistanceToLine(r.points, x, y) - r.width / 2.0 < d) { return true }
+            }
+            return false
+        }
+
+        // Spielplatz: bis zu vier Spielgeräte im Raster von 4,5 m (mit 1,5 m zum Rand), am Rand eine Bank.
+        undefined Playground(Area a) {
+            string kinds[] = ["sandbox", "swing", "slide", "climber", "swing", "slide"]
+            var cells = this.Grid(a, 4.5, 0.1, 161)
+            int placed = 0
+            for (int k = 0; k + 3 < cells.Count && placed < 5; k = k + 4) {
+                int ix = Math.Round(cells[k])!int
+                int iy = Math.Round(cells[k + 1])!int
+                float x = cells[k + 2]
+                float y = cells[k + 3]
+                if (!this.Room(a, x, y, 1.6)) { continue }
+                int pick = (Math.Abs(ix * 7 + iy * 13) + placed) % kinds.length
+                if (placed == 0) { pick = 0 }
+                float angle = Math.Floor(Raser.Greens.Rand(ix, iy, 162) * 2.0) * 90.0
+                this.Add(a, kinds[pick], x, y, 0.0, undefined, angle, placed)
+                placed++
+            }
+            // eine Bank am Rand
+            int n = a.ring.length / 2
+            if (n >= 3) {
+                float mx = (a.ring[0] + a.ring[2]) / 2.0
+                float my = (a.ring[1] + a.ring[3]) / 2.0
+                var box = Raser.Box2.Of(a.ring)
+                float cx = (box.minX + box.maxX) / 2.0
+                float cy = (box.minY + box.maxY) / 2.0
+                float dx = cx - mx
+                float dy = cy - my
+                float dl = Math.Max(Math.Sqrt(dx * dx + dy * dy), 0.01)
+                float bx = mx + dx / dl * 1.0
+                float by = my + dy / dl * 1.0
+                if (this.Room(a, bx, by, 0.0)) { this.Add(a, "bench", bx, by, 0.0, undefined, Math.Atan2(dy, dx) * 180.0 / Math.PI, 9) }
+            }
+        }
+
+        // Sportplatz: Tore an den Enden der langen Achse, zur Mitte gedreht; kleine Plätze (unter 700 m²) Basketballkörbe.
+        undefined Pitch(Area a) {
+            var dir = Raser.Geo.LongestEdge(a.ring)
+            float ux = dir[0]
+            float uy = dir[1]
+            var box = Raser.Box2.Of(a.ring)
+            float cx = (box.minX + box.maxX) / 2.0
+            float cy = (box.minY + box.maxY) / 2.0
+            float lo = 1.0e30
+            float hi = -1.0e30
+            for (int k = 0; k + 1 < a.ring.length; k = k + 2) {
+                float t = (a.ring[k] - cx) * ux + (a.ring[k + 1] - cy) * uy
+                lo = Math.Min(lo, t)
+                hi = Math.Max(hi, t)
+            }
+            string kind = "goal"
+            if (Math.Abs(Raser.Geo.Area(a.ring)) < 700.0) { kind = "hoop" }
+            for (int side = 0; side < 2; side++) {
+                float t = lo + 1.2
+                if (side == 1) { t = hi - 1.2 }
+                float x = cx + ux * t
+                float y = cy + uy * t
+                // zur Mitte: das Tor öffnet sich nach innen
+                float face = Math.Atan2(-uy, -ux) * 180.0 / Math.PI
+                if (side == 0) { face = Math.Atan2(uy, ux) * 180.0 / Math.PI }
+                if (x >= 0.0 && y >= 0.0 && x < 256.0 && y < 256.0 && Raser.Geo.Inside(a.ring, x, y)) { this.Add(a, kind, x, y, 0.0, undefined, Math.Round(face / 90.0) * 90.0, side) }
+            }
+        }
+
+        // Kleingärten: Parzellen von 15 x 15 m (Weltraster) - Laube in einer Ecke, Beete, ein Obstbaum, Hecke an zwei Seiten.
+        undefined Allotments(Area a) {
+            var cells = this.Grid(a, 15.0, 0.0, 171)
+            for (int k = 0; k + 3 < cells.Count; k = k + 4) {
+                int ix = Math.Round(cells[k])!int
+                int iy = Math.Round(cells[k + 1])!int
+                float x = cells[k + 2]
+                float y = cells[k + 3]
+                if (!this.Room(a, x, y, 3.0)) { continue }
+                if (this.Room(a, x - 4.5, y + 4.5, 0.0)) { this.Add(a, "shed", x - 4.5, y + 4.5, 0.0, undefined, Math.Floor(Raser.Greens.Rand(ix, iy, 172) * 4.0) * 90.0, 0) }
+                for (int b = 0; b < 4; b++) {
+                    float bx = x + 1.0 + b * 1.2
+                    if (this.Room(a, bx, y - 3.0, 0.0)) { this.Add(a, "bush", bx, y - 3.0, 0.0, "flowers", 0.0, b) }
+                    if (this.Room(a, bx, y - 4.5, 0.0)) { this.Add(a, "bush", bx, y - 4.5, 0.0, undefined, 0.0, b + 10) }
+                }
+                if (this.Room(a, x + 4.0, y + 3.5, 0.0)) { this.Add(a, "tree", x + 4.0, y + 3.5, 6.0, "ahorn", 0.0, 0) }
+                for (float s = -6.5; s < 7.0; s = s + 2.0) {
+                    if (this.Room(a, x + s, y - 7.0, 0.0)) { this.Add(a, "hedge", x + s, y - 7.0, 0.0, undefined, 0.0, 20) }
+                    if (this.Room(a, x - 7.0, y + s, 0.0)) { this.Add(a, "hedge", x - 7.0, y + s, 0.0, undefined, 90.0, 21) }
+                }
+            }
+        }
+
+        // Friedhof: Gräber im Raster 1,6 x 2,6 m, jede fünfte Reihe und Spalte ein Weg; ein paar große Bäume.
+        undefined Cemetery(Area a) {
+            var cells = this.Grid(a, 1.6, 0.0, 181)
+            for (int k = 0; k + 3 < cells.Count; k = k + 4) {
+                int ix = Math.Round(cells[k])!int
+                int iy = Math.Round(cells[k + 1])!int
+                if (ix % 6 == 0) { continue }
+                float x = cells[k + 2]
+                float y = cells[k + 3]
+                // Reihen 2,6 m: nur jede zweite Zelle in y trägt ein Grab (der Rest ist Weg zwischen den Reihen), jede fünfte Reihe frei
+                if (iy % 2 != 0 || (iy / 2) % 5 == 0) { continue }
+                if (Raser.Greens.Rand(ix, iy, 182) < 0.12) { continue }
+                if (!this.Room(a, x, y, 1.0)) { continue }
+                this.Add(a, "grave", x, y, 0.0, undefined, 0.0, Math.Floor(Raser.Greens.Rand(ix, iy, 183) * 4.0)!int)
+            }
+            var trees = this.Grid(a, 20.0, 0.3, 184)
+            for (int k = 0; k + 3 < trees.Count; k = k + 4) {
+                int ix = Math.Round(trees[k])!int
+                int iy = Math.Round(trees[k + 1])!int
+                if (Raser.Greens.Rand(ix, iy, 185) < 0.45 && this.Room(a, trees[k + 2], trees[k + 3], 1.0)) { this.Add(a, "tree", trees[k + 2], trees[k + 3], 18.0, Raser.Greens.ParkSpecies(ix, iy), 0.0, 0) }
+            }
+            this.Hedges(a, false, 186)
+        }
+
+        // Schilf am Ufer: alle 1,5 m am Rand eines Gewässers, 60 cm außerhalb (auf dem Ufer), nicht überall.
+        undefined Shore(Area a) {
+            int n = a.ring.length / 2
+            float area2 = Raser.Geo.Area(a.ring)
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                float ax = a.ring[k * 2]
+                float ay = a.ring[k * 2 + 1]
+                float dx = a.ring[l * 2] - ax
+                float dy = a.ring[l * 2 + 1] - ay
+                float len = Math.Sqrt(dx * dx + dy * dy)
+                if (len < 0.5) { continue }
+                float ux = dx / len
+                float uy = dy / len
+                float nx = uy
+                float ny = -ux
+                if (area2 < 0.0) {
+                    nx = -uy
+                    ny = ux
+                }
+                for (float s = 0.7; s < len; s = s + 1.5) {
+                    float x = ax + ux * s + nx * 0.6
+                    float y = ay + uy * s + ny * 0.6
+                    int seed = Math.Round((x + this.e0) * 3.0)!int * 7919 + Math.Round((y + this.n0) * 3.0)!int
+                    if (Raser.Greens.Rand(seed, 0, 191) > 0.55) { continue }
+                    if (x < 0.0 || y < 0.0 || x >= 256.0 || y >= 256.0 || Raser.Geo.Inside(a.ring, x, y) || this.Occupied(x, y)) { continue }
+                    this.Add(a, "reed", x, y, 0.0, undefined, 0.0, k)
+                }
+            }
+        }
+    }
+}

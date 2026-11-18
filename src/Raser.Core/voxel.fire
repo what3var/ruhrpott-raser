@@ -165,7 +165,7 @@ namespace Raser {
             c[21] = 0xD9C27A
             c[22] = 0x3F2C28
             c[23] = 0x55524E
-            c[24] = 0x2F5226
+            c[24] = 0x4E4C2C
             c[25] = 0x8E9A4A
             c[26] = 0x5A4A40
             c[27] = 0x3E6B2A

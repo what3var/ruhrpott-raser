@@ -876,6 +876,7 @@ class StoreTests {
         if (IO.Directory.Exists(root)) { IO.Directory.Delete(root, true) }
         var store = new Raser.FileTileStore(root)
         var tile = Sample.Make()
+        Raser.Greens.Build(tile)          // (beim Laden bepflanzt: wie gespeichert)
         int hash = tile.DataHash()
         store.Save(tile)
         Testing.Assert.IsTrue(store.Has(new Raser.TileKey(1473, 22292)))
@@ -1079,5 +1080,106 @@ class InteriorTests {
                 Testing.Assert.IsTrue(st)
             }
         }
+    }
+}
+
+class GreensTests {
+    static Raser.Area Zone(string kind, string source, float ring[]) {
+        var a = new Raser.Area()
+        a.source = source
+        a.id = Raser.Ids.Stable(Raser.IdKind.Area, source)
+        a.kind = kind
+        float r[] = new float[ring.length]
+        for (int i = 0; i < r.length; i++) { r[i] = ring[i] }
+        a.ring = take r
+        a.surface = Raser.Material.Grass
+        a.color = Raser.Palette.Grass
+        return a
+    }
+
+    static Raser.Tile Green() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        tile.data.areas.Add(GreensTests.Zone("landuse=forest", "test:wald", [0.0, 0.0, 120.0, 0.0, 120.0, 120.0, 0.0, 120.0]))
+        tile.data.areas.Add(GreensTests.Zone("leisure=park", "test:park", [140.0, 0.0, 250.0, 0.0, 250.0, 100.0, 140.0, 100.0]))
+        tile.data.areas.Add(GreensTests.Zone("leisure=playground", "test:spiel", [150.0, 150.0, 166.0, 150.0, 166.0, 166.0, 150.0, 166.0]))
+        tile.data.areas.Add(GreensTests.Zone("leisure=pitch", "test:platz", [180.0, 130.0, 240.0, 130.0, 240.0, 170.0, 180.0, 170.0]))
+        foreach (src in ["test:waldweg", "test:parkweg"]) {
+            var road = new Raser.Road()
+            road.source = src
+            road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+            road.kind = "highway=path"
+            if (src == "test:waldweg") { road.points = [0.0, 60.0, 120.0, 60.0] } else {
+                road.kind = "highway=footway"
+                road.points = [140.0, 50.0, 250.0, 50.0]
+            }
+            road.width = 2.0
+            tile.data.roads.Add(take road)
+        }
+        return tile
+    }
+
+    [Test "Grün: Wald dicht mit mehreren Arten und Unterwuchs, Wege frei, Abstände, Park mit Bänken, Spielplatz, Tore - fest"]
+    undefined Greens() {
+        var t = GreensTests.Green()
+        Raser.Greens.Build(t)
+        var u = GreensTests.Green()
+        Raser.Greens.Build(u)
+        Testing.Assert.AreEqual(t.data.props.Count, u.data.props.Count)
+        for (int i = 0; i < t.data.props.Count; i++) {
+            Testing.Assert.AreEqual(t.data.props[i].x, u.data.props[i].x)
+            Testing.Assert.AreEqual(t.data.props[i].detail, u.data.props[i].detail)
+        }
+        // noch einmal bauen ersetzt (verdoppelt nicht)
+        int before = t.data.props.Count
+        Raser.Greens.Build(t)
+        Testing.Assert.AreEqual(before, t.data.props.Count)
+        var trees = new List<Raser.Prop>()
+        var species = new HashSet<string>()
+        int bushes = 0
+        int ferns = 0
+        int benches = 0
+        int play = 0
+        int goals = 0
+        float path[] = [0.0, 60.0, 120.0, 60.0]
+        float parkPath[] = [140.0, 50.0, 250.0, 50.0]
+        foreach (p in t.data.props) {
+            if (p.kind == "tree" && p.x < 120.0 && p.y < 120.0) {
+                trees.Add(p)
+                species.Add(p.detail)
+                // der Waldweg bleibt frei (halbe Breite + 1 m)
+                Testing.Assert.IsTrue(Raser.Geo.DistanceToLine(path, p.x, p.y) >= 2.0)
+            }
+            if (p.kind == "bush") { bushes++ }
+            if (p.kind == "fern") { ferns++ }
+            if (p.kind == "bench" && p.y < 100.0) {
+                // im Park: am Weg
+                benches++
+                Testing.Assert.IsTrue(Raser.Geo.DistanceToLine(parkPath, p.x, p.y) < 3.0)
+            }
+            if (p.kind == "swing" || p.kind == "slide" || p.kind == "climber" || p.kind == "sandbox") { play++ }
+            if (p.kind == "goal" || p.kind == "hoop") { goals++ }
+        }
+        print("Grün: " + trees.Count + " Bäume, " + species.Count + " Arten, " + bushes + " Büsche, " + ferns + " Farne, " + benches + " Bänke, " + play + " Spielgeräte, " + goals + " Tore")
+        // 1,44 ha Wald alle 4,5 m: gut 500 Bäume (ohne Lichtungen und Weg)
+        Testing.Assert.IsTrue(trees.Count > 400)
+        Testing.Assert.IsTrue(species.Count >= 3)
+        Testing.Assert.IsTrue(bushes > 50)
+        Testing.Assert.IsTrue(ferns > 30)
+        Testing.Assert.IsTrue(benches >= 2)
+        Testing.Assert.IsTrue(play >= 3)
+        Testing.Assert.AreEqual(2, goals)
+        // Abstände der Bäume im Wald: mindestens 1,2 m (Raster 4,5 m, verrückt um höchstens 32 %)
+        for (int i = 0; i < trees.Count; i++) {
+            for (int j = i + 1; j < trees.Count; j++) {
+                float dx = trees[i].x - trees[j].x
+                float dy = trees[i].y - trees[j].y
+                Testing.Assert.IsTrue(dx * dx + dy * dy >= 1.44)
+            }
+        }
+        // jedes Modell gibt es (Raser.Props.Make)
+        foreach (k in ["fern", "reed", "hedge", "sandbox", "swing", "slide", "climber", "goal", "hoop", "shed", "grave"]) { Testing.Assert.IsTrue(Raser.Props.Make(k, 0.0, 3, 90.0, undefined) != undefined) }
+        foreach (sp in ["buche", "eiche", "birke", "ahorn", "kiefer", "fichte"]) { Testing.Assert.IsTrue(Raser.Props.Make("tree", 14.0, 2, 0.0, sp).sz > 50) }
     }
 }

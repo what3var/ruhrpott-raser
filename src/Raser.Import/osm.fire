@@ -398,10 +398,20 @@ namespace Raser {
                 if (leisure == "track") { Raser.OsmData.Area(f, "leisure=track", Raser.Material.Paving, Raser.Palette.BrickLight, 20); return f }
                 Raser.OsmData.Area(f, "leisure=pitch", Raser.Material.Grass, Raser.Palette.Grass, 20); return f
             }
-            if (natural == "wood" || landuse == "forest" || natural == "scrub") {
+            // Wald und Grün behalten ihre Art (Raser.Greens bepflanzt und möbliert sie nach ihr), der Belag ist derselbe
+            if (natural == "wood" || landuse == "forest") {
                 Raser.OsmData.Area(f, "landuse=forest", Raser.Material.Grass, Raser.Palette.Forest, 12); return f
             }
-            if (leisure == "park" || leisure == "garden" || landuse == "grass" || landuse == "meadow" || landuse == "village_green" || landuse == "recreation_ground" || landuse == "cemetery" || landuse == "allotments" || natural == "grassland") {
+            if (natural == "scrub" || natural == "heath") {
+                Raser.OsmData.Area(f, "natural=" + natural, Raser.Material.Grass, Raser.Palette.Grass, 11); return f
+            }
+            if (leisure == "park" || leisure == "garden") {
+                Raser.OsmData.Area(f, "leisure=" + leisure, Raser.Material.Grass, Raser.Palette.Grass, 10); return f
+            }
+            if (landuse == "cemetery" || landuse == "allotments" || landuse == "meadow") {
+                Raser.OsmData.Area(f, "landuse=" + landuse, Raser.Material.Grass, Raser.Palette.Grass, 10); return f
+            }
+            if (landuse == "grass" || landuse == "village_green" || landuse == "recreation_ground" || natural == "grassland") {
                 Raser.OsmData.Area(f, "landuse=grass", Raser.Material.Grass, Raser.Palette.Grass, 10); return f
             }
             if (landuse == "farmland" || landuse == "orchard") {

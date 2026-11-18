@@ -52,13 +52,15 @@ namespace Raser {
         }
 
         // Lädt eine Kachel; danach sind die Grundrisse bereinigt (Raser.Footprints.Clean: Punkte eingerastet, Mini-Knicke weg) und die Bäume stehen in
-        // ihren Baumscheiben neben der Fahrbahn (Raser.Props.Settle), aus Baumreihen werden Grünstreifen (Raser.Strips) - für Voxel und Netze gleich.
+        // ihren Baumscheiben neben der Fahrbahn (Raser.Props.Settle), aus Baumreihen werden Grünstreifen (Raser.Strips), Wälder und Parks sind bepflanzt
+        // (Raser.Greens) - für Voxel und Netze gleich.
         Tile Load(TileKey key) {
             if (this.source != undefined) {
                 var stored = this.source.Load(key)
                 if (stored != undefined) { Raser.Footprints.Clean(stored) }
                 Raser.Props.Settle(stored)
                 if (stored != undefined) { Raser.Strips.Build(stored) }
+                Raser.Greens.Build(stored)
                 return stored
             }
             string path = this.TilePath(key, ".json")
@@ -72,6 +74,7 @@ namespace Raser {
             Raser.Footprints.Clean(tile)
             Raser.Props.Settle(tile)
             Raser.Strips.Build(tile)
+            Raser.Greens.Build(tile)
             return tile
         }
 
