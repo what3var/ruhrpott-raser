@@ -412,6 +412,10 @@ class NetBot {
         bool ranUp = false
         bool told = false
         float least = 1000.0
+        float farthest = 0.0
+        int lastSeqSeen = 0
+        float lastSeqAt = 0.0
+        bool stallTold = false
         bool footPlan = plan == "aufheben" || plan == "stehen" || plan == "zueinander" || plan == "gehen"
         bool carPlan = plan == "kreis" || plan == "gerade" || plan == "umfahren" || plan == "ablegen"
         while (s.Online || s.link.IsOpen) {
@@ -425,6 +429,7 @@ class NetBot {
             bool left = false
             bool right = false
             bool use = false
+            bool sprint = false
             var pred = s.pred
             var car = pred.Car()
             float place[] = pred.world.PlaceOf(pred.pawn)
@@ -533,6 +538,7 @@ class NetBot {
                             left = diff > 4.0
                             right = diff < -4.0
                             gas = Math.Abs(diff) < 60.0
+                            sprint = d > 6.0
                         }
                     }
                 } else if (phase == "aufgehoben" && t - phaseAt > 1.0 && s.pendingOps.Count == 0) {
@@ -579,9 +585,9 @@ class NetBot {
                     phase = "sammeln"
                     phaseAt = t
                 } else if (phase == "sammeln") {
-                    // das nächste am Boden (bis 40 m)
+                    // das nächste am Boden (bis 150 m)
                     RemoteEntity best = undefined
-                    float bestD = 40.0
+                    float bestD = 150.0
                     foreach (r in s.OfType(Raser.EntityType.Item)) {
                         float d = Math.Sqrt((r.east - place[0]) * (r.east - place[0]) + (r.north - place[1]) * (r.north - place[1]))
                         if (d < bestD && !mine.Contains(r.id)) {
@@ -589,7 +595,7 @@ class NetBot {
                             best = r
                         }
                     }
-                    if (best == undefined || t - phaseAt > 14.0) {
+                    if (best == undefined || t - phaseAt > 20.0 || t > seconds - 2.0) {
                         print("[" + user + "] aufgesammelt: " + target + " Gegenstände, Bargeld jetzt " + s.inv.cash + " Cent, getragen " + s.CarriedAll() + " Stück")
                         phase = "fertig"
                     } else if (bestD < 2.0) {
@@ -605,6 +611,7 @@ class NetBot {
                         left = diff > 4.0
                         right = diff < -4.0
                         gas = Math.Abs(diff) < 60.0
+                        sprint = bestD > 6.0
                     }
                 }
             } else if (plan == "stehen") {
@@ -655,7 +662,7 @@ class NetBot {
                 }
                 s.Poll()
             } else {
-                s.Control(dt, gas, brake, left, right, false, false, use)
+                s.Control(dt, gas, brake, left, right, false, sprint, use)
             }
             if (!spawned && s.selfKnown && s.hasInventory) { print("[" + user + "] Bargeld " + s.inv.cash + " Cent") }
             if (!spawned && s.selfKnown) {
@@ -677,6 +684,15 @@ class NetBot {
                 }
                 npcSeen = "Verkehr in Sicht: " + cars + " Autos, " + walkers + " Fussgaenger (Takt " + npcTick + ")"
             }
+            // (zur Fehlersuche: steht die Folge der Eingaben 2 s still, einmal drucken, warum)
+            if (pred.seq != lastSeqSeen) {
+                lastSeqSeen = pred.seq
+                lastSeqAt = t
+            } else if (t - lastSeqAt > 2.0 && !stallTold && plan != "schummeln") {
+                stallTold = true
+                print("[" + user + "] keine Eingaben seit 2 s: online " + s.Online + ", Vorhersage " + (s.pred != undefined) + ", Takt " + s.accumulator + ", Phase " + phase)
+            }
+            if (spawned) { farthest = Math.Max(farthest, Math.Sqrt((s.selfEast - spawnE) * (s.selfEast - spawnE) + (s.selfNorth - spawnN) * (s.selfNorth - spawnN))) }
             if (s.pred.snaps > snaps) {
                 snaps = s.pred.snaps
                 print("[" + user + "] Teleport nach " + Math.Round(s.selfEast) + ", " + Math.Round(s.selfNorth))
@@ -710,7 +726,7 @@ class NetBot {
             Sleep(50ms)
         }
         print("[" + user + "] Stand am Ende: " + NetBot.Stand(s))
-        print("[" + user + "] Server-Lage " + Math.Round(s.selfEast * 10.0) / 10.0 + ", " + Math.Round(s.selfNorth * 10.0) / 10.0 + ", " + Math.Round(Math.Sqrt((s.selfEast - spawnE) * (s.selfEast - spawnE) + (s.selfNorth - spawnN) * (s.selfNorth - spawnN))) + " m vom Start; " + s.OfType(Raser.EntityType.Vehicle).Count + " Fahrzeuge in Sicht")
+        print("[" + user + "] Server-Lage " + Math.Round(s.selfEast * 10.0) / 10.0 + ", " + Math.Round(s.selfNorth * 10.0) / 10.0 + ", " + Math.Round(Math.Sqrt((s.selfEast - spawnE) * (s.selfEast - spawnE) + (s.selfNorth - spawnN) * (s.selfNorth - spawnN))) + " m vom Start (am weitesten " + Math.Round(farthest) + " m); " + s.OfType(Raser.EntityType.Vehicle).Count + " Fahrzeuge in Sicht")
         print("[" + user + "] " + npcSeen)
         print("[" + user + "] Vorhersage: " + p.reconciled + " Abgleiche, " + p.corrected + " mit Fehler, max Korrektur " + Math.Round(p.maxCorrection * 1000.0) / 1000.0 + " m, im Mittel " + Math.Round(p.sumCorrection / Math.Max(1, p.reconciled) * 10000.0) / 10000.0 + " m, Spruenge " + p.snaps + ", offen " + p.pending.Count)
         print("[" + user + "] Bandbreite: empfangen " + Math.Round((s.link.receivedBytes - recvBytes0) / span) + " B/s, gesendet " + Math.Round((s.link.sentBytes - sentBytes0) / span) + " B/s")

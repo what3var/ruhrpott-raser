@@ -771,7 +771,8 @@ class RegionServer {
         var all = this.EntitiesFor(p)
         // die Grundlage: der zuletzt bestätigte Snapshot (Delta dagegen); ohne: alles ganz
         Raser.SnapState grund = undefined
-        if (p.snapAck > 0 && p.sent.ContainsKey(p.snapAck)) { grund = p.sent[p.snapAck] }
+        // (eine Grundlage älter als 1,6 s nicht: der Client hebt nur die letzten 2 s auf - dann ganz)
+        if (p.snapAck > 0 && this.tick - p.snapAck <= 48 && p.sent.ContainsKey(p.snapAck)) { grund = p.sent[p.snapAck] }
         var state = new Raser.SnapState(this.tick)
         foreach (e in all) {
             if (s.quant.Count >= Raser.Protocol.MaxEntities) { break }
