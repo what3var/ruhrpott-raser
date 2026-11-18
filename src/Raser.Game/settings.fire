@@ -13,6 +13,7 @@
 class GameSettings {
     // Grafik
     string size                     // Fenstergröße "960x600" (Neustart)
+    defined bool fullscreen         // das Fenster über den ganzen Bildschirm (sofort: Window.Fullscreen)
     defined bool gpu                // Renderer Grafikkarte statt Software (Neustart)
     defined int renderThreads       // Threads des Software-Renderers (0: automatisch)
     defined int near                // Radius der nahen Stufe in Blöcken
@@ -36,6 +37,7 @@ class GameSettings {
 
     construct() {
         this.size = "960x600"
+        this.fullscreen = false
         this.gpu = false
         this.renderThreads = 0
         this.near = 1
@@ -185,7 +187,7 @@ class GameSettings {
     // --settings 0 lassen die Datei aus: sie sollen auf jedem Rechner dasselbe messen.
     static GameSettings Load(Options options) {
         var s = new GameSettings()
-        foreach (name in ["size", "gpu", "render-threads", "near", "far", "workers", "no-sky"]) {
+        foreach (name in ["size", "fullscreen", "gpu", "render-threads", "near", "far", "workers", "no-sky"]) {
             string v = options.Get(name, "")
             if (v != "") { s.fromCli[name] = v }
         }
@@ -204,6 +206,7 @@ class GameSettings {
     // Die Werte der Datei als Optionen, wo die Kommandozeile nichts sagt.
     undefined ApplyTo(Options options) {
         this.Fill(options, "size", this.size)
+        if (this.fullscreen) { this.Fill(options, "fullscreen", "1") }
         if (this.gpu) { this.Fill(options, "gpu", "1") }
         this.Fill(options, "render-threads", "" + this.renderThreads)
         this.Fill(options, "near", "" + this.near)
@@ -228,6 +231,7 @@ class GameSettings {
             var parts = sv.Split("x")
             if (parts.length == 2 && parts[0].ToInt() >= 320 && parts[1].ToInt() >= 200) { this.size = v }
         }
+        this.fullscreen = GameSettings.Flag(o.Get("fullscreen"), this.fullscreen)
         this.gpu = GameSettings.Flag(o.Get("gpu"), this.gpu)
         this.renderThreads = GameSettings.Whole(o.Get("renderThreads"), this.renderThreads, 0, 64)
         this.near = GameSettings.Whole(o.Get("near"), this.near, -1, 4)
@@ -288,7 +292,7 @@ class GameSettings {
             if (keys != "") { keys = keys + ",\n" }
             keys = keys + "    " + Json.Serialize(id) + ": " + this.KeyOf(id)
         }
-        return "{\n  \"size\": " + Json.Serialize(this.size) + ",\n  \"gpu\": " + GameSettings.Bool(this.gpu) + ",\n  \"renderThreads\": " + this.renderThreads + ",\n  \"near\": " + this.near +
+        return "{\n  \"size\": " + Json.Serialize(this.size) + ",\n  \"fullscreen\": " + GameSettings.Bool(this.fullscreen) + ",\n  \"gpu\": " + GameSettings.Bool(this.gpu) + ",\n  \"renderThreads\": " + this.renderThreads + ",\n  \"near\": " + this.near +
             ",\n  \"far\": " + this.far + ",\n  \"workers\": " + this.workers + ",\n  \"sky\": " + GameSettings.Bool(this.sky) + ",\n  \"camera\": " + GameSettings.Decimal(this.camera) +
             ",\n  \"smooth\": " + GameSettings.Decimal(this.smooth) + ",\n  \"layout\": " + Json.Serialize(this.layout) + ",\n  \"volume\": " + this.volume +
             ",\n  \"keys\": {\n" + keys + "\n  }\n}\n"

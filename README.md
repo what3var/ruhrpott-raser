@@ -62,7 +62,7 @@ Esc öffnet das Menü (`src/Raser.Game/menu.fire`, mit dem UI-Toolkit von fire):
 (alle Tasten, umbelegbar), Verbindung (online), Beenden. Offline hält es das Spiel an, online läuft die Welt weiter, der eigene Wagen bekommt
 keine Eingaben. Die Optionen stehen in `spiel.json` neben `launcher.json` (`RASER_CONFIG` oder `--config` für einen anderen Ordner,
 `--settings 0` ohne Datei); was auf der Kommandozeile steht (`--size`, `--gpu`, `--render-threads`, `--near`, `--far`, `--workers`, `--no-sky`),
-geht vor. Sichtweite, Himmel, Render-Threads und Kamera wirken sofort, Fenstergröße, Renderer und Worker nach einem Neustart.
+geht vor (dazu `--fullscreen 1`). Vollbild, Sichtweite, Himmel, Render-Threads und Kamera wirken sofort, Fenstergröße, Renderer und Worker nach einem Neustart.
 
 ```bash
 raser-game --menu-shot menu.png [--menu-keys down,enter,right] [--menu-bench 100000]   # das offene Menü ohne Fenster als PNG
