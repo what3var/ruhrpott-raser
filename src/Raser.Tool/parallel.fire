@@ -1,0 +1,183 @@
+// Raser.Tool: Voxelisieren und Netz-Cache auf alle Kerne verteilt.
+//
+// Je Kachel eine Aufgabe; so viele Worker (`fire dedicated`, jeder mit eigenem Speicher und eigenen Zwischenspeichern) wie der Rechner Kerne hat.
+// Die Kacheln sind voneinander unabhängig: das Voxelisieren liest von den Nachbarn nur die Kacheldaten (Bäume über die Grenze) und schreibt nur
+// die eigenen Chunks; der Netz-Cache liest die Chunks (die nach dem Voxelisieren fest sind) und schreibt nur die eigenen Netze.
+// Eine Kachel braucht beim Voxelisieren bis gut 2 GB (Bochum-Innenstadt, gemessen 2,3 GB), beim Netz-Cache gut 0,4 GB - darum höchstens so
+// viele Worker, wie in 80 % des freien Speichers passen. `--jobs n` gibt die Zahl fest vor (auch über die Kerne hinaus).
+#import "filesystem"
+#import "time"
+#import "raser.core"
+#import "raser.world"
+#import "raser.mesh"
+
+class Parallel {
+    static readonly defined float VoxelizeMb = 2600.0
+    static readonly defined float MeshesMb = 600.0
+
+    // Die Zahl der Kerne: Windows sagt sie in NUMBER_OF_PROCESSORS, Linux in /proc/cpuinfo; sonst 4.
+    static defined int Cores() {
+        string n = Environment.Get("NUMBER_OF_PROCESSORS")
+        if (n != undefined && n != "") {
+            int c = n.ToInt()
+            if (c > 0) { return c }
+        }
+        if (IO.File.Exists("/proc/cpuinfo")) {
+            int count = 0
+            foreach (line in IO.File.ReadAllText("/proc/cpuinfo").Split("\n")) {
+                if (line.StartsWith("processor")) { count++ }
+            }
+            if (count > 0) { return count }
+        }
+        return 4
+    }
+
+    // Wie viele Worker für tasks Aufgaben mit je perJobMb Speicher: --jobs, sonst die Kerne, gedeckelt durch den freien Speicher.
+    static defined int Jobs(Args args, defined int tasks, defined float perJobMb, string what) {
+        int cores = Parallel.Cores()
+        int jobs = cores
+        string why = cores + " Kerne"
+        if (args.Has("jobs")) {
+            jobs = Math.Max(1, args.Get("jobs").ToInt())
+            why = "--jobs " + jobs
+        } else {
+            any free = Environment.FreeMemory
+            if (free != undefined && free > 0) {
+                int fit = Math.Max(1, Math.Floor(free / 1048576.0 * 0.8 / perJobMb)!int)
+                if (fit < jobs) {
+                    jobs = fit
+                    why = cores + " Kerne, aber freier Speicher für " + fit + " (je etwa " + Math.Round(perJobMb / 1000.0 * 10.0) / 10.0 + " GB)"
+                }
+            }
+        }
+        jobs = Math.Max(1, Math.Min(jobs, tasks))
+        Tool.Log(what + ": " + jobs + " Worker (" + why + ")")
+        return jobs
+    }
+
+    // ---- Voxelisieren ----
+
+    static undefined Voxelize(Args args) {
+        string world = args.Get("world", "world")
+        string overridesDir = args.Get("overrides", "overrides")
+        int seed = args.Get("seed", "1").ToInt()
+        var store = new Raser.FileTileStore(world)
+        var overrides = Raser.TileGenerator.LoadOverrides(overridesDir)
+        var generator = new Raser.TileGenerator(store, overrides, seed)
+        Tool.Log(overrides.Count + " Overrides, Seed " + seed + ", Generator " + Raser.Voxelizer.Version)
+        var keys = Tool.Chosen(args, store)
+        // was zu tun ist (aktuelle Kacheln überspringen, außer mit --force)
+        var todo = new List<string>()
+        foreach (k in keys) {
+            if (!args.Has("force") && generator.IsUpToDate(k)) {
+                Tool.Log("Kachel " + k + ": aktuell")
+            } else {
+                todo.Add(k.ToString())
+            }
+        }
+        if (todo.Count == 0) {
+            Tool.Log("Voxelisieren: alles aktuell")
+            return
+        }
+        int jobs = Parallel.Jobs(args, todo.Count, Parallel.VoxelizeMb, "Voxelisieren von " + todo.Count + " Kacheln")
+        var work = new Channel<string>(todo.Count + 1)
+        var results = new Channel<string>(todo.Count + 1)
+        foreach (t in todo) { work.Send(t) }
+        work.Close()
+        for (int i = 0; i < jobs; i++) {
+            fire dedicated taking world taking overridesDir taking seed with work, results {
+                Parallel.VoxelWorker(work, results, world, overridesDir, seed)
+            }
+        }
+        Parallel.Collect(results, todo.Count)
+    }
+
+    static undefined VoxelWorker(Channel<string> work, Channel<string> results, string world, string overridesDir, defined int seed) {
+        var store = new Raser.FileTileStore(world)
+        var generator = new Raser.TileGenerator(store, Raser.TileGenerator.LoadOverrides(overridesDir), seed)
+        foreach (name in work) {
+            var k = Raser.TileKey.Parse(name)
+            int t0 = DateTime.Now.Ticks
+            try {
+                var manifest = generator.Generate(k)
+                results.Send("Kachel " + k + ": " + manifest.chunks + " Chunks, " + manifest.filled + " Voxel in " + Parallel.Seconds(t0))
+            } catch (Exception e) {
+                results.Send("Kachel " + k + ": FEHLER " + e.message)
+            }
+        }
+    }
+
+    // ---- Netz-Cache ----
+
+    static undefined Meshes(Args args) {
+        string world = args.Get("world", "world")
+        var store = new Raser.FileTileStore(world)
+        var keys = Tool.Chosen(args, store)
+        var todo = new List<string>()
+        foreach (k in keys) {
+            if (store.LoadManifest(k) == undefined) {
+                Tool.Log("Kachel " + k + ": nicht voxelisiert")
+                continue
+            }
+            if (args.Has("force")) {
+                string folder = IO.Path.Combine(world, "meshes", k.ToString())
+                if (IO.Directory.Exists(folder)) { IO.Directory.Delete(folder, true) }
+            }
+            todo.Add(k.ToString())
+        }
+        if (todo.Count == 0) { return }
+        int jobs = Parallel.Jobs(args, todo.Count, Parallel.MeshesMb, "Netz-Cache für " + todo.Count + " Kacheln")
+        var work = new Channel<string>(todo.Count + 1)
+        var results = new Channel<string>(todo.Count + 1)
+        foreach (t in todo) { work.Send(t) }
+        work.Close()
+        for (int i = 0; i < jobs; i++) {
+            fire dedicated taking world with work, results {
+                Parallel.MeshWorker(work, results, world)
+            }
+        }
+        Parallel.Collect(results, todo.Count)
+    }
+
+    static undefined MeshWorker(Channel<string> work, Channel<string> results, string world) {
+        var builder = new Raser.NearBuilder(world, 0.0, 0.0, 0.0, false)
+        foreach (name in work) {
+            var k = Raser.TileKey.Parse(name)
+            int t0 = DateTime.Now.Ticks
+            try {
+                int built = 0
+                int quads = 0
+                for (int j = 0; j < 5; j++) {
+                    for (int i = 0; i < 5; i++) {
+                        var res = builder.Build(k.x * 5 + i, k.y * 5 + j)
+                        if (!res.cached) { built++ }
+                        foreach (b in res.batches) { quads = quads + b.quads }
+                    }
+                }
+                results.Send("Kachel " + k + ": " + built + " Blöcke gebaut, " + quads + " Vierecke in " + Parallel.Seconds(t0))
+            } catch (Exception e) {
+                results.Send("Kachel " + k + ": FEHLER " + e.message)
+            }
+            builder.Forget()
+        }
+    }
+
+    // ---- gemeinsam ----
+
+    // Die Meldungen der Worker, mit Fortschritt; wirft am Ende, wenn eine Kachel fehlschlug.
+    static undefined Collect(Channel<string> results, defined int count) {
+        int start = DateTime.Now.Ticks
+        int failed = 0
+        for (int done = 1; done <= count; done++) {
+            string line = results.Receive()
+            if (line.IndexOf(": FEHLER ") >= 0) { failed++ }
+            Tool.Log(line + " " + Tool.Progress(done, count, start))
+        }
+        if (failed > 0) { throw new Raser.DataException(failed + " Kacheln fehlgeschlagen (siehe oben).") }
+    }
+
+    static string Seconds(defined int since) {
+        float s = (DateTime.Now.Ticks - since) / 10000000.0
+        return $"{s:F1} s"
+    }
+}

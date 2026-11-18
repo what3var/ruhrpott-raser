@@ -41,7 +41,10 @@ raser setup --meshes 1      # dazu den Netz-Cache (noch etwa 45 min; sonst baut 
 raser fetch                 # nur die Rohdaten nach data/raw (fortsetzbar, Vorhandenes wird übersprungen)
 ```
 
-Unter Windows heißt das Programm `raser.exe`; Optionen: `--raw <ordner>` (Rohdaten, Vorgabe `data/raw`), `--world <ordner>` (Vorgabe `world`).
+Unter Windows heißt das Programm `raser.exe`; Optionen: `--raw <ordner>` (Rohdaten, Vorgabe `data/raw`), `--world <ordner>` (Vorgabe `world`),
+`--jobs <n>` (Worker-Threads). Voxelisieren und Netz-Cache laufen auf allen Kernen, je Kachel ein Worker (`fire dedicated`); beim Voxelisieren
+braucht ein Worker bis gut 2 GB, darum höchstens so viele, wie in 80 % des freien Speichers passen. Wichtig: das Werkzeug nativ als Release
+bauen (`--engine native -m RELEASE`), in der VM ist es ein Vielfaches langsamer.
 
 ## Launcher
 
