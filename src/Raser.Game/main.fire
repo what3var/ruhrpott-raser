@@ -649,6 +649,8 @@ class Game {
         // --quit s: nach s Sekunden beenden (Messungen; sonst gehen die Zeilen beim Abbruch verloren)
         float quitAfter = options.Get("quit", "0").ToFloat()
         int quitAt = DateTime.Now.Ticks + Math.Round(quitAfter * 10000000.0)!int
+        // --async 1 (Standard): scene3d zeichnet das Bild in seinem eigenen Thread (Camera.RenderAsync), während das Spiel das nächste rechnet
+        bool renderAsync = options.Get("async", "1") != "0"
         while (win.Tick()) {
             if (quitAfter > 0.0 && DateTime.Now.Ticks > quitAt) { break }
             if (profile) { mark = Game.Lap(prof, 0, mark) }
@@ -797,7 +799,8 @@ class Game {
             if (profile) { mark = Game.Lap(prof, 4, mark) }
             scene.Advance(dt * 1s)
             if (profile) { mark = Game.Lap(prof, 5, mark) }
-            atmosphere.Render()
+            // --async 0: das Bild hier und jetzt (sonst zeichnet scene3d es im Hintergrund, das HUD kommt über das vorige)
+            if (renderAsync) { atmosphere.RenderAsync() } else { atmosphere.Render() }
             if (profile) { mark = Game.Lap(prof, 6, mark) }
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
             npcs.Draw(hud, ink, shade, width)
@@ -827,6 +830,7 @@ class Game {
                 }
             }
         }
+        cam.WaitRender()
         online.Close()
         view.Close()
         return 0
