@@ -184,9 +184,8 @@ class TrafficView {
         this.message = ""
     }
 
-    // Zeichnet die Welt Brücken? (Noch nicht: Straßen mit layer > 0 liegen als Belag auf dem Gelände.) Solange stehen auch die NPCs auf einer
-    // Brücke auf dem Gelände - wie die Straße, die man sieht; die Simulation kennt ihre Höhe schon (NpcState.z).
-    static readonly defined bool BridgesDrawn = false
+    // Zeichnet die Welt Brücken? Ja (Raser.BridgeMesher): NPCs auf einer Brücke stehen auf ihrem Deck (NpcState.z, aus Raser.Bridges).
+    static readonly defined bool BridgesDrawn = true
 
     static defined int Rgb(defined int c) { return S3D.Rgb((c / 65536) % 256, (c / 256) % 256, c % 256) }
 

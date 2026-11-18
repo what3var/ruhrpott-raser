@@ -1,0 +1,129 @@
+// Die Tests von Raser.Sim (forge test src/Raser.Sim/Raser.Sim.fireproj): Brücken in der Fahrphysik.
+#import "testing"
+#import "raser.core"
+#import "raser.world"
+#import "raser.sim"
+
+class BridgeWorld {
+    static Raser.Road Road(defined int id, string kind, float pts[], defined float width, defined int layer) {
+        var r = new Raser.Road()
+        r.id = id
+        r.kind = kind
+        r.points = copy pts
+        r.width = width
+        r.layer = layer
+        return r
+    }
+
+    // Kachel 0_0: Gelände 50 m, darin ein Einschnitt (44 m) von Ost nach West bei y = 100 mit einer Straße darin; darüber eine Brücke (layer 1)
+    // von Süd nach Nord (x = 100, y = 50 .. 150), an beiden Enden geht es auf dem Gelände weiter.
+    static Raser.Obstacles Make() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var raster = new Raser.HeightRaster(0.0, 0.0, 1.0, 257, 257, 50.0)
+        for (int r = 0; r < 257; r++) {
+            for (int c = 0; c < 257; c++) {
+                if (Math.Abs(r - 100.0) < 8.0) { raster.Set(c, r, 44.0) }
+            }
+        }
+        tile.heights = take raster
+        tile.data.roads.Add(BridgeWorld.Road(1, "highway=residential", [0.0, 100.0, 200.0, 100.0], 5.5, 0))
+        tile.data.roads.Add(BridgeWorld.Road(2, "highway=residential", [100.0, 50.0, 100.0, 150.0], 5.5, 1))
+        tile.data.roads.Add(BridgeWorld.Road(3, "highway=residential", [100.0, 0.0, 100.0, 50.0], 5.5, 0))
+        tile.data.roads.Add(BridgeWorld.Road(4, "highway=residential", [100.0, 150.0, 100.0, 250.0], 5.5, 0))
+        var o = new Raser.Obstacles("")
+        o.decks["0_0"] = Raser.Bridges.Of(tile)
+        var none = new List<Raser.Box2>()
+        o.boxes["0_0"] = none
+        none.TakeTo(o.boxes)
+        o.tiles["0_0"] = take tile
+        return o
+    }
+}
+
+class BridgeTests {
+    [Test "Deck: über dem Einschnitt auf Höhe der Enden, Rampen am Gelände, kein Pfeiler auf der Straße darunter"]
+    undefined Deck() {
+        var o = BridgeWorld.Make()
+        var decks = o.decks["0_0"]
+        Testing.Assert.AreEqual(1, decks.Count)
+        var d = decks[0]
+        Testing.Assert.IsTrue(d.startJoined && d.endJoined)
+        Testing.Assert.IsTrue(Math.Abs(d.At(50.0) - 50.15) < 0.05)
+        Testing.Assert.IsTrue(Math.Abs(d.GroundAt(50.0) - 44.0) < 0.05)
+        foreach (s in d.piers) {
+            float p[] = new float[4]
+            d.PointAt(s, p)
+            Testing.Assert.IsTrue(Math.Abs(p[1] - 100.0) > 3.0)
+        }
+        any z = o.DeckHeight(100.0, 100.0, 2)
+        Testing.Assert.IsTrue(z != undefined && Math.Abs(z - 50.15) < 0.05)
+        Testing.Assert.AreEqual(2, o.DeckUnder(100.0, 100.0))
+        Testing.Assert.AreEqual(0, o.DeckUnder(150.0, 100.0))
+    }
+
+    [Test "Fahrphysik: über die Rampe auf das Deck und wieder herunter, unten fährt man durch"]
+    undefined Drive() {
+        var o = BridgeWorld.Make()
+        var all = new List<Raser.Vehicle>()
+        // oben: von Süden nach Norden (Richtung 0)
+        var up = Raser.Vehicle.Of("auto")
+        up.east = 101.4
+        up.north = 20.0
+        up.heading = 0.0
+        up.speed = 12.0
+        // unten: im Einschnitt von West nach Ost (Richtung -90), quer unter der Brücke durch
+        var down = Raser.Vehicle.Of("auto")
+        down.east = 40.0
+        down.north = 98.6
+        down.heading = -90.0
+        down.speed = 12.0
+        all.Add(up)
+        all.Add(down)
+        bool onDeck = false
+        bool underAlways = true
+        float dt = 1.0 / 30.0
+        for (int i = 0; i < 300; i++) {
+            Raser.Physics.Advance(up, all, o, dt, 0.3, 0.0, 0.0, false, 0.0)
+            Raser.Physics.Advance(down, all, o, dt, 0.3, 0.0, 0.0, false, 0.0)
+            if (up.north > 60.0 && up.north < 140.0) {
+                Testing.Assert.AreEqual(2, up.bridge)
+                onDeck = true
+            }
+            if (down.bridge != 0) { underAlways = false }
+        }
+        Testing.Assert.IsTrue(onDeck)
+        Testing.Assert.IsTrue(underAlways)
+        // durch, nicht aufgehalten: beide weit gekommen, oben wieder auf dem Gelände
+        Testing.Assert.IsTrue(up.north > 160.0)
+        Testing.Assert.AreEqual(0, up.bridge)
+        Testing.Assert.IsTrue(down.east > 150.0)
+        // zu Fuß unter der Brücke: bleibt unten
+        var w = new Raser.Walker()
+        w.east = 95.0
+        w.north = 100.0
+        w.heading = -90.0
+        for (int i = 0; i < 120; i++) { Raser.Physics.Walk(w, all, o, dt, 1.0, 0.0, false) }
+        Testing.Assert.AreEqual(0, w.bridge)
+        Testing.Assert.IsTrue(w.east > 100.0)
+    }
+
+    [Test "Brüstung: wer auf dem Deck zur Seite lenkt, bleibt auf der Brücke"]
+    undefined Parapet() {
+        var o = BridgeWorld.Make()
+        var all = new List<Raser.Vehicle>()
+        var car = Raser.Vehicle.Of("auto")
+        car.east = 100.0
+        car.north = 60.0
+        car.heading = 0.0
+        car.speed = 0.0
+        car.bridge = 2
+        all.Add(car)
+        // halb rechts einschlagen, Gas
+        for (int i = 0; i < 120; i++) {
+            Raser.Physics.Advance(car, all, o, 1.0 / 30.0, 0.6, 0.0, -1.0, false, 0.0)
+        }
+        // es steht an der Brüstung: höchstens die halbe Fahrbahn neben der Mitte, noch auf der Brücke
+        Testing.Assert.IsTrue(Math.Abs(car.east - 100.0) < 2.75 + 0.05 || car.north > 150.0)
+        Testing.Assert.IsTrue(car.bridge == 2 || car.north > 150.0)
+    }
+}

@@ -576,6 +576,7 @@ class RegionServer {
                 e.a = q.pawn.vehicle
             }
             if (this.tick < q.lyingUntil) { e.bits = e.bits | Raser.EntityType.Lying }
+            if (q.pawn.OnFoot && q.pawn.walker.bridge != 0) { e.bits = e.bits | Raser.EntityType.OnBridge }
             if (q.inv != undefined && q.inv.LampShining()) { e.bits = e.bits | Raser.EntityType.Lamp }
             list.Add(take e)
         }

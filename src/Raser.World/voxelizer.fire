@@ -222,6 +222,7 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 32: Brücken (Straßen und Bahnen mit layer > 0) nicht mehr als Belag auf dem Gelände - sie liegen auf ihrem Deck (Raser.Bridges)
         // 31: Ort (Altstadt, Land, Industrie ...) und besondere Gebäude (Raser.BuildingKinds): Dach auf Stützen, Parkhaus mit offenen Geschossen,
         //     Hallen mit Rolltoren und Lichtbändern; Fachwerk mit Ziegeln auf dem Land; Gebiete und OSM-Tags der Gebäude aus dem Import
         // 30: Aussehen je Gebäude (Raser.HouseStyle): Bautyp, Farbfamilie je Viertel, Fassaden-Farben (Palette 128 .. 159, 180 .. 247), Sockel,
@@ -250,7 +251,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 31
+        static readonly defined int Version = 32
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -988,6 +989,8 @@ namespace Raser {
             for (int ri = 0; ri < this.tile.data.roads.Count; ri++) {
                 if (!this.roadBoxes[ri].Overlaps(mx0, my0, mx1, my1)) { continue }
                 var r = this.tile.data.roads[ri]
+                // Brücken (layer > 0) liegen auf ihrem Deck (Raser.Bridges, im Netz gebaut), nicht auf dem Gelände: die Straße darunter bleibt frei
+                if (r.layer > 0) { continue }
                 float hw = r.width / 2.0
                 int n = r.points.length / 2
                 for (int sgi = 0; sgi < n; sgi++) {

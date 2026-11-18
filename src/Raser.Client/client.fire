@@ -133,6 +133,17 @@ class Ground {
         return r.At(e - key.East, n - key.North)
     }
 
+    // Die Höhe unter einem Fahrzeug oder Spieler: auf einer Brücke (bridge: ihre ID, -1: die höchste dort) das Deck (Raser.Obstacles.DeckHeight),
+    // sonst das Gelände. bridges: die Hindernisse des Spiels (kennen die Decks); undefined: nur Gelände.
+    Raser.Obstacles bridges
+    any AtLevel(defined float e, defined float n, defined int bridge) {
+        if (bridge != 0 && this.bridges != undefined) {
+            any z = this.bridges.DeckHeight(e, n, bridge)
+            if (z != undefined) { return z }
+        }
+        return this.At(e, n)
+    }
+
     // Lange Fahrten: die Höhenraster der Kacheln weg, die mehr als eine Kachel von (e, n) entfernt sind. Gibt zurück, wie viele.
     defined int Trim(defined float e, defined float n) {
         var gone = Obstacles.FarTiles(this.rasters.Keys, e, n)

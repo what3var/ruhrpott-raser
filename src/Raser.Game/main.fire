@@ -316,6 +316,7 @@ class Game {
         atmosphere.drawSky = options.Get("no-sky", "") == ""
         if (!atmosphere.drawSky) { atmosphere.sky.Show(false) }
         var obstacles = new Obstacles(world)
+        terrain.bridges = obstacles          // auf Brücken: die Höhe des Decks (Ground.AtLevel)
 
         // die Fahrzeuge: das eigene (--vehicle auto|transporter|motorrad|fahrrad) am Start, die anderen Klassen dahinter am Rand geparkt
         var vehicles = new List<Raser.Vehicle>()
@@ -818,18 +819,18 @@ class Game {
     // Der Wagen in die Szene, auf das Gelände.
     static undefined PlaceCar(Raser.Vehicle car, CarModel model, Ground terrain, WorldView view) {
         float y = 0.0
-        any g = terrain.At(car.east, car.north)
+        any g = terrain.AtLevel(car.east, car.north, car.bridge)
         if (g != undefined) { y = g - view.originZ }
         model.Place(car.east - view.originE, y, -(car.north - view.originN), car.heading, car.lean)
     }
 
     // Die Kamera zu einem Punkt (Wagen oder Spieler, Richtung heading): reach m dahinter und up m hoch, Blick voraus; first: aus seinen Augen
     // (eye m hoch). Vor einer Wand rückt sie heran und höher, weich wieder hinaus.
-    static undefined Look(Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float east, defined float north, defined float heading, defined float camHeading, defined bool first, defined float dt, defined float reach, defined float up, defined float eye) {
+    static undefined Look(Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float east, defined float north, defined float heading, defined float camHeading, defined bool first, defined float dt, defined float reach, defined float up, defined float eye, defined int bridge = 0) {
         float x = east - view.originE
         float z = -(north - view.originN)
         float y = 0.0
-        any g = terrain.At(east, north)
+        any g = terrain.AtLevel(east, north, bridge)
         if (g != undefined) { y = g - view.originZ }
         if (first) {
             float ch = heading * Math.PI / 180.0
@@ -906,7 +907,7 @@ class Game {
             up = 2.3
             eye = 1.55
         }
-        Game.Look(cam, terrain, view, obstacles, chase, car.east, car.north, car.heading, camHeading, hood, dt, reach, up, eye)
+        Game.Look(cam, terrain, view, obstacles, chase, car.east, car.north, car.heading, camHeading, hood, dt, reach, up, eye, car.bridge)
     }
 
     // Die Fahrzeuge in die Szene - nur die im Umkreis von 400 m um (e, n) neu (die anderen bleiben, wo sie sind: so lädt keines das Gelände
@@ -926,7 +927,7 @@ class Game {
             return
         }
         float y = 0.0
-        any g = terrain.At(car.east, car.north)
+        any g = terrain.AtLevel(car.east, car.north, car.bridge)
         if (g != undefined) { y = g - view.originZ }
         float h = car.heading * Math.PI / 180.0
         // die Sitzbank (Motorrad) bzw. der Sattel (Fahrrad)
@@ -948,11 +949,11 @@ class Game {
     // Spieler (Figur) und Kamera zu Fuß.
     static undefined PlaceWalker(Raser.Walker walker, PersonModel person, Camera cam, Ground terrain, WorldView view, Obstacles obstacles, Chase chase, defined float camHeading, defined bool first, defined float dt) {
         float y = 0.0
-        any g = terrain.At(walker.east, walker.north)
+        any g = terrain.AtLevel(walker.east, walker.north, walker.bridge)
         if (g != undefined) { y = g - view.originZ }
         person.Place(walker.east - view.originE, y, -(walker.north - view.originN), walker.heading, walker.stride)
         person.Show(!first)
-        Game.Look(cam, terrain, view, obstacles, chase, walker.east, walker.north, walker.heading, camHeading, first, dt, 3.5, 2.1, 1.65)
+        Game.Look(cam, terrain, view, obstacles, chase, walker.east, walker.north, walker.heading, camHeading, first, dt, 3.5, 2.1, 1.65, walker.bridge)
     }
 
     static defined float Distance(Raser.Vehicle car, Raser.Walker walker) { return Raser.Physics.Distance(car, walker) }

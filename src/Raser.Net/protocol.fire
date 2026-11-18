@@ -14,7 +14,7 @@
 namespace Raser {
     // Die Nummern des Protokolls.
     class Protocol {
-        static readonly defined int Version = 2
+        static readonly defined int Version = 3       // 3: die Brücke (Ebene) im eigenen Zustand (Spieler, Fahrzeug), Bit OnBridge der Entitäten
         static readonly defined int MaxClientFrame = 1024        // Bytes je Rahmen vom Client
         static readonly defined int MaxServerFrame = 65535       // Bytes je Rahmen vom Server
         static readonly defined int MaxText = 200                // Zeichen je Chatzeile oder Befehl
@@ -93,6 +93,7 @@ namespace Raser {
         static readonly defined int Sliding = 2         // Fahrzeug: rutscht
         static readonly defined int Lying = 4           // Spieler/Fußgänger: liegt (umgehauen)
         static readonly defined int Standing = 8        // NPC: steht (wartet)
+        static readonly defined int OnBridge = 16       // Spieler/Fahrzeug: auf einer Brücke (welche: die höchste dort, Raser.Obstacles.DeckUnder)
         static readonly defined int Lamp = 16           // Spieler: die Taschenlampe leuchtet
     }
 
@@ -128,6 +129,7 @@ namespace Raser {
             var b = v.body
             e.variant = Raser.Protocol.KindOf(b.kind, false)
             if (b.sliding) { e.bits = Raser.EntityType.Sliding }
+            if (b.bridge != 0) { e.bits = e.bits | Raser.EntityType.OnBridge }
             e.east = b.east
             e.north = b.north
             e.heading = b.heading
@@ -562,11 +564,13 @@ namespace Raser {
                 w.Float64(k.speed)
                 w.Float64(k.stride)
                 w.Float64(k.load)
+                w.Varint(k.bridge)
                 if (p.selfVehicle != undefined) {
                     var v = p.selfVehicle
                     w.Byte(Raser.Protocol.KindOf(v.kind, false))
                     w.Byte(Raser.Wire.Flag(v.sliding))
                     foreach (x in [v.east, v.north, v.heading, v.speed, v.steerAngle, v.pushE, v.pushN, v.lean, v.health, v.fuel, v.grip]) { w.Float64(x) }
+                    w.Varint(v.bridge)
                 }
             }
             if (p.entities.Count > Raser.Protocol.MaxEntities) { throw new Raser.ProtocolException("Zu viele Entitäten (" + p.entities.Count + ").") }
@@ -605,6 +609,7 @@ namespace Raser {
                 k.speed = r.Float64()
                 k.stride = r.Float64()
                 k.load = r.Float64()
+                k.bridge = r.Varint()
                 p.self = take self
                 if ((flags & 4) != 0) {
                     int kind = r.Byte()
@@ -622,6 +627,7 @@ namespace Raser {
                     v.health = r.Float64()
                     v.fuel = r.Float64()
                     v.grip = r.Float64()
+                    v.bridge = r.Varint()
                     p.selfVehicle = take v
                 }
             }

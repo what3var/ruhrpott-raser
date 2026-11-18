@@ -1,0 +1,255 @@
+// Raser.World: Brücken - die Höhe des Decks einer Straße oder Bahn mit OSM layer > 0 (Tunnel nimmt der Import nicht auf). Ohne Szene: dieselbe
+// Rechnung für das Netz (Raser.Mesh zeichnet das Deck), den Verkehr (Spuren auf dem Deck) und die Fahrphysik (Raser.Sim: der Spieler fährt
+// darauf), auf dem Server wie im Client.
+//
+// Je Brücke (eine Linie der Kachel mit layer > 0, ohne Treppen) ein Deck: die Höhe seiner Oberkante je Meter entlang der Linie. Sie ist das
+// Höchste aus
+// - dem Gelände darunter + 15 cm (das Deck liegt nie im Boden),
+// - der Geraden zwischen dem Gelände an den Enden (wenn beide Enden an eine Straße der Ebene 0 anschließen: eine Brücke über einen Einschnitt),
+// - je Kreuzung mit einer Straße oder Bahn darunter (2D-Schnitt, Ebene kleiner): Gelände dort + lichte Höhe (Fahrbahn 4,5 m, Bahn 5,5 m, Fußweg
+//   2,8 m) + Dicke des Decks (0,8 m), zu den Seiten mit der größten Steigung fallend (Straße 8 %, Bahn 3,5 %, Fußweg 12 %).
+// Das Gelände kommt aus dem Höhenraster der Kachel (DGM1: unter einer Brücke das Gelände darunter); Punkte außerhalb der Kachel haben die Höhe
+// ihres Rands (eine Brücke über den Kachelrand kann an der Grenze um ein paar Zentimeter springen).
+#import "raser.core"
+
+namespace Raser {
+    class BridgeDeck {
+        static readonly defined float Step = 1.0         // m zwischen den Höhen
+
+        defined int road                // die ID der Straße
+        string kind                     // "highway=service", "railway=rail" ...
+        defined int level               // OSM layer
+        defined float width             // die Breite der Fahrbahn bzw. des Gleises (m)
+        defined bool rail
+        defined bool foot               // Fuß- und Radweg (Geländer statt Brüstung)
+        defined int color               // der Belag (Palette, Material) wie die Straße
+        defined int surface
+        float pts[]                     // kachel-lokal
+        float acc[]                     // die Länge bis zu jedem Punkt
+        float z[]                       // je Step m die Höhe der Oberkante (m über NHN), der letzte Wert am Ende
+        float ground[]                  // je Step m das Gelände darunter
+        defined float length
+        List<float> piers               // wo Pfeiler stehen (m entlang): alle 15 m, wo das Deck mehr als 1 m über dem Gelände liegt, nicht auf einer
+                                        // Fahrbahn oder Bahn darunter
+        defined bool startJoined        // am Anfang schließt eine Straße der Ebene 0 an (Rampe)
+        defined bool endJoined
+
+        construct() { this.piers = new List<float>() }
+
+        // Die Höhe der Oberkante bei s m entlang (linear, an den Enden festgehalten).
+        defined float At(defined float s) { return Raser.BridgeDeck.Sample(this.z, s) }
+
+        defined float GroundAt(defined float s) { return Raser.BridgeDeck.Sample(this.ground, s) }
+
+        static defined float Sample(float values[], defined float s) {
+            int n = values.length
+            if (n == 0) { return 0.0 }
+            float f = Math.Clamp(s / Raser.BridgeDeck.Step, 0.0, (n - 1) * 1.0)
+            int i = Math.Floor(f)!int
+            if (i >= n - 1) { return values[n - 1] }
+            float t = f - i
+            return values[i] * (1.0 - t) + values[i + 1] * t
+        }
+
+        // Der Punkt bei s (kachel-lokal) und die Richtung dort nach out (x, y, dx, dy).
+        undefined PointAt(defined float s, float out[]) {
+            int n = this.pts.length / 2
+            float t = Math.Clamp(s, 0.0, this.length)
+            for (int i = 0; i + 1 < n; i++) {
+                float len = this.acc[i + 1] - this.acc[i]
+                if (t <= this.acc[i + 1] || i + 2 >= n) {
+                    float f = 0.0
+                    if (len > 0.0001) { f = Math.Clamp((t - this.acc[i]) / len, 0.0, 1.0) }
+                    float ex = this.pts[i * 2 + 2] - this.pts[i * 2]
+                    float ey = this.pts[i * 2 + 3] - this.pts[i * 2 + 1]
+                    out[0] = this.pts[i * 2] + ex * f
+                    out[1] = this.pts[i * 2 + 1] + ey * f
+                    float l = Math.Max(len, 0.0001)
+                    out[2] = ex / l
+                    out[3] = ey / l
+                    return
+                }
+            }
+            out[0] = this.pts[0]
+            out[1] = this.pts[1]
+            out[2] = 1.0
+            out[3] = 0.0
+        }
+
+        // Liegt (x, y) (kachel-lokal) auf dem Deck (bis margin m über den Rand)? Setzt dann hitS (m entlang) und hitSide (m quer, links positiv).
+        defined float hitS
+        defined float hitSide
+        defined bool Covers(defined float x, defined float y, defined float margin) {
+            float best = 1.0e30
+            int n = this.pts.length / 2
+            for (int i = 0; i + 1 < n; i++) {
+                float ax = this.pts[i * 2]
+                float ay = this.pts[i * 2 + 1]
+                float ex = this.pts[i * 2 + 2] - ax
+                float ey = this.pts[i * 2 + 3] - ay
+                float l2 = ex * ex + ey * ey
+                if (l2 < 0.000001) { continue }
+                float t = ((x - ax) * ex + (y - ay) * ey) / l2
+                // über die Enden hinaus zählt nicht (dort beginnt die Straße auf dem Gelände)
+                if ((t < 0.0 && i == 0) || (t > 1.0 && i + 2 == n)) { continue }
+                t = Math.Clamp(t, 0.0, 1.0)
+                float qx = ax + ex * t
+                float qy = ay + ey * t
+                float d = Math.Sqrt((x - qx) * (x - qx) + (y - qy) * (y - qy))
+                if (d < best) {
+                    best = d
+                    this.hitS = this.acc[i] + t * Math.Sqrt(l2)
+                    float cross = ex * (y - ay) - ey * (x - ax)
+                    this.hitSide = d
+                    if (cross < 0.0) { this.hitSide = -d }
+                }
+            }
+            return best <= this.width / 2.0 + margin
+        }
+    }
+
+    class Bridges {
+        static readonly defined float Thickness = 0.8      // das Deck (m)
+        static readonly defined float Base = 0.15          // so weit mindestens über dem Gelände (m)
+
+        // Ist die Straße eine Brücke? (layer > 0, Straße oder Bahn, keine Treppe)
+        static defined bool IsBridge(Road r) {
+            if (r.kind == undefined || r.layer <= 0 || r.points == undefined || r.points.length < 4) { return false }
+            if (r.kind == "highway=steps" || r.kind == "highway=elevator") { return false }
+            return r.kind.StartsWith("highway=") || r.kind == "railway=rail" || r.kind == "railway=tram" || r.kind == "railway=light_rail"
+        }
+
+        static defined bool IsFoot(string kind) { return kind == "highway=footway" || kind == "highway=path" || kind == "highway=pedestrian" || kind == "highway=cycleway" || kind == "highway=bridleway" }
+
+        // Die lichte Höhe über einer Straße darunter (m).
+        static defined float Clearance(Road o) {
+            if (o.kind.StartsWith("railway=")) { return 5.5 }
+            if (Raser.Bridges.IsFoot(o.kind) || o.kind == "highway=steps") { return 2.8 }
+            return 4.5
+        }
+
+        // Die Decks aller Brücken einer Kachel (in der Folge der Straßen der Kachel). Ohne Höhenraster: keine.
+        static List<BridgeDeck> Of(Tile tile) {
+            var decks = new List<BridgeDeck>(Owns.Values)
+            if (tile == undefined || tile.data == undefined || tile.data.roads == undefined || tile.heights == undefined) { return decks }
+            foreach (r in tile.data.roads) {
+                if (!Raser.Bridges.IsBridge(r)) { continue }
+                var d = Raser.Bridges.Deck(r, tile.data.roads, tile.heights)
+                if (d != undefined) { decks.Add(take d) }
+            }
+            return decks
+        }
+
+        static BridgeDeck Deck(Road r, List<Road> roads, HeightRaster heights) {
+            var d = new Raser.BridgeDeck()
+            d.road = r.id
+            d.kind = r.kind
+            d.level = r.layer
+            d.width = Math.Max(r.width, 1.5)
+            d.rail = r.kind.StartsWith("railway=")
+            d.foot = Raser.Bridges.IsFoot(r.kind)
+            d.color = r.color
+            d.surface = r.surface!int
+            d.pts = copy r.points
+            int n = r.points.length / 2
+            d.acc = new float[n]
+            d.acc[0] = 0.0
+            float total = 0.0
+            for (int i = 1; i < n; i++) {
+                float dx = r.points[i * 2] - r.points[i * 2 - 2]
+                float dy = r.points[i * 2 + 1] - r.points[i * 2 - 1]
+                total = total + Math.Sqrt(dx * dx + dy * dy)
+                d.acc[i] = total
+            }
+            d.length = total
+            if (total < 0.5) { return undefined }
+            int m = Math.Ceiling(total / Raser.BridgeDeck.Step)!int + 1
+            d.z = new float[m]
+            d.ground = new float[m]
+            float p[] = new float[4]
+            for (int i = 0; i < m; i++) {
+                d.PointAt(Math.Min(i * Raser.BridgeDeck.Step, total), p)
+                d.ground[i] = heights.At(p[0], p[1])
+            }
+            // die Enden: schließt dort eine Straße der Ebene 0 an?
+            float sx = r.points[0]
+            float sy = r.points[1]
+            float ex = r.points[n * 2 - 2]
+            float ey = r.points[n * 2 - 1]
+            foreach (o in roads) {
+                if (o == r || o.layer != 0 || o.points == undefined) { continue }
+                for (int k = 0; k + 1 < o.points.length; k = k + 2) {
+                    float ox = o.points[k]
+                    float oy = o.points[k + 1]
+                    if ((ox - sx) * (ox - sx) + (oy - sy) * (oy - sy) < 0.01) { d.startJoined = true }
+                    if ((ox - ex) * (ox - ex) + (oy - ey) * (oy - ey) < 0.01) { d.endJoined = true }
+                }
+            }
+            // die untere Grenze: Gelände + Base, zwischen zwei angeschlossenen Enden die Gerade
+            float g0 = d.ground[0]
+            float g1 = d.ground[m - 1]
+            for (int i = 0; i < m; i++) {
+                float z = d.ground[i] + Raser.Bridges.Base
+                if (d.startJoined && d.endJoined) { z = Math.Max(z, g0 + (g1 - g0) * i / Math.Max(1.0, m - 1.0) + Raser.Bridges.Base) }
+                d.z[i] = z
+            }
+            // die Kreuzungen mit Straßen und Bahnen darunter: lichte Höhe, zu den Seiten fallend
+            float slope = 0.08
+            if (d.rail) { slope = 0.035 }
+            if (d.foot) { slope = 0.12 }
+            foreach (o in roads) {
+                if (o == r || o.layer >= r.layer || o.kind == undefined || o.points == undefined || o.points.length < 4) { continue }
+                if (!(o.kind.StartsWith("highway=") || o.kind.StartsWith("railway="))) { continue }
+                float need = Raser.Bridges.Clearance(o) + Raser.Bridges.Thickness
+                for (int i = 0; i + 1 < n; i++) {
+                    float ax = r.points[i * 2]
+                    float ay = r.points[i * 2 + 1]
+                    float bx = r.points[i * 2 + 2]
+                    float by = r.points[i * 2 + 3]
+                    for (int k = 0; k + 3 < o.points.length; k = k + 2) {
+                        float t = Raser.Bridges.Cross(ax, ay, bx, by, o.points[k], o.points[k + 1], o.points[k + 2], o.points[k + 3])
+                        if (t < 0.0) { continue }
+                        float s = d.acc[i] + t * (d.acc[i + 1] - d.acc[i])
+                        float c = heights.At(ax + (bx - ax) * t, ay + (by - ay) * t) + need
+                        for (int q = 0; q < m; q++) {
+                            float v = c - slope * Math.Abs(q * Raser.BridgeDeck.Step - s)
+                            if (v > d.z[q]) { d.z[q] = v }
+                        }
+                    }
+                }
+            }
+            // die Pfeiler
+            for (float s = 7.5; s < total - 3.0; s = s + 15.0) {
+                if (d.At(s) - Raser.Bridges.Thickness - d.GroundAt(s) < 1.0) { continue }
+                d.PointAt(s, p)
+                if (Raser.Bridges.OnRoadBelow(d, roads, p[0], p[1])) { continue }
+                d.piers.Add(s)
+            }
+            return d
+        }
+
+        // Liegt (x, y) auf einer Fahrbahn oder Bahn unter dem Deck (mit 0,5 m Rand)?
+        static defined bool OnRoadBelow(BridgeDeck d, List<Road> roads, defined float x, defined float y) {
+            foreach (o in roads) {
+                if (o.layer >= d.level || o.kind == undefined || o.points == undefined) { continue }
+                if (!(o.kind.StartsWith("highway=") || o.kind.StartsWith("railway="))) { continue }
+                if (Raser.Geo.DistanceToLine(o.points, x, y) < o.width / 2.0 + 0.5) { return true }
+            }
+            return false
+        }
+
+        // Schneiden sich die Strecken a-b und c-d? Gibt t auf a-b (0 .. 1), sonst -1.
+        static defined float Cross(defined float ax, defined float ay, defined float bx, defined float by, defined float cx, defined float cy, defined float dx, defined float dy) {
+            float rx = bx - ax
+            float ry = by - ay
+            float sx = dx - cx
+            float sy = dy - cy
+            float den = rx * sy - ry * sx
+            if (Math.Abs(den) < 0.000001) { return -1.0 }
+            float t = ((cx - ax) * sy - (cy - ay) * sx) / den
+            float u = ((cx - ax) * ry - (cy - ay) * rx) / den
+            if (t < 0.0 || t > 1.0 || u < 0.0 || u > 1.0) { return -1.0 }
+            return t
+        }
+    }
+}

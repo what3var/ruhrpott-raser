@@ -12,6 +12,7 @@ namespace Raser {
         defined float walkSpeed
         defined float sprintSpeed
         defined float turnRate          // Grad/s
+        defined int bridge              // auf einer Brücke: die ID ihrer Straße, 0: auf dem Gelände (wie Raser.Vehicle.bridge)
         defined float load              // was er trägt, bremst: Faktor fürs Gehen (Rennen: das Quadrat), aus Raser.Inventory.SpeedFactor
 
         construct() {
