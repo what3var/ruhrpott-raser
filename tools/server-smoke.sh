@@ -51,15 +51,12 @@ AP=$!
 "$GAME" --server 127.0.0.1:$GP --token "falsch" --user Anna --bot 2 > "$WORK/falsch.log" 2>&1
 wait $BP $AP
 
-# Runde 2: Anna fährt, hält, steigt aus und setzt ihren Rucksack ab; Bernd (zu Fuß) setzt seinen ab, geht zu Annas und hebt ihn auf; Carla schummelt
-# (doppelt so viele Eingaben, dann eine Lage wie in v1).
+# Runde 2: Anna fährt, hält, steigt aus und setzt ihren Rucksack ab; Bernd (zu Fuß) setzt seinen ab, geht zu Annas und hebt ihn auf.
 "$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 40 --plan aufheben --vehicle fuss --at 376100,5705000 > "$WORK/bernd2.log" 2>&1 &
 BP=$!
-"$GAME" --server 127.0.0.1:$GP --token "$C" --user Carla --bot 8 --plan schummeln --at 376300,5705000 > "$WORK/carla.log" 2>&1 &
-CP=$!
 "$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 40 --plan ablegen --at 376100,5705000 "${WORLDARG[@]}" > "$WORK/anna2.log" 2>&1 &
 AP=$!
-wait $BP $CP $AP
+wait $BP $AP
 
 # Runde 3: Anna fährt Bernd (zu Fuß) um - Bernd verliert Bargeld und Gegenstände, Anna sammelt sie auf; dann meldet Anna sich neu an: ihr Bargeld
 # kommt aus der Datenbank.
@@ -70,6 +67,8 @@ sleep 1
 wait $BP
 sleep 1
 "$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 3 --plan stehen --vehicle fuss --at 376100,5705000 > "$WORK/anna4.log" 2>&1
+# Runde 4: Carla schummelt allein (doppelt so viele Eingaben, dann eine Lage wie in v1) - allein, damit ihr Wagen niemanden umfährt.
+"$GAME" --server 127.0.0.1:$GP --token "$C" --user Carla --bot 8 --plan schummeln --at 376300,5705000 > "$WORK/carla.log" 2>&1
 # Runde 5: Dora (neu) geht 3 s, meldet sich neu an (Stand wie zuletzt), dann startet der Server neu, Dora wieder (Stand wie zuletzt).
 "$GAME" --server 127.0.0.1:$GP --token "$D" --user Dora --bot 6 --plan gehen --vehicle fuss --at 390000,5710000 > "$WORK/dora1.log" 2>&1
 "$GAME" --server 127.0.0.1:$GP --token "$D" --user Dora --bot 5 --plan gehen > "$WORK/dora2.log" 2>&1
