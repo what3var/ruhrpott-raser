@@ -55,6 +55,7 @@ class SettingsTests {
         s.near = 2
         s.sky = false
         s.gpu = true
+        s.fullscreen = true
         s.camera = 1.25
         s.layout = "en"
         s.Assign("gas", 105)
@@ -68,6 +69,8 @@ class SettingsTests {
         Testing.Assert.AreEqual("2", o.Get("near", ""))
         Testing.Assert.AreEqual("1", o.Get("no-sky", ""))
         Testing.Assert.AreEqual("1", o.Get("gpu", ""))
+        Testing.Assert.AreEqual("1", o.Get("fullscreen", ""))
+        Testing.Assert.IsTrue(t.fullscreen)
         Testing.Assert.AreEqual(1.25, t.camera)
         Testing.Assert.AreEqual("en", t.layout)
         Testing.Assert.AreEqual(105, t.KeyOf("gas"))
