@@ -652,6 +652,8 @@ class Game {
             // --overview 40: die Kamera so hoch über dem Wagen, Blick schräg hinab (der Verkehr von oben)
             float over = options.Get("overview", "0").ToFloat()
             if (over > 0.0) { npcs.Overview(cam, terrain, view, car.east, car.north, car.heading + options.Get("look", "0").ToFloat(), over) }
+            // --follow auto|person: die Kamera hinter das nächste Auto bzw. den nächsten Fußgänger des Verkehrs
+            if (options.Get("follow", "") != "") { npcs.Follow(cam, terrain, view, car.east, car.north, options.Get("follow", ""), options.Get("look", "0").ToFloat()) }
             view.lead = Math.Abs(car.speed) * 2.5
             view.Fill(car.east, car.north)
             atmosphere.Update(car.east, car.north, 0.0)
