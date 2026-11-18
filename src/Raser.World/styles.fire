@@ -113,6 +113,7 @@ namespace Raser {
         static string ZoneAt(TileData data, defined float x, defined float y) {
             if (data == undefined) { return "" }
             string found = ""
+            if (data.zones == undefined) { return "" }
             foreach (z in data.zones) {
                 if (Raser.Geo.Inside(z.ring, x, y)) {
                     // die feinere Angabe gewinnt: Altstadt und Hof vor Ort, Ort vor Nutzung
@@ -166,10 +167,10 @@ namespace Raser {
                     if (a.kind != "landuse=farmland" && a.kind != "landuse=forest") { continue }
                     if (Raser.Geo.Inside(a.ring, cx, cy) || Raser.HouseStyle.RingDistance(a.ring, cx, cy) < 60.0) { fields = true }
                 }
-                foreach (z in data.zones) {
+                if (data.zones != undefined) { foreach (z in data.zones) {
                     if (z.kind != "landuse=farmland" && z.kind != "landuse=meadow") { continue }
                     if (Raser.HouseStyle.RingDistance(z.ring, cx, cy) < 60.0) { fields = true }
-                }
+                } }
             }
             if (fields && near <= 8) { return Raser.HouseStyle.Rural }
             if (zone == "place=village" && near <= 14) { return Raser.HouseStyle.Rural }
