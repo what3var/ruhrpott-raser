@@ -209,6 +209,7 @@ class Tool {
         Tool.Log(blocks + " Blöcke, " + total + " Vierecke (" + (total * 2 / blocks / 1000) + "k Dreiecke je Block)")
         string names[] = ["Gelände (glatt)", "Fenster/Türen/Bögen/Brücken", "Glas der Fenster"]
         for (int i = 0; i < 3; i++) { Tool.Log("  " + names[i] + ": " + builder.stats[256 + i]) }
+        Tool.Log("  Modelle (Möbel, Spielgeräte, Pflanzen): " + builder.propQuads + " (" + builder.propCount + " Props, davon " + builder.treeCount + " Bäume)")
         // die Materialien, nach Anzahl
         var order = new List<int>()
         for (int m = 0; m < 256; m++) { if (builder.stats[m] > 0) { order.Add(builder.stats[m] * 256 + m) } }

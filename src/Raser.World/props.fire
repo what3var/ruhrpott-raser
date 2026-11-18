@@ -147,6 +147,71 @@ namespace Raser {
             }
         }
 
+        // Stadtmöbel, Spielgeräte und Pflanzen im öffentlichen Raum sind keine Voxel mehr, sondern Modelle im Netz der nahen Stufe
+        // (Raser.PropMesher in Raser.Mesh): in jedem Winkel gedreht, wenige Flächen. Voxel bleiben nur Sandkasten, Laube, Grab - und alles in
+        // Kleingärten (Grundstücke: dort bleibt es im Raster, wie gewünscht).
+        static defined bool AsModel(string kind, string source) {
+            if (kind == undefined) { return false }
+            if (source != undefined && source.Contains("landuse=allotments")) { return false }
+            return kind == "tree" || kind == "bush" || kind == "fern" || kind == "reed" || kind == "hedge" || kind == "lamp" || kind == "bench" || kind == "bin" || kind == "sign" || kind == "signal" || kind == "swing" || kind == "slide" || kind == "climber" || kind == "goal" || kind == "hoop"
+        }
+
+        // Der Kopf einer Laterne (Raser.PropMesher): so weit vor dem Mast (m, in Richtung angle) und so hoch über dem Fuß.
+        static readonly defined float LampReach = 1.1
+        static readonly defined float LampHead = 4.85
+
+        // Ist der Baum ein Nadelbaum mit Kegel (Fichte, OSM needleleaved)?
+        static defined bool Conical(string detail) { return detail == "needleleaved" || detail == "fichte" }
+
+        // Die Höhe eines Baums (m): aus den Daten, sonst aus der ID (Laubbaum 8 .. 16 m, Nadelbaum 10 .. 20 m) - nah und fern dieselbe.
+        static defined float TreeHeight(Prop p) {
+            if (p.height > 0.0) { return Math.Clamp(p.height, 3.0, 35.0) }
+            if (Raser.Props.Conical(p.detail)) { return 10.0 + Raser.Props.Rand(p.id, 1, 0) * 10.0 }
+            return 8.0 + Raser.Props.Rand(p.id, 1, 0) * 8.0
+        }
+
+        // Nach dem Laden: Verkehrszeichen zeigen zum Verkehr, der auf sie zufährt (Rechtsverkehr: rechts der Fahrtrichtung, die Vorderseite
+        // gegen sie), Bäume stehen in einer Drehung aus ihrer ID (die Modelle sind nicht rund). Wiederholt anwendbar.
+        static undefined Face(Tile tile) {
+            if (tile == undefined || tile.data == undefined || tile.data.props == undefined || tile.data.roads == undefined) { return }
+            foreach (p in tile.data.props) {
+                if (p.kind == "tree" || p.kind == "bush" || p.kind == "fern" || p.kind == "reed") {
+                    if (p.angle == 0.0) { p.angle = Raser.Props.Rand(p.id, 7, 0) * 360.0 }
+                    continue
+                }
+                if (p.kind != "sign") { continue }
+                float best = 1.0e30
+                float dx = 1.0
+                float dy = 0.0
+                float side = 0.0
+                foreach (r in tile.data.roads) {
+                    if (!Raser.Props.IsCarRoad(r)) { continue }
+                    for (int k = 0; k + 3 < r.points.length; k = k + 2) {
+                        float ax = r.points[k]
+                        float ay = r.points[k + 1]
+                        float ex = r.points[k + 2] - ax
+                        float ey = r.points[k + 3] - ay
+                        float len2 = ex * ex + ey * ey
+                        if (len2 <= 0.0) { continue }
+                        float t = Math.Clamp(((p.x - ax) * ex + (p.y - ay) * ey) / len2, 0.0, 1.0)
+                        float cx = ax + ex * t
+                        float cy = ay + ey * t
+                        float d2 = (p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy)
+                        if (d2 < best) {
+                            best = d2
+                            float len = Math.Sqrt(len2)
+                            dx = ex / len
+                            dy = ey / len
+                            side = ex * (p.y - ay) - ey * (p.x - ax)
+                        }
+                    }
+                }
+                if (best > 900.0) { continue }
+                // rechts der Linie (side < 0): der Verkehr fährt in Linienrichtung auf das Schild zu - es zeigt ihm entgegen
+                if (side < 0.0) { p.angle = Math.Atan2(-dy, -dx) * 180.0 / Math.PI } else { p.angle = Math.Atan2(dy, dx) * 180.0 / Math.PI }
+            }
+        }
+
         // Ein Wert in [0, 1) aus Variante und Zahlen.
         static defined float Rand(defined int seed, defined int a, defined int b) {
             int h = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), seed), a), b)

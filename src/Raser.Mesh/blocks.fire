@@ -350,7 +350,11 @@ namespace Raser {
         defined bool opaqueOnly
         defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
         List<int> stats                 // (raser nearstats) Vierecke je Material der Voxel (0-255), dahinter Gelände, Fenster/Brücken, Glas der Fenster
-        static readonly defined int CacheVersion = 17     // (17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        Raser.PropMesher props          // Möbel, Spielgeräte, Pflanzen als Modelle (die Vorlagen bleiben über die Blöcke)
+        defined int propQuads           // (raser nearstats) die Vierecke der Modelle, die Props, davon Bäume
+        defined int propCount
+        defined int treeCount
+        static readonly defined int CacheVersion = 18     // (18: Möbel, Spielgeräte und Pflanzen als gedrehte Modelle (Raser.PropMesher), Grenzen im öffentlichen Raum geschnitten; 17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)
@@ -363,6 +367,7 @@ namespace Raser {
             this.nearSpacing = 0.8
             this.opaqueOnly = opaqueOnly
             this.useCache = true
+            this.props = new Raser.PropMesher()
         }
 
         // Wo der Netz-Cache eines Blocks liegt: <welt>/meshes/<kachel>/<bx>_<by>.rrn (Deflate). Beim Voxelisieren einer Kachel wird ihr Ordner gelöscht.
@@ -490,6 +495,15 @@ namespace Raser {
                 var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip, false, fine)
                 if (this.stats != undefined) { this.stats[256] = this.stats[256] + ground.count }
                 opaque.Add(take ground, tileKey.East - east, tileKey.North - north, 0.0)
+                // Möbel, Spielgeräte und Pflanzen: gedrehte Modelle (nach dem Gelände: der Fuß steht auf dem Gehweg, wo einer ist)
+                var models = new Raser.MeshPart()
+                this.props.Add(models, fm, east - tileKey.East, north - tileKey.North, 51.2)
+                if (this.stats != undefined) {
+                    this.propQuads = this.propQuads + models.count
+                    this.propCount = this.propCount + this.props.count
+                    this.treeCount = this.treeCount + this.props.trees
+                }
+                opaque.Add(take models, tileKey.East - east, tileKey.North - north, 0.0)
                 // Fenster, Türen und Tore: eingehängt zwischen die Laibungen
                 var frames = new Raser.MeshPart()
                 var panes = new Raser.MeshPart()

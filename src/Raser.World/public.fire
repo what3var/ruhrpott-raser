@@ -1,0 +1,48 @@
+// Raser.World: öffentlicher Raum und Grundstücke - wo der Untergrund natürliche Formen haben darf.
+//
+// Im öffentlichen Raum (Rasen, Wald, Park, Spiel- und Sportplatz, Platz, Wasser, Wiese, Friedhof) laufen die Grenzen der Beläge schräg und in
+// Kurven, wie die Flächen in den Daten sind (Raser.FarMesher: die Zellen des Geländes werden an der Grenze geschnitten). Auf Grundstücken bleibt es
+// im Raster der Zellen, wie bisher (ausdrücklich so gewünscht).
+//
+// Die Daten (OSM) kennen keine Flurstücke. Ein Grundstück ist hier:
+// - eine Fläche einer Nutzung, die Privatleuten oder Firmen gehört: Gewerbe, Handel, Industrie, Bahn, Baustelle, Parkplatz, Kleingärten, und
+//   alles, was nicht unten als öffentlich steht;
+// - und jede Stelle bis PlotMargin (5 m) an einem Gebäude (Vorgarten, Hof, Garten hinter dem Haus) - auch ohne Fläche in den Daten.
+// Wo eine Grenze ein Grundstück berührt (eine ihrer Flächen ist keine öffentliche, oder die Stelle liegt am Haus), bleibt sie im Raster.
+namespace Raser {
+    class PublicSpace {
+        static readonly defined float PlotMargin = 5.0
+
+        // Ist eine Fläche dieser Art öffentlicher Raum (ihre Grenzen dürfen natürlich verlaufen)?
+        static defined bool IsPublic(string kind) {
+            if (kind == undefined) { return false }
+            return kind == "landuse=grass" || kind == "landuse=forest" || kind == "natural=wood" || kind == "natural=scrub" || kind == "natural=heath" || kind == "natural=water" || kind == "natural=wetland" || kind == "natural=grassland" || kind == "landuse=meadow" || kind == "landuse=village_green" || kind == "landuse=recreation_ground" || kind == "landuse=cemetery" || kind == "leisure=park" || kind == "leisure=garden" || kind == "leisure=playground" || kind == "leisure=pitch" || kind == "place=square" || kind == "highway=pedestrian" || kind == "waterway=riverbank"
+        }
+
+        // Liegt (x, y) auf einem Grundstück am Haus (bis PlotMargin an einem Grundriss der Kachel)? (Raser.FarMesher prüft dasselbe mit seinen
+        // Rechtecken der Gebäude.)
+        static defined bool AtHouse(TileData data, defined float x, defined float y) {
+            if (data == undefined) { return false }
+            float m = Raser.PublicSpace.PlotMargin
+            foreach (b in data.buildings) {
+                float fp[] = b.footprint
+                if (fp == undefined || fp.length < 6) { continue }
+                // erst das Rechteck (schnell), dann der Grundriss
+                float minX = 1.0e30
+                float minY = 1.0e30
+                float maxX = -1.0e30
+                float maxY = -1.0e30
+                for (int k = 0; k + 1 < fp.length; k = k + 2) {
+                    minX = Math.Min(minX, fp[k])
+                    maxX = Math.Max(maxX, fp[k])
+                    minY = Math.Min(minY, fp[k + 1])
+                    maxY = Math.Max(maxY, fp[k + 1])
+                }
+                if (x < minX - m || x > maxX + m || y < minY - m || y > maxY + m) { continue }
+                if (Raser.Geo.Inside(fp, x, y)) { return true }
+                if (Raser.HouseStyle.RingDistance(fp, x, y) < m) { return true }
+            }
+            return false
+        }
+    }
+}

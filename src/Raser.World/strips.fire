@@ -80,6 +80,50 @@ namespace Raser {
         }
 
         // Die Streifen einer Kachel aus ihren Bäumen (nach Raser.Props.Settle).
+        // Die Sträucher in den Grünstreifen der Kachel: in Reihen alle 0,6 m, quer alle 0,5 m, ein Teil frei; nicht auf der Einfassung und nicht
+        // dicht an Bäumen und Laternen. Deterministisch aus der Straße und der Lage im Streifen. Je Strauch x, y (kachel-lokal) und eine Zahl
+        // für die Variante. (Früher Voxel im Voxelizer, jetzt Modelle im Netz: Raser.PropMesher.)
+        static List<float> Bushes(Tile tile) {
+            var out = new List<float>()
+            if (tile == undefined || tile.strips == undefined || tile.data == undefined) { return out }
+            var probe = new Raser.StripProbe()
+            foreach (strip in tile.strips) {
+                float line[] = undefined
+                foreach (r in tile.data.roads) {
+                    if (r.id == strip.road) { line = r.points }
+                }
+                if (line == undefined) { continue }
+                int row = 0
+                for (float s = strip.s0 + 0.4; s < strip.s1 - 0.3; s = s + 0.6) {
+                    int col = 0
+                    for (float q = Raser.Strips.Edge + 0.35; q < strip.width - Raser.Strips.Edge - 0.2; q = q + 0.5) {
+                        int seed = strip.road + row * 7919 + col * 104729
+                        col++
+                        if (Raser.Props.Rand(seed, 70, 0) < 0.3) { continue }
+                        float js = (Raser.Props.Rand(seed, 71, 0) - 0.5) * 0.3
+                        float jq = (Raser.Props.Rand(seed, 72, 0) - 0.5) * 0.2
+                        Raser.Strips.PointAt(line, s + js, strip.side * (strip.half + q + jq), probe)
+                        float x = probe.x
+                        float y = probe.y
+                        if (x < -1.0 || y < -1.0 || x > 257.0 || y > 257.0) { continue }
+                        bool near = false
+                        foreach (p in tile.data.props) {
+                            if ((p.kind == "tree" || p.kind == "lamp" || p.kind == "sign") && (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y) < 0.36) {
+                                near = true
+                                break
+                            }
+                        }
+                        if (near) { continue }
+                        out.Add(x)
+                        out.Add(y)
+                        out.Add(seed * 1.0)
+                    }
+                    row++
+                }
+            }
+            return out
+        }
+
         static undefined Build(Tile tile) {
             tile.strips = new List<Strip>()
             if (tile.data == undefined || tile.data.props == undefined || tile.data.roads == undefined) { return }
