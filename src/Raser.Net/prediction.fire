@@ -1,0 +1,345 @@
+// Raser.Net: Vorhersage und Abgleich für den eigenen Spieler (Protokoll v2, docs/SERVER.md).
+//
+// Der Client rechnet jede Eingabe sofort selbst (Raser.SimWorld.Control, dieselbe Rechnung wie der Server) und merkt sie sich, bis der Server sie
+// bestätigt. Kommt ein Snapshot (mit der Nummer der zuletzt gerechneten Eingabe und dem eigenen Zustand, bitgenau), setzt er den Spieler auf den
+// Zustand des Servers zurück und rechnet die noch offenen Eingaben noch einmal. Was sich dabei an der Lage ändert, ist der Fehler der Vorhersage:
+// kleine Fehler werden weich ausgeglichen (die Anzeige läuft mit einem Versatz, der in ~100 ms verschwindet), große (ein Teleport, ein anderes
+// Fahrzeug) springen sofort.
+#import "raser.core"
+#import "raser.sim"
+
+namespace Raser {
+    class Prediction {
+        Raser.SimWorld world            // die Hindernisse und die Fahrzeuge (aus den Snapshots; das eigene vorhergesagt)
+        Raser.Pawn pawn
+        List<Raser.Controls> pending    // gerechnet, noch nicht bestätigt
+        Dictionary<int, Raser.Entity> known  // je Fahrzeug der letzte Stand des Servers (vor dem Nachrechnen wird alles darauf zurückgesetzt)
+        defined int seq                 // die Nummer der letzten Eingabe
+        defined bool reverse            // der Gang (aus den Tasten, wie im Spiel)
+        defined bool ready              // der erste Snapshot mit dem eigenen Zustand ist da
+        defined int ack                 // die zuletzt bestätigte Eingabe
+        // die Anzeige: Lage nach dem letzten Takt (und dem davor, zum Glätten zwischen den Takten) und der Versatz des Abgleichs
+        defined float prevE
+        defined float prevN
+        defined float prevH
+        defined float curE
+        defined float curN
+        defined float curH
+        defined float errE
+        defined float errN
+        defined float errH
+        defined float snapDistance      // ab so viel Fehler (m) springt die Anzeige
+        defined float smoothing         // Zeitkonstante des Ausgleichs (s)
+        // Messwerte
+        defined float lastCorrection    // m, beim letzten Abgleich
+        defined float maxCorrection     // m, der größte (ohne Sprünge)
+        defined float sumCorrection
+        defined int reconciled          // so viele Abgleiche
+        defined int corrected           // ... davon mit Fehler über 1 mm
+        defined int snaps               // ... davon gesprungen
+
+        construct(Raser.Obstacles obstacles, defined int id) {
+            this.world = new Raser.SimWorld(take obstacles)
+            this.pawn = new Raser.Pawn(id)
+            this.pending = new List<Raser.Controls>()
+            this.known = new Dictionary<int, Raser.Entity>()
+            this.seq = 0
+            this.reverse = false
+            this.ready = false
+            this.ack = 0
+            this.prevE = 0.0
+            this.prevN = 0.0
+            this.prevH = 0.0
+            this.curE = 0.0
+            this.curN = 0.0
+            this.curH = 0.0
+            this.errE = 0.0
+            this.errN = 0.0
+            this.errH = 0.0
+            this.snapDistance = 4.0
+            this.smoothing = 0.05
+            this.lastCorrection = 0.0
+            this.maxCorrection = 0.0
+            this.sumCorrection = 0.0
+            this.reconciled = 0
+            this.corrected = 0
+            this.snaps = 0
+        }
+
+        // Das Fahrzeug, in dem der Spieler sitzt (undefined: zu Fuß).
+        Raser.Vehicle Car() {
+            var v = this.world.Find(this.pawn.vehicle)
+            if (v == undefined) { return undefined }
+            return v.body
+        }
+
+        // Ein Takt aus den Tasten (wie im Spiel, Raser.Controls.FromKeys): gerechnet und gemerkt; die Eingabe geht an den Server.
+        Raser.Controls Keys(defined bool gas, defined bool brake, defined bool left, defined bool right, defined bool handbrake, defined bool sprint, defined bool use) {
+            float speed = 0.0
+            var car = this.Car()
+            if (car != undefined) { speed = car.speed }
+            this.seq++
+            var c = Raser.Controls.FromKeys(this.seq, gas, brake, left, right, handbrake, sprint, use, this.reverse, speed)
+            this.reverse = c.IsReverse
+            this.Step(c)
+            return c
+        }
+
+        // Ein Takt mit einer fertigen Eingabe (ihre Nummer muss die nächste sein).
+        undefined Step(Raser.Controls c) {
+            this.seq = c.seq
+            this.pending.Add(c.Clone())
+            // (bleibt der Server lange stumm, die ältesten vergessen: höchstens 4 s)
+            while (this.pending.Count > 120) { this.pending.RemoveAt(0) }
+            if (!this.ready) { return }
+            this.world.Control(this.pawn, c)
+            this.prevE = this.curE
+            this.prevN = this.curN
+            this.prevH = this.curH
+            this.Mark()
+        }
+
+        // Die Lage nach dem Takt merken.
+        undefined Mark() {
+            float place[] = this.world.PlaceOf(this.pawn)
+            this.curE = place[0]
+            this.curN = place[1]
+            this.curH = place[2]
+        }
+
+        // Ein Fahrzeug aus dem Snapshot: gemerkt (der Stand des Servers) und in die Welt der Vorhersage (das eigene nicht: das rechnet sie selbst).
+        undefined SyncVehicle(Raser.Entity e) {
+            if (e.type != Raser.EntityType.Vehicle) { return }
+            var stand = e.Clone()
+            this.known[e.id] = stand
+            stand.TakeTo(this.known)
+            this.Restore(e)
+        }
+
+        undefined Restore(Raser.Entity e) {
+            if (e.id == this.pawn.vehicle) { return }
+            var v = this.world.Find(e.id)
+            if (v == undefined) { v = this.world.Add(e.id, Raser.Protocol.VehicleOf(e.variant), e.east, e.north, e.heading) }
+            var b = v.body
+            b.east = e.east
+            b.north = e.north
+            b.heading = e.heading
+            b.speed = e.speed
+            b.steerAngle = 0.0
+            b.lean = e.b / 10.0
+            b.sliding = (e.bits & Raser.EntityType.Sliding) != 0
+            b.pushE = 0.0
+            b.pushN = 0.0
+            v.driver = e.a
+        }
+
+        undefined Forget(defined int id) {
+            this.known.Remove(id)
+            if (id != this.pawn.vehicle) { this.world.Remove(id) }
+        }
+
+        // Der Abgleich mit einem Snapshot: auf den Zustand des Servers, die offenen Eingaben noch einmal. Gibt den Fehler der Vorhersage (m).
+        defined float Reconcile(Raser.Packet s) {
+            if (s.self == undefined) { return 0.0 }
+            float beforeE = this.curE
+            float beforeN = this.curN
+            float beforeH = this.curH
+            int beforeVehicle = this.pawn.vehicle
+            bool first = !this.ready
+            this.ack = s.ack
+            while (this.pending.Count > 0 && this.pending[0].seq <= s.ack) { this.pending.RemoveAt(0) }
+            // das eigene Fahrzeug
+            if (this.pawn.vehicle != 0 && this.pawn.vehicle != s.self.vehicle) {
+                var old = this.world.Find(this.pawn.vehicle)
+                if (old != undefined && old.driver == this.pawn.id) { old.driver = 0 }
+            }
+            if (s.self.vehicle != 0 && s.selfVehicle != undefined) {
+                var v = this.world.Find(s.self.vehicle)
+                if (v == undefined) { v = this.world.Add(s.self.vehicle, s.selfVehicle.kind, s.selfVehicle.east, s.selfVehicle.north, s.selfVehicle.heading) }
+                Raser.Physics.CopyState(s.selfVehicle, v.body)
+                v.driver = this.pawn.id
+            }
+            this.pawn.vehicle = s.self.vehicle
+            this.pawn.useHeld = s.self.useHeld
+            this.pawn.seq = s.ack
+            Raser.Physics.CopyWalker(s.self.walker, this.pawn.walker)
+            // die anderen Fahrzeuge: was der Snapshot bringt, sonst der letzte Stand des Servers
+            foreach (id in s.gone) { this.Forget(id) }
+            foreach (e in s.entities) { this.SyncVehicle(e) }
+            foreach (pair in this.known) { this.Restore(pair.Value) }
+            this.ready = true
+            this.Mark()
+            // die offenen Eingaben noch einmal
+            foreach (c in this.pending) {
+                this.world.Control(this.pawn, c)
+                this.Mark()
+            }
+            if (first) {
+                this.prevE = this.curE
+                this.prevN = this.curN
+                this.prevH = this.curH
+                return 0.0
+            }
+            float de = beforeE - this.curE
+            float dn = beforeN - this.curN
+            float dh = Raser.Prediction.Turn(beforeH - this.curH)
+            float dist = Math.Sqrt(de * de + dn * dn)
+            this.reconciled++
+            this.lastCorrection = dist
+            this.prevE = this.prevE - de
+            this.prevN = this.prevN - dn
+            this.prevH = this.prevH - dh
+            if (dist > this.snapDistance || beforeVehicle != this.pawn.vehicle) {
+                // ein Sprung: sofort hin
+                this.snaps++
+                this.errE = 0.0
+                this.errN = 0.0
+                this.errH = 0.0
+                this.prevE = this.curE
+                this.prevN = this.curN
+                this.prevH = this.curH
+                return dist
+            }
+            if (dist > 0.001) { this.corrected++ }
+            this.maxCorrection = Math.Max(this.maxCorrection, dist)
+            this.sumCorrection = this.sumCorrection + dist
+            // weich: die Anzeige bleibt, wo sie war, und läuft in ~100 ms zur neuen Lage
+            this.errE = this.errE + de
+            this.errN = this.errN + dn
+            this.errH = this.errH + dh
+            return dist
+        }
+
+        // Der Versatz schwindet (je Bild, dt s).
+        undefined Decay(defined float dt) {
+            float k = Math.Exp(-dt / this.smoothing)
+            this.errE = this.errE * k
+            this.errN = this.errN * k
+            this.errH = this.errH * k
+        }
+
+        // Die Lage zum Anzeigen: zwischen den letzten beiden Takten (alpha 0 .. 1), mit dem Versatz. Ost, Nord, Richtung.
+        float[] Display(defined float alpha) {
+            float a = Math.Clamp(alpha, 0.0, 1.0)
+            float h = this.prevH + Raser.Prediction.Turn(this.curH - this.prevH) * a
+            return [this.prevE + (this.curE - this.prevE) * a + this.errE, this.prevN + (this.curN - this.prevN) * a + this.errN, h + this.errH]
+        }
+
+        // Ein Winkel (Grad) nach -180 .. 180.
+        static defined float Turn(defined float d) {
+            float t = d
+            while (t > 180.0) { t = t - 360.0 }
+            while (t < -180.0) { t = t + 360.0 }
+            return t
+        }
+    }
+
+    // Die Uhr des Servers aus Sicht des Clients: aus den Takten der Snapshots, geglättet. Für die Interpolation der anderen.
+    class ServerClock {
+        defined bool known
+        defined float offset            // Sekunden des Servers - Sekunden des Clients
+        defined float rate              // Takte je s
+
+        construct(defined float rate) {
+            this.known = false
+            this.offset = 0.0
+            this.rate = rate
+        }
+
+        // Ein Snapshot mit dem Takt tick kam zur Zeit local (s) an.
+        undefined Observe(defined int tick, defined float local) {
+            float sample = tick / this.rate - local
+            if (!this.known || Math.Abs(sample - this.offset) > 0.5) {
+                this.offset = sample
+                this.known = true
+                return
+            }
+            // langsam folgen; ein früher Snapshot (kürzere Laufzeit) zieht schneller
+            float k = 0.05
+            if (sample > this.offset) { k = 0.2 }
+            this.offset = this.offset + (sample - this.offset) * k
+        }
+
+        defined float Now(defined float local) { return local + this.offset }
+    }
+
+    // Die Lagen einer anderen Entität über die Zeit (Takte des Servers in s): gezeigt wird sie etwas in der Vergangenheit (~100 ms), zwischen den
+    // beiden Snapshots davor und danach; fehlt der nächste, geht es mit dem Tempo bis 0,25 s weiter.
+    class Interpolator {
+        List<float> samples             // je Snapshot: Zeit, Ost, Nord, Richtung, Tempo, Schräglage
+        defined float east
+        defined float north
+        defined float heading
+        defined float speed
+        defined float lean
+
+        construct() {
+            this.samples = new List<float>()
+            this.east = 0.0
+            this.north = 0.0
+            this.heading = 0.0
+            this.speed = 0.0
+            this.lean = 0.0
+        }
+
+        defined int Count { get { return this.samples.Count / 6 } }
+
+        undefined Add(defined float t, defined float e, defined float n, defined float h, defined float v, defined float lean) {
+            int c = this.samples.Count
+            if (c >= 6 && t <= this.samples[c - 6]) {
+                // derselbe Takt noch einmal (oder älter): das letzte ersetzen
+                if (t < this.samples[c - 6]) { return }
+                for (int i = 0; i < 6; i++) { this.samples.RemoveAt(c - 6) }
+            }
+            foreach (x in [t, e, n, h, v, lean]) { this.samples.Add(x) }
+            while (this.samples.Count > 6 * 20) {
+                for (int i = 0; i < 6; i++) { this.samples.RemoveAt(0) }
+            }
+        }
+
+        // Die Lage zur Zeit t (Server, s) in east, north, heading, speed, lean. false: noch nichts da.
+        defined bool Sample(defined float t) {
+            int n = this.Count
+            if (n == 0) { return false }
+            var s = this.samples
+            if (t <= s[0] || n == 1) {
+                this.Take(0)
+                if (n == 1 && t > s[0]) { this.Ahead(Math.Min(t - s[0], 0.25)) }
+                return true
+            }
+            for (int i = 0; i + 1 < n; i++) {
+                float t0 = s[i * 6]
+                float t1 = s[(i + 1) * 6]
+                if (t > t1) { continue }
+                float a = (t - t0) / (t1 - t0)
+                int p = i * 6
+                int q = p + 6
+                this.east = s[p + 1] + (s[q + 1] - s[p + 1]) * a
+                this.north = s[p + 2] + (s[q + 2] - s[p + 2]) * a
+                this.heading = s[p + 3] + Raser.Prediction.Turn(s[q + 3] - s[p + 3]) * a
+                this.speed = s[p + 4] + (s[q + 4] - s[p + 4]) * a
+                this.lean = s[p + 5] + (s[q + 5] - s[p + 5]) * a
+                return true
+            }
+            // hinter dem letzten: mit dem Tempo weiter (höchstens 0,25 s)
+            this.Take(n - 1)
+            this.Ahead(Math.Min(t - s[(n - 1) * 6], 0.25))
+            return true
+        }
+
+        undefined Take(defined int k) {
+            int p = k * 6
+            this.east = this.samples[p + 1]
+            this.north = this.samples[p + 2]
+            this.heading = this.samples[p + 3]
+            this.speed = this.samples[p + 4]
+            this.lean = this.samples[p + 5]
+        }
+
+        undefined Ahead(defined float dt) {
+            float h = this.heading * Math.PI / 180.0
+            this.east = this.east - Math.Sin(h) * this.speed * dt
+            this.north = this.north + Math.Cos(h) * this.speed * dt
+        }
+    }
+}

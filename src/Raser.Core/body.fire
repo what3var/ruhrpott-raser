@@ -1,0 +1,82 @@
+// Raser.Core: der Körper des Spielers (Roadmap M5) - Puste, Sättigung, Durst; ohne Szene, also testbar und später auf dem Server dieselbe Rechnung.
+//
+// Einfach gehalten:
+//   Puste (stamina, 0 bis 1): Rennen kostet sie (voll reicht für drainTime s), sonst kommt sie wieder (leer bis voll in regenTime s). Ist sie
+//     alle, ist der Spieler aus der Puste: Rennen geht erst wieder ab 25 %.
+//   Sättigung (food) und Durst (water, 100 = kein Durst), je 0 bis 100: sinken mit der Zeit (satt bis leer in foodTime bzw. waterTime s; beim
+//     Rennen doppelt so schnell). Unter 15 kommt die Puste nur mit einem Drittel des Tempos wieder - wer nichts isst und trinkt, rennt kaum noch.
+//     Essen und Trinken (Raser.Inventory.Use) füllen sie auf.
+//   Rauchen (smoke, s): nur fürs Bild (Rauch an der Figur), keine Wirkung.
+namespace Raser {
+    class Body {
+        defined float stamina
+        defined float food
+        defined float water
+        defined float smoke
+        defined bool tired              // aus der Puste: Rennen erst wieder ab 25 %
+        defined float drainTime         // s Rennen mit voller Puste
+        defined float regenTime         // s von leer bis voll
+        defined float foodTime          // s von satt bis hungrig
+        defined float waterTime         // s ohne Trinken bis durstig
+
+        construct() {
+            this.stamina = 1.0
+            this.food = 80.0
+            this.water = 80.0
+            this.smoke = 0.0
+            this.tired = false
+            this.drainTime = 12.0
+            this.regenTime = 15.0
+            this.foodTime = 2700.0
+            this.waterTime = 1800.0
+        }
+
+        // Darf er jetzt rennen?
+        defined bool CanSprint { get { return !this.tired && this.stamina > 0.0 } }
+
+        // Wie schnell die Puste wiederkommt (1 normal, ein Drittel bei Hunger oder Durst).
+        defined float Vigor { get {
+            if (this.food < 15.0 || this.water < 15.0) { return 0.34 }
+            return 1.0
+        } }
+
+        // Ein Schritt von dt s; sprinting: er rennt gerade (nur, wenn CanSprint).
+        undefined Step(defined float dt, defined bool sprinting) {
+            float pace = 1.0
+            if (sprinting && this.CanSprint) {
+                pace = 2.0
+                this.stamina = Math.Max(0.0, this.stamina - dt / this.drainTime)
+                if (this.stamina <= 0.0) { this.tired = true }
+            } else {
+                this.stamina = Math.Min(1.0, this.stamina + dt / this.regenTime * this.Vigor)
+                if (this.stamina >= 0.25) { this.tired = false }
+            }
+            this.food = Math.Max(0.0, this.food - dt * pace * 100.0 / this.foodTime)
+            this.water = Math.Max(0.0, this.water - dt * pace * 100.0 / this.waterTime)
+            this.smoke = Math.Max(0.0, this.smoke - dt)
+        }
+
+        // Essen und Trinken (auch negativ: Pommes machen durstig).
+        undefined Eat(defined float food, defined float drink) {
+            this.food = Math.Clamp(this.food + food, 0.0, 100.0)
+            this.water = Math.Clamp(this.water + drink, 0.0, 100.0)
+        }
+
+        // Binär: Puste, Sättigung, Durst in Tausendsteln bzw. Zehnteln (Varints).
+        undefined Write(Raser.ByteWriter w) {
+            w.Varint(Math.Round(this.stamina * 1000.0)!int)
+            w.Varint(Math.Round(this.food * 10.0)!int)
+            w.Varint(Math.Round(this.water * 10.0)!int)
+            int flags = 0
+            if (this.tired) { flags = 1 }
+            w.Varint(flags)
+        }
+
+        undefined Read(Raser.ByteReader r) {
+            this.stamina = r.Varint() / 1000.0
+            this.food = r.Varint() / 10.0
+            this.water = r.Varint() / 10.0
+            this.tired = (r.Varint() & 1) == 1
+        }
+    }
+}

@@ -1,0 +1,255 @@
+// Raser.Sim: die Welt im festen Takt (Protokoll v2, docs/SERVER.md) - Spieler (Raser.Pawn) und Fahrzeuge mit IDs (Raser.SimVehicle) und ein
+// Schritt je Eingabe (Raser.Controls). Der Server rechnet damit autoritativ, der Client dieselben Schritte als Vorhersage für den eigenen
+// Spieler (Raser.Prediction in Raser.Net). Alle Eingaben sind ganze Zahlen (Hundertstel): so rechnen beide Seiten mit denselben Werten.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    // Die Eingaben eines Takts.
+    class Controls {
+        static readonly defined int Reverse = 1
+        static readonly defined int Handbrake = 2
+        static readonly defined int Sprint = 4
+        static readonly defined int Use = 8
+
+        defined int seq                 // Folgenummer (je Client fortlaufend ab 1)
+        defined int throttle            // Gas 0 .. 100
+        defined int brake               // Bremse 0 .. 100
+        defined int steer               // Lenkung -100 (rechts) .. 100 (links)
+        defined int forward             // zu Fuß: -100 (rückwärts) .. 100
+        defined int turn                // zu Fuß: -100 (rechts) .. 100 (links)
+        defined int flags               // Reverse, Handbrake, Sprint, Use
+
+        construct(defined int seq) {
+            this.seq = seq
+            this.throttle = 0
+            this.brake = 0
+            this.steer = 0
+            this.forward = 0
+            this.turn = 0
+            this.flags = 0
+        }
+
+        defined bool IsReverse { get { return (this.flags & Raser.Controls.Reverse) != 0 } }
+        defined bool IsHandbrake { get { return (this.flags & Raser.Controls.Handbrake) != 0 } }
+        defined bool IsSprint { get { return (this.flags & Raser.Controls.Sprint) != 0 } }
+        defined bool IsUse { get { return (this.flags & Raser.Controls.Use) != 0 } }
+
+        undefined Set(defined int flag, defined bool enabled) {
+            if (enabled) { this.flags = this.flags | flag } else { this.flags = this.flags & (15 - flag) }
+        }
+
+        // Liegen alle Werte in ihren Grenzen? (Der Server nimmt nur solche.)
+        defined bool Valid() {
+            return this.throttle >= 0 && this.throttle <= 100 && this.brake >= 0 && this.brake <= 100 && Math.Abs(this.steer) <= 100 && Math.Abs(this.forward) <= 100 && Math.Abs(this.turn) <= 100 && this.flags >= 0 && this.flags <= 15
+        }
+
+        Raser.Controls Clone() {
+            var c = new Raser.Controls(this.seq)
+            c.throttle = this.throttle
+            c.brake = this.brake
+            c.steer = this.steer
+            c.forward = this.forward
+            c.turn = this.turn
+            c.flags = this.flags
+            return c
+        }
+
+        defined bool Same(Raser.Controls o) {
+            return o.throttle == this.throttle && o.brake == this.brake && o.steer == this.steer && o.forward == this.forward && o.turn == this.turn && o.flags == this.flags
+        }
+
+        // Aus den Tasten wie im Spiel: W Gas (im Rückwärtsgang erst bremsen), S Bremse (im Stand: Rückwärtsgang), A/D lenken, Leertaste
+        // Handbremse, Umschalt rennen, E ein-/aussteigen. Zu Fuß: W/S gehen, A/D drehen. reverse: der Gang bisher; speed: das Tempo des Fahrzeugs
+        // (die Vorhersage). Der neue Gang steht danach in reverse (der Flag).
+        static Raser.Controls FromKeys(defined int seq, defined bool gas, defined bool brake, defined bool left, defined bool right, defined bool handbrake, defined bool sprint, defined bool use, defined bool reverse, defined float speed) {
+            var c = new Raser.Controls(seq)
+            bool back = reverse
+            if (gas) {
+                if (back && speed < -0.5) { c.brake = 100 } else {
+                    back = false
+                    c.throttle = 100
+                }
+            }
+            if (brake) {
+                if (!back && speed > 0.5) { c.brake = 100 } else {
+                    back = true
+                    c.throttle = 100
+                }
+            }
+            if (left) { c.steer = 100 }
+            if (right) { c.steer = -100 }
+            if (gas) { c.forward = 100 }
+            if (brake) { c.forward = -100 }
+            c.turn = c.steer
+            c.Set(Raser.Controls.Reverse, back)
+            c.Set(Raser.Controls.Handbrake, handbrake)
+            c.Set(Raser.Controls.Sprint, sprint)
+            c.Set(Raser.Controls.Use, use)
+            return c
+        }
+    }
+
+    // Ein Spieler in der Welt: zu Fuß (walker) oder in einem Fahrzeug (vehicle: dessen ID). Zu Fuß im Fahrzeug folgt walker dem Fahrzeug.
+    class Pawn {
+        defined int id                  // Spieler-ID
+        Raser.Walker walker
+        defined int vehicle             // ID des Fahrzeugs (0: zu Fuß)
+        defined int seq                 // die zuletzt gerechnete Eingabe
+        defined bool useHeld            // E war im letzten Takt gedrückt (gewechselt wird bei der Flanke)
+
+        construct(defined int id) {
+            this.id = id
+            this.walker = new Raser.Walker()
+            this.vehicle = 0
+            this.seq = 0
+            this.useHeld = false
+        }
+
+        defined bool OnFoot { get { return this.vehicle == 0 } }
+    }
+
+    // Ein Fahrzeug der Welt mit ID; gehört der Region (nicht dem Spieler).
+    class SimVehicle {
+        defined int id
+        Raser.Vehicle body
+        defined int driver              // Spieler-ID am Steuer (0: frei)
+        defined int owner               // für diesen Spieler erzeugt (0: geparkt am Straßenrand)
+
+        construct(defined int id, Raser.Vehicle body) {
+            this.id = id
+            this.body = try take body
+            this.driver = 0
+            this.owner = 0
+        }
+    }
+
+    class SimWorld {
+        static readonly defined float Hz = 30.0           // Takte je Sekunde (Server und Client)
+        static readonly defined float Tick = 1.0 / 30.0     // s je Takt
+        static readonly defined float Reach = 3.5           // so weit (m) reicht der Spieler zum Einsteigen
+        static readonly defined float StopSpeed = 1.5       // aussteigen nur langsamer als das (m/s)
+
+        Raser.Obstacles obstacles
+        List<Raser.SimVehicle> vehicles
+        List<Raser.Vehicle> bodies      // dieselben Fahrzeuge (Verweise) für Raser.Physics
+        defined float wetness
+
+        construct(Raser.Obstacles obstacles) {
+            this.obstacles = try take obstacles
+            this.vehicles = new List<Raser.SimVehicle>()
+            this.bodies = new List<Raser.Vehicle>()
+            this.wetness = 0.0
+        }
+
+        Raser.SimVehicle Find(defined int id) {
+            if (id == 0) { return undefined }
+            foreach (v in this.vehicles) { if (v.id == id) { return v } }
+            return undefined
+        }
+
+        // Ein neues Fahrzeug der Klasse kind ("auto", "transporter", "motorrad", "fahrrad") bei (e, n) in Richtung h.
+        Raser.SimVehicle Add(defined int id, string kind, defined float e, defined float n, defined float h) {
+            var body = Raser.Vehicle.Of(kind)
+            body.east = e
+            body.north = n
+            body.heading = h
+            var v = new Raser.SimVehicle(id, take body)
+            this.bodies.Add(v.body)
+            this.vehicles.Add(take v)
+            return this.vehicles[this.vehicles.Count - 1]
+        }
+
+        undefined Remove(defined int id) {
+            for (int i = 0; i < this.vehicles.Count; i++) {
+                if (this.vehicles[i].id != id) { continue }
+                var body = this.vehicles[i].body
+                for (int k = 0; k < this.bodies.Count; k++) {
+                    if (this.bodies[k] == body) {
+                        this.bodies.RemoveAt(k)
+                        break
+                    }
+                }
+                this.vehicles.RemoveAt(i)
+                return
+            }
+        }
+
+        // Das nächste freie Fahrzeug in Reichweite des Spielers; undefined: keins.
+        Raser.SimVehicle NearestFree(Raser.Walker walker) {
+            Raser.SimVehicle found = undefined
+            float best = Raser.SimWorld.Reach
+            foreach (v in this.vehicles) {
+                if (v.driver != 0) { continue }
+                float d = Raser.Physics.Distance(v.body, walker)
+                if (d < best) {
+                    best = d
+                    found = v
+                }
+            }
+            return found
+        }
+
+        // Steigt p ein (ins nächste freie Fahrzeug) oder aus (im Stand, wenn neben dem Fahrzeug Platz ist). true: gewechselt.
+        defined bool Use(Raser.Pawn p) {
+            var car = this.Find(p.vehicle)
+            if (car != undefined) {
+                if (Math.Abs(car.body.speed) >= Raser.SimWorld.StopSpeed) { return false }
+                if (!Raser.Physics.GetOut(car.body, p.walker, this.obstacles)) { return false }
+                car.body.speed = 0.0
+                car.driver = 0
+                p.vehicle = 0
+                return true
+            }
+            var free = this.NearestFree(p.walker)
+            if (free == undefined) { return false }
+            free.driver = p.id
+            p.vehicle = free.id
+            return true
+        }
+
+        // Ein Takt des Spielers p mit den Eingaben c: ein- oder aussteigen (bei der Flanke von E), dann fahren oder gehen. Gibt true, wenn er
+        // ein- oder ausgestiegen ist.
+        defined bool Control(Raser.Pawn p, Raser.Controls c) {
+            p.seq = c.seq
+            bool press = c.IsUse && !p.useHeld
+            p.useHeld = c.IsUse
+            // das Fahrzeug ist weg (entfernt): zu Fuß weiter
+            if (p.vehicle != 0 && this.Find(p.vehicle) == undefined) { p.vehicle = 0 }
+            bool changed = false
+            if (press) { changed = this.Use(p) }
+            var car = this.Find(p.vehicle)
+            float dt = Raser.SimWorld.Tick
+            if (car != undefined) {
+                float brake = c.brake / 100.0
+                if (c.IsHandbrake) { brake = 1.0 }
+                Raser.Physics.Advance(car.body, this.bodies, this.obstacles, dt, c.throttle / 100.0, brake, c.steer / 100.0, c.IsReverse, this.wetness)
+                // der Spieler sitzt im Fahrzeug
+                p.walker.east = car.body.east
+                p.walker.north = car.body.north
+                p.walker.heading = car.body.heading
+                p.walker.speed = 0.0
+            } else {
+                Raser.Physics.Walk(p.walker, this.bodies, this.obstacles, dt, c.forward / 100.0, c.turn / 100.0, c.IsSprint)
+            }
+            return changed
+        }
+
+        // Die Fahrzeuge ohne Fahrer rollen und rutschen aus (ein Takt).
+        undefined Coast() {
+            foreach (v in this.vehicles) {
+                if (v.driver != 0) { continue }
+                var b = v.body
+                if (b.speed == 0.0 && b.pushE == 0.0 && b.pushN == 0.0) { continue }
+                Raser.Physics.Advance(b, this.bodies, this.obstacles, Raser.SimWorld.Tick, 0.0, 1.0, 0.0, false, this.wetness)
+            }
+        }
+
+        // Die Lage des Spielers: das Fahrzeug, in dem er sitzt, sonst er selbst - Ost, Nord, Richtung, Tempo.
+        float[] PlaceOf(Raser.Pawn p) {
+            var car = this.Find(p.vehicle)
+            if (car != undefined) { return [car.body.east, car.body.north, car.body.heading, car.body.speed] }
+            return [p.walker.east, p.walker.north, p.walker.heading, p.walker.speed]
+        }
+    }
+}

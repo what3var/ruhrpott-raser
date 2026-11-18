@@ -25,6 +25,21 @@ namespace Raser {
         defined bool pitched
         defined int wallColor
         defined int roofColor
+        // das Aussehen (Raser.HouseStyle.Assign: aus Bautyp, Viertel und ID, also stabil)
+        defined int houseType       // Raser.HouseStyle.Small ...
+        defined int wallMaterial
+        defined int plinthColor     // Sockel (0: keiner)
+        defined int plinthVoxels    // seine Höhe über dem Boden-Voxel (Voxel)
+        defined int groundColor     // das Erdgeschoss in eigener Farbe (0: wie die Wand)
+        defined int trimColor       // Gesims über dem Erdgeschoss (0: keins)
+        defined int gableColor      // der Giebel über der Traufe verkleidet (0: wie die Wand)
+        defined int timberColor     // Fachwerk (0: keins)
+        defined int frameColor      // Fensterrahmen
+        defined int sillColor       // Fensterbänke (0: keine)
+        defined int doorColor       // Haustüren
+        defined int shutterColor    // Fensterläden (0: keine)
+        defined int balconyColor    // Brüstung der Balkone (0: keine Balkone)
+        defined bool dormers        // Gauben auf dem Steildach (nur im Netz, Raser.FarMesher.Dormers)
         float eaveRing[]        // Steildach: der Grundriss um den Dachüberstand nach außen versetzt (undefined: kein Überstand)
         List<float> passages    // Durchfahrten (Torbögen): je Stück ax, ay, bx, by, halbe Breite, lichte Höhe, Stich des Bogens
         float planes[]          // je Dachfläche: a, b, c (z = a x + b y + c), gültig (1) oder senkrecht (0)
@@ -65,6 +80,9 @@ namespace Raser {
             // je Gebäude eine Dreckstufe für Wand und Dach (Raser.Palette.Dirty; aus ID und Seed, also stabil)
             this.wallColor = Raser.Palette.Dirty(this.wallColor, Raser.RoofModel.DirtLevel(h >> 8))
             this.roofColor = Raser.Palette.Dirty(this.roofColor, Raser.RoofModel.DirtLevel(h >> 16))
+            this.wallMaterial = b.wall!int
+            this.frameColor = Raser.Palette.Plaster
+            this.doorColor = Raser.Palette.Wood + 64
             int nf = b.roofs.Count
             this.planes = new float[nf * 4]
             this.faceBoxes = new float[nf * 4]
@@ -197,6 +215,8 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 30: Aussehen je Gebäude (Raser.HouseStyle): Bautyp, Farbfamilie je Viertel, Fassaden-Farben (Palette 128 .. 159, 180 .. 247), Sockel,
+        //     Gesims, Giebel, Fachwerk, Wandmaterial; unter der Traufe und am Fuß schmutziger
         // 29: Durchfahrten 25 cm breiter in den Voxeln (glatte Seitenwände im eingehängten Gewölbe)
         // 28: Bögen als eingehängte Stücke (Raser.Facade.Arches, Gewölbe der Durchfahrten): die Wand lässt Rechtecke bis zum Scheitel frei
         // 27: Bögen bleiben in der Wandflucht (kein Bogenschnitt, wo ein Schnitt im Grundriss ist), innen wie außen glatt; schräge Durchfahrten mit
@@ -221,7 +241,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 29
+        static readonly defined int Version = 30
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -255,6 +275,7 @@ namespace Raser {
                 Raser.Voxelizer.PlanFacade(model, tile.data.roads)
                 this.models.Add(take model)
             }
+            Raser.HouseStyle.Assign(this.models, tile.data.roads, tile.key.x * 256.0, tile.key.y * 256.0, seed)
             this.roadBoxes = new List<Box2>()
             foreach (r in tile.data.roads) {
                 var box = Raser.Box2.Of(r.points)
@@ -1060,7 +1081,7 @@ namespace Raser {
                         plan.roofLow[c] = Math.Max(ground, Math.Floor(lowest * 5.0)!int)
                         plan.material[c] = bd.roof!int
                         plan.color[c] = model.roofColor
-                        plan.below[c] = bd.wall!int
+                        plan.below[c] = model.wallMaterial
                         plan.belowColor[c] = model.wallColor
                         int o = (y + 1) * 66 + (x + 1)
                         int flags = 0
@@ -1171,6 +1192,19 @@ namespace Raser {
                             plan.upperKind[c] = 0
                         }
                         plan.flags[c] = flags
+                        plan.plinthN[c] = model.plinthVoxels
+                        plan.plinthCol[c] = model.plinthColor
+                        plan.groundCol[c] = model.groundColor
+                        plan.trimCol[c] = model.trimColor
+                        plan.gableCol[c] = model.gableColor
+                        plan.gableFrom[c] = Math.Floor(bd.eaves * 5.0)!int
+                        plan.timberCol[c] = model.timberColor
+                        plan.timberP[c] = -1
+                        plan.timberW[c] = 0
+                        if (model.timberColor != 0 && model.facade != undefined && !model.facade.inSlot) {
+                            plan.timberP[c] = Math.Floor(model.facade.gapLeft * 5.0)!int
+                            plan.timberW[c] = Math.Floor((model.facade.gapLeft + model.facade.gapRight) * 5.0 + 0.5)!int
+                        }
                         plan.thick[c] = model.facade != undefined && model.facade.style != Raser.Facade.None
                         plan.hall[c] = model.facade != undefined && (model.facade.style == Raser.Facade.Pavilion || model.facade.style == Raser.Facade.Church)
                         plan.planShape[c] = planOf[o]
@@ -1330,10 +1364,71 @@ namespace Raser {
         defined int eaveColor[4096]
         defined int eavePlan[4096]      // Grundriss-Form am Rand des Überstands
         defined bool eaveFull[4096]     // Gebäude mit Überstand: das Dach über der Wand voll (die Schnitte der Wand gelten nur darunter)
+        // das Aussehen der Wandsäule (Raser.HouseStyle, aus dem RoofModel): Sockel (Voxel über dem Boden, Farbe), Erdgeschoss, Gesims, Giebel
+        // (ab diesem Voxel), Fachwerk (Farbe; Lage im Wandstück zwischen den Fenstern und seine Breite in Voxeln, -1: im Fensterplatz)
+        defined int plinthN[4096]
+        defined int plinthCol[4096]
+        defined int groundCol[4096]
+        defined int trimCol[4096]
+        defined int gableFrom[4096]
+        defined int gableCol[4096]
+        defined int timberCol[4096]
+        defined int timberP[4096]
+        defined int timberW[4096]
         defined int storey
         defined int highest
 
         construct() { this.highest = -1000000 }
+
+        // Die Farbe des Wand-Voxels vz in Säule c (ground: Boden-Voxel, top: Dach-Voxel): die Wandfarbe des Gebäudes, außen mit Sockel, Erdgeschoss,
+        // Gesims, Giebel und Fachwerk; unter der Traufe und am Fuß ohne Sockel eine Stufe schmutziger (Regen, Spritzwasser).
+        defined int WallColor(defined int c, defined int vz, defined int ground, defined int top) {
+            int col = this.belowColor[c]
+            if ((this.flags[c] & 4) != 0) { return col }
+            int rel = vz - ground
+            int pn = this.plinthN[c]
+            if (pn > 0 && rel < pn) { return this.plinthCol[c] }
+            if (rel < 0) { return col }
+            int st = this.storey
+            int s = rel % st
+            if (rel < st && this.groundCol[c] != 0) { col = this.groundCol[c] }
+            if (rel == st && this.trimCol[c] != 0) { return this.trimCol[c] }
+            if (vz >= this.gableFrom[c] && this.gableCol[c] != 0) {
+                col = this.gableCol[c]
+            } else if (this.timberCol[c] != 0) {
+                // Fachwerk: Schwelle (Boden des Geschosses), Brust- und Sturzriegel (unter und über den Fenstern), Ständer an den Fenstern, an den
+                // Ecken und in der Mitte breiter Felder, Streben in den Feldern dazwischen
+                bool beam = s == 0 || s == 4 || s == 12
+                int p = this.timberP[c]
+                int w = this.timberW[c]
+                if (!beam && p >= 0 && w > 0) {
+                    int mid = -1
+                    if (w >= 9) { mid = w / 2 }
+                    if (p == 0 || p == w - 1 || p == mid) {
+                        beam = true
+                    } else if (s >= 5 && s <= 11) {
+                        int q0 = 1
+                        int q1 = w - 2
+                        bool mirror = false
+                        if (mid > 0 && p > mid) {
+                            q0 = mid + 1
+                            mirror = true
+                        } else if (mid > 0) {
+                            q1 = mid - 1
+                        }
+                        int fw = q1 - q0
+                        if (fw >= 1) {
+                            int q = p - q0
+                            if (mirror) { q = q1 - p }
+                            beam = s - 5 == Math.Round(q * 6.0 / fw)!int
+                        }
+                    }
+                }
+                if (beam) { return this.timberCol[c] }
+            }
+            if (vz >= top - 1 || (pn == 0 && rel < 2)) { col = Raser.Palette.Dirty(col, 1) }
+            return col
+        }
 
         // Eine Nachbarsäule ohne Gebäude (Gelände), -1: keine im Chunk.
         defined int GroundNeighbor(defined int c) {
@@ -1468,7 +1563,7 @@ namespace Raser {
                         // Keller: das Gelände ist ausgehoben, die Außenwand läuft durch, je Geschoss eine Decke
                         if (wall) {
                             chunk.materials[i] = this.below[c]
-                            chunk.colors[i] = this.belowColor[c]
+                            chunk.colors[i] = this.WallColor(c, vz, ground, top)
                         } else if ((vz - cellar) % this.storey == 0) {
                             chunk.materials[i] = concrete
                             chunk.colors[i] = concreteColor
@@ -1556,7 +1651,7 @@ namespace Raser {
                             chunk.colors[i] = Raser.Palette.Metal + 64
                         } else {
                             chunk.materials[i] = this.below[c]
-                            chunk.colors[i] = this.belowColor[c]
+                            chunk.colors[i] = this.WallColor(c, vz, ground, top)
                         }
                     } else if (inStorey == 0 && (vz == ground || !this.hall[c])) {
                         chunk.materials[i] = concrete

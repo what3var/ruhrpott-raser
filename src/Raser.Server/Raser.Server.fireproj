@@ -9,6 +9,12 @@
     },
     {
       "project": "../Raser.Net/Raser.Net.fireproj"
+    },
+    {
+      "project": "../Raser.World/Raser.World.fireproj"
+    },
+    {
+      "project": "../Raser.Sim/Raser.Sim.fireproj"
     }
   ],
   "settings": {

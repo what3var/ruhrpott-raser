@@ -1,0 +1,131 @@
+// Raser.Core: umgehauen (Roadmap M5) - wird ein Spieler umgefahren (später auch geschlagen), fällt alles, was er trägt, zu Boden: jeder Stapel
+// der Hosentaschen, Hände, Maus und des Handy-Platzes für sich, der Rucksack ganz (mit Inhalt). Dazu verliert er einen zufälligen Teil seines
+// Bargelds (20 bis 60 %), das als ein bis drei Häufchen Geld daneben liegt. Manches geht dabei kaputt - je wuchtiger, desto eher:
+//   Handy, Taschenlampe: kaputt (data 1), bleiben aber Gegenstände; Kanister: leckt (die Hälfte des Rests ist weg);
+//   Brötchen, Pommes, Wasser, Zigaretten: je Stück zerdrückt bzw. zerplatzt (weg); Schlüssel, Werkzeug, Rucksäcke: nie.
+// Im Rucksack ist alles halb so gefährdet. Die Wucht: die Geschwindigkeit des Aufpralls (m/s), ab 2 m/s zählt sie, ab 16 m/s voll.
+//
+// Rein und deterministisch: der Zufall kommt aus dem Samen (seed) - so entscheidet der Server, und jeder, der denselben Samen und denselben
+// Zustand hat, rechnet dasselbe aus.
+namespace Raser {
+    // Ein einfacher, überall gleicher Zufall (linearer Kongruenzgenerator, 31 Bit).
+    class Dice {
+        defined int state
+
+        construct(defined int seed) {
+            this.state = (seed # 1234567) & 2147483647
+            this.Next()
+        }
+
+        defined int Next() {
+            this.state = (this.state * 1103515245 + 12345) & 2147483647
+            return this.state
+        }
+
+        // 0 bis unter 1.
+        defined float Float() { return this.Next() / 2147483648.0 }
+    }
+
+    // Was beim Umhauen geschah.
+    class KnockResult {
+        defined int dropped             // Stapel (und Rucksäcke) am Boden
+        defined int broken              // kaputt gegangene Gegenstände (Handy, Lampe, Kanister leck)
+        defined int destroyed           // weg (zerdrückte Brötchen, geplatzte Flaschen ...)
+        defined int cashLost            // Cent, die jetzt am Boden liegen
+        List<int> drops                 // die IDs der neuen Gegenstände am Boden
+
+        construct() {
+            this.dropped = 0
+            this.broken = 0
+            this.destroyed = 0
+            this.cashLost = 0
+            this.drops = new List<int>()
+        }
+
+        string ToString() { return this.dropped + " Stapel am Boden, " + this.broken + " kaputt, " + this.destroyed + " weg, " + this.cashLost + " Cent verloren" }
+    }
+
+    class Knockdown {
+        // Die Stärke (0 bis 1) aus der Wucht (m/s).
+        static defined float Strength(defined float impact) { return Math.Clamp((impact - 2.0) / 14.0, 0.0, 1.0) }
+
+        // Haut den Spieler (inv, an seiner Lage inv.east/north) mit der Wucht impact (m/s) um; seed: der Zufall (vom Server).
+        static Raser.KnockResult Apply(Raser.Inventory inv, defined int seed, defined float impact) {
+            var result = new Raser.KnockResult()
+            var dice = new Raser.Dice(seed)
+            float strength = Raser.Knockdown.Strength(impact)
+            inv.CloseOpened()
+            inv.lampOn = false
+            foreach (id in [inv.cursor, inv.hands, inv.pockets, inv.phoneSlot, inv.backpackSlot]) {
+                var c = inv.store.Find(id)
+                if (c == undefined) { continue }
+                for (int i = 0; i < c.Size; i++) {
+                    if (c.Empty(i)) { continue }
+                    var t = Raser.Items.Get(c.Item(i))
+                    if (t != undefined && t.IsBackpack) {
+                        // der Inhalt: halb so gefährdet
+                        var inside = inv.store.Find(c.Data(i))
+                        if (inside != undefined) {
+                            for (int k = 0; k < inside.Size; k++) { Raser.Knockdown.Damage(inside, k, strength * 0.5, dice, result) }
+                        }
+                    } else { Raser.Knockdown.Damage(c, i, strength, dice, result) }
+                    if (!c.Empty(i)) {
+                        float a = dice.Float() * 2.0 * Math.PI
+                        float d = 0.6 + dice.Float() * 1.6
+                        int drop = inv.drops.Add(inv.east + Math.Cos(a) * d, inv.north + Math.Sin(a) * d, c.Item(i), c.Amount(i), c.Data(i))
+                        result.drops.Add(drop)
+                        result.dropped++
+                    }
+                    c.Clear(i)
+                }
+            }
+            // das Bargeld: 20 bis 60 % in ein bis drei Häufchen
+            int lost = Math.Floor(inv.cash * (0.2 + dice.Float() * 0.4))!int
+            if (lost > 0) {
+                int piles = 1 + Math.Floor(dice.Float() * 3.0)!int
+                if (lost < piles) { piles = lost }
+                int rest = lost
+                for (int p = 0; p < piles; p++) {
+                    int part = rest
+                    if (p < piles - 1) { part = rest / (piles - p) }
+                    rest = rest - part
+                    float a = dice.Float() * 2.0 * Math.PI
+                    float d = 0.4 + dice.Float() * 1.4
+                    result.drops.Add(inv.drops.Add(inv.east + Math.Cos(a) * d, inv.north + Math.Sin(a) * d, Raser.Items.Geld, part, 0))
+                }
+                inv.cash = inv.cash - lost
+                result.cashLost = lost
+            }
+            return result
+        }
+
+        // Ein Stapel nimmt Schaden (an Ort und Stelle): je Stück bzw. je Gegenstand mit der Wahrscheinlichkeit fragility x strength.
+        static undefined Damage(Raser.Container c, defined int slot, defined float strength, Raser.Dice dice, Raser.KnockResult result) {
+            if (c.Empty(slot)) { return }
+            var t = Raser.Items.Get(c.Item(slot))
+            if (t == undefined || t.fragility <= 0.0 || t.IsBackpack) { return }
+            float p = t.fragility * strength
+            int data = c.Data(slot)
+            if (t.breakable) {
+                if (data == 0 && dice.Float() < p) {
+                    c.Set(slot, c.Item(slot), c.Amount(slot), 1)
+                    result.broken++
+                }
+                return
+            }
+            if (t.id == Raser.Items.Kanister) {
+                if (data < 100 && dice.Float() < p) {
+                    c.Set(slot, c.Item(slot), 1, data + (100 - data + 1) / 2)
+                    result.broken++
+                }
+                return
+            }
+            int keep = 0
+            int n = c.Amount(slot)
+            for (int k = 0; k < n; k++) {
+                if (dice.Float() < p) { result.destroyed++ } else { keep++ }
+            }
+            c.Set(slot, c.Item(slot), keep, data)
+        }
+    }
+}

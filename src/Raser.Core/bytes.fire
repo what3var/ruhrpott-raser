@@ -44,6 +44,13 @@ namespace Raser {
             this.length = this.length + 8
         }
 
+        // Eine Zahl als IEEE binary64 (8 Bytes, bitgenau - für Zustände, die beide Seiten gleich weiterrechnen).
+        undefined Float64(defined float v) {
+            this.Reserve(8)
+            this.data.WriteFloat64(this.length, v, true)
+            this.length = this.length + 8
+        }
+
         // Eine nicht negative Zahl in 7-Bit-Gruppen (LEB128).
         undefined Varint(defined int v) {
             if (v < 0) { throw new ArgumentException("Varint: negative value " + v) }
@@ -120,6 +127,13 @@ namespace Raser {
             return v
         }
 
+        defined float Float64() {
+            this.Need(8)
+            float v = this.data.ReadFloat64(this.position, true)
+            this.position = this.position + 8
+            return v
+        }
+
         defined int Varint() {
             int v = 0
             int shift = 0
@@ -159,6 +173,16 @@ namespace Raser {
         static defined int AddInt(defined int h, defined int v) {
             for (int i = 0; i < 8; i++) { h = Raser.Fnv.AddByte(h, v >> (i * 8)) }
             return h
+        }
+
+        // Mischt alle Bits eines Hashs durcheinander (der Abschluss von MurmurHash3): FNV allein verteilt kleine Unterschiede in den letzten
+        // Zahlen kaum in die oberen Bits - Muster aus Hash(x, y) hingen sonst fast nur an x.
+        static defined int Mix(defined int h) {
+            h = h # (h >> 33)
+            h = h * -49064778989728563
+            h = h # (h >> 33)
+            h = h * -4265267296055464877
+            return h # (h >> 33)
         }
 
         static defined int AddText(defined int h, string s) {

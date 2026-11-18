@@ -85,6 +85,11 @@ namespace Raser {
         defined float slotHalf
         defined float wallX             // die Richtung der Wand (Einheitsvektor entlang)
         defined float wallY
+        // für Fachwerk: das Wandstück zwischen den Fenstern der Obergeschosse, in dem die Säule liegt (m vom linken und rechten Rand: Fenster
+        // oder Ende des Laufs); inSlot: die Säule liegt in einem Fensterplatz
+        defined float gapLeft
+        defined float gapRight
+        defined bool inSlot
 
         construct() {
             this.runs = new List<FacadeRun>()
@@ -438,6 +443,20 @@ namespace Raser {
             }
             this.wallX = this.ux[best]
             this.wallY = this.uy[best]
+            var slots = fr.upper
+            if (slots.Count == 0) { slots = fr.ground }
+            float left = 0.0
+            float right = fr.length
+            this.inSlot = false
+            foreach (sl in slots) {
+                float lo = sl.center - sl.half
+                float hi = sl.center + sl.half
+                if (along >= lo && along < hi) { this.inSlot = true }
+                if (hi <= along && hi > left) { left = hi }
+                if (lo >= along && lo < right) { right = lo }
+            }
+            this.gapLeft = along - left
+            this.gapRight = right - along
         }
 
         static defined int SlotAt(List<FacadeSlot> slots, defined float along) {
