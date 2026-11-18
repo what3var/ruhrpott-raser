@@ -405,6 +405,25 @@ class StateTests {
         Testing.Assert.AreEqual(0xE1B496, b.skin)
         Testing.Assert.IsTrue(Math.Abs(b.east - 376117.23) < 0.006 && Math.Abs(b.north - 5705005.68) < 0.006)
         Testing.Assert.IsTrue(Math.Abs(b.heading - 269.5) < 0.006 && Math.Abs(b.height - 1.78) < 0.006)
+        // als Entität (Art 4) und zurück
+        var c = new Raser.NpcState()
+        c.FromEntity(a.id, a.EntityType, a.Variant, a.Bits, a.A, a.B)
+        Testing.Assert.AreEqual(4, a.EntityType)
+        Testing.Assert.AreEqual(2, c.kind)
+        Testing.Assert.AreEqual(4, c.state)
+        Testing.Assert.IsTrue(c.honk)
+        Testing.Assert.AreEqual(0x3C6E46, c.color)
+        Testing.Assert.AreEqual(0x324664, c.legs)
+        Testing.Assert.AreEqual(0x463223, c.hair)
+        Testing.Assert.AreEqual(0xE1B496, c.skin)
+        Testing.Assert.IsTrue(Math.Abs(c.height - 1.78) < 0.006)
+        a.kind = Raser.NpcState.Van
+        a.state = 1
+        c.FromEntity(a.id, a.EntityType, a.Variant, a.Bits, a.A, a.B)
+        Testing.Assert.AreEqual(3, a.EntityType)
+        Testing.Assert.AreEqual(1, c.kind)
+        Testing.Assert.AreEqual(1, c.state)
+        Testing.Assert.AreEqual(0x3C6E46, c.color)
         // der Puffer: zwei Snapshots, dazwischen halb
         var buf = new Raser.NpcBuffer()
         var one = new List<Raser.NpcState>()
