@@ -3,7 +3,7 @@
 //   raser setup     [--raw data/raw] [--world world] [--meshes 1]   alles in einem: Rohdaten laden, importieren, voxelisieren (setup.fire)
 //   raser fetch     [--raw data/raw]   nur die Rohdaten laden (DGM1, LoD2, OSM der Testregion)
 //   raser import    --dgm <ordner> --lod2 <ordner> --osm <ordner> [--world world] [--tiles x0_y0:x1_y1]
-//   raser voxelize  [--world world] [--overrides overrides] [--seed n] [--tile x_y | --all] [--force]
+//   raser voxelize  [--world world] [--overrides overrides] [--seed n] [--tile x_y | --all] [--force] [--jobs n]   (auf alle Kerne, parallel.fire)
 //   raser export png [--world world] [--tile x_y | --all] [--step n] [--out datei.png]
 //   raser export obj [--world world] --at ost,nord [--size meter] [--out datei.obj]
 //   raser faces     [--world world] [--tile x_y]    die Randschichten (.rrb) für schon voxelisierte Chunks
@@ -152,6 +152,15 @@ class Tool {
         return store.Keys()
     }
 
+    // Auf alle Kerne verteilt (parallel.fire); mit PostGIS (--db) oder --jobs 1 der Reihe nach.
+    static undefined VoxelizeAny(Args args) {
+        if (args.Has("db") || args.Get("jobs", "") == "1") { Tool.Voxelize(args) } else { Parallel.Voxelize(args) }
+    }
+
+    static undefined MeshesAny(Args args) {
+        if (args.Has("db") || args.Get("jobs", "") == "1") { Tool.Meshes(args) } else { Parallel.Meshes(args) }
+    }
+
     static undefined Voxelize(Args args) {
         var store = Tool.Store(args)
         var overrides = Raser.TileGenerator.LoadOverrides(args.Get("overrides", "overrides"))
@@ -159,6 +168,7 @@ class Tool {
         var generator = new Raser.TileGenerator(store, overrides, seed)
         Tool.Log(overrides.Count + " Overrides, Seed " + seed + ", Generator " + Raser.Voxelizer.Version)
         var keys = Tool.Chosen(args, store)
+        Tool.Log("Voxelisieren: " + keys.Count + " Kacheln (je Kachel etwa eine halbe bis einige Minuten; eine Zeile, sobald eine anfängt und fertig ist)")
         int start = DateTime.Now.Ticks
         int done = 0
         int built = 0
@@ -168,6 +178,7 @@ class Tool {
                 Tool.Log("Kachel " + k + ": aktuell " + Tool.Progress(done, keys.Count, start))
                 continue
             }
+            Tool.Log("Kachel " + k + ": voxelisieren ... (" + done + "/" + keys.Count + ")")
             var manifest = generator.Generate(k)
             built++
             Tool.Log("Kachel " + k + ": " + manifest.chunks + " Chunks, " + manifest.filled + " Voxel " + Tool.Progress(done, keys.Count, start))
@@ -193,6 +204,7 @@ class Tool {
         var store = Tool.Store(args)
         var builder = new Raser.NearBuilder(args.Get("world", "world"), 0.0, 0.0, 0.0, false)
         var keys = Tool.Chosen(args, store)
+        Tool.Log("Netz-Cache: " + keys.Count + " Kacheln (je Kachel etwa ein bis zwei Minuten)")
         int start = DateTime.Now.Ticks
         int done = 0
         foreach (k in keys) {
@@ -205,6 +217,7 @@ class Tool {
                 string folder = IO.Path.Combine(args.Get("world", "world"), "meshes", k.ToString())
                 if (IO.Directory.Exists(folder)) { IO.Directory.Delete(folder, true) }
             }
+            Tool.Log("Kachel " + k + ": Netze bauen ... (" + done + "/" + keys.Count + ")")
             int built = 0
             int quads = 0
             for (int j = 0; j < 5; j++) {
@@ -329,10 +342,10 @@ class Tool {
                 case "fetch": Setup.Fetch(args)
                 case "setup": Setup.Run(args)
                 case "import": Tool.Import(args)
-                case "voxelize": Tool.Voxelize(args)
+                case "voxelize": Tool.VoxelizeAny(args)
                 case "info": Tool.Info(args)
                 case "faces": Tool.Faces(args)
-                case "meshes": Tool.Meshes(args)
+                case "meshes": Tool.MeshesAny(args)
                 case "export":
                     string what = "png"
                     if (args.positional.Count > 1) { what = args.positional[1] }

@@ -2,7 +2,7 @@
 // (läuft so auch unter Windows).
 //
 //   raser fetch [--raw data/raw]                                   die Rohdaten laden (DGM1, LoD2 von opengeodata.nrw.de, OSM 4 x 4 Ausschnitte)
-//   raser setup [--raw data/raw] [--world world] [--meshes 1]      laden (was fehlt), importieren, voxelisieren, auf Wunsch den Netz-Cache bauen
+//   raser setup [--raw data/raw] [--world world] [--meshes 1] [--jobs n]   laden (was fehlt), importieren, voxelisieren (auf allen Kernen), auf Wunsch den Netz-Cache
 //
 // Was schon da ist, wird nicht noch einmal geladen; ein abgebrochener Download geht beim nächsten Mal weiter (Http.Download, Teildatei .part).
 // Voxelisiert werden nur Kacheln, deren Chunks fehlen oder älter als der Generator sind (wie `raser voxelize`).
@@ -135,11 +135,13 @@ class Setup {
         Setup.Fetch(args)
         string imp[] = ["import", "--dgm", IO.Path.Combine(raw, "dgm1"), "--lod2", IO.Path.Combine(raw, "lod2"), "--osm", IO.Path.Combine(raw, "osm"), "--world", world]
         Tool.Import(new Args(imp))
-        string vox[] = ["voxelize", "--world", world, "--overrides", args.Get("overrides", "overrides")]
-        Tool.Voxelize(new Args(vox))
+        string vox[] = ["voxelize", "--world", world, "--overrides", args.Get("overrides", "overrides"), "--jobs", args.Get("jobs", "0")]
+        if (!args.Has("jobs")) { vox = ["voxelize", "--world", world, "--overrides", args.Get("overrides", "overrides")] }
+        Tool.VoxelizeAny(new Args(vox))
         if (args.Has("meshes")) {
             string mesh[] = ["meshes", "--world", world]
-            Tool.Meshes(new Args(mesh))
+            if (args.Has("jobs")) { mesh = ["meshes", "--world", world, "--jobs", args.Get("jobs")] }
+            Tool.MeshesAny(new Args(mesh))
         }
         Tool.Log("Die Welt liegt in " + world + " - starten: raser-game --world " + world)
     }
