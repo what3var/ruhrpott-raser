@@ -716,3 +716,417 @@ class SkyTests {
 
     static defined int Sum(defined int c) { return ((c >> 16) & 255) + ((c >> 8) & 255) + (c & 255) }
 }
+
+class InventoryTests {
+    [Test "Inventar: Katalog, Taschen nehmen nur Kleines, Stapel, Tempo aus den Händen"]
+    undefined Basics() {
+        Testing.Assert.AreEqual("Rucksack", Raser.Items.Get(Raser.Items.Rucksack).name)
+        Testing.Assert.AreEqual(Raser.Items.Pommes, Raser.Items.Find("pommes"))
+        Testing.Assert.IsTrue(Raser.Items.Get(0) == undefined)
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops, 5, 4)
+        Testing.Assert.AreEqual(5, inv.Pockets().Size)
+        // Geld wird Bargeld, kein Stapel
+        Testing.Assert.AreEqual(0, inv.Give(Raser.Items.Geld, 150))
+        Testing.Assert.AreEqual(0, inv.Pockets().Used())
+        Testing.Assert.AreEqual(150, inv.cash)
+        // der Kanister ist sperrig: in die Hände - ein Platz (4 %) und 5,5 kg (11 %)
+        Testing.Assert.AreEqual(0, inv.Give(Raser.Items.Kanister, 1))
+        Testing.Assert.AreEqual(1, inv.Hands().CountOf(Raser.Items.Kanister))
+        Testing.Assert.IsTrue(Math.Abs(inv.SpeedFactor() - 0.85) < 0.0001)
+        // Wasser ist mittel: ohne Rucksack ebenfalls in die Hände
+        inv.Give(Raser.Items.Wasser, 1)
+        inv.Give(Raser.Items.Pommes, 1)
+        inv.Give(Raser.Items.Werkzeug, 1)
+        Testing.Assert.AreEqual(4, inv.Hands().Used())
+        // 40 % für vier Plätze, 6,7 kg: 13,4 %
+        Testing.Assert.IsTrue(Math.Abs(inv.SpeedFactor() - 0.466) < 0.0001)
+        // voll: noch ein Kanister passt nicht
+        Testing.Assert.AreEqual(1, inv.Give(Raser.Items.Kanister, 1))
+        // das Handy kommt in seinen Platz, der Walker wird langsamer
+        inv.Give(Raser.Items.Handy, 1)
+        Testing.Assert.IsTrue(inv.HasPhone())
+        var w = new Raser.Walker()
+        w.load = inv.SpeedFactor()
+        for (int i = 0; i < 40; i++) { w.Step(0.05, 1.0, 0.0, false) }
+        Testing.Assert.IsTrue(Math.Abs(w.speed - 2.2 * 0.466) < 0.001)
+        Testing.Assert.AreEqual(5500 + 550 + 250 + 400 + 180, inv.Weight())
+    }
+
+    [Test "Inventar: Klicks wie in Minecraft (aufnehmen, halbieren, einzeln ablegen, tauschen, Regeln der Plätze)"]
+    undefined Clicks() {
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops)
+        inv.Give(Raser.Items.Broetchen, 5)
+        var p = inv.Pockets()
+        var hand = inv.Cursor()
+        // rechts: die Hälfte (aufgerundet) auf die Maus
+        var op = inv.Click(inv.pockets, 0, 3, false)
+        Testing.Assert.IsTrue(op != undefined && op.kind == Raser.InvOp.Move && op.count == 3)
+        Testing.Assert.AreEqual(3, hand.Amount(0))
+        Testing.Assert.AreEqual(2, p.Amount(0))
+        // rechts auf einen leeren Platz: eins ablegen
+        inv.Click(inv.pockets, 1, 3, false)
+        Testing.Assert.AreEqual(1, p.Amount(1))
+        Testing.Assert.AreEqual(2, hand.Amount(0))
+        // links auf denselben Stapel: alles drauf
+        inv.Click(inv.pockets, 0, 1, false)
+        Testing.Assert.AreEqual(4, p.Amount(0))
+        Testing.Assert.IsTrue(hand.Empty(0))
+        // links aufnehmen, links auf einen anderen Gegenstand: tauschen
+        inv.Give(Raser.Items.Schluessel, 1)
+        Testing.Assert.AreEqual(Raser.Items.Schluessel, p.Item(2))
+        inv.Click(inv.pockets, 0, 1, false)
+        Testing.Assert.AreEqual(4, hand.Amount(0))
+        var swap = inv.Click(inv.pockets, 2, 1, false)
+        Testing.Assert.AreEqual(Raser.InvOp.Swap, swap.kind)
+        Testing.Assert.AreEqual(Raser.Items.Schluessel, hand.Item(0))
+        Testing.Assert.AreEqual(Raser.Items.Broetchen, p.Item(2))
+        // ein Stapel geht nicht über maxStack: 6 Brötchen + 4 = 6 und 4 bleiben auf der Maus
+        inv.Click(inv.pockets, 3, 1, false)
+        inv.Give(Raser.Items.Broetchen, 6)
+        // der Kanister darf nicht in die Hosentasche und nicht auf den Rücken
+        inv.Give(Raser.Items.Kanister, 1)
+        Testing.Assert.AreEqual(Raser.Items.Kanister, inv.Hands().Item(0))
+        inv.Click(inv.hands, 0, 1, false)
+        Testing.Assert.AreEqual(Raser.Items.Kanister, hand.Item(0))
+        Testing.Assert.IsTrue(inv.Click(inv.pockets, 4, 1, false) == undefined)
+        Testing.Assert.IsTrue(inv.Click(inv.backpackSlot, 0, 1, false) == undefined)
+        Testing.Assert.IsTrue(inv.Click(inv.hands, 1, 1, false) != undefined)
+        // ein fremder Behälter ist tabu
+        var other = store.Create(Raser.ContainerKind.Backpack, 6)
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Move, inv.pockets, 0, other, 0, 1)))
+        // eine Bewegung von mehr, als da ist, wird abgelehnt
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Move, inv.pockets, 0, inv.pockets, 4, 50)))
+    }
+
+    [Test "Inventar: Rucksack auf dem Rücken, abgelegt mit Inhalt, geöffnet, von einem anderen aufgehoben"]
+    undefined Backpacks() {
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops)
+        Testing.Assert.IsTrue(inv.Backpack() == undefined)
+        inv.Give(Raser.Items.Rucksack, 1)
+        var bp = inv.Backpack()
+        Testing.Assert.IsTrue(bp != undefined)
+        Testing.Assert.AreEqual(16, bp.Size)
+        // jetzt kommt Mittleres in den Rucksack statt in die Hände
+        inv.Give(Raser.Items.Wasser, 6)
+        Testing.Assert.AreEqual(6, bp.CountOf(Raser.Items.Wasser))
+        Testing.Assert.AreEqual(0, inv.Hands().Used())
+        // Umschalt+Klick: aus dem Rucksack in die Hosentaschen geht Wasser nicht (mittel) - in die Hände schon
+        var q = inv.Click(bp.id, 0, 1, true)
+        Testing.Assert.IsTrue(q != undefined && q.target == inv.hands)
+        // ein Rucksack nimmt keinen Rucksack
+        inv.Give(Raser.Items.Turnbeutel, 1)
+        Testing.Assert.AreEqual(Raser.Items.Turnbeutel, inv.Hands().Item(1))
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Move, inv.hands, 1, bp.id, 5, 1)))
+        // den Rucksack ablegen: er liegt mit Inhalt auf dem Boden
+        inv.east = 10.0
+        inv.north = 20.0
+        int bagId = bp.id
+        var drop = inv.DropAll(inv.backpackSlot, 0)
+        Testing.Assert.IsTrue(drop != undefined && drop.drop > 0)
+        Testing.Assert.IsTrue(inv.Backpack() == undefined)
+        var d = drops.Find(drop.drop)
+        Testing.Assert.AreEqual(bagId, d.data)
+        Testing.Assert.AreEqual(2, store.Find(bagId).CountOf(Raser.Items.Wasser))
+        // zu weit weg: nicht zu öffnen; daneben schon - dann ist der Inhalt erreichbar
+        inv.east = 30.0
+        Testing.Assert.IsFalse(inv.Open(d.id))
+        inv.east = 11.0
+        Testing.Assert.IsTrue(inv.Open(d.id))
+        Testing.Assert.IsTrue(inv.Reaches(bagId))
+        Testing.Assert.IsTrue(inv.Click(bagId, 1, 1, false) != undefined)
+        Testing.Assert.AreEqual(Raser.Items.Wasser, inv.Cursor().Item(0))
+        inv.Click(bagId, 1, 1, false)
+        // ein anderer Spieler hebt ihn auf: er hat den Inhalt auf dem Rücken
+        var other = new Raser.Inventory(store, drops)
+        other.east = 10.5
+        other.north = 20.0
+        Testing.Assert.IsTrue(other.Apply(new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)) == false)
+        var pick = new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)
+        pick.drop = d.id
+        Testing.Assert.IsTrue(other.Apply(pick))
+        Testing.Assert.AreEqual(0, drops.all.Count)
+        Testing.Assert.AreEqual(bagId, other.Backpack().id)
+        Testing.Assert.AreEqual(2, other.Backpack().CountOf(Raser.Items.Wasser))
+        // ... und der erste kommt nicht mehr dran
+        Testing.Assert.IsFalse(inv.Reaches(bagId))
+        // einzelne Gegenstände: ablegen und wieder aufheben
+        int coins = drops.Add(other.east, other.north, Raser.Items.Geld, 30, 0)
+        Testing.Assert.IsTrue(other.PickUp(coins))
+        Testing.Assert.AreEqual(30, other.cash)
+        Testing.Assert.AreEqual(0, other.Pockets().CountOf(Raser.Items.Geld))
+        Testing.Assert.IsTrue(drops.Nearest(10.5, 20.0, 3.0) == undefined)
+    }
+
+    [Test "Inventar: Behälter, Bodengegenstände und Operationen als Bytes hin und zurück"]
+    undefined Codec() {
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops)
+        inv.Give(Raser.Items.Trekkingrucksack, 1)
+        inv.Give(Raser.Items.Zigaretten, 14)
+        inv.Give(Raser.Items.Kanister, 1)
+        drops.Add(376117.25, 5705005.5, Raser.Items.Pommes, 2, 0)
+        var w = new Raser.ByteWriter()
+        store.Write(w)
+        drops.Write(w)
+        inv.Write(w)
+        var op = new Raser.InvOp(Raser.InvOp.Move, inv.pockets, 1, inv.hands, 3, 7)
+        op.Write(w)
+        byte bytes[] = w.data.Slice(0, w.length)
+        var r = new Raser.ByteReader(bytes)
+        var s2 = Raser.ContainerStore.Read(r)
+        var d2 = Raser.ItemDrops.Read(r)
+        var inv2 = new Raser.Inventory(s2, d2, 0)
+        inv2.ReadIds(r)
+        var op2 = Raser.InvOp.Read(r)
+        Testing.Assert.IsTrue(r.AtEnd)
+        Testing.Assert.AreEqual(store.all.Count, s2.all.Count)
+        Testing.Assert.AreEqual(27, inv2.Backpack().Size)
+        Testing.Assert.AreEqual(14, inv2.Pockets().CountOf(Raser.Items.Zigaretten))
+        Testing.Assert.AreEqual(Raser.Items.Kanister, inv2.Hands().Item(0))
+        Testing.Assert.IsTrue(Math.Abs(d2.all[0].north - 5705005.5) < 0.001)
+        Testing.Assert.AreEqual(op.ToString(), op2.ToString())
+        Testing.Assert.AreEqual(inv.Weight(), inv2.Weight())
+    }
+}
+
+class ItemUseTests {
+    [Test "Tempo: nur Hände und volle Hosentaschen bremsen, der Rucksack nie"]
+    undefined Load() {
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops)
+        inv.Give(Raser.Items.Trekkingrucksack, 1)
+        inv.Give(Raser.Items.Broetchen, 6)
+        inv.Give(Raser.Items.Schluessel, 1)
+        inv.Give(Raser.Items.Taschenlampe, 1)
+        inv.Give(Raser.Items.Zigaretten, 10)
+        Testing.Assert.AreEqual(1.0, inv.SpeedFactor())
+        // die fünfte Tasche voll: 6 %
+        inv.Give(Raser.Items.Handy, 1)
+        inv.Give(Raser.Items.Handy, 1)
+        Testing.Assert.AreEqual(5, inv.Pockets().Used())
+        Testing.Assert.IsTrue(Math.Abs(inv.SpeedFactor() - 0.94) < 0.0001)
+        // Schweres in den Rucksack: kein Unterschied
+        inv.Give(Raser.Items.Wasser, 8)
+        Testing.Assert.AreEqual(8, inv.Backpack().CountOf(Raser.Items.Wasser))
+        Testing.Assert.IsTrue(Math.Abs(inv.SpeedFactor() - 0.94) < 0.0001)
+        // die Zahlen sind einstellbar
+        inv.pocketsFull = 0.0
+        Testing.Assert.AreEqual(1.0, inv.SpeedFactor())
+    }
+
+    [Test "Benutzen: essen, trinken, Lampe, rauchen, tanken mit dem Kanister, reparieren"]
+    undefined Use() {
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops)
+        var body = new Raser.Body()
+        inv.body = body
+        body.food = 20.0
+        body.water = 50.0
+        inv.Give(Raser.Items.Broetchen, 2)
+        var op = inv.UseAt(inv.pockets, 0)
+        Testing.Assert.IsTrue(op != undefined && op.kind == Raser.InvOp.Use)
+        Testing.Assert.AreEqual(50.0, body.food)
+        Testing.Assert.AreEqual(1, inv.Pockets().Amount(0))
+        inv.UseAt(inv.pockets, 0)
+        Testing.Assert.IsTrue(inv.Pockets().Empty(0))
+        // Pommes machen satt und etwas durstig, Wasser löscht den Durst
+        inv.Give(Raser.Items.Pommes, 1)
+        inv.Give(Raser.Items.Wasser, 1)
+        inv.UseAt(inv.hands, 0)
+        Testing.Assert.AreEqual(100.0, body.food)
+        Testing.Assert.AreEqual(45.0, body.water)
+        inv.UseAt(inv.hands, 1)
+        Testing.Assert.AreEqual(90.0, body.water)
+        // Rauchen: nur fürs Bild
+        inv.Give(Raser.Items.Zigaretten, 3)
+        inv.UseAt(inv.pockets, 0)
+        Testing.Assert.AreEqual(2, inv.Pockets().Amount(0))
+        Testing.Assert.IsTrue(body.smoke > 5.0)
+        // die Lampe: an und aus; im Rucksack leuchtet sie nicht, kaputt geht sie nicht an
+        inv.Give(Raser.Items.Taschenlampe, 1)
+        Testing.Assert.IsTrue(inv.UseAt(inv.pockets, 1) != undefined)
+        Testing.Assert.IsTrue(inv.LampShining())
+        inv.UseAt(inv.pockets, 1)
+        Testing.Assert.IsFalse(inv.LampShining())
+        inv.Pockets().Set(1, Raser.Items.Taschenlampe, 1, 1)
+        Testing.Assert.IsTrue(inv.UseAt(inv.pockets, 1) == undefined)
+        // der Kanister: kein Fahrzeug in der Nähe - nichts; daneben tankt er 40 % (voll), der Rest bleibt im Kanister
+        inv.Give(Raser.Items.Kanister, 1)
+        var car = Raser.Vehicle.Of("auto")
+        car.east = 10.0
+        car.fuel = 0.1
+        inv.vehicle = car
+        Testing.Assert.IsTrue(inv.UseAt(inv.hands, 0) == undefined)
+        inv.east = 8.0
+        Testing.Assert.IsTrue(inv.UseAt(inv.hands, 0) != undefined)
+        Testing.Assert.IsTrue(Math.Abs(car.fuel - 0.5) < 0.0001)
+        Testing.Assert.AreEqual(100, inv.Hands().Data(0))
+        Testing.Assert.IsTrue(inv.UseAt(inv.hands, 0) == undefined)
+        Testing.Assert.AreEqual(Raser.Items.Kanister, inv.Hands().Item(0))
+        // halb voller Kanister in fast vollen Tank: nur so viel wie fehlt
+        inv.Hands().Set(0, Raser.Items.Kanister, 1, 50)
+        car.fuel = 0.9
+        inv.UseAt(inv.hands, 0)
+        Testing.Assert.IsTrue(Math.Abs(car.fuel - 1.0) < 0.0001)
+        Testing.Assert.AreEqual(75, inv.Hands().Data(0))
+        // ein Kanister mit Füllstand stapelt nicht und wird nicht geteilt
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Drop, inv.hands, 0, 0, 0, 0)))
+        // das Fahrrad braucht keinen Sprit
+        var bike = Raser.Vehicle.Of("fahrrad")
+        bike.east = 8.5
+        inv.vehicle = bike
+        Testing.Assert.IsTrue(inv.UseAt(inv.hands, 0) == undefined)
+        // der Schraubenschlüssel repariert um 25 %, bis heil
+        inv.Give(Raser.Items.Werkzeug, 1)
+        inv.vehicle = car
+        car.health = 0.6
+        inv.UseAt(inv.hands, 1)
+        Testing.Assert.IsTrue(Math.Abs(car.health - 0.85) < 0.0001)
+        inv.UseAt(inv.hands, 1)
+        Testing.Assert.AreEqual(1.0, car.health)
+        Testing.Assert.IsTrue(inv.UseAt(inv.hands, 1) == undefined)
+        Testing.Assert.AreEqual(Raser.Items.Werkzeug, inv.Hands().Item(1))
+        // Schlüssel lassen sich nicht benutzen; Bargeld und Lampe als Bytes
+        inv.Give(Raser.Items.Schluessel, 1)
+        Testing.Assert.IsTrue(inv.UseAt(inv.pockets, 2) == undefined)
+        inv.cash = 1234
+        inv.lampOn = true
+        var w = new Raser.ByteWriter()
+        inv.WriteState(w)
+        body.Write(w)
+        var r = new Raser.ByteReader(w.data.Slice(0, w.length))
+        var inv2 = new Raser.Inventory(store, drops, 0)
+        inv2.ReadState(r)
+        var b2 = new Raser.Body()
+        b2.Read(r)
+        Testing.Assert.AreEqual(1234, inv2.cash)
+        Testing.Assert.IsTrue(inv2.lampOn)
+        Testing.Assert.IsTrue(Math.Abs(b2.water - body.water) < 0.1)
+    }
+
+    [Test "Körper: Rennen kostet Puste, aus der Puste erst ab 25 % wieder, Hunger bremst die Erholung"]
+    undefined Stamina() {
+        var b = new Raser.Body()
+        for (int i = 0; i < 100; i++) { b.Step(0.1, true) }
+        Testing.Assert.IsTrue(b.stamina > 0.1 && b.stamina < 0.2)
+        int guard = 0
+        while (b.CanSprint && guard < 100) {
+            b.Step(0.1, true)
+            guard++
+        }
+        Testing.Assert.IsFalse(b.CanSprint)
+        // 3 s Pause: 20 % - noch nicht
+        for (int i = 0; i < 30; i++) { b.Step(0.1, false) }
+        Testing.Assert.IsFalse(b.CanSprint)
+        for (int i = 0; i < 10; i++) { b.Step(0.1, false) }
+        Testing.Assert.IsTrue(b.CanSprint)
+        // hungrig: ein Drittel so schnell
+        var h = new Raser.Body()
+        h.stamina = 0.0
+        h.food = 10.0
+        for (int i = 0; i < 30; i++) { h.Step(0.1, false) }
+        Testing.Assert.IsTrue(h.stamina > 0.06 && h.stamina < 0.07)
+        // Rennen macht doppelt so schnell hungrig
+        var a = new Raser.Body()
+        var c = new Raser.Body()
+        a.Step(10.0, false)
+        c.Step(10.0, true)
+        Testing.Assert.IsTrue(Math.Abs((80.0 - c.food) - 2.0 * (80.0 - a.food)) < 0.0001)
+    }
+
+    [Test "Umhauen: alles fällt, Geld zum Teil, Kaputtes nach Wucht - mit demselben Samen dasselbe"]
+    undefined Knock() {
+        var r1 = ItemUseTests.Knocked(42, 20.0)
+        var r2 = ItemUseTests.Knocked(42, 20.0)
+        Testing.Assert.AreEqual(r1, r2)
+        // sanft (unter 2 m/s): nichts kaputt, alles am Boden
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = ItemUseTests.Loaded(store, drops)
+        var soft = Raser.Knockdown.Apply(inv, 7, 1.0)
+        Testing.Assert.AreEqual(0, soft.broken + soft.destroyed)
+        // Hosentaschen: Handy... - Handy-Platz, Brötchen, Schlüssel; Hände: Kanister, Wasser; Rücken: Rucksack = 6 Stapel
+        Testing.Assert.AreEqual(6, soft.dropped)
+        Testing.Assert.AreEqual(0, inv.Pockets().Used() + inv.Hands().Used())
+        Testing.Assert.IsTrue(inv.Backpack() == undefined)
+        Testing.Assert.IsTrue(soft.cashLost >= 2000 && soft.cashLost <= 6000)
+        Testing.Assert.AreEqual(10000 - soft.cashLost, inv.cash)
+        // das Geld am Boden ergibt genau den Verlust; alles liegt um den Spieler (bis 2,2 m)
+        int onGround = 0
+        foreach (d in drops.all) {
+            if (d.item == Raser.Items.Geld) { onGround = onGround + d.count }
+            Testing.Assert.IsTrue(Math.Sqrt((d.east - 100.0) * (d.east - 100.0) + (d.north - 200.0) * (d.north - 200.0)) <= 2.21)
+        }
+        Testing.Assert.AreEqual(soft.cashLost, onGround)
+        // der Rucksack liegt mit Inhalt da: ein anderer hebt ihn auf
+        var other = new Raser.Inventory(store, drops)
+        other.east = 100.0
+        other.north = 200.0
+        foreach (id in soft.drops) {
+            var d = drops.Find(id)
+            if (d != undefined && d.item == Raser.Items.Rucksack) { other.PickUp(id) }
+        }
+        Testing.Assert.AreEqual(3, other.Backpack().CountOf(Raser.Items.Zigaretten))
+        // volle Wucht: im Mittel über viele Samen geht einiges kaputt, Schlüssel nie
+        int broken = 0
+        int destroyed = 0
+        for (int seed = 1; seed <= 40; seed++) {
+            var s2 = new Raser.ContainerStore()
+            var d2 = new Raser.ItemDrops()
+            var i2 = ItemUseTests.Loaded(s2, d2)
+            var hard = Raser.Knockdown.Apply(i2, seed, 30.0)
+            broken = broken + hard.broken
+            destroyed = destroyed + hard.destroyed
+            foreach (d in d2.all) {
+                if (d.item == Raser.Items.Schluessel) { Testing.Assert.AreEqual(0, d.data) }
+            }
+        }
+        // Handy 70 %, Kanister 15 % je Mal; Brötchen 30 %, Wasser 40 % je Stück
+        Testing.Assert.IsTrue(broken > 20 && broken < 45)
+        Testing.Assert.IsTrue(destroyed > 40 && destroyed < 110)
+    }
+
+    static Raser.Inventory Loaded(Raser.ContainerStore store, Raser.ItemDrops drops) {
+        var inv = new Raser.Inventory(store, drops)
+        inv.east = 100.0
+        inv.north = 200.0
+        inv.cash = 10000
+        inv.Give(Raser.Items.Rucksack, 1)
+        inv.Give(Raser.Items.Handy, 1)
+        inv.Give(Raser.Items.Broetchen, 4)
+        inv.Give(Raser.Items.Schluessel, 1)
+        inv.Give(Raser.Items.Kanister, 1)
+        inv.Give(Raser.Items.Zigaretten, 3)
+        // das Wasser in die Hände (im Rucksack wäre es halb so gefährdet)
+        inv.Give(Raser.Items.Wasser, 2)
+        var bp = inv.Backpack()
+        for (int i = 0; i < bp.Size; i++) {
+            if (bp.Item(i) == Raser.Items.Wasser) { inv.Apply(new Raser.InvOp(Raser.InvOp.Move, bp.id, i, inv.hands, 1, bp.Amount(i))) }
+        }
+        // die Zigaretten in den Rucksack
+        var p = inv.Pockets()
+        for (int i = 0; i < p.Size; i++) {
+            if (p.Item(i) == Raser.Items.Zigaretten) { inv.Apply(new Raser.InvOp(Raser.InvOp.Move, inv.pockets, i, bp.id, 0, 3)) }
+        }
+        return inv
+    }
+
+    static string Knocked(defined int seed, defined float impact) {
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = ItemUseTests.Loaded(store, drops)
+        var r = Raser.Knockdown.Apply(inv, seed, impact)
+        string s = r.ToString()
+        foreach (d in drops.all) { s = s + ";" + d.item + "x" + d.count + "/" + d.data + "@" + Math.Round(d.east * 100.0) + "," + Math.Round(d.north * 100.0) }
+        return s
+    }
+}

@@ -129,9 +129,10 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 ## M4: Multiplayer-Grundgerüst
 - [x] Koordinator + ein Regionsserver auf einem Rechner, Protokoll schon für mehrere Regionen ausgelegt (`raser-server`, docs/SERVER.md: ein Prozess, getrennte Klassen, Nachrichten mit Region und Kachel)
 - [x] Konten und Sitzungen (SQLite, PBKDF2, Rollen Spieler/Admin), Launcher-API (HTTP 7480), Spielprotokoll v1 (TCP 7481), Chat, Admin-Befehle, Konsole im Spiel
-- [ ] Globale, eindeutige Objekt-IDs (Spieler: ja, `Raser.IdAllocator`); globale Dienste (Konten: ja; Inventar, Wirtschaft) getrennt von Regionen
-- [ ] Autoritativer Regionsserver, 2–8 Spieler (jetzt: der Server prüft nur Plausibilität der Lagen, die Clients rechnen)
-- [ ] Client-Prediction für Fahrzeuge
+- [ ] Globale, eindeutige Objekt-IDs (Spieler, Fahrzeuge, Behälter, Gegenstände am Boden: ja, `Raser.IdAllocator`); globale Dienste (Konten: ja; Inventar, Wirtschaft) getrennt von Regionen
+- [x] Autoritativer Regionsserver, 2–8 Spieler: Protokoll v2 (Eingaben je Takt, 30 Hz), dieselbe Physik auf Server und Client (`Raser.Sim`: Fahrzeuge, Gehen, Hindernisse der Kacheln, Stöße), Fahrzeuge der Region mit IDs, Inventar über den Server (docs/SERVER.md)
+- [x] Client-Prediction für Fahrzeuge und zu Fuß: Abgleich mit Nachrechnen, weicher Ausgleich, Sprung bei großen Fehlern; die anderen 100 ms in der Vergangenheit interpoliert
+- [ ] Verkehr (NPC-Autos, Fußgänger) auf dem Server: Haken `RegionServer.Npcs`/`NpcEntities` und Entitäten 3/4 sind da; Ereignis „Spieler umgehauen“ mit Verursacher (die Folgen fehlen noch)
 - [x] Interest-Management pro Kachel (eigene Kachel und die 8 Nachbarn)
 - [ ] Serverseitiges Wetter (jetzt: Uhr und Preset maßgeblich vom Server, `/time`, `/weather`; simuliert per Seed, optional echtes DWD-Wetter)
 - [ ] Zerstörungs-/Bau-Deltas (Key-Value-Store), Zerstörung als eigener Delta-Typ mit Ursache

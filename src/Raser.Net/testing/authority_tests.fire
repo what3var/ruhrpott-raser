@@ -1,0 +1,296 @@
+// Die Tests des autoritativen Servers (Protokoll v2): Eingaben auf der Leitung, dieselbe Rechnung auf "Client" und "Server", Abgleich der
+// Vorhersage, Interpolation der anderen, Inventar auf der Leitung.
+#import "testing"
+
+class AuthorityTests {
+    static Raser.Packet Round(Raser.Packet p) {
+        byte frame[] = Raser.Wire.Frame(p)
+        var frames = new Raser.FrameReader(Raser.Protocol.MaxServerFrame)
+        frames.Feed(frame, 0, frame.length)
+        return Raser.Wire.Decode(frames.Next())
+    }
+
+    // Eine Folge von Eingaben, die etwas tut: anfahren, lenken, bremsen, rückwärts, Handbremse - aus einer festen Zahlenfolge.
+    static Raser.Controls Script(defined int seq) {
+        var c = new Raser.Controls(seq)
+        int phase = (seq / 45) % 6
+        if (phase == 0 || phase == 1 || phase == 3) { c.throttle = 100 }
+        if (phase == 1) { c.steer = 60 }
+        if (phase == 2) { c.brake = 80 }
+        if (phase == 3) { c.steer = -100 }
+        if (phase == 4) {
+            c.throttle = 70
+            c.Set(Raser.Controls.Reverse, true)
+            c.steer = (seq * 37) % 201 - 100
+        }
+        if (phase == 5) { c.Set(Raser.Controls.Handbrake, true) }
+        return c
+    }
+
+    static Raser.SimWorld Empty() { return new Raser.SimWorld(new Raser.Obstacles("")) }
+
+    [Test "Input: Eingaben hin und zurück, Grenzen"]
+    undefined Inputs() {
+        var list = new List<Raser.Controls>()
+        for (int i = 0; i < 3; i++) {
+            var c = new Raser.Controls(1000 + i)
+            c.throttle = 100
+            c.brake = 33 * i
+            c.steer = -100 + i
+            c.forward = -100
+            c.turn = 55
+            c.Set(Raser.Controls.Reverse, i == 1)
+            c.Set(Raser.Controls.Use, i == 2)
+            c.Set(Raser.Controls.Sprint, true)
+            list.Add(take c)
+        }
+        var p = Raser.Packet.Inputs(list)
+        byte frame[] = Raser.Wire.Frame(p)
+        // eine Eingabe sind 7 Bytes, der Rahmen 2 + Art + Nummer + Anzahl
+        Testing.Assert.IsTrue(frame.length <= 2 + 1 + 2 + 1 + 3 * 8, "kompakt: " + frame.length + " Bytes")
+        var back = AuthorityTests.Round(p)
+        Testing.Assert.AreEqual(3, back.controls.Count)
+        for (int i = 0; i < 3; i++) {
+            Testing.Assert.AreEqual(1000 + i, back.controls[i].seq)
+            Testing.Assert.IsTrue(back.controls[i].Same(list[i]), "Eingabe " + i)
+        }
+        Testing.Assert.IsTrue(back.controls[1].IsReverse)
+        Testing.Assert.IsTrue(back.controls[2].IsUse)
+        Testing.Assert.IsFalse(back.controls[0].IsUse)
+        // außerhalb der Grenzen: der Server wirft hinaus
+        byte bad[] = Raser.Wire.Encode(p)
+        bad[bad.length - 7] = 101
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking bad))
+        // mehr als 8 je Nachricht
+        byte many[] = Raser.Wire.Encode(p)
+        many[3] = 9
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking many))
+        // eine Eingabe aus Tasten: S im Stand legt den Rückwärtsgang ein, bei Fahrt bremst S
+        var back1 = Raser.Controls.FromKeys(1, false, true, false, false, false, false, false, false, 0.0)
+        Testing.Assert.IsTrue(back1.IsReverse)
+        Testing.Assert.AreEqual(100, back1.throttle)
+        var stop = Raser.Controls.FromKeys(2, false, true, true, false, false, false, false, false, 10.0)
+        Testing.Assert.IsFalse(stop.IsReverse)
+        Testing.Assert.AreEqual(100, stop.brake)
+        Testing.Assert.AreEqual(100, stop.steer)
+    }
+
+    [Test "Snapshot: der eigene Zustand bitgenau"]
+    undefined SelfExact() {
+        var world = AuthorityTests.Empty()
+        var car = world.Add(77, "motorrad", 376117.123456789, 5705005.987654321, 12.3456789)
+        var pawn = new Raser.Pawn(5)
+        pawn.vehicle = 77
+        car.driver = 5
+        for (int i = 1; i <= 50; i++) { world.Control(pawn, AuthorityTests.Script(i)) }
+        var s = new Raser.Packet(Raser.Protocol.Snapshot)
+        s.ack = 50
+        s.SetSelf(pawn, car.body)
+        var back = AuthorityTests.Round(s)
+        Testing.Assert.AreEqual(77, back.self.vehicle)
+        Testing.Assert.AreEqual("motorrad", back.selfVehicle.kind)
+        var b = car.body
+        var v = back.selfVehicle
+        Testing.Assert.IsTrue(v.east == b.east && v.north == b.north && v.heading == b.heading && v.speed == b.speed, "Lage und Tempo bitgenau")
+        Testing.Assert.IsTrue(v.steerAngle == b.steerAngle && v.lean == b.lean && v.fuel == b.fuel && v.health == b.health, "Lenkung, Schräglage, Tank, Zustand bitgenau")
+        Testing.Assert.IsTrue(back.self.walker.east == pawn.walker.east, "der Spieler sitzt im Fahrzeug")
+    }
+
+    [Test "Dieselbe Rechnung: gleiche Eingaben, gleicher Zustand auf Client und Server"]
+    undefined Deterministic() {
+        var client = AuthorityTests.Empty()
+        var server = AuthorityTests.Empty()
+        foreach (w in [client, server]) {
+            w.Add(1, "auto", 376117.0, 5705005.0, 30.0)
+            w.Add(2, "transporter", 376140.0, 5705020.0, -60.0)
+            w.Add(3, "fahrrad", 376100.0, 5704990.0, 90.0)
+        }
+        var cp = new Raser.Pawn(9)
+        var sp = new Raser.Pawn(9)
+        foreach (p in [cp, sp]) {
+            p.walker.east = 376117.0
+            p.walker.north = 5705007.5
+        }
+        // erst einsteigen (E), dann fahren; beim Server kommen die Eingaben über die Leitung
+        for (int i = 1; i <= 600; i++) {
+            var c = AuthorityTests.Script(i)
+            if (i == 2 || i == 400 || i == 401) { c.Set(Raser.Controls.Use, true) }
+            if (i > 400) {
+                c.forward = 100
+                c.turn = 30
+            }
+            client.Control(cp, c)
+            var list = new List<Raser.Controls>()
+            list.Add(c.Clone())
+            var wire = AuthorityTests.Round(Raser.Packet.Inputs(list))
+            server.Control(sp, wire.controls[0])
+            if (i % 2 == 0) {
+                client.Coast()
+                server.Coast()
+            }
+        }
+        Testing.Assert.AreEqual(sp.vehicle, cp.vehicle)
+        for (int k = 0; k < 3; k++) {
+            var a = client.vehicles[k].body
+            var b = server.vehicles[k].body
+            Testing.Assert.IsTrue(a.east == b.east && a.north == b.north && a.heading == b.heading && a.speed == b.speed && a.health == b.health, "Fahrzeug " + k + " bitgenau: " + a.east + " / " + b.east)
+        }
+        Testing.Assert.IsTrue(cp.walker.east == sp.walker.east && cp.walker.north == sp.walker.north, "der Spieler bitgenau")
+        // und er ist wirklich gefahren
+        var moved = server.Find(1).body
+        Testing.Assert.IsTrue(Math.Abs(moved.east - 376117.0) + Math.Abs(moved.north - 5705005.0) > 50.0, "gefahren: " + moved.east + ", " + moved.north)
+    }
+
+    // Ein Server, der Eingaben mit Verzögerung rechnet, und ein Client mit Vorhersage; der Server weicht ab (ein Stoß, den der Client nicht
+    // kennt). Gibt die Vorhersage zurück.
+    static Raser.Prediction Run(defined int delay, defined int pushAt, defined float push, Raser.SimWorld server, Raser.Pawn sp) {
+        var pred = new Raser.Prediction(new Raser.Obstacles(""), 9)
+        // der Client kennt das Fahrzeug aus den Snapshots
+        var known = server.vehicles[0].body
+        pred.world.Add(server.vehicles[0].id, known.kind, known.east, known.north, known.heading)
+        pred.ready = true
+        Raser.Physics.CopyWalker(sp.walker, pred.pawn.walker)
+        pred.Mark()
+        pred.prevE = pred.curE
+        pred.prevN = pred.curN
+        var queue = new List<Raser.Controls>()
+        for (int tick = 1; tick <= 400; tick++) {
+            // der Client: eine Eingabe je Takt, sofort gerechnet
+            var c = AuthorityTests.Script(tick)
+            if (tick == 1) { c.Set(Raser.Controls.Use, true) }
+            pred.Step(c)
+            queue.Add(c.Clone())
+            // der Server rechnet, was delay Takte alt ist
+            while (queue.Count > delay) {
+                server.Control(sp, queue[0])
+                queue.RemoveAt(0)
+            }
+            if (tick == pushAt) {
+                var car = server.Find(sp.vehicle)
+                car.body.east = car.body.east + push
+            }
+            // jeder 2. Takt ein Snapshot (über die Leitung)
+            if (tick % 2 == 0) {
+                var s = new Raser.Packet(Raser.Protocol.Snapshot)
+                s.ack = sp.seq
+                var own = server.Find(sp.vehicle)
+                Raser.Vehicle body = undefined
+                if (own != undefined) { body = own.body }
+                s.SetSelf(sp, body)
+                foreach (v in server.vehicles) { if (v.id != sp.vehicle) { s.entities.Add(Raser.Entity.OfVehicle(v)) } }
+                var back = AuthorityTests.Round(s)
+                pred.Reconcile(back)
+                pred.Decay(1.0 / 30.0)
+            }
+        }
+        return pred
+    }
+
+    [Test "Abgleich: ohne Abweichung kein Fehler, nach einem Stoß zurück auf den Server, weich oder als Sprung"]
+    undefined Reconcile() {
+        foreach (push in [0.0, 0.8, 9.0]) {
+            var server = AuthorityTests.Empty()
+            server.Add(1, "auto", 376117.0, 5705005.0, 30.0)
+            var sp = new Raser.Pawn(9)
+            sp.walker.east = 376117.0
+            sp.walker.north = 5705007.0
+            var pred = AuthorityTests.Run(4, 200, push, server, sp)
+            var mine = pred.Car()
+            var real = server.Find(1).body
+            // Server und Vorhersage stimmen am Ende überein: die 4 offenen Eingaben rechnet der Client voraus, also erst den Server nachziehen
+            Testing.Assert.AreEqual(4, pred.pending.Count)
+            foreach (c in pred.pending) { server.Control(sp, c) }
+            Testing.Assert.IsTrue(Math.Abs(mine.east - real.east) < 1.0e-9 && Math.Abs(mine.north - real.north) < 1.0e-9, "zusammen: " + mine.east + " / " + real.east)
+            if (push == 0.0) {
+                Testing.Assert.AreEqual(0.0, pred.maxCorrection, "ohne Abweichung")
+                Testing.Assert.AreEqual(0, pred.snaps)
+            } else if (push < 4.0) {
+                Testing.Assert.IsTrue(pred.maxCorrection > 0.7 && pred.maxCorrection < 0.9, "der Stoß: " + pred.maxCorrection)
+                Testing.Assert.AreEqual(1, pred.corrected)
+                Testing.Assert.AreEqual(0, pred.snaps)
+                // weich: der Versatz ist nach dem Ende fast weg
+                Testing.Assert.IsTrue(Math.Abs(pred.errE) < 0.01, "Versatz " + pred.errE)
+            } else {
+                Testing.Assert.AreEqual(1, pred.snaps, "ein Sprung")
+                Testing.Assert.AreEqual(0.0, pred.errE)
+            }
+        }
+    }
+
+    [Test "Weich: der Versatz schwindet in ~100 ms, die Anzeige springt nicht"]
+    undefined Smooth() {
+        var pred = new Raser.Prediction(new Raser.Obstacles(""), 1)
+        pred.ready = true
+        pred.errE = 1.0
+        float t = 0.0
+        while (t < 0.1) {
+            pred.Decay(1.0 / 60.0)
+            t = t + 1.0 / 60.0
+        }
+        Testing.Assert.IsTrue(pred.errE < 0.2 && pred.errE > 0.0, "nach 100 ms: " + pred.errE)
+    }
+
+    [Test "Interpolation: zwischen den Snapshots, über 180 Grad, kurz voraus"]
+    undefined Interpolate() {
+        var ip = new Raser.Interpolator()
+        Testing.Assert.IsFalse(ip.Sample(1.0))
+        ip.Add(10.0, 100.0, 200.0, 170.0, 10.0, 0.0)
+        ip.Add(10.1, 101.0, 200.0, -170.0, 10.0, 20.0)
+        ip.Add(10.1, 101.0, 200.0, -170.0, 10.0, 20.0)
+        Testing.Assert.AreEqual(2, ip.Count)
+        Testing.Assert.IsTrue(ip.Sample(10.05))
+        Testing.Assert.AreNear(100.5, ip.east, 1.0e-9)
+        Testing.Assert.AreNear(180.0, Math.Abs(ip.heading), 1.0e-6)
+        Testing.Assert.AreNear(10.0, ip.lean, 1.0e-9)
+        // davor: der erste
+        ip.Sample(9.0)
+        Testing.Assert.AreNear(100.0, ip.east, 1.0e-9)
+        // danach: mit dem Tempo weiter, höchstens 0,25 s (Richtung -170: vorwärts ist (-sin, cos))
+        ip.Sample(20.0)
+        float h = -170.0 * Math.PI / 180.0
+        Testing.Assert.AreNear(101.0 - Math.Sin(h) * 10.0 * 0.25, ip.east, 1.0e-6)
+        // ein älterer Snapshot kommt zu spät: nicht übernommen
+        ip.Add(9.5, 0.0, 0.0, 0.0, 0.0, 0.0)
+        Testing.Assert.AreEqual(2, ip.Count)
+        // die Uhr des Servers: ein Takt 300 (30 Hz) = 10 s, angekommen bei 1000 s
+        var clock = new Raser.ServerClock(30.0)
+        clock.Observe(300, 1000.0)
+        Testing.Assert.AreNear(10.5, clock.Now(1000.5), 1.0e-9)
+        clock.Observe(303, 1000.2)
+        Testing.Assert.IsTrue(clock.Now(1000.2) > 10.1 && clock.Now(1000.2) < 10.21)
+    }
+
+    [Test "Inventar: InvOp und InvSet hin und zurück, Unsinn abgelehnt"]
+    undefined Inventory() {
+        var op = new Raser.InvOp(Raser.InvOp.Move, 123456789012, 2, 5, 0, 3)
+        var back = AuthorityTests.Round(Raser.Packet.Op(17, op))
+        Testing.Assert.AreEqual(17, back.seq)
+        Testing.Assert.AreEqual(123456789012, back.op.source)
+        Testing.Assert.AreEqual(3, back.op.count)
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops, 5, 4)
+        inv.Give(Raser.Items.Rucksack, 1)
+        inv.Give(Raser.Items.Wasser, 2)
+        var set = new Raser.Packet(Raser.Protocol.InvSet)
+        set.seq = 17
+        set.ok = true
+        set.invIds[0] = inv.pockets
+        foreach (c in store.all) { set.containers.Add(Raser.Container.Read(new Raser.ByteReader(AuthorityTests.Bytes(c)))) }
+        var sb = AuthorityTests.Round(set)
+        Testing.Assert.IsTrue(sb.ok)
+        Testing.Assert.AreEqual(inv.pockets, sb.invIds[0])
+        Testing.Assert.AreEqual(store.all.Count, sb.containers.Count)
+        int water = 0
+        foreach (c in sb.containers) { water = water + c.CountOf(Raser.Items.Wasser) }
+        Testing.Assert.AreEqual(2, water)
+        byte bad[] = Raser.Wire.Encode(Raser.Packet.Op(1, new Raser.InvOp(9, 1, 0, 2, 0, 1)))
+        Testing.Assert.Throws(() => Raser.Wire.Decode(taking bad))
+    }
+
+    static byte[] Bytes(Raser.Container c) {
+        var w = new Raser.ByteWriter(64)
+        c.Write(w)
+        return w.ToBytes()
+    }
+}

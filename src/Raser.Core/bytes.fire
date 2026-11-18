@@ -44,6 +44,13 @@ namespace Raser {
             this.length = this.length + 8
         }
 
+        // Eine Zahl als IEEE binary64 (8 Bytes, bitgenau - für Zustände, die beide Seiten gleich weiterrechnen).
+        undefined Float64(defined float v) {
+            this.Reserve(8)
+            this.data.WriteFloat64(this.length, v, true)
+            this.length = this.length + 8
+        }
+
         // Eine nicht negative Zahl in 7-Bit-Gruppen (LEB128).
         undefined Varint(defined int v) {
             if (v < 0) { throw new ArgumentException("Varint: negative value " + v) }
@@ -116,6 +123,13 @@ namespace Raser {
         defined int Int64() {
             this.Need(8)
             int v = this.data.ReadInt64(this.position, true)
+            this.position = this.position + 8
+            return v
+        }
+
+        defined float Float64() {
+            this.Need(8)
+            float v = this.data.ReadFloat64(this.position, true)
             this.position = this.position + 8
             return v
         }

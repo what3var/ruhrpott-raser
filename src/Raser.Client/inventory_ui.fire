@@ -1,0 +1,457 @@
+// Raser.Client: das Inventar auf dem Bildschirm, im Stil von Minecraft - graue Plätze mit dunklem Innern, die Symbole der Gegenstände, die
+// Anzahl unten rechts; die Maus nimmt Stapel auf und legt sie ab (Raser.Inventory.Click). Gezeichnet mit dem Renderer der Anzeige, nach dem Bild.
+//
+// I oder Tab öffnet und schließt, Escape schließt. Offen: links nehmen/ablegen/tauschen, rechts die Hälfte nehmen bzw. eins ablegen, Umschalt+links
+// schiebt den Stapel in den anderen Bereich, ein Klick neben das Fenster wirft den Stapel der Maus weg (rechts: eins), Q wirft den Stapel unter der
+// Maus weg. H zeigt das Handy (noch ohne Funktion). Geschlossen steht unten die Schnellleiste: Hosentaschen und Hände.
+#import "graphics"
+#import "windows"
+#import "time"
+#import "raser.core"
+//
+// Farben der Pinsel: 0xAABBGGRR (wie S3D.Rgb; im Speicher des Framebuffers R, G, B, A).
+
+// Ein Platz auf dem Bildschirm (für das Treffen mit der Maus).
+class SlotSpot {
+    defined int container
+    defined int slot
+    defined int x
+    defined int y
+    construct(defined int container, defined int slot, defined int x, defined int y) {
+        this.container = container
+        this.slot = slot
+        this.x = x
+        this.y = y
+    }
+}
+
+class InventoryScreen {
+    static readonly defined int Size = 36           // ein Platz: 32 Pixel Symbol und Rahmen
+
+    Raser.Inventory inv
+    ItemIcons icons
+    defined bool open
+    defined bool phoneOpen
+    defined int mouseX
+    defined int mouseY
+    defined bool shift
+    List<SlotSpot> spots
+    defined int panelX
+    defined int panelY
+    defined int panelW
+    defined int panelH
+    string note                    // eine kurze Meldung (unten), bis noteUntil (Ticks)
+    defined int noteUntil
+    List<Raser.InvOp> done         // die ausgeführten Operationen (später an den Server)
+    SolidBrush paint
+    SolidBrush ink
+    SolidBrush dark
+    defined int clockMinutes        // für das Handy
+    defined bool pointer            // den Mauszeiger selbst zeichnen (ohne Fenster, für Bilder)
+
+    construct(Raser.Inventory inv) {
+        this.inv = inv
+        this.icons = new ItemIcons()
+        this.open = false
+        this.phoneOpen = false
+        this.mouseX = -1
+        this.mouseY = -1
+        this.shift = false
+        this.spots = new List<SlotSpot>()
+        this.note = ""
+        this.noteUntil = 0
+        this.done = new List<Raser.InvOp>()
+        this.paint = new SolidBrush(0xFFFFFFFF)
+        this.ink = new SolidBrush(0xFFFFFFFF)
+        this.dark = new SolidBrush(0xFF404040)
+        this.clockMinutes = 0
+        this.pointer = false
+    }
+
+    undefined Show() {
+        this.open = true
+        this.phoneOpen = false
+    }
+
+    // Schließt; was die Maus hält, kommt zurück ins Inventar (der Rest auf den Boden). Ein geöffneter Rucksack am Boden geht zu.
+    undefined Hide() {
+        this.open = false
+        var hand = this.inv.Cursor()
+        if (!hand.Empty(0)) {
+            int rest = this.inv.Add(hand.Item(0), hand.Amount(0), hand.Data(0))
+            if (rest > 0) {
+                hand.Set(0, hand.Item(0), rest, hand.Data(0))
+                this.Record(this.inv.DropAll(this.inv.cursor, 0))
+            } else { hand.Clear(0) }
+        }
+        this.inv.CloseOpened()
+    }
+
+    undefined Say(string text) {
+        this.note = text
+        this.noteUntil = DateTime.UtcNow.Ticks + 30000000
+    }
+
+    undefined Record(Raser.InvOp op) {
+        if (op == undefined) { return }
+        this.done.Add(take op)
+        while (this.done.Count > 64) { this.done.RemoveAt(0) }
+    }
+
+    // Ein Ereignis des Fensters; true: verbraucht (das Spiel soll es nicht sehen).
+    defined bool Handle(any ev) {
+        int type = ev[0]
+        if (type == EventType.KeyDown || type == EventType.KeyUp) {
+            int key = ev[1]
+            bool pressed = type == EventType.KeyDown
+            if (key == 1073742049 || key == 1073742053) {
+                this.shift = pressed
+                return this.open
+            }
+            if (!pressed) { return false }
+            if (key == 105 || key == 9) {
+                if (this.open) { this.Hide() } else { this.Show() }
+                return true
+            }
+            if (key == 104) {
+                if (this.inv.HasPhone()) { this.phoneOpen = !this.phoneOpen } else { this.Say("Kein Handy im Handy-Platz") }
+                return true
+            }
+            if (key == 27 && (this.open || this.phoneOpen)) {
+                if (this.open) { this.Hide() }
+                this.phoneOpen = false
+                return true
+            }
+            if (!this.open) { return false }
+            if (key == 113) {
+                var spot = this.SpotAt(this.mouseX, this.mouseY)
+                if (spot != undefined) { this.Record(this.inv.DropAll(spot.container, spot.slot)) }
+            }
+            // offen: alle Tasten bleiben hier (das Fahrzeug steht still)
+            return true
+        }
+        if (!this.open) { return false }
+        if (type == EventType.MouseMove) {
+            this.mouseX = ev[1]
+            this.mouseY = ev[2]
+            return true
+        }
+        if (type == EventType.MouseDown) {
+            int button = ev[1]
+            this.mouseX = ev[2]
+            this.mouseY = ev[3]
+            this.Press(button)
+            return true
+        }
+        if (type == EventType.MouseUp || type == EventType.MouseScroll) { return true }
+        return false
+    }
+
+    // Ein Klick an der Lage der Maus.
+    undefined Press(defined int button) {
+        var spot = this.SpotAt(this.mouseX, this.mouseY)
+        if (spot != undefined) {
+            var op = this.inv.Click(spot.container, spot.slot, button, this.shift)
+            if (op == undefined && !this.inv.Cursor().Empty(0)) { this.Say(this.Refusal(spot.container)) }
+            this.Record(op)
+            return
+        }
+        bool inside = this.mouseX >= this.panelX && this.mouseX < this.panelX + this.panelW && this.mouseY >= this.panelY && this.mouseY < this.panelY + this.panelH
+        var hand = this.inv.Cursor()
+        if (inside || hand.Empty(0)) { return }
+        // neben das Fenster: wegwerfen (rechts: eins)
+        int n = hand.Amount(0)
+        if (button == 3 && hand.Data(0) == 0) { n = 1 }
+        var op = new Raser.InvOp(Raser.InvOp.Drop, this.inv.cursor, 0, 0, 0, n)
+        if (this.inv.Apply(op)) { this.Record(op) }
+    }
+
+    // Warum der Stapel der Maus dort nicht hin darf.
+    string Refusal(defined int container) {
+        var c = this.inv.store.Find(container)
+        var t = Raser.Items.Get(this.inv.Cursor().Item(0))
+        if (c == undefined || t == undefined) { return "" }
+        if (c.kind == Raser.ContainerKind.Pockets && t.size > 1) { return t.name + " passt nicht in die Hosentasche" }
+        if (c.kind == Raser.ContainerKind.Backpack && t.size > 2) { return t.name + " passt nicht in den Rucksack" }
+        if (c.kind == Raser.ContainerKind.BackpackSlot) { return "Auf den Ruecken kommt nur ein Rucksack" }
+        if (c.kind == Raser.ContainerKind.PhoneSlot) { return "Hier kommt nur das Handy hin" }
+        return ""
+    }
+
+    SlotSpot SpotAt(defined int x, defined int y) {
+        foreach (s in this.spots) {
+            if (x >= s.x && x < s.x + InventoryScreen.Size && y >= s.y && y < s.y + InventoryScreen.Size) { return s }
+        }
+        return undefined
+    }
+
+    // ---- Zeichnen ----
+
+    undefined Fill(Renderer r, defined int x, defined int y, defined int w, defined int h, defined int color) {
+        this.paint.Color = color
+        r.FillRect(x, y, w, h, this.paint)
+    }
+
+    // Text mit Schatten (wie die Anzahl in Minecraft).
+    undefined Shadowed(Renderer r, defined int x, defined int y, string text, defined int color) {
+        this.paint.Color = 0xFF3F3F3F
+        r.DrawText(x + 1, y + 1, text, this.paint)
+        this.ink.Color = color
+        r.DrawText(x, y, text, this.ink)
+    }
+
+    // Ein Platz: dunkler Rand oben links, heller unten rechts, das Innere grau; hover: heller.
+    undefined Frame(Renderer r, defined int x, defined int y, defined bool hover, defined int tint) {
+        int s = InventoryScreen.Size
+        this.Fill(r, x, y, s, s, 0xFF373737)
+        this.Fill(r, x + 2, y + 2, s - 2, s - 2, 0xFFFFFFFF)
+        this.Fill(r, x + 2, y + 2, s - 4, s - 4, tint)
+        if (hover) { this.Fill(r, x + 2, y + 2, s - 4, s - 4, 0x80FFFFFF) }
+    }
+
+    // Symbol und Anzahl eines Stapels, oben links bei (x, y) (32 x 32).
+    undefined Stack(Renderer r, defined int x, defined int y, defined int item, defined int count) {
+        if (item == 0) { return }
+        var t = Raser.Items.Get(item)
+        if (t == undefined) { return }
+        r.BlitScaled(this.icons.Of(t.icon), 0, 0, 16, 16, x, y, 32, 32, BlitMode.Blend)
+        if (count > 1) {
+            string text = "" + count
+            this.Shadowed(r, x + 33 - r.TextWidth(text), y + 33 - r.TextHeight(), text, 0xFFFFFFFF)
+        }
+    }
+
+    // Ein Platz eines Behälters samt Stapel; merkt sich die Lage für die Maus. ghost: das blasse Symbol im leeren Platz (0: keins).
+    undefined Slot(Renderer r, Raser.Container c, defined int slot, defined int x, defined int y, defined int ghost, defined int tint) {
+        bool hover = this.mouseX >= x && this.mouseX < x + InventoryScreen.Size && this.mouseY >= y && this.mouseY < y + InventoryScreen.Size
+        this.Frame(r, x, y, hover && this.open, tint)
+        if (c.Empty(slot) && ghost > 0) { r.BlitScaled(this.icons.Ghost(ghost), 0, 0, 16, 16, x + 2, y + 2, 32, 32, BlitMode.Blend) }
+        this.Stack(r, x + 2, y + 2, c.Item(slot), c.Amount(slot))
+        this.spots.Add(new SlotSpot(c.id, slot, x, y))
+    }
+
+    // Die Plätze eines Behälters als Raster (columns je Reihe) ab (x, y); gibt die Höhe.
+    defined int Grid(Renderer r, Raser.Container c, defined int columns, defined int x, defined int y, defined int tint) {
+        int rows = (c.Size + columns - 1) / columns
+        for (int i = 0; i < c.Size; i++) { this.Slot(r, c, i, x + (i % columns) * InventoryScreen.Size, y + (i / columns) * InventoryScreen.Size, 0, tint) }
+        return rows * InventoryScreen.Size
+    }
+
+    // Die Spalten eines Rucksacks (aus seiner Art).
+    defined int ColumnsOf(defined int item) {
+        var t = Raser.Items.Get(item)
+        if (t == undefined || t.columns <= 0) { return 9 }
+        return t.columns
+    }
+
+    // Zeichnet: offen das Fenster (mit Stapel an der Maus und Hinweis), sonst die Schnellleiste; das Handy, wenn es offen ist.
+    undefined Draw(Renderer r, defined int width, defined int height) {
+        this.spots.Clear()
+        if (this.open) { this.DrawWindow(r, width, height) } else { this.DrawQuick(r, width, height) }
+        if (this.phoneOpen) { this.DrawPhone(r, width, height) }
+        if (this.note != "" && DateTime.UtcNow.Ticks < this.noteUntil) {
+            int w = r.TextWidth(this.note) + 16
+            int y = height - 112
+            if (this.open) { y = this.panelY + this.panelH + 8 }
+            this.Fill(r, (width - w) / 2, y, w, r.TextHeight() + 8, 0xC0000000)
+            this.Shadowed(r, (width - w) / 2 + 8, y + 4, this.note, 0xFF70E0FF)
+        }
+    }
+
+    // Die Schnellleiste unten in der Mitte: fünf Hosentaschen, dann die Hände (rötlich, wenn belegt) - und das Tempo, wenn sie bremsen.
+    undefined DrawQuick(Renderer r, defined int width, defined int height) {
+        var p = this.inv.Pockets()
+        var h = this.inv.Hands()
+        int s = InventoryScreen.Size
+        int w = (p.Size + h.Size) * s + 12
+        int x = (width - w) / 2
+        int y = height - 48 - s
+        this.Fill(r, x - 3, y - 3, w + 6, s + 6, 0x90000000)
+        for (int i = 0; i < p.Size; i++) { this.Slot(r, p, i, x + i * s, y, 0, 0xFF8B8B8B) }
+        int hx = x + p.Size * s + 12
+        for (int i = 0; i < h.Size; i++) {
+            int tint = 0xFF7A7A7A
+            if (!h.Empty(i)) { tint = 0xFF606A9A }
+            this.Slot(r, h, i, hx + i * s, y, 0, tint)
+        }
+        float f = this.inv.SpeedFactor()
+        if (f < 0.999) {
+            string text = "Tempo " + Math.Round(f * 100.0) + "%"
+            this.Shadowed(r, hx + h.Size * s + 8, y + (s - r.TextHeight()) / 2, text, 0xFF60A0FF)
+        }
+    }
+
+    undefined DrawWindow(Renderer r, defined int width, defined int height) {
+        int s = InventoryScreen.Size
+        int line = r.TextHeight() + 4
+        int pad = 12
+        var inv = this.inv
+        var bp = inv.Backpack()
+        Raser.Container ground = undefined
+        if (inv.opened != 0 && inv.Reaches(inv.opened)) { ground = inv.store.Find(inv.opened) }
+        // Höhe: (am Boden: Titel + Raster) + Rucksack (Titel + Raster bzw. eine Zeile) + Titel + zwei Reihen + Fußzeile
+        int groundItem = 0
+        int groundRows = 0
+        if (ground != undefined) {
+            var gd = inv.drops.Find(inv.openedDrop)
+            groundItem = gd.item
+            groundRows = (ground.Size + this.ColumnsOf(groundItem) - 1) / this.ColumnsOf(groundItem)
+        }
+        int bpRows = 1
+        if (bp != undefined) { bpRows = (bp.Size + this.ColumnsOf(inv.BackpackItem()) - 1) / this.ColumnsOf(inv.BackpackItem()) }
+        int inner = 9 * s
+        int w = inner + 2 * pad
+        int h = pad + line + bpRows * s + 10 + line + 2 * s + 8 + line + line + pad
+        if (ground != undefined) { h = h + line + groundRows * s + 10 }
+        int x = (width - w) / 2
+        int y = Math.Max(4, (height - h) / 2 - 20)
+        this.panelX = x
+        this.panelY = y
+        this.panelW = w
+        this.panelH = h
+        // abgedunkelt dahinter, das Fenster mit hellem Rand oben links und dunklem unten rechts
+        this.Fill(r, 0, 0, width, height, 0x78000000)
+        this.Fill(r, x - 1, y - 1, w + 2, h + 2, 0xFF000000)
+        this.Fill(r, x, y, w, h, 0xFFFFFFFF)
+        this.Fill(r, x + 3, y + 3, w - 3, h - 3, 0xFF555555)
+        this.Fill(r, x + 3, y + 3, w - 6, h - 6, 0xFFC6C6C6)
+        int cx = x + pad
+        int cy = y + pad
+        if (ground != undefined) {
+            var gt = Raser.Items.Get(groundItem)
+            r.DrawText(cx, cy, gt.name + " am Boden (" + ground.Used() + "/" + ground.Size + ")", this.dark)
+            cy = cy + line
+            cy = cy + this.Grid(r, ground, this.ColumnsOf(groundItem), cx, cy, 0xFF8B8B8B) + 10
+        }
+        if (bp != undefined) {
+            var bt = Raser.Items.Get(inv.BackpackItem())
+            r.DrawText(cx, cy, bt.name + " (" + bp.Used() + "/" + bp.Size + " Plaetze)", this.dark)
+            cy = cy + line
+            cy = cy + this.Grid(r, bp, this.ColumnsOf(inv.BackpackItem()), cx, cy, 0xFF8B8B8B) + 10
+        } else {
+            r.DrawText(cx, cy, "Kein Rucksack", this.dark)
+            cy = cy + line
+            this.Fill(r, cx, cy, inner, s, 0xFFB4B4B4)
+            this.paint.Color = 0xFF6A6A6A
+            r.DrawText(cx + 8, cy + (s - r.TextHeight()) / 2, "Rucksack auf den Platz links: mehr Platz", this.paint)
+            cy = cy + s + 10
+        }
+        // links Rücken und Handy, daneben Hosentaschen und Hände
+        int left = cx
+        int px = cx + s + 16
+        r.DrawText(px, cy, "Hosentaschen", this.dark)
+        cy = cy + line
+        var slot = inv.store.Find(inv.backpackSlot)
+        this.Slot(r, slot, 0, left, cy, Raser.Items.Rucksack, 0xFF8B8B8B)
+        var pockets = inv.Pockets()
+        for (int i = 0; i < pockets.Size; i++) { this.Slot(r, pockets, i, px + i * s, cy, 0, 0xFF8B8B8B) }
+        var phone = inv.store.Find(inv.phoneSlot)
+        this.Slot(r, phone, 0, left, cy + s + 8, Raser.Items.Handy, 0xFF8B8B8B)
+        var hands = inv.Hands()
+        for (int i = 0; i < hands.Size; i++) {
+            int tint = 0xFF7F7F7F
+            if (!hands.Empty(i)) { tint = 0xFF606A9A }
+            this.Slot(r, hands, i, px + i * s, cy + s + 8, 0, tint)
+        }
+        // rechts daneben: Tempo und Gewicht
+        int ix = px + pockets.Size * s + 10
+        float f = inv.SpeedFactor()
+        int tempoColor = 0xFF2E6E2E
+        if (f < 0.999) { tempoColor = 0xFF1040A0 }
+        this.paint.Color = tempoColor
+        r.DrawText(ix, cy + s + 8 + (s - r.TextHeight()) / 2, "< Haende", this.dark)
+        r.DrawText(ix, cy + 4, "Tempo " + Math.Round(f * 100.0) + "%", this.paint)
+        int g = inv.Weight()
+        string kg = (g / 1000) + "," + ((g % 1000) / 100) + " kg"
+        r.DrawText(ix, cy + 4 + line, kg, this.dark)
+        cy = cy + 2 * s + 8 + 8
+        this.paint.Color = 0xFF505050
+        r.DrawText(cx, cy, "Links: nehmen/ablegen  Rechts: halb/eins", this.paint)
+        r.DrawText(cx, cy + line, "Umschalt: verschieben  Q/daneben: weg", this.paint)
+        // Hinweis zum Platz unter der Maus, dann der Stapel an der Maus
+        var hand = inv.Cursor()
+        var spot = this.SpotAt(this.mouseX, this.mouseY)
+        if (spot != undefined && hand.Empty(0)) {
+            var c = inv.store.Find(spot.container)
+            if (!c.Empty(spot.slot)) { this.Tooltip(r, c.Item(spot.slot), c.Amount(spot.slot), c.Data(spot.slot), width) }
+            else if (c.kind == Raser.ContainerKind.BackpackSlot) { this.Tip(r, ["Ruecken", "nimmt einen Rucksack"], width) }
+            else if (c.kind == Raser.ContainerKind.PhoneSlot) { this.Tip(r, ["Handy", "H: Handy ansehen"], width) }
+            else if (c.kind == Raser.ContainerKind.Hands) { this.Tip(r, ["Haende", "alles passt, aber jeder Platz bremst mehr"], width) }
+        }
+        if (!hand.Empty(0)) { this.Stack(r, this.mouseX - 16, this.mouseY - 16, hand.Item(0), hand.Amount(0)) }
+        if (this.pointer) {
+            // ein Pfeil wie der des Systems: schwarz gerandet, weiß
+            int mx = this.mouseX
+            int my = this.mouseY
+            this.paint.Color = 0xFF000000
+            r.FillTriangle(mx - 1, my - 2, mx - 1, my + 17, mx + 13, my + 12, this.paint)
+            this.paint.Color = 0xFFFFFFFF
+            r.FillTriangle(mx + 1, my + 2, mx + 1, my + 13, mx + 9, my + 11, this.paint)
+        }
+    }
+
+    // Name, Anzahl, Gewicht und Größe eines Stapels neben der Maus.
+    undefined Tooltip(Renderer r, defined int item, defined int count, defined int data, defined int width) {
+        var t = Raser.Items.Get(item)
+        if (t == undefined) { return }
+        string sizes[] = ["", "klein", "mittel", "sperrig"]
+        string second = sizes[Math.Clamp(t.size, 0, 3)] + ", " + (t.weight * count) + " g"
+        if (t.IsBackpack) {
+            var c = this.inv.store.Find(data)
+            int used = 0
+            if (c != undefined) { used = c.Used() }
+            second = t.capacity + " Plaetze, " + used + " belegt"
+        }
+        string first = t.name
+        if (count > 1) { first = first + " x" + count }
+        this.Tip(r, [first, second], width)
+    }
+
+    // Ein Hinweis im Stil von Minecraft (dunkel violett gerahmt) rechts oben an der Maus; die erste Zeile weiß, die anderen grau.
+    undefined Tip(Renderer r, string lines[], defined int width) {
+        int line = r.TextHeight() + 2
+        int w = 0
+        foreach (l in lines) { w = Math.Max(w, r.TextWidth(l)) }
+        w = w + 12
+        int h = lines.length * line + 8
+        int x = this.mouseX + 14
+        int y = this.mouseY - h - 4
+        if (x + w > width - 4) { x = this.mouseX - w - 14 }
+        if (y < 4) { y = this.mouseY + 20 }
+        this.Fill(r, x, y, w, h, 0xF0100010)
+        this.Fill(r, x + 1, y + 1, w - 2, 1, 0xFFFF0050)
+        this.Fill(r, x + 1, y + h - 2, w - 2, 1, 0xFF7F0028)
+        this.Fill(r, x + 1, y + 1, 1, h - 2, 0xFFFF0050)
+        this.Fill(r, x + w - 2, y + 1, 1, h - 2, 0xFF7F0028)
+        for (int i = 0; i < lines.length; i++) {
+            int color = 0xFFAAAAAA
+            if (i == 0) { color = 0xFFFFFFFF }
+            this.Shadowed(r, x + 6, y + 4 + i * line, lines[i], color)
+        }
+    }
+
+    // Das Handy (Platzhalter): ein Gerät rechts mit Uhr und "kein Netz".
+    undefined DrawPhone(Renderer r, defined int width, defined int height) {
+        int w = 190
+        int h = 340
+        int x = width - w - 40
+        int y = (height - h) / 2
+        this.paint.Color = 0xFF1C1818
+        r.FillRoundRect(x, y, w, h, 22, this.paint)
+        this.paint.Color = 0xFF302A2A
+        r.FillRoundRect(x + 4, y + 4, w - 8, h - 8, 19, this.paint)
+        this.paint.Color = 0xFF6E3C1E
+        r.FillRect(x + 12, y + 30, w - 24, h - 70, this.paint)
+        this.Fill(r, x + 12, y + 30, w - 24, (h - 70) / 2, 0xFFA05A2D)
+        this.paint.Color = 0xFF141010
+        r.FillRoundRect(x + w / 2 - 20, y + 12, 40, 8, 4, this.paint)
+        this.paint.Color = 0xFF585050
+        r.FillCircle(x + w / 2, y + h - 22, 9, this.paint)
+        string clock = (this.clockMinutes / 60) + ":" + ((this.clockMinutes % 60) / 10) + ((this.clockMinutes % 60) % 10)
+        this.Shadowed(r, x + (w - r.TextWidth(clock)) / 2, y + 60, clock, 0xFFFFFFFF)
+        this.Shadowed(r, x + (w - r.TextWidth("Ruhrpott-Handy")) / 2, y + 100, "Ruhrpott-Handy", 0xFFFFE8E0)
+        this.Shadowed(r, x + (w - r.TextWidth("kein Netz")) / 2, y + 140, "kein Netz", 0xFF60C0FF)
+        this.Shadowed(r, x + (w - r.TextWidth("kommt bald")) / 2, y + 160, "kommt bald", 0xFFE0C0B0)
+        this.Shadowed(r, x + (w - r.TextWidth("H: zu")) / 2, y + h - 64, "H: zu", 0xFFE0C0B0)
+    }
+}

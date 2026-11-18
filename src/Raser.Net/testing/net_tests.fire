@@ -18,6 +18,7 @@ class WireTests {
         var back = WireTests.Round(Raser.Packet.Hello("abc123", "Jürgen", "0.1.3"))
         Testing.Assert.AreEqual(Raser.Protocol.Hello, back.type)
         Testing.Assert.AreEqual(Raser.Protocol.Version, back.version)
+        Testing.Assert.AreEqual(1, back.kind)
         Testing.Assert.AreEqual("abc123", back.text)
         Testing.Assert.AreEqual("Jürgen|0.1.3", back.name)
     }
@@ -36,24 +37,42 @@ class WireTests {
         Testing.Assert.AreEqual(22292, back.tileY)
     }
 
-    [Test "Snapshot mit zwei Spielern, Weather, Said, Welcome, Teleport"]
+    [Test "Snapshot mit zwei Entitäten, Weather, Said, Welcome, Teleport"]
     undefined Server() {
         var s = new Raser.Packet(Raser.Protocol.Snapshot)
         s.time = 1795000000123
+        s.tick = 4711
         s.region = 1
-        var a = Raser.Packet.Moved(0, 376117.0, 5705005.0, 45.0, 10.0, 1)
-        a.id = Raser.Ids.Stable(Raser.IdKind.Player, "a")
-        var b = Raser.Packet.Moved(0, 376130.5, 5705010.25, 179.99, 0.0, 0)
-        b.id = 42
-        s.players.Add(take a)
-        s.players.Add(take b)
+        s.ack = 99
+        var a = new Raser.Entity(Raser.Ids.Stable(Raser.IdKind.Player, "a"), Raser.EntityType.Player)
+        a.east = 376117.0
+        a.north = 5705005.0
+        a.heading = 45.0
+        a.speed = 10.0
+        var b = new Raser.Entity(42, Raser.EntityType.Vehicle)
+        b.variant = 3
+        b.east = 376130.5
+        b.north = 5705010.25
+        b.heading = 179.99
+        b.a = 7
+        b.b = -123
+        s.entities.Add(take a)
+        s.entities.Add(take b)
+        s.gone.Add(5)
         var back = WireTests.Round(s)
         Testing.Assert.AreEqual(1795000000123, back.time)
-        Testing.Assert.AreEqual(2, back.players.Count)
-        Testing.Assert.AreEqual(Raser.Ids.Stable(Raser.IdKind.Player, "a"), back.players[0].id)
-        Testing.Assert.AreEqual(42, back.players[1].id)
-        Testing.Assert.AreNear(5705010.25, back.players[1].north, 0.001)
-        Testing.Assert.AreNear(179.99, back.players[1].heading, 0.001)
+        Testing.Assert.AreEqual(4711, back.tick)
+        Testing.Assert.AreEqual(99, back.ack)
+        Testing.Assert.IsTrue(back.self == undefined)
+        Testing.Assert.AreEqual(2, back.entities.Count)
+        Testing.Assert.AreEqual(Raser.Ids.Stable(Raser.IdKind.Player, "a"), back.entities[0].id)
+        Testing.Assert.AreEqual(42, back.entities[1].id)
+        Testing.Assert.AreEqual(3, back.entities[1].variant)
+        Testing.Assert.AreEqual(-123, back.entities[1].b)
+        Testing.Assert.AreNear(5705010.25, back.entities[1].north, 0.001)
+        Testing.Assert.AreNear(179.99, back.entities[1].heading, 0.001)
+        Testing.Assert.AreEqual(1, back.gone.Count)
+        Testing.Assert.AreEqual(5, back.gone[0])
 
         var w = new Raser.Packet(Raser.Protocol.Weather)
         w.year = 2026
@@ -77,7 +96,11 @@ class WireTests {
         welcome.region = 1
         welcome.admin = true
         welcome.name = "Anna"
+        welcome.rate = 30
+        welcome.tick = 12
         var wel = WireTests.Round(welcome)
+        Testing.Assert.AreEqual(30, wel.rate)
+        Testing.Assert.AreEqual(12, wel.tick)
         Testing.Assert.AreEqual(1234567890123, wel.id)
         Testing.Assert.IsTrue(wel.admin)
         Testing.Assert.AreEqual("Anna", wel.name)

@@ -18,6 +18,12 @@
     },
     {
       "project": "../Raser.Client/Raser.Client.fireproj"
+    },
+    {
+      "project": "../Raser.Traffic/Raser.Traffic.fireproj"
+    },
+    {
+      "project": "../Raser.Sim/Raser.Sim.fireproj"
     }
   ],
   "settings": {
