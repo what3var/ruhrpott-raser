@@ -328,8 +328,9 @@ class RegionServer {
         if (this.tick % Raser.Protocol.SnapshotEvery == 0) { this.SendSnapshots(time) }
     }
 
-    // Haken für den Verkehr (NPC-Autos und Fußgänger, eigene Bibliothek): hier rechnet später Traffic.Step(dt, Spieler ...) seine NPCs, Spieler
-    // gegen NPC entscheidet der Server (Knocks), und NpcEntities gibt sie in die Snapshots.
+    // Haken für den Verkehr (NPC-Autos und Fußgänger, Raser.Traffic): hier rechnet später traffic.Step(Raser.SimWorld.Tick,
+    // this.TrafficPlayers()) seine NPCs (Kacheln wie die Hindernisse: this.sim.obstacles.TileAt), Spieler gegen NPC entscheidet der Server
+    // (Knocks, "umgefahren" aus traffic.events), und NpcEntities gibt sie in die Snapshots.
     undefined Npcs() { }
 
     // Haken für den Verkehr: die NPCs in der Nähe von p als Entitäten (EntityType.NpcCar, EntityType.Pedestrian).
@@ -356,13 +357,16 @@ class RegionServer {
         }
     }
 
-    // Ereignis "Spieler umgehauen" (victim, Verursacher: Spieler-ID, 0: niemand). Hier entscheidet später der Server, was er verliert
-    // (Inventar zu Boden, Kleingeld, kaputte Teile - die Regeln kommen aus Raser.Core); jetzt: er liegt LyingTicks lang, alle in der Nähe
-    // bekommen das Ereignis.
+    // Ereignis "Spieler umgehauen" (victim, Verursacher: Spieler-ID, 0: niemand; by: das Fahrzeug). Der Server entscheidet, was er verliert
+    // (Raser.Knockdown aus Raser.Core: Inventar zu Boden, ein Teil des Kleingelds, Kaputtes - Zufall aus Takt und ID, also nachrechenbar); er
+    // liegt LyingTicks lang (die Eingaben zählen nicht), alle in der Nähe bekommen das Ereignis, er selbst den neuen Stand seines Inventars.
     undefined KnockedDown(Player victim, defined int causer, Raser.Vehicle by) {
         victim.lyingUntil = this.tick + RegionServer.LyingTicks
         victim.pawn.walker.speed = 0.0
-        Gateway.Log(victim.name + " umgehauen (von " + Raser.Ids.Format(causer) + ", " + Math.Round(Math.Abs(by.speed) * 3.6) + " km/h)")
+        this.Follow(victim)
+        float impact = Math.Abs(by.speed)
+        var result = Raser.Knockdown.Apply(victim.inv, this.tick * 7919 + (victim.id & 1048575), impact)
+        Gateway.Log(victim.name + " umgehauen (von " + Raser.Ids.Format(causer) + ", " + Math.Round(impact * 3.6) + " km/h): " + result.dropped + " Stapel am Boden, " + result.cashLost + " Cent verloren, " + result.broken + " kaputt, " + result.destroyed + " weg")
         var ev = new Raser.Packet(Raser.Protocol.Event)
         ev.kind = Raser.Protocol.KnockedDown
         ev.id = victim.id
@@ -371,6 +375,25 @@ class RegionServer {
         ev.north = victim.north
         byte frame[] = Raser.Wire.Frame(ev)
         foreach (p in this.players) { if (RegionServer.Near(p, victim)) { p.link.SendFrame(frame) } }
+        this.SendInventory(victim, victim.opSeq, true)
+    }
+
+    // Für den Verkehr (Raser.Traffic.Step): je Spieler und je Fahrzeug der Region 7 Zahlen - Ost, Nord, Richtung, Tempo, Radius, spread, Art (0 zu
+    // Fuß, 1 fährt ein Fahrzeug, 2 abgestelltes Fahrzeug); Spieler im Fahrzeug stehen nur als ihr Fahrzeug darin.
+    List<float> TrafficPlayers() {
+        var list = new List<float>()
+        foreach (p in this.players) {
+            if (p.pawn == undefined || !p.pawn.OnFoot) { continue }
+            var w = p.pawn.walker
+            foreach (x in [w.east, w.north, w.heading, w.speed, 0.35, 0.0, 0.0]) { list.Add(x) }
+        }
+        foreach (v in this.sim.vehicles) {
+            var b = v.body
+            float art = 2.0
+            if (v.driver != 0) { art = 1.0 }
+            foreach (x in [b.east, b.north, b.heading, b.speed, b.radius, b.spread, art]) { list.Add(x) }
+        }
+        return list
     }
 
     // Sieht p den Spieler q? Gleiche Kachel oder eine der 8 Nachbarn.

@@ -140,10 +140,12 @@ einer Eingabe, `Coast` = die Fahrzeuge ohne Fahrer rollen aus). Die Kacheln läd
   wer schneller schickt, fährt nicht schneller (die Bots messen das: doppelt so viele Eingaben, dieselbe Strecke). Über 150 Eingaben je s: Kick.
   Werte außerhalb der Grenzen (Gas 101, Flags 16 ...) lehnt schon `Raser.Wire` ab: Kick.
 - **Spieler gegen Fahrzeug:** zu Fuß hält ihn das Fahrzeug auf (`Physics.Walk`); erwischt ihn eines mit mehr als 5 m/s, ist er **umgehauen**
-  (`RegionServer.KnockedDown(Opfer, Verursacher)`: er liegt 3 s, die Eingaben zählen nicht, alle in der Nähe bekommen das Ereignis). Hier
-  entscheidet später der Server, was er verliert (Inventar zu Boden, Kleingeld, kaputte Teile - die Regeln kommen aus Raser.Core).
+  (`RegionServer.KnockedDown(Opfer, Verursacher, Fahrzeug)`: er liegt 3 s, die Eingaben zählen nicht, alle in der Nähe bekommen das Ereignis).
+  Was er verliert, entscheidet der Server mit `Raser.Knockdown.Apply` (Raser.Core: Inventar zu Boden, ein Teil des Kleingelds, Kaputtes; der
+  Zufall aus Takt und ID); er bekommt danach den neuen Stand seines Inventars.
 - **Haken für den Verkehr:** `RegionServer.Npcs()` wird in jedem Takt nach den Spielern und vor den freien Fahrzeugen aufgerufen (hier läuft
-  später `Traffic.Step(dt, Spieler ...)`, Spieler gegen NPC entscheidet `Knocks`), `RegionServer.NpcEntities(p, list)` gibt die NPCs in der Nähe
+  später `traffic.Step(Raser.SimWorld.Tick, this.TrafficPlayers())` - `TrafficPlayers` liefert schon die 7 Zahlen je Spieler bzw. Fahrzeug, die
+  Kacheln gibt `this.sim.obstacles.TileAt`; Spieler gegen NPC entscheidet der Server), `RegionServer.NpcEntities(p, list)` gibt die NPCs in der Nähe
   von p in die Snapshots (Entitäten 3 und 4).
 
 ## Vorhersage, Abgleich, Interpolation (Client)
@@ -276,7 +278,7 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
 | `src/Raser.Net` | das Protokoll (`Raser.Packet`, `Raser.Entity`, `Raser.Wire`, `Raser.FrameReader`, `Raser.Link`), Vorhersage und Interpolation (`Raser.Prediction`, `Raser.Interpolator`, `Raser.ServerClock`), Befehle (`Raser.Commands`), Passwörter (`Raser.Passwords`) - mit Tests |
 | `src/Raser.Server` | `raser-server`: Launcher-API, Konten, Gateway, Koordinator, Regionsserver (Simulation, Snapshots, Inventar), Uhr und Wetter |
 | `src/Raser.Client` | `NetSession` (Verbindung, Takt, Vorhersage, Entitäten, Inventar, Chat, Konsole), `ChatOverlay` |
-| `src/Raser.Game` | `online.fire`: die anderen Spieler in der Szene; `--bot`: ein Client ohne Welt und Fenster (für Tests); `npcs.fire`: der Verkehr in der Szene |
+| `src/Raser.Game` | `online.fire`: Steuerung über den Server, die Entitäten in der Szene; `--bot`: ein Client ohne Fenster mit Plänen (für Tests); `npcs.fire`: der Verkehr in der Szene |
 
 Probe von Hand: `tools/server-smoke.sh <raser-server> <raser-game> [arbeitsverzeichnis] [welt]` startet den Server, registriert über HTTP,
 verbindet Bots (`raser-game --bot 12 --plan kreis|ablegen|aufheben|schummeln --say "..."`) und prüft, dass sie sich sehen, den Chat lesen, dass
