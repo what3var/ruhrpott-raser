@@ -433,7 +433,7 @@ class NetBot {
                         float de = r.east - place[0]
                         float dn = r.north - place[1]
                         float d = Math.Sqrt(de * de + dn * dn)
-                        if (d < 1.2) {
+                        if (d < 2.0) {
                             var op = new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)
                             op.drop = target
                             bool local = s.inv.Apply(op)
@@ -502,7 +502,7 @@ class NetBot {
                     if (best == undefined || t - phaseAt > 14.0) {
                         print("[" + user + "] aufgesammelt: " + target + " Gegenstände, Bargeld jetzt " + s.inv.cash + " Cent, getragen " + s.CarriedAll() + " Stück")
                         phase = "fertig"
-                    } else if (bestD < 1.2) {
+                    } else if (bestD < 2.0) {
                         var op = new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)
                         op.drop = best.id
                         s.inv.Apply(op)

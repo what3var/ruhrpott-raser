@@ -193,6 +193,12 @@ class RegionServer {
         }
         float start[] = [e, n, 0.0]
         if (this.sim.obstacles.store != undefined) { start = Raser.Physics.StartIn(this.sim.obstacles.TileAt(e, n), e, n) }
+        // steht dort schon ein Fahrzeug (ein anderer kam an denselben Punkt), je 7 m weiter zurück entlang der Straße
+        float sh = start[2] * Math.PI / 180.0
+        for (int k = 0; k < 6 && this.Occupied(start[0], start[1]); k++) {
+            start[0] = start[0] + Math.Sin(sh) * 7.0
+            start[1] = start[1] - Math.Cos(sh) * 7.0
+        }
         var pawn = new Raser.Pawn(p.id)
         pawn.walker.east = start[0]
         pawn.walker.north = start[1]
@@ -218,6 +224,14 @@ class RegionServer {
         p.placed = true
         this.Follow(p)
         this.Park(p)
+    }
+
+    // Steht ein Fahrzeug näher als 6 m an (e, n)?
+    defined bool Occupied(defined float e, defined float n) {
+        foreach (v in this.sim.vehicles) {
+            if ((v.body.east - e) * (v.body.east - e) + (v.body.north - n) * (v.body.north - n) < 36.0) { return true }
+        }
+        return false
     }
 
     // Was jeder am Anfang dabeihat (wie offline): Handy, Schlüssel, Kleingeld, Brötchen, Zigaretten, ein Rucksack mit Wasser, Lampe, Werkzeug.
