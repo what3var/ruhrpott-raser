@@ -237,7 +237,9 @@ class Minimap {
                 this.worker.ordered.Remove(job.name)
                 var tk = Raser.TileKey.Parse(job.name)
                 if (tk != undefined && Math.Abs(tk.x - key.x) <= 1 && Math.Abs(tk.y - key.y) <= 1 && !this.tiles.ContainsKey(job.name)) {
-                    this.tiles[job.name] = job.TakeImage()
+                    // (die Karte besitzt ihre Bilder: Owns.Values übernimmt es aus dem Auftrag)
+                    this.tiles[job.name] = job.image
+                    job.image = undefined
                     this.dirty = true
                 }
                 delete job
@@ -452,18 +454,18 @@ class Minimap {
 // Probe ohne Fenster (raser-game --minimap-probe 1 --world ... --at e,n): 6 s lang 25 m/s nach Osten (über Kachelgrenzen) - je Bild Prepare
 // wie im Spiel; gedruckt wird das längste Prepare und wie viele Kachelbilder kamen.
 class MinimapProbe {
-    static defined int Run(string world, defined float e, defined float n) {
+    static defined int Run(string world, defined float e, defined float n, defined float seconds = 6.0, defined float speed = 25.0) {
         var map = new Minimap(new Obstacles(world))
         int worst = 0
         int frames = 0
         float x = e
         int began = DateTime.UtcNow.Ticks
-        while (DateTime.UtcNow.Ticks - began < 60000000) {
+        while (DateTime.UtcNow.Ticks - began < seconds * 10000000.0) {
             int t0 = DateTime.UtcNow.Ticks
             map.Prepare(x, n, 1)
             worst = Math.Max(worst, DateTime.UtcNow.Ticks - t0)
             frames++
-            x = x + 25.0 / 30.0
+            x = x + speed / 30.0
             Sleep(33ms)
         }
         int images = 0
@@ -484,12 +486,6 @@ class MapJob {
         this.image = undefined
     }
 
-    Framebuffer TakeImage() {
-        var fb = this.image
-        this.image = undefined
-        if (fb != undefined) { fb.TakeLocal() }
-        return fb
-    }
 }
 
 // Lädt Kacheln (JSON, bis 1 MB) und zeichnet ihr Bild in einem eigenen Thread (`fire dedicated`: er wartet beim Lesen in den Natives) -

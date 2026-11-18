@@ -275,7 +275,7 @@ class Game {
         // --minimap-probe 1: die Kachelbilder der Karte aus dem Worker, ohne Fenster (minimap.fire)
         if (options.Get("minimap-probe", "") != "") {
             var mp = options.Get("at", "376117,5705005").Split(",")
-            return MinimapProbe.Run(options.Get("world", "world"), mp[0].ToFloat(), mp[1].ToFloat())
+            return MinimapProbe.Run(options.Get("world", "world"), mp[0].ToFloat(), mp[1].ToFloat(), options.Get("seconds", "6").ToFloat(), options.Get("speed", "25").ToFloat())
         }
         string world = options.Get("world", "world")
         var store = new Raser.FileTileStore(world)
