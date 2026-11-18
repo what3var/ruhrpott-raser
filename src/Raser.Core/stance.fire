@@ -1,0 +1,135 @@
+// Raser.Core: wie ein Fahrzeug auf seinen Rädern liegt (Roadmap M3: Fahrzeugphysik) - die Haltung des Aufbaus über den vier Aufstandspunkten,
+// ohne Szene (testbar). Nur fürs Bild: jeder Client rechnet sie selbst aus der Lage und dem Boden unter den Rädern (Gelände, Brückendeck,
+// Bordstein), über das Netz geht nichts davon.
+//
+// Die Räder geben eine Ebene: Nicken (pitch, Nase hoch positiv) aus vorn gegen hinten über den Radstand, Wanken (roll, links tiefer positiv,
+// wie Raser.Vehicle.lean) aus rechts gegen links über die Spur, die Höhe der Mitte aus der Ebene. Dazu legt sich der Aufbau leicht in die
+// Fahrt: beim Bremsen taucht die Nase ein (0,22 ° je m/s², höchstens 2,5 °), beim Beschleunigen hebt sie sich, in der Kurve wankt er nach
+// außen (0,3 ° je m/s² Querbeschleunigung, höchstens 3,5 °). Höhe, Nicken und Wanken folgen dem als Feder mit Dämpfer (1,6 bzw. 1,8 Hz,
+// leicht unterdämpft): über einen Bordstein wippt der Wagen kurz, am Hang liegt er ruhig schräg. Zweiräder wanken nicht (sie legen sich mit
+// lean in die Kurve), nicken aber. Die Kamera folgt der Höhe noch einmal geglättet (camHeight), damit sie nicht mitwippt.
+namespace Raser {
+    class Stance {
+        defined float pitch             // Grad, Nase hoch positiv
+        defined float roll              // Grad, links tiefer positiv
+        defined float height            // m: die Höhe des Aufbaus über der Mitte (in Ruhe: die Ebene der Räder dort)
+        defined float pitchRate         // Grad/s
+        defined float rollRate
+        defined float heightRate        // m/s
+        defined float camHeight         // die Höhe geglättet (für die Kamera)
+        defined float targetPitch       // nach Update: die Ebene der Räder (ohne Fahrt)
+        defined float targetRoll
+        defined float targetHeight
+        defined float accelLong         // geschätzt aus Tempo und Richtung (m/s², geglättet)
+        defined float accelLat
+        defined float lastSpeed
+        defined float lastHeading
+        defined bool settled            // schon einmal gesetzt
+
+        construct() {
+            this.settled = false
+        }
+
+        // Die Ebene der Räder: wheels die Höhen der Aufstandspunkte vorn links, vorn rechts, hinten links, hinten rechts (m), front und rear die
+        // Abstände der Achsen vor und hinter der Mitte (m), track die Spur (m, 0: Zweirad - dann zählen nur vorn links und hinten links).
+        undefined Plane(defined float wheels[], defined float front, defined float rear, defined float track) {
+            float span = Math.Max(0.1, front + rear)
+            float hf = wheels[0]
+            float hr = wheels[2]
+            this.targetRoll = 0.0
+            if (track > 0.01) {
+                hf = (wheels[0] + wheels[1]) / 2.0
+                hr = (wheels[2] + wheels[3]) / 2.0
+                float hl = (wheels[0] + wheels[2]) / 2.0
+                float hright = (wheels[1] + wheels[3]) / 2.0
+                this.targetRoll = Math.Atan2(hright - hl, track) * 180.0 / Math.PI
+            }
+            this.targetPitch = Math.Atan2(hf - hr, span) * 180.0 / Math.PI
+            this.targetHeight = (hr * front + hf * rear) / span
+        }
+
+        // Ein Bild: die Ebene der Räder (wie Plane), dazu das Tempo (m/s) und die Richtung (Grad) des Fahrzeugs jetzt; dt s seit dem letzten
+        // Bild (0: nur setzen, beim ersten Mal ohne Federn auf die Ebene).
+        undefined Update(defined float wheels[], defined float front, defined float rear, defined float track, defined float speed, defined float heading, defined float dt) {
+            this.Plane(wheels, front, rear, track)
+            if (!this.settled) {
+                this.Snap()
+                this.lastSpeed = speed
+                this.lastHeading = heading
+                this.settled = true
+                return
+            }
+            if (dt <= 0.0) { return }
+            // ein Sprung (Teleport, auf ein Deck): ohne Federn
+            if (Math.Abs(this.targetHeight - this.height) > 1.5) { this.Snap() }
+            // die Beschleunigungen aus Tempo und Richtung, geglättet (0,15 s)
+            float turn = heading - this.lastHeading
+            while (turn > 180.0) { turn = turn - 360.0 }
+            while (turn < -180.0) { turn = turn + 360.0 }
+            float along = Math.Clamp((speed - this.lastSpeed) / dt, -15.0, 15.0)
+            float across = Math.Clamp(speed * turn * Math.PI / 180.0 / dt, -15.0, 15.0)
+            this.lastSpeed = speed
+            this.lastHeading = heading
+            float k = 1.0 - Math.Exp(-dt / 0.15)
+            this.accelLong = this.accelLong + (along - this.accelLong) * k
+            this.accelLat = this.accelLat + (across - this.accelLat) * k
+            float wantPitch = this.targetPitch + Math.Clamp(this.accelLong * 0.22, -2.5, 2.5)
+            float wantRoll = this.targetRoll
+            if (track > 0.01) { wantRoll = wantRoll + Math.Clamp(-this.accelLat * 0.3, -3.5, 3.5) }
+            // Federn und Dämpfer, in Teilschritten von höchstens 1/120 s
+            int parts = Math.Max(1, Math.Ceiling(dt * 120.0)!int)
+            float h = dt / parts
+            float wa = 2.0 * Math.PI * 1.6
+            float wh = 2.0 * Math.PI * 1.8
+            for (int i = 0; i < parts; i++) {
+                this.pitchRate = this.pitchRate + (wa * wa * (wantPitch - this.pitch) - 2.0 * 0.55 * wa * this.pitchRate) * h
+                this.pitch = this.pitch + this.pitchRate * h
+                this.rollRate = this.rollRate + (wa * wa * (wantRoll - this.roll) - 2.0 * 0.55 * wa * this.rollRate) * h
+                this.roll = this.roll + this.rollRate * h
+                this.heightRate = this.heightRate + (wh * wh * (this.targetHeight - this.height) - 2.0 * 0.6 * wh * this.heightRate) * h
+                this.height = this.height + this.heightRate * h
+            }
+            // nie mehr als 0,12 m in den Boden (die Federn schlagen durch)
+            if (this.height < this.targetHeight - 0.12) {
+                this.height = this.targetHeight - 0.12
+                if (this.heightRate < 0.0) { this.heightRate = 0.0 }
+            }
+            if (Math.Abs(this.height - this.camHeight) > 2.0) { this.camHeight = this.height } else { this.camHeight = this.camHeight + (this.height - this.camHeight) * (1.0 - Math.Exp(-dt / 0.3)) }
+        }
+
+        // Gleich auf die Ebene der Räder, in Ruhe.
+        undefined Snap() {
+            this.pitch = this.targetPitch
+            this.roll = this.targetRoll
+            this.height = this.targetHeight
+            this.camHeight = this.targetHeight
+            this.pitchRate = 0.0
+            this.rollRate = 0.0
+            this.heightRate = 0.0
+            this.accelLong = 0.0
+            this.accelLat = 0.0
+        }
+
+        // Ein Punkt des Aufbaus (rechts, hoch, vorn in m ab der Mitte am Boden) gedreht mit Richtung heading, Nicken und Wanken (wie scene3d:
+        // erst um die Längsachse, dann um die Querachse, dann um die Hochachse) - in out: x (Osten), y (hoch), z (Süden, wie die Szene).
+        static undefined Turn(defined float right, defined float up, defined float front, defined float heading, defined float pitch, defined float roll, defined float out[]) {
+            // lokal: x rechts, y hoch, z hinten (vorn ist -z)
+            float x = right
+            float y = up
+            float z = -front
+            float cr = Math.Cos(roll * Math.PI / 180.0)
+            float sr = Math.Sin(roll * Math.PI / 180.0)
+            float x1 = x * cr - y * sr
+            float y1 = x * sr + y * cr
+            float cp = Math.Cos(pitch * Math.PI / 180.0)
+            float sp = Math.Sin(pitch * Math.PI / 180.0)
+            float y2 = y1 * cp - z * sp
+            float z2 = y1 * sp + z * cp
+            float ch = Math.Cos(heading * Math.PI / 180.0)
+            float sh = Math.Sin(heading * Math.PI / 180.0)
+            out[0] = x1 * ch + z2 * sh
+            out[1] = y2
+            out[2] = -x1 * sh + z2 * ch
+        }
+    }
+}

@@ -213,6 +213,7 @@ namespace Raser {
                 tile.data.props.Add(take prop)
             }
             Raser.Region.Scatter(tile)
+            Raser.RestAreas.Furnish(tile)
             Raser.Region.AssignFunctions(tile)
             return tile
         }

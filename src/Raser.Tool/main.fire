@@ -186,6 +186,41 @@ class Tool {
     }
 
     // Schreibt die Randschichten (.rrb) zu allen gespeicherten Chunks (für Welten, die vor den Randschichten voxelisiert wurden).
+    // Woraus die nahe Stufe besteht: --at e,n (Standard der Startpunkt), --radius r Blöcke ringsum (Standard 1): Vierecke je Material der Voxel,
+    // Gelände, Fenster/Brücken, Glas (ohne Cache gebaut).
+    static undefined NearStats(Args args) {
+        var at = args.Get("at", "376117,5705005").Split(",")
+        int bx = Math.Floor(at[0].ToFloat() / 51.2)!int
+        int by = Math.Floor(at[1].ToFloat() / 51.2)!int
+        int r = args.Get("radius", "1").ToInt()
+        var builder = new Raser.NearBuilder(args.Get("world", "world"), 0.0, 0.0, 0.0, false)
+        builder.useCache = false
+        builder.stats = new List<int>()
+        for (int i = 0; i < 66563; i++) { builder.stats.Add(0) }
+        int total = 0
+        int blocks = 0
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                var res = builder.Build(bx + dx, by + dy)
+                blocks++
+                foreach (b in res.batches) { total = total + b.quads }
+            }
+        }
+        Tool.Log(blocks + " Blöcke, " + total + " Vierecke (" + (total * 2 / blocks / 1000) + "k Dreiecke je Block)")
+        string names[] = ["Gelände (glatt)", "Fenster/Türen/Bögen/Brücken", "Glas der Fenster"]
+        for (int i = 0; i < 3; i++) { Tool.Log("  " + names[i] + ": " + builder.stats[256 + i]) }
+        // die Materialien, nach Anzahl
+        var order = new List<int>()
+        for (int m = 0; m < 256; m++) { if (builder.stats[m] > 0) { order.Add(builder.stats[m] * 256 + m) } }
+        order.Sort()
+        for (int i = order.Count - 1; i >= 0 && i >= order.Count - 25; i--) {
+            int m = order[i] % 256
+            int colors = 0
+            for (int c = 0; c < 256; c++) { colors = colors + builder.stats[515 + m * 256 + c] }
+            Tool.Log("  Material " + m + ": " + builder.stats[m] + " (einzelne Voxelflächen " + builder.stats[259 + m] + ", davon oben/unten " + builder.stats[66051 + m] + ", schräg " + builder.stats[66307 + m] + "; " + colors + " Farben)")
+        }
+    }
+
     static undefined Faces(Args args) {
         var store = Tool.Store(args)
         foreach (k in Tool.Chosen(args, store)) {
@@ -345,6 +380,7 @@ class Tool {
                 case "voxelize": Tool.VoxelizeAny(args)
                 case "info": Tool.Info(args)
                 case "faces": Tool.Faces(args)
+                case "nearstats": Tool.NearStats(args)
                 case "meshes": Tool.MeshesAny(args)
                 case "export":
                     string what = "png"

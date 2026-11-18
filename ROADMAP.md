@@ -109,13 +109,23 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Verfolgerkamera weicht Gebäuden aus (rückt heran und höher, weich wieder hinaus)
 - [x] Kamera an der Wand: weicht bis 60° zur Seite aus (die Richtung mit dem weitesten freien Weg), bleibt es eng, steigt sie und blickt von oben
 - [x] Schaden aus der Wucht des Aufpralls (`Vehicle.health`, `DamageOf`: bis 7 km/h nichts, 50 km/h frontal 39 %; kaputt fährt nichts), Anzeige „Zustand“
-- [ ] Glätte; Bordsteine; Laternen und Schilder umfahren
+- [ ] Glätte; Laternen und Schilder umfahren
+- [x] Fahrzeuge liegen auf ihren Rädern (`Raser.Stance`): Höhe, Nicken und Wanken aus den vier Aufstandspunkten (Gelände, Brückendeck, Bordstein
+  des Gehwegs: `Ground.Surface`), gefedert (über den Bordstein wippt der Wagen), beim Bremsen taucht die Nase ein, in Kurven wankt er nach außen;
+  Fahrer auf dem Zweirad, Scheinwerfer und Haubenkamera neigen sich mit, die Verfolgerkamera folgt der Höhe geglättet; NPC-Autos nah ebenso -
+  `docs/images/spiel-neigung-hang.png` (12° Steigung), `docs/images/spiel-neigung-bordstein.png` (rechts auf dem Bordstein)
+- [x] Stöße drehen (`Vehicle.spin`, `Impact`): ein Stoß außerhalb der Mitte - Wand am Eck, Pfosten, anderes Fahrzeug - gibt Drehimpuls aus Hebel
+  und Trägheitsmoment, die Reifen bremsen das Drehen, die Fahrt behält ihre Richtung (sie wird zum Rutschen) - `docs/images/spiel-stoss-drehung.png`
+  (48 km/h auf den abgestellten Transporter: der schiebt Motorrad und Fahrrad weiter, das Auto dreht sich weg; `raser --at 376562.3,5704723.4
+  --gap 22 --heading 69 --steer 0.04 --auto 4.3 --overview 14 --look -40`)
+- [x] Angestoßene stoßen weiter an: jedes bewegte Fahrzeug (abgestellt, Unfallwagen des Verkehrs) prallt an Wänden ab und stößt andere an,
+  paarweise mit Breitphase (`Raser.BodyGrid`, `Physics.Wrecks`)
 - [x] Fahrzeugklassen (`Vehicle.Of`): Auto, Transporter, Motorrad, Fahrrad - eigene Fahrwerte, Modelle, Kamera; die anderen Klassen stehen am Start geparkt, der Spieler steigt ins nächste ein; Fahrzeuge halten einander auf
 - [x] Zweiräder legen sich in die Kurve (`Vehicle.lean` = atan(v · Gierrate / g), höchstens 40°), der Fahrer sitzt (Sitzhaltung der Figur)
 - [x] Tank je Fahrzeug (`Vehicle.fuel`, Gas x Antrieb verbraucht; das Fahrrad braucht keinen; leer fährt nichts), Anzeige „Tank“
 - [x] Angefahrene Fahrzeuge rutschen los (`Vehicle.Shove`: unelastischer Stoß nach Masse, die Reifen bremsen, Wände halten auf) und nehmen Schaden
 - [x] Fahrzeuge am Straßenrand verteilt (`Game.Parking`: Straßen für Autos der Startkachel, 20 bis 200 m vom Start, nicht an Gebäuden und Pfosten; `--parked 8`)
-- [ ] Fahrzeuge: Akku statt Tank für E-Fahrzeuge, Tankstellen; angestoßene Fahrzeuge drehen sich; Parkplätze in allen Kacheln (beim Nachladen), Parkplatzflächen aus OSM
+- [ ] Fahrzeuge: Akku statt Tank für E-Fahrzeuge, Tankstellen; Parkplätze in allen Kacheln (beim Nachladen), Parkplatzflächen aus OSM
 - [x] Streaming gemessen (`raser --live 60 [--speed 50]`: Autopilot, 30 Bilder je s): über Kachelgrenzen hinweg fehlt unter dem Wagen und 60 m voraus nie eine Stufe (50 km/h, nah 1, fern 5)
 - [x] Die fernen Stufen baut ein eigener Worker (vorher das Hauptprogramm), Modelle entstehen Netz für Netz im Zeitbudget
 - [x] Ruckler beim Nachladen kleiner (fire a9d8598d: Natives sperren einander nicht mehr; Netze als Byte-Puffer durch den Kanal; Worker `dedicated`): 24 statt 15 Bilder je s, das längste Bild 0,25 bis 0,55 statt 0,8 bis 1,3 s

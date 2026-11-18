@@ -50,6 +50,11 @@ namespace Raser {
         defined float turn            // Verbindungen: der Winkel (Grad, links positiv)
         defined float density         // Verkehr: Fahrzeuge bzw. Fußgänger je m
         defined int level             // die Ebene (OSM layer: 0 auf dem Gelände, 1 Brücke ...)
+        defined int laneIndex         // mehrere Fahrstreifen einer Richtung: 0 ist der rechte
+        defined int laneCount         // so viele Fahrstreifen hat die Richtung (1: einer)
+        defined int leftLane          // der Fahrstreifen links daneben (-1: keiner)
+        defined int rightLane
+        defined float laneWidth       // die Breite eines Fahrstreifens (m)
         float z[]                     // Brücken: die Höhe je Punkt (m über NHN); leer: auf dem Gelände
         float pts[]                   // Ost, Nord, ...
         float acc[]                   // die Länge bis zu jedem Punkt
@@ -63,6 +68,9 @@ namespace Raser {
             this.target = -1
             this.fromNode = -1
             this.toNode = -1
+            this.laneCount = 1
+            this.leftLane = -1
+            this.rightLane = -1
         }
 
         defined bool IsCar { get { return this.kind <= 1 } }
@@ -230,8 +238,10 @@ namespace Raser {
 
         // Das Wunschtempo (m/s) nach Art: innerorts 50 km/h an Haupt- und Sammelstraßen, 30 in Wohnstraßen, Schritt in Spielstraßen.
         static defined float LimitOf(string kind) {
-            if (kind == "motorway") { return 100.0 / 3.6 }
-            if (kind == "trunk" || kind == "motorway_link" || kind == "trunk_link") { return 70.0 / 3.6 }
+            // Autobahn: die Richtgeschwindigkeit 130 km/h, Kraftfahrstraße 100, Auf- und Abfahrten 60
+            if (kind == "motorway") { return 130.0 / 3.6 }
+            if (kind == "trunk") { return 100.0 / 3.6 }
+            if (kind == "motorway_link" || kind == "trunk_link") { return 60.0 / 3.6 }
             if (kind == "primary" || kind == "secondary" || kind == "tertiary" || kind == "unclassified") { return 50.0 / 3.6 }
             if (kind.EndsWith("_link")) { return 40.0 / 3.6 }
             if (kind == "living_street") { return 10.0 / 3.6 }
@@ -242,7 +252,8 @@ namespace Raser {
         // Die Vorfahrt nach Art (höher geht vor).
         static defined int RankOf(string kind) {
             string k = kind
-            if (k.EndsWith("_link")) { k = k.Substring(0, k.Length - 5) }
+            // Auffahrten fädeln ein: sie haben eine Stufe weniger als ihre Straße
+            if (k.EndsWith("_link")) { return Math.Max(0, Raser.RoadGraph.RankOf(k.Substring(0, k.Length - 5)) - 1) }
             if (k == "motorway" || k == "trunk") { return 5 }
             if (k == "primary") { return 4 }
             if (k == "secondary") { return 3 }
@@ -444,7 +455,7 @@ namespace Raser {
             foreach (r in this.sorted) {
                 r.oneway = false
                 if (!r.car) { continue }
-                if (r.lanes == 1 || r.kind == "motorway" || r.kind.EndsWith("_link")) { r.oneway = true } else if (r.lanes != 1 && Raser.RoadGraph.RankOf(r.kind) >= 2 && this.Twin(r)) { r.oneway = true }
+                if (r.lanes == 1 || r.kind == "motorway" || r.kind.EndsWith("_link") || (r.kind == "trunk" && r.lanes >= 2)) { r.oneway = true } else if (r.lanes != 1 && Raser.RoadGraph.RankOf(r.kind) >= 2 && this.Twin(r)) { r.oneway = true }
             }
             // wie viele Straßen sich einen Punkt teilen
             var carUse = new Dictionary<string, int>()
@@ -500,8 +511,15 @@ namespace Raser {
                 foreach (a in pair.Value) {
                     int made = 0
                     foreach (b in o) {
-                        if (b == this.lanes[a].reverse) { continue }
+                        if (b == this.lanes[a].reverse || !Raser.RoadGraph.LaneFits(this.lanes[a], this.lanes[b])) { continue }
                         if (this.Connect(a, b, pair.Key, false)) { made++ }
+                    }
+                    // (passt kein Streifen: dann eben jeder)
+                    if (made == 0) {
+                        foreach (b in o) {
+                            if (b == this.lanes[a].reverse) { continue }
+                            if (this.Connect(a, b, pair.Key, false)) { made++ }
+                        }
                     }
                     // Sackgasse (oder nur Einbahnstraßen hinein): wenden
                     if (made == 0 && this.lanes[a].reverse >= 0) { this.Connect(a, this.lanes[a].reverse, pair.Key, true) }
@@ -624,6 +642,10 @@ namespace Raser {
         }
 
         // Die Fahrspuren eines Abschnitts: rechts der Mitte (Einbahnstraße: in der Mitte), an Kreuzungen gekürzt.
+        // Wie viele Fahrstreifen je Richtung: Einbahnstraßen (auch jede Richtungsfahrbahn einer Autobahn) so viele wie lanes, Autobahnen und
+        // Kraftfahrstraßen ohne Angabe 2, Straßen in beiden Richtungen mit lanes >= 4 die Hälfte; höchstens 4.
+        static defined int LanesPerDirection(RoadInfo r) { return Raser.Motorways.Layout(r.kind, r.width, r.lanes, r.oneway).per }
+
         undefined CarLanes(RoadPiece p) {
             var r = p.road
             float len = Raser.LaneMath.Length(p.line)
@@ -634,6 +656,11 @@ namespace Raser {
                 float f = len * 0.7 / (t0 + t1)
                 t0 = t0 * f
                 t1 = t1 * f
+            }
+            int per = Raser.RoadGraph.LanesPerDirection(r)
+            if (per >= 2) {
+                this.MultiLanes(p, r, per, t0, t1)
+                return
             }
             float off = Math.Max(r.width / 4.0, 1.0)
             if (r.oneway) { off = 0.0 }
@@ -675,6 +702,82 @@ namespace Raser {
             int bi = this.AddLane(take bwd)
             this.lanes[fi].reverse = bi
             this.lanes[bi].reverse = fi
+        }
+
+        // Mehrere Fahrstreifen je Richtung (Autobahn): nebeneinander, rechts ein Standstreifen (2,5 m; Autobahn und Kraftfahrstraße, wenn die
+        // Breite reicht), links 0,5 m Rand; je Streifen eine Spur mit ihren Nachbarn links und rechts (zum Wechseln).
+        undefined MultiLanes(RoadPiece p, RoadInfo r, defined int per, defined float t0, defined float t1) {
+            // dieselbe Aufteilung wie gezeichnet (Raser.Motorways.Layout)
+            var layout = Raser.Motorways.Layout(r.kind, r.width, r.lanes, r.oneway)
+            float half = r.width / 2.0
+            if (!r.oneway) { half = r.width / 2.0 }
+            float shoulder = layout.shoulder
+            float lw = layout.lane
+            int rank = Raser.RoadGraph.RankOf(r.kind)
+            float limit = Raser.RoadGraph.LimitOf(r.kind)
+            float density = Raser.RoadGraph.CarDensityOf(r.kind) / 100.0 / per
+            if (!r.oneway) { density = density / 2.0 }
+            int dirs = 1
+            if (!r.oneway) { dirs = 2 }
+            int firsts[] = [-1, -1]
+            for (int dir = 0; dir < dirs; dir++) {
+                float line[] = p.line
+                int n0 = p.start
+                int n1 = p.end
+                float a0 = t0
+                float a1 = t1
+                if (dir == 1) {
+                    line = Raser.LaneMath.Reverse(p.line)
+                    n0 = p.end
+                    n1 = p.start
+                    a0 = t1
+                    a1 = t0
+                }
+                int first = this.lanes.Count
+                firsts[dir] = first
+                for (int i = 0; i < per; i++) {
+                    // rechts von der Mitte (Einbahnstraße) bzw. von der Mittellinie (beide Richtungen): der rechte Rand bei half
+                    float off = half - shoulder - lw * (i + 0.5)
+                    float shifted[] = Raser.LaneMath.Offset(line, off)
+                    var l = new Raser.Lane()
+                    l.kind = Raser.LaneKind.Road
+                    l.road = r.id
+                    l.fromNode = n0
+                    l.toNode = n1
+                    l.rank = rank
+                    l.width = r.width
+                    l.limit = limit
+                    l.density = density
+                    l.laneIndex = i
+                    l.laneCount = per
+                    l.laneWidth = lw
+                    l.pts = Raser.LaneMath.Cut(shifted, a0, Raser.LaneMath.Length(shifted) - a1)
+                    try l.pts.TakeTo(l)
+                    l.Finish()
+                    this.Heights(l, r)
+                    this.AddLane(take l)
+                }
+                for (int i = 0; i < per; i++) {
+                    if (i + 1 < per) { this.lanes[first + i].leftLane = first + i + 1 }
+                    if (i > 0) { this.lanes[first + i].rightLane = first + i - 1 }
+                }
+            }
+            // die rechten Streifen beider Richtungen sind einander die Gegenrichtung (Wenden in Sackgassen)
+            if (dirs == 2) {
+                this.lanes[firsts[0]].reverse = firsts[1]
+                this.lanes[firsts[1]].reverse = firsts[0]
+            }
+        }
+
+        // Darf an einem Knoten von a nach b gefahren werden? Mehrere Streifen: geradeaus Streifen für Streifen (fallen Streifen weg, die linken
+        // auf den linken), ab- und auffahren nur auf dem rechten.
+        static defined bool LaneFits(Lane a, Lane b) {
+            bool ma = a.laneCount > 1
+            bool mb = b.laneCount > 1
+            if (ma && mb) { return b.laneIndex == Math.Min(a.laneIndex, b.laneCount - 1) }
+            if (ma) { return a.laneIndex == 0 }
+            if (mb) { return b.laneIndex == 0 }
+            return true
         }
 
         // Die Ebene und (auf einer Brücke) die Höhe je Punkt einer Spur der Straße r: das Gelände an den Enden der Brücke, dazwischen linear,
@@ -904,6 +1007,13 @@ namespace Raser {
                 if (this.OnCarriageway(node, ax + (bx - ax) * f, ay + (by - ay) * f, 0.0)) {
                     crossing = true
                     break
+                }
+            }
+            // über Autobahnen und Kraftfahrstraßen (und ihre Auf- und Abfahrten) geht niemand
+            if (crossing) {
+                foreach (ri in this.nodeRoads[node]) {
+                    string k = this.sorted[ri].kind
+                    if (k == "motorway" || k == "trunk" || k.EndsWith("_link")) { return }
                 }
             }
             if (crossing && this.carDegree[node] >= 3) {

@@ -10,10 +10,16 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 | Statische Felder werden in Deklarationsreihenfolge initialisiert; ein Initialisierer, der ein später deklariertes statisches Feld liest, bekommt `undefined`. | Reihenfolge der Klassen in `voxel.fire` beachten | **muss behoben werden:** der Compiler soll zur Compilezeit ermitteln, welcher Initialisierer von welchem statischen Feld abhängt, und in dieser Reihenfolge initialisieren (ein Zyklus ist ein Fehler) |
 | Ein Ausdruck kann nicht mit `&&` auf der nächsten Zeile weitergehen (Zeilenende beendet die Anweisung). | Eine Zeile | Verhalten |
 | Ein Objekt, das einem Konstruktor übergeben und in einem Feld gespeichert wird, stirbt mit dem Aufrufer, wenn es ein Temporärwert war (`new Voxelizer(Sample.Make(), ...)`). | `try x.TakeTo(this)` in den Konstruktoren | Absicht (Besitzmodell); leicht zu vergessen, ein Hinweis des Typprüfers wäre hilfreich |
-| `x.TakeLocal()` in einem `if`-Block bindet `x` an diesen Block; ein `return x` danach gibt ein zerstörtes Objekt zurück (DestroyedException beim Aufrufer, VM und nativ). | kein `TakeLocal` mehr; die Karte hält ihre Bilder in `Dictionary(Owns.Values)` (`Minimap.Prepare`) | Verhalten laut Doku; ein Hinweis des Typprüfers (TakeLocal in einem inneren Block, Wert verlässt ihn) hätte den Absturz des Spiels verhindert |
 | **Wunsch: ein Schlüsselwort `replace`** für das Überschreiben eines Felds: es löscht das bisherige Objekt (bzw. Array, Container), wenn es im Besitz des Objekts ist, und setzt dann den neuen Wert. Hintergrund: ein Feld neu zu belegen (`this.d = new Dictionary<...>()`, `this.one = take b`, `this.a = undefined`) gibt das Alte **absichtlich nicht** frei - sonst müsste fire jedes Mal sämtliche Referenzen auf das Objekt und alle seine Kinder prüfen. Das Löschen darf deshalb **niemals implizit** passieren, nur mit `replace`. | heute `delete this.f` vor dem Überschreiben (`MeshBatch.Pack`), bzw. `List` + `Clear` (`WorldView.making`) | Idee |
 
 | Elemente mit `RemoveAt` aus einer Liste nehmen, die aus `Json.Deserialize` kam, und die Liste danach wieder schreiben: „A value to write to JSON is destroyed“ (gefunden in Raser.Greens mit fire master, nativ). | die Liste mit `TakeAt` umlegen und die behaltenen mit `take` zurück | offen |
+
+## Werkzeuge
+
+- **`forge build -m RELEASE` übersetzt seit 04dd5fe8 mit TinyCC** (der Compiler für „Build“ ist automatisch tcc, gcc nur für `forge publish`). Für
+  Ruhrpott-Raser heißt das: ein Release ohne `--toolchain gcc` ist ein langsames Spiel und ein langsames `raser setup`. Wunsch: `-m RELEASE` bzw.
+  `PERFORMANCE` nimmt den Compiler für „Publish“ (oder warnt), tcc nur für DEBUG. Umweg: `--toolchain gcc` in allen Bauanleitungen (README). Stand
+  fire master 58efe6cb.
 
 ## scene3d
 
@@ -21,6 +27,8 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 |---|---|---|
 | Nebel auch auf der GPU (laut Doku nur Fast und Software). | Hardware-Renderer | offen |
 | Kacheln (`Scene.LightCulling`) und Spiegelungen (`Object.Reflectivity`) auch auf der GPU. | Hardware-Renderer | offen |
+| **In der VM sind die Aufrufe in die Bibliothek eines Pakets einer nach dem anderen**, auch mit `"threadSafe": true` (die Sperre des Wrappers, `native/abi/fire_pkg_wrapper.h`): ein `Model.FromArrays` im Worker hält dort das Hauptprogramm auf, bis das Modell fertig ist (nativ nicht mehr, ab fire-scene3d 1.0.2). | das Spiel läuft nativ | offen (Wunsch: ohne Sperre für Pakete, die thread-sicher sind) |
+| **Die GPU lädt jedes neue Netz einzeln und wartet zweimal darauf** (`s3d_gpu_deviceBuffer`: Vertices und Indizes je ein `submitAndWait`), und zwar in dem Bild, das es zuerst zeigt; ohne DirectDrawing wird außerdem jedes Bild zurückgelesen und gewartet. Kommen viele Blöcke auf einmal, stockt das Bild. Mit `RenderAsync` geschieht beides im Render-Thread von scene3d. | `--async 1` (Standard) | offen (Wunsch: Uploads gesammelt in einem Puffer, oder schon im Worker) |
 
 ## scene3d: gemischt oder nicht
 
@@ -31,6 +39,10 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
   Software), oder `hasAlpha` nur, wenn das Objekt durchsichtige Texel wirklich benutzt.
 
 ## Threads
+
+- **Eine Paketversion mit Zusatz zählt als 1.0.0** (`ProjectBuilder.PackageVersion`): `"version": "1.0.1-sky"` im Manifest eines Pakets wird
+  stillschweigend `1.0.0` - der Cache der nativen Bibliotheken (`/tmp/fire-packages/<name>-<version>`) hält dann die alte, die neue Version
+  greift nicht. Umweg: nur Ziffern (`1.0.2`). Wunsch: der Zusatz bleibt Teil der Version, oder eine Warnung. Stand fire native-c 658559be.
 
 - **Zahlen-Arrays kosten beim Abholen aus einem Kanal Zeit je Wert, Byte-Puffer nicht - auch mit `take`** (ein Worker schickt ein Objekt mit
   einem Array, das Hauptprogramm misst sein `TryReceive`). `Send(take x)` gibt laut Doku weiter wie `handover`; trotzdem kosten 2 Mio. Werte
@@ -75,6 +87,13 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
   Umweg in Raser: die Worker laufen mit `fire dedicated`.
 - `Send(new float[n])` lehnt der Typprüfer mit TC029 ab („An object goes into a channel only with a word … - or fresh ('new', the result of a
   call)“) - für ein Array zählt `new` nicht als frisch, das Ergebnis eines Aufrufs schon.
+
+## UI-Toolkit im Spiel (das Menü, src/Raser.Game/menu.fire)
+
+Das Menü ist ein `UI.Root` ohne Fenster (`new UI.Root(layer, systemScale: false)`, `SetScale(s, resize: false)`) über dem Bild von scene3d; die
+Ereignisse kommen mit `Dispatch`, Esc und das Belegen der Tasten über `onKeyPreview` mit `KeyScancode`, die Auswahlen sind `UI.Stepper`, die
+Lautstärke ein `UI.Slider` (beide mit eigenem `Draw` im Stil des Spiels), dazu `FocusFollowsPointer`, `OnCursor` und `Window.Fullscreen`. Alle
+Umwege der ersten Fassung sind damit weg, auch der `readonly`-Fund (`ContainerKind.Held` bleibt als Name). Offen: nichts. Stand fire master 58efe6cb.
 
 ## Netz
 

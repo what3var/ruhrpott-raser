@@ -1,4 +1,4 @@
-# Server: Stand M4 (autoritativ, Protokoll v4)
+# Server: Stand M4 (autoritativ, Protokoll v5)
 
 Wie Spieler, Launcher und Server zusammenspielen. Grundlage ist das Konzept, Abschnitt 8 (Koordinator, Regionsserver, globale Dienste) und
 die Roadmap, M4. Hier steht, was jetzt gebaut ist und was später kommt.
@@ -64,20 +64,22 @@ Feste Schnittstelle für den Launcher. JSON in UTF-8, Fehler als `{"error": "...
 Der Launcher startet das Spiel mit `--server <host>:7481 --token <token> --user <name>`. Die Liste der Dateien (Größe, SHA-256) entsteht beim Start
 des Servers; ein neuer Build heißt: Server neu starten.
 
-## Spielprotokoll (TCP, Port 7481), Version 4
+## Spielprotokoll (TCP, Port 7481), Version 5
 
 **Rahmen:** 2 Byte Länge (Little Endian), dann so viele Bytes Nachricht: 1 Byte Art, dann die Felder (`Raser.ByteWriter`: Varints, ZigZag für
 Vorzeichen, Texte als Länge + UTF-8, `Float64` bitgenau). Lage in cm (UTM 32, Ost/Nord), Richtung in 1/100 Grad, Tempo in cm/s. Ein Client darf
 höchstens 1 KiB je Rahmen schicken, der Server bis 64 KiB.
 
 Der Server ist maßgeblich: der Client schickt keine Lagen mehr, nur seine **Eingaben je Takt** und **Operationen am Inventar**. Ein Client mit
-einer anderen Version bekommt beim Hello ein Reject ("Protokoll 2 passt nicht, der Server spricht 4: bitte den Launcher aktualisieren."); eine
+einer anderen Version bekommt beim Hello ein Reject ("Protokoll 4 passt nicht, der Server spricht 5: bitte den Launcher aktualisieren."); eine
 State-Nachricht (Lage wie in v1) wirft hinaus. Seit v3 sind Snapshots Deltas gegen den letzten bestätigten (siehe unten), v4 trägt dazu die
-Brückenebene im eigenen Zustand.
+Brückenebene im eigenen Zustand, v5 das Drehen des eigenen Fahrzeugs nach einem Stoß (`Vehicle.spin`, die 18. Zahl des eigenen Zustands; im
+Delta nur, wenn es sich ändert - fast nie). Nicken und Wanken (`Raser.Stance`) gehen nicht über die Leitung: jeder Client rechnet sie aus der
+Lage und dem Boden unter den Rädern.
 
 | Art | Richtung | Inhalt |
 |---|---|---|
-| 1 Hello | C → S | Protokollversion (4), Token, Name\|Client-Version, Fahrzeugart für einen neuen Spieler (0 zu Fuß, 1 Auto, 2 Transporter, 3 Motorrad, 4 Fahrrad), ein Startpunkt (Ost, Nord - **der Server nimmt ihn nicht**: er wählt selbst) |
+| 1 Hello | C → S | Protokollversion (5), Token, Name\|Client-Version, Fahrzeugart für einen neuen Spieler (0 zu Fuß, 1 Auto, 2 Transporter, 3 Motorrad, 4 Fahrrad), ein Startpunkt (Ost, Nord - **der Server nimmt ihn nicht**: er wählt selbst) |
 | 3 Chat | C → S | Text (höchstens 200 Zeichen) |
 | 4 Command | C → S | Befehlszeile (`/kick name`) |
 | 5 Bye | C → S | - |
@@ -133,7 +135,9 @@ höchstens 20 je s. Wer 30 s nichts schickt, fliegt. Den Startpunkt wählt der S
 ## Autoritative Simulation
 
 Der Regionsserver rechnet die Welt mit **demselben Code wie der Client** (Bibliothek `Raser.Sim`): `Raser.Physics` (Fahrzeuge mit
-`Raser.Vehicle.Step`, `Collide`, Schaden, Tank, Schräglage; Teilschritte von höchstens 0,5 m; Stöße zwischen Fahrzeugen mit `Vehicle.Shove`;
+`Raser.Vehicle.Step`, `Collide`, Schaden, Tank, Schräglage; Teilschritte von höchstens 0,5 m; Stöße zwischen Fahrzeugen mit
+`Vehicle.Impact` - ein Stoß am Berührpunkt auf beide, mit Drehung (`spin`) aus Hebel und Trägheitsmoment; jedes bewegte Fahrzeug, ob gefahren
+oder angestoßen, prallt an Wänden ab und stößt andere an, die Kandidaten aus einem Gitter (`Raser.BodyGrid`, 8 m, je Takt neu);
 Gehen mit `Raser.Walker`; Aus- und Einsteigen), `Raser.Obstacles` (Grundrisse mit Durchfahrten und Pfosten der Kacheln - früher in
 `client.fire`, dort bleibt `Obstacles` als dünne Unterklasse), `Raser.SimWorld` (Fahrzeuge mit IDs, `Control` = ein Takt eines Spielers mit
 einer Eingabe, `Coast` = die Fahrzeuge ohne Fahrer rollen aus, `Crowd` = zu Fuß gegen zu Fuß).
@@ -233,9 +237,11 @@ die Folge, in der Kacheln kommen, ändert nichts.
    ohne Fahrer). Eingetragen werden alle Spieler zu Fuß und alle Fahrzeuge der Welt.
 4. Stöße: fährt ein Fahrzeug (Art 1) mit mehr als 0,5 m/s in ein NPC-Auto, rechnet `Traffic.Impacts` den Stoß (unelastisch, Schaden wie
    `Raser.Vehicle`): das Auto wird ein Unfallwagen (rutscht aus, hupt, fährt nach 6 s weiter; kaputt bleibt es stehen). Fußgänger, die ein
-   Fahrzeug über 1,5 m/s erwischt, fallen um (liegen 9 s). Danach prallt in `Npcs` jedes Fahrzeug an den NPC-Autos ab (`Vehicle.Collide`),
-   Spieler zu Fuß hält ein NPC-Auto auf (`Walker.Avoid`). Die Vorhersage des Clients kennt die NPCs nicht: ein Aufprall wird beim Abgleich
-   korrigiert. Wände für Unfallwagen prüft der Server noch nicht (offline: `TrafficView.Simulate`).
+   Fahrzeug über 1,5 m/s erwischt, fallen um (liegen 9 s). Danach `Raser.Physics.Wrecks` (wie offline in `TrafficView.Simulate`): die
+   Unfallwagen prallen an Wänden, Pfosten und Brückenpfeilern ab und stoßen andere NPC-Autos und die Fahrzeuge der Spieler an (`Vehicle.Impact`,
+   auf beide), abgestellte Fahrzeuge der Spieler, die sich bewegen, stoßen NPC-Autos an; ein so angestoßenes NPC-Auto wird im nächsten Schritt
+   ein Unfallwagen (`Traffic.Impacts`). Die gefahrenen Fahrzeuge prallen an den NPC-Autos ab (`Vehicle.Collide`), Spieler zu Fuß hält ein
+   NPC-Auto auf (`Walker.Avoid`). Die Vorhersage des Clients kennt die NPCs nicht: ein Aufprall wird beim Abgleich korrigiert.
 5. Snapshot je Spieler (`NpcEntities`): `traffic.States(liste, ost, nord, 200.0)` füllt `Raser.NpcState` für die NPCs bis 200 m (die Objekte
    gehören der Simulation und werden beim nächsten Aufruf überschrieben), daraus die Entitäten:
 

@@ -9,8 +9,10 @@
 // Abbiegespur will, reserviert sie; kreuzt sie eine schon reservierte, wartet er an der Haltelinie. Vorfahrt: die höhere Straßenart geht
 // vor, bei gleicher rechts vor links; links Abbiegende lassen den Gegenverkehr durch. Nach 6 s Warten zählt nur noch die Reservierung.
 // Steht ein Hindernis (geparkt, Unfall, der Spieler) länger als 3 s, fährt das Auto links daran vorbei.
-// Angefahren (Raser.Vehicle.Shove gibt dem Körper pushE/pushN) wird es ein Körper mit Physik (Raser.Vehicle.Step, gebremst): es rutscht aus,
-// hupt nach 2 s und fädelt sich nach 6 s wieder auf die nächste Spur ein (kaputt: bleibt stehen).
+// Angefahren (ein Stoß gibt dem Körper pushE/pushN und spin - vom Spieler hier in Impacts, von Unfallwagen und abgestellten Wagen in
+// Raser.Physics.Wrecks) wird es ein Körper mit Physik (Raser.Vehicle.Step, gebremst): es rutscht und dreht sich aus, stößt dabei selbst an
+// (Wrecks: Wände, andere Autos, Fahrzeuge der Spieler), hupt nach 2 s und fädelt sich nach 6 s wieder auf die nächste Spur ein (kaputt:
+// bleibt stehen).
 //
 // Fußgänger: gehen 1,2 .. 1,6 m/s die Gehwege und Fußwege entlang, an Knoten um die Ecke oder (seltener) über einen Überweg - dort warten sie,
 // bis kein Auto kommt. Sie weichen einander aus (rechts halten), dem Spieler zu Fuß, und springen zur Seite, wenn ein Fahrzeug auf sie
@@ -60,6 +62,9 @@ namespace Raser {
         defined float wait            // so lange (s) steht es schon an einer Haltelinie
         defined float blocked         // so lange (s) steht es hinter einem Hindernis
         defined float pass            // > 0: fährt noch so weit (m) links vorbei
+        defined int changeTo          // mehrere Streifen: dorthin wechselt es im nächsten Move (-1: bleibt)
+        defined float changeCool      // so lange (s) kein neuer Wechsel
+        defined float cap             // höchstens so schnell (m/s): Lkw (Transporter) 90 km/h
         defined float gap             // die Lücke zum nächsten Hindernis (m, nach Decide)
         defined float stuck           // so lange (s) steht es schon (gleich warum)
         defined int state             // 0 fährt, 1 Unfall (Physik), 2 kaputt
@@ -80,6 +85,8 @@ namespace Raser {
             this.reserved = -1
             this.random = new Raser.TrafficRandom(seed)
             this.wish = 1.0
+            this.changeTo = -1
+            this.cap = 1.0e9
         }
     }
 
@@ -463,6 +470,7 @@ namespace Raser {
             if (rnd.Next() < 0.12) { c.kind = "transporter" }
             c.color = Raser.Traffic.Colors[Math.Floor(rnd.Next() * Raser.Traffic.Colors.length)!int % Raser.Traffic.Colors.length]
             c.wish = 0.85 + rnd.Next() * 0.25
+            if (c.kind == "transporter") { c.cap = 90.0 / 3.6 }
             c.body = Raser.Vehicle.Of(c.kind)
             try c.body.TakeTo(c)
             c.length = c.body.length
@@ -506,7 +514,7 @@ namespace Raser {
         undefined Plan(NpcCar c) {
             int last = c.lane
             if (c.plan.Count > 0) { last = c.plan[c.plan.Count - 1] }
-            while (c.plan.Count < 3) {
+            while (c.plan.Count < 8) {
                 var l = this.graph.lanes[last]
                 if (l.next.Count == 0) { return }
                 int pick = l.next[0]
@@ -563,6 +571,8 @@ namespace Raser {
 
         // Der Weg voraus (bis look m, alle 2 m): Lage, Richtung, Abstand, Kurventempo - entlang der Spur und der geplanten.
         undefined Path(NpcCar c, defined float look) {
+            // alle 2 m, bei weitem Blick (Autobahn) gröber: höchstens 47 Punkte
+            float step = Math.Max(2.0, look / 46.0)
             this.pathCount = 0
             int li = c.lane
             float s = c.s
@@ -572,9 +582,11 @@ namespace Raser {
                 var l = this.graph.lanes[li]
                 if (s > l.length) {
                     if (k >= c.plan.Count) {
-                        // das Ende: nichts mehr voraus
+                        // das Ende: nichts mehr voraus (nur in einer Sackgasse ohne Weiter ein Halt)
                         l.At(l.length, this.at)
-                        this.Sample(d - (s - l.length), 0.0)
+                        float stop = 0.0
+                        if (l.next.Count > 0) { stop = this.at.vmax }
+                        this.Sample(d - (s - l.length), stop)
                         return
                     }
                     s = s - l.length
@@ -584,8 +596,8 @@ namespace Raser {
                 }
                 l.At(s, this.at)
                 this.Sample(d, this.at.vmax)
-                s = s + 2.0
-                d = d + 2.0
+                s = s + step
+                d = d + step
             }
         }
 
@@ -651,10 +663,10 @@ namespace Raser {
         undefined Decide(NpcCar c, List<float> players, defined float dt) {
             var lane = this.graph.lanes[c.lane]
             float v = c.speed
-            float look = Math.Clamp(v * v / 3.0 + v * 2.0 + 14.0, 20.0, 90.0)
+            float look = Math.Clamp(v * v / 3.0 + v * 2.0 + 14.0, 20.0, 200.0)
             this.Path(c, look)
             // Wunschtempo: so schnell, dass es vor jeder Kurve mit 1,5 m/s² auf deren Tempo kommt
-            float v0 = lane.limit * c.wish
+            float v0 = Math.Min(lane.limit * c.wish, c.cap)
             for (int i = 0; i < this.pathCount; i++) {
                 float allowed = Math.Sqrt(this.pathV[i] * c.wish * this.pathV[i] * c.wish + 2.0 * 1.5 * Math.Max(0.0, this.pathD[i] - 1.0))
                 if (allowed < v0) { v0 = allowed }
@@ -665,6 +677,16 @@ namespace Raser {
             float lead = 0.0
             bool still = false            // das nächste Hindernis steht und ist kein fahrendes Auto
             bool player = false           // das nächste Hindernis ist ein Spieler
+            // rechts wird nicht überholt: ein Langsamerer auf dem Streifen links davor (bis 40 m) bestimmt das Tempo mit
+            if (lane.leftLane >= 0) {
+                var left = this.graph.lanes[lane.leftLane]
+                float scale = left.length / Math.Max(0.01, lane.length)
+                foreach (o in this.cars) {
+                    if (o.lane != lane.leftLane || o.state != 0) { continue }
+                    float along = o.s - c.s * scale
+                    if (along > -2.0 && along < 40.0) { v0 = Math.Min(v0, Math.Max(o.speed + 1.0, 3.0)) }
+                }
+            }
             if (this.pathCount > 0 && this.pathV[this.pathCount - 1] == 0.0) {
                 gap = this.pathD[this.pathCount - 1] - half
             }
@@ -782,10 +804,41 @@ namespace Raser {
             float target = 0.0
             if (c.pass > 0.0) { target = aside }
             c.gap = gap
-            // quer höchstens 0,3 m/s plus ein Viertel des Tempos (es lenkt, rutscht nicht)
-            float shift = (0.5 + 0.25 * v) * dt
+            // quer 0,5 m/s plus ein Viertel des Tempos, höchstens 1,5 m/s (es lenkt, rutscht nicht; ein Spurwechsel dauert gut 2 s)
+            float shift = Math.Min(1.5, 0.5 + 0.25 * v) * dt
             c.offset = c.offset + Math.Clamp(target - c.offset, -shift, shift)
             c.accel = Raser.Traffic.Idm(v, v0, gap, lead)
+            // mehrere Streifen: überholen links, sonst rechts fahren (angewandt erst in Move: die Reihenfolge zählt nicht)
+            c.changeTo = -1
+            if (c.changeCool > 0.0) { c.changeCool = c.changeCool - dt }
+            if (lane.kind == Raser.LaneKind.Road && lane.laneCount > 1 && c.changeCool <= 0.0 && c.pass <= 0.0 && Math.Abs(c.offset) < 0.3 && lane.length - c.s > 40.0 && v > 3.0) {
+                float desire = Math.Min(lane.limit * c.wish, c.cap)
+                if (lane.leftLane >= 0 && gap < 80.0 && lead < desire - 3.0) {
+                    // links frei? vorn mehr Platz als hier, hinten genug für den, der kommt
+                    if (this.Room(c, lane, lane.leftLane, gap + 15.0, 25.0, v)) { c.changeTo = lane.leftLane }
+                } else if (lane.rightLane >= 0 && gap > 60.0) {
+                    if (this.Room(c, lane, lane.rightLane, 100.0, 25.0, v)) { c.changeTo = lane.rightLane }
+                }
+            }
+        }
+
+        // Ist auf dem Streifen other neben lane Platz für c: vorn mindestens ahead m, hinten mindestens behind m (und mehr, wenn der Hintere
+        // schneller ist: 2 s Unterschied)?
+        defined bool Room(NpcCar c, Lane lane, defined int other, defined float ahead, defined float behind, defined float v) {
+            var ol = this.graph.lanes[other]
+            float scale = ol.length / Math.Max(0.01, lane.length)
+            float mine = c.s * scale
+            foreach (o in this.cars) {
+                if (o == c || o.state != 0) { continue }
+                bool there = o.lane == other || o.changeTo == other
+                if (!there) { continue }
+                float along = o.s - mine
+                if (o.lane != other) { along = o.s * scale - mine }
+                float room = c.length / 2.0 + o.length / 2.0
+                if (along >= 0.0 && along - room < ahead) { return false }
+                if (along < 0.0 && -along - room < behind + Math.Max(0.0, o.speed - v) * 2.0) { return false }
+            }
+            return true
         }
 
         // Darf c auf die Abbiegespur turn? Nicht, solange eine kreuzende reserviert ist oder ein Vorfahrtberechtigter kommt.
@@ -812,7 +865,7 @@ namespace Raser {
                 var ol = this.graph.lanes[o.lane]
                 if (ol.kind != Raser.LaneKind.Road || ol.toNode != node) { continue }
                 float toEnd = ol.length - o.s
-                if (toEnd > 30.0 || (o.speed < 0.5 && toEnd > 8.0)) { continue }
+                if (toEnd > Math.Max(30.0, o.speed * 3.5) || (o.speed < 0.5 && toEnd > 8.0)) { continue }
                 int oturn = o.plan[0]
                 if (!this.graph.Conflict(turn, oturn)) { continue }
                 if (this.Before(o, ol, oturn, c, mine, t, mx, my, ne, nn)) { return false }
@@ -840,6 +893,21 @@ namespace Raser {
 
         // Ein Auto bewegt sich (nach Decide): Tempo, s, Spurwechsel am Ende, Lage.
         undefined Move(NpcCar c, defined float dt) {
+            // der Spurwechsel aus Decide: auf den Streifen daneben, an derselben Stelle (der Versatz bringt es weich hinüber)
+            if (c.changeTo >= 0) {
+                var was = this.graph.lanes[c.lane]
+                var into = this.graph.lanes[c.changeTo]
+                float ns = c.s * into.length / Math.Max(0.01, was.length)
+                into.At(ns, this.at)
+                c.offset = (c.east - this.at.e) * this.at.dy - (c.north - this.at.n) * this.at.dx
+                c.lane = c.changeTo
+                c.s = ns
+                c.changeTo = -1
+                c.changeCool = 6.0
+                c.plan.Clear()
+                c.reserved = -1
+                this.Plan(c)
+            }
             float v = Math.Max(0.0, c.speed + c.accel * dt)
             float ds = (c.speed + v) * 0.5 * dt
             if (c.accel < 0.0 && v == 0.0 && c.speed > 0.0) { ds = c.speed * c.speed / (-2.0 * c.accel) }
@@ -880,7 +948,7 @@ namespace Raser {
             c.north = b.north
             c.heading = b.heading
             c.speed = Math.Abs(b.speed)
-            bool resting = Math.Abs(b.speed) < 0.1 && Math.Abs(b.pushE) + Math.Abs(b.pushN) < 0.1
+            bool resting = Math.Abs(b.speed) < 0.1 && Math.Abs(b.pushE) + Math.Abs(b.pushN) < 0.1 && Math.Abs(b.spin) < 1.0
             if (c.state == 2) { return }
             if (b.health <= 0.0) {
                 c.state = 2
@@ -902,6 +970,7 @@ namespace Raser {
                     c.reserved = -1
                     b.pushE = 0.0
                     b.pushN = 0.0
+                    b.spin = 0.0
                     // die Anzeige gleitet in 1,5 s vom Körper auf die Spur
                     var lane = this.graph.lanes[c.lane]
                     lane.At(c.s, this.at)
@@ -918,6 +987,18 @@ namespace Raser {
         // 0,5 m/s hinein, bekommt das Auto den Stoß eines unelastischen Stoßes (wie Raser.Vehicle.Shove, der Spieler mit 1300 kg) und wird ein
         // Unfallwagen. Den Abprall des Spielers rechnet sein Client (oder der Server mit seiner Fahrphysik) selbst - gegen die Zustände (States).
         undefined Impacts(List<float> players) {
+            // von außen angestoßen (Raser.Physics.Wrecks: ein Unfallwagen, ein abgestellter Wagen hat sie getroffen): auch ein Unfallwagen
+            foreach (c in this.cars) {
+                if (c.state != 0) { continue }
+                var b = c.body
+                if (Math.Abs(b.pushE) + Math.Abs(b.pushN) > 0.3 || Math.Abs(b.spin) > 5.0) {
+                    this.Hit(c)
+                } else {
+                    b.pushE = 0.0
+                    b.pushN = 0.0
+                    b.spin = 0.0
+                }
+            }
             for (int i = 0; i + 6 < players.Count; i = i + 7) {
                 if (players[i + 6] != 1.0) { continue }
                 float h = players[i + 2] * Math.PI / 180.0
@@ -958,6 +1039,10 @@ namespace Raser {
                             }
                             b.pushE = b.pushE + nx * dv
                             b.pushN = b.pushN + ny * dv
+                            // außerhalb der Mitte getroffen, dreht es sich: der Berührpunkt auf dem Rand seines Kreises, zum Spieler hin
+                            float rx = ox * b.spread * q - nx * b.radius
+                            float ry = oy * b.spread * q - ny * b.radius
+                            b.spin = b.Turned(b.spin + b.SpinOf(rx * ny - ry * nx, dv))
                             b.health = Math.Max(0.0, b.health - Raser.Vehicle.DamageOf(into))
                             hit = true
                             break
@@ -1024,6 +1109,28 @@ namespace Raser {
         NpcState NextState(defined int i) {
             while (this.statePool.Count <= i) { this.statePool.Add(new Raser.NpcState()) }
             return this.statePool[i]
+        }
+
+        // Die Körper der Autos auf dem Gelände (Ebene 0; auf Brücken stößt niemand sie an) nach bodies, in loose je, ob es ein Unfallwagen ist
+        // (frei rollt) - für Raser.Physics.Wrecks. Die Körper gehören den Autos; die Listen werden neu gefüllt.
+        undefined Bodies(List<Vehicle> bodies, List<bool> loose) {
+            bodies.Clear()
+            loose.Clear()
+            foreach (c in this.cars) {
+                if (c.level != 0 && c.state == 0) { continue }
+                bodies.Add(c.body)
+                loose.Add(c.state != 0)
+            }
+        }
+
+        // Nach Raser.Physics.Wrecks: die Lage der Unfallwagen aus ihren Körpern.
+        undefined Follow() {
+            foreach (c in this.cars) {
+                if (c.state == 0) { continue }
+                c.east = c.body.east
+                c.north = c.body.north
+                c.heading = c.body.heading
+            }
         }
 
         // Für die Ansicht und das Spiel: hat der Körper einen Stoß bekommen (Raser.Vehicle.Shove), wird das Auto ein Unfallwagen.

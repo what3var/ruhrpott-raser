@@ -21,6 +21,8 @@ namespace Raser {
         defined float pushN
         defined float lean              // Grad, nach links positiv: so weit legt sich ein Zweirad in die Kurve (Autos: 0)
         defined int bridge              // auf einer Brücke: die ID ihrer Straße (Raser.BridgeDeck.road), 0: auf dem Gelände
+        defined float spin              // Grad/s, gegen den Uhrzeigersinn (wie heading): so dreht ein Stoß außerhalb der Mitte das Fahrzeug um seine
+                                        // Hochachse - die Reifen bremsen es (SpinBrake), die Fahrt behält dabei ihre Richtung (sie wird zum Rutschen)
         // das Fahrzeug
         defined float wheelbase
         defined float topSpeed          // m/s
@@ -51,6 +53,32 @@ namespace Raser {
             this.kind = "auto"
             this.name = "Auto"
             this.Size(4.2, 1.8)
+        }
+
+        // Das Trägheitsmoment um die Hochachse (kg m²): ein Quader mit Länge und Breite, die Masse gleich verteilt.
+        defined float Inertia() { return this.mass * (this.length * this.length + this.width * this.width) / 12.0 }
+
+        // So schnell bremsen die Reifen das Drehen (Grad/s²) bei Grip g: Reibung mal Gewicht an einem Hebel von einem Viertel der Länge, durch das
+        // Trägheitsmoment - zu gut einem Drittel (rollende Reifen schieben weniger als blockierte). Auto etwa 110 °/s², Transporter 85, Motorrad 230.
+        defined float SpinBrake(defined float g) { return 0.35 * 9.0 * g * 3.0 * this.length / (this.length * this.length + this.width * this.width) * 180.0 / Math.PI }
+
+        // Wie stark (Grad/s) ein Stoß dreht, der das Tempo der Mitte um dv m/s ändert, mit dem Hebel arm (m, Kreuzprodukt Hebel x Stoßrichtung,
+        // positiv: gegen den Uhrzeigersinn): der Drehimpuls arm · m · dv durch das Trägheitsmoment - und weil die Drehung einen Teil des Stoßes
+        // schluckt, durch 1 + arm² · m / I (ein Stoß am Rand eines Körpers, der nicht fest sitzt).
+        defined float SpinOf(defined float arm, defined float dv) {
+            float k = 12.0 / (this.length * this.length + this.width * this.width)
+            return arm * dv * k / (1.0 + arm * arm * k) * 180.0 / Math.PI
+        }
+
+        // Ein Stoß ändert das Tempo um (dvE, dvN) m/s: der Teil entlang der Richtung geht ins Tempo, der quer dazu ins Rutschen.
+        undefined Kick(defined float dvE, defined float dvN) {
+            float h = this.heading * Math.PI / 180.0
+            float fx = -Math.Sin(h)
+            float fy = Math.Cos(h)
+            float along = dvE * fx + dvN * fy
+            this.speed = this.speed + along
+            this.pushE = this.pushE + dvE - along * fx
+            this.pushN = this.pushN + dvN - along * fy
         }
 
         undefined Size(defined float length, defined float width) {
@@ -161,6 +189,23 @@ namespace Raser {
                 this.lean = this.lean + Math.Clamp(upright - this.lean, -tilt, tilt)
             }
             this.heading = this.heading + yawRate * 180.0 / Math.PI * dt
+            // nach einem Stoß dreht es sich weiter: die Fahrt behält ihre Richtung (was quer zur neuen Richtung liegt, rutscht), die Reifen
+            // bremsen das Drehen
+            if (this.spin != 0.0) {
+                float h0 = this.heading * Math.PI / 180.0
+                float ve = -Math.Sin(h0) * this.speed
+                float vn = Math.Cos(h0) * this.speed
+                this.heading = this.heading + this.spin * dt
+                float h1 = this.heading * Math.PI / 180.0
+                float fx1 = -Math.Sin(h1)
+                float fy1 = Math.Cos(h1)
+                float along = ve * fx1 + vn * fy1
+                this.pushE = this.pushE + ve - along * fx1
+                this.pushN = this.pushN + vn - along * fy1
+                this.speed = along
+                float stop = this.SpinBrake(g) * dt
+                if (Math.Abs(this.spin) <= stop) { this.spin = 0.0 } else if (this.spin > 0.0) { this.spin = this.spin - stop } else { this.spin = this.spin + stop }
+            }
             float h = this.heading * Math.PI / 180.0
             this.east = this.east - Math.Sin(h) * this.speed * dt
             this.north = this.north + Math.Cos(h) * this.speed * dt
@@ -189,14 +234,22 @@ namespace Raser {
             if (Math.Abs(offset) > 0.1) {
                 this.heading = this.heading + Math.Clamp(side / offset, -0.35, 0.35) * 180.0 / Math.PI
             }
+            // der Hebel des Stoßes: der Berührpunkt liegt offset m vor der Mitte (auf dem Rand des Kreises, in Richtung der Wand - das zählt
+            // für das Drehen nicht), gestoßen wird entlang (nx, ny)
+            float arm = offset * (fx * ny - fy * nx)
+            // dreht sich der Wagen mit dem Berührpunkt in die Wand hinein, prallt das Drehen ab (ein Drittel zurück)
+            if (this.spin * arm < 0.0) { this.spin = -this.spin * 0.3 }
             // das Rutschen in die Wand hinein hört auf
             float pin = -(this.pushE * nx + this.pushN * ny)
             if (pin > 0.0) {
                 this.pushE = this.pushE + nx * pin
                 this.pushN = this.pushN + ny * pin
+                this.spin = this.Turned(this.spin + this.SpinOf(arm, pin))
             }
             float into = -(fx * nx + fy * ny) * this.speed          // > 0: der Wagen fährt in die Wand
             if (into <= 0.0) { return 0.0 }
+            // ein Stoß am Eck (schräg, nicht durch die Mitte) dreht den Wagen: der Teil des Tempos in die Wand am Hebel arm
+            this.spin = this.Turned(this.spin + this.SpinOf(arm, into))
             this.health = Math.Max(0.0, this.health - Raser.Vehicle.DamageOf(into))
             float along = Math.Sqrt(Math.Max(0.0, this.speed * this.speed - into * into))
             float sign = 1.0
@@ -208,6 +261,69 @@ namespace Raser {
                 this.speed = sign * along * Math.Max(0.0, 1.0 - 0.04 * into)
             }
             this.steerAngle = 0.0
+            return into
+        }
+
+        // Das Drehen begrenzt (höchstens 200 °/s).
+        defined float Turned(defined float spin) { return Math.Clamp(spin, -200.0, 200.0) }
+
+        // Ein Stoß zwischen zwei Fahrzeugen (Körper mit Masse und Trägheitsmoment): der Kreis von a offA m vor seiner Mitte steckt depth m tief
+        // im Kreis von b offB m vor dessen Mitte, (nx, ny) zeigt von b zu a. Beide werden nach ihren Massen auseinandergeschoben; nähern sie sich am
+        // Berührpunkt (Tempo, Rutschen und Drehen beider zusammen), bekommen beide einen Stoß an diesem Punkt - fast unelastisch (e = 0,15), mit
+        // Reibung quer (bis 0,2 des Stoßes). Außerhalb der Mitte dreht er (Kreuzprodukt Hebel x Stoß durch das Trägheitsmoment), beide nehmen
+        // Schaden (DamageOf). Gibt das Tempo, mit dem sie sich am Berührpunkt näherten (m/s; 0: nicht).
+        static defined float Impact(Raser.Vehicle a, defined float offA, Raser.Vehicle b, defined float offB, defined float nx, defined float ny, defined float depth) {
+            float ha = a.heading * Math.PI / 180.0
+            float hb = b.heading * Math.PI / 180.0
+            float fax = -Math.Sin(ha)
+            float fay = Math.Cos(ha)
+            float fbx = -Math.Sin(hb)
+            float fby = Math.Cos(hb)
+            float wa = 1.0 / a.mass
+            float wb = 1.0 / b.mass
+            // auseinander, der Leichtere weiter
+            float share = wa / (wa + wb)
+            a.east = a.east + nx * depth * share
+            a.north = a.north + ny * depth * share
+            b.east = b.east - nx * depth * (1.0 - share)
+            b.north = b.north - ny * depth * (1.0 - share)
+            // der Berührpunkt: auf dem Rand des Kreises von a, zu b hin (nach dem Auseinanderschieben berühren sie sich dort)
+            float px = a.east + fax * offA - nx * a.radius
+            float py = a.north + fay * offA - ny * a.radius
+            float rax = px - a.east
+            float ray = py - a.north
+            float rbx = px - b.east
+            float rby = py - b.north
+            float wza = a.spin * Math.PI / 180.0
+            float wzb = b.spin * Math.PI / 180.0
+            // das Tempo der Berührpunkte: Fahrt, Rutschen, Drehen (w x r = w · (-ry, rx))
+            float vax = fax * a.speed + a.pushE - wza * ray
+            float vay = fay * a.speed + a.pushN + wza * rax
+            float vbx = fbx * b.speed + b.pushE - wzb * rby
+            float vby = fby * b.speed + b.pushN + wzb * rbx
+            float vn = (vax - vbx) * nx + (vay - vby) * ny
+            if (vn >= 0.0) { return 0.0 }
+            float ia = a.Inertia()
+            float ib = b.Inertia()
+            float rna = rax * ny - ray * nx
+            float rnb = rbx * ny - rby * nx
+            float j = -1.15 * vn / (wa + wb + rna * rna / ia + rnb * rnb / ib)
+            // Reibung quer zum Stoß: höchstens so viel, dass die Berührpunkte nicht mehr aneinander entlang rutschen
+            float tx = -ny
+            float ty = nx
+            float vt = (vax - vbx) * tx + (vay - vby) * ty
+            float rta = rax * ty - ray * tx
+            float rtb = rbx * ty - rby * tx
+            float jt = Math.Clamp(-vt / (wa + wb + rta * rta / ia + rtb * rtb / ib), -0.2 * j, 0.2 * j)
+            float ix = j * nx + jt * tx
+            float iy = j * ny + jt * ty
+            a.Kick(ix * wa, iy * wa)
+            b.Kick(-ix * wb, -iy * wb)
+            a.spin = a.Turned(a.spin + (rax * iy - ray * ix) / ia * 180.0 / Math.PI)
+            b.spin = b.Turned(b.spin - (rbx * iy - rby * ix) / ib * 180.0 / Math.PI)
+            float into = -vn
+            a.health = Math.Max(0.0, a.health - Raser.Vehicle.DamageOf(into))
+            b.health = Math.Max(0.0, b.health - Raser.Vehicle.DamageOf(into))
             return into
         }
 

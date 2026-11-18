@@ -14,7 +14,7 @@
 namespace Raser {
     // Die Nummern des Protokolls.
     class Protocol {
-        static readonly defined int Version = 4       // 3: Delta-Snapshots (debt) bzw. die Brücke im eigenen Zustand (bridges); 4: beides
+        static readonly defined int Version = 5       // 3: Delta-Snapshots (debt) bzw. die Brücke im eigenen Zustand (bridges); 4: beides; 5: das Drehen des eigenen Fahrzeugs (SelfState)
         static readonly defined int MaxClientFrame = 1024        // Bytes je Rahmen vom Client
         static readonly defined int MaxServerFrame = 65535       // Bytes je Rahmen vom Server
         static readonly defined int MaxText = 200                // Zeichen je Chatzeile oder Befehl

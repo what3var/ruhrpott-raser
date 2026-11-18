@@ -30,7 +30,7 @@ tools/fetch-bochum.sh                 # Rohdaten der Testregion (rund 230 MB)
 FORGE=/pfad/zu/forge tools/build-bochum.sh
 ```
 
-Das Werkzeug läuft in der VM (`forge run RuhrpottRaser.firesln -- info`), für echte Daten aber nativ: `forge build RuhrpottRaser.firesln --engine native -m RELEASE`
+Das Werkzeug läuft in der VM (`forge run RuhrpottRaser.firesln -- info`), für echte Daten aber nativ: `forge build RuhrpottRaser.firesln --engine native -m RELEASE --toolchain gcc`
 baut `src/Raser.Tool/bin/linux-rel/Raser.Tool`. Gemessen an der Testregion (Bochum-Innenstadt, 2 × 2 km, 49 vollständige Kacheln):
 
 | Schritt | Dauer (nativ) |
@@ -123,7 +123,7 @@ Je Chunk-Säule wird einmal ein Plan der 64 × 64 Voxel-Säulen gerechnet (gilt 
 ## Betrachter
 
 ```bash
-forge build RuhrpottRaser.firesln -p Raser.Viewer --engine native -m RELEASE
+forge build RuhrpottRaser.firesln -p Raser.Viewer --engine native -m RELEASE --toolchain gcc
 src/Raser.Viewer/bin/linux-rel/Raser.Viewer --world world --at 376130,5704900 --radius 2 --distance 110 --pitch -40 --shot rathaus.png
 ```
 
@@ -166,6 +166,8 @@ Für die Nachbarn liest ein Worker nur deren Randschichten (`.rrb`, 6 x 64 x 64 
 Gemessen im Hauptprogramm (`--workers 0`) je Säule: Lesen rund 13 ms, Vernetzen rund 110 ms. In Workern kommt das nicht an: fire-Threads stehen, solange
 das Hauptprogramm in `cam.Render()` steckt (docs/FIRE.md) - beim Flug mit 15 m/s kamen die Ergebnisse kaum an. Bis das in fire gelöst ist, ist
 `--workers 0` (Laden im Hauptprogramm, `--budget` Säulen je Bild) die ehrliche Wahl; das Vernetzen ist dann der nächste Engpass.
+(Gelöst mit fire-scene3d 1.0.2: scene3d ist thread-sicher, `Render` sperrt nur für den Schnappschuss der Szene, `Model.FromArrays` im Worker gar
+nicht - das Spiel baut seine Modelle in Workern, `Platzieren` kostet damit 0,2 bis 1 ms statt 25 bis 90 ms je Bild.)
 
 ![Betrachter](images/viewer-rathaus.png)
 

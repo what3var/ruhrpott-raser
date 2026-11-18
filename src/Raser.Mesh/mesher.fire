@@ -761,7 +761,15 @@ if (Raser.Plan.IsElevation(p)) {
                         part.Quad(bx + xs[0] * 0.2, by + ys[0] * 0.2, z0, bx + xs[k] * 0.2, by + ys[k] * 0.2, z0, bx + xs[c] * 0.2, by + ys[c] * 0.2, z0, bx + xs[d] * 0.2, by + ys[d] * 0.2, z0, 0.0, 0.0, -1.0, color, m)
                     }
                 }
-                // die Seiten: die schräge Kante immer, die Kanten auf dem Rand, wo der Nachbar nicht verdeckt
+                // die Seiten: die schräge Kante immer, die Kanten auf dem Rand, wo der Nachbar nicht verdeckt. Volle Voxel desselben Schnitts
+                // (Plan, Material, Farbe) übereinander geben je Kante eine hohe Fläche: nur das unterste der Säule gibt sie aus, bis zum obersten
+                // (eine schräge Hauswand sonst je 20 cm ein Viereck je Voxel - neun von zehn Vierecken der nahen Stufe).
+                defined int zTop = z
+                bool stacks = full && !(this.skipTerrain && m <= 8)
+                if (stacks) {
+                    if (z > 0 && this.SameCut(i - 4096, p, m, color, mats, cols, cut)) { continue }
+                    while (zTop + 1 < 64 && this.SameCut(i + (zTop + 1 - z) * 4096, p, m, color, mats, cols, cut)) { zTop++ }
+                }
                 for (int k = 0; k < n; k++) {
                     int l = (k + 1) % n
                     float ex = xs[l] - xs[k]
@@ -772,21 +780,44 @@ if (Raser.Plan.IsElevation(p)) {
                     defined int ny = y
                     bool rim = true
                     if (xs[k] < 0.0001 && xs[l] < 0.0001) { nx = x - 1 } else if (xs[k] > 0.9999 && xs[l] > 0.9999) { nx = x + 1 } else if (ys[k] < 0.0001 && ys[l] < 0.0001) { ny = y - 1 } else if (ys[k] > 0.9999 && ys[l] > 0.9999) { ny = y + 1 } else { rim = false }
-                    if (rim) {
-                        bool hidden = false
-                        if (nx >= 0 && ny >= 0 && nx < 64 && ny < 64) {
-                            defined int ni = nx + (ny << 6) + (z << 12)
-                            defined int nm = mats[ni]
-                            hidden = nm != 0 && cut[ni] == 0 && (!Raser.Mesher.IsTransparent(nm) || nm == m)
-                        } else {
-                            hidden = this.Hides(nx, ny, z, m, false)
-                        }
-                        if (hidden) { continue }
+                    if (!stacks) {
+                        if (rim && this.RimHidden(nx, ny, z, m, mats, cut)) { continue }
+                        // gegen den Uhrzeigersinn: außen ist rechts der Kante
+                        part.Quad(bx + xs[k] * 0.2, by + ys[k] * 0.2, z0, bx + xs[l] * 0.2, by + ys[l] * 0.2, z0, bx + xs[l] * 0.2, by + ys[l] * 0.2, hz[l], bx + xs[k] * 0.2, by + ys[k] * 0.2, hz[k], ey / el, -ex / el, 0.0, color, m)
+                        continue
                     }
-                    // gegen den Uhrzeigersinn: außen ist rechts der Kante
-                    part.Quad(bx + xs[k] * 0.2, by + ys[k] * 0.2, z0, bx + xs[l] * 0.2, by + ys[l] * 0.2, z0, bx + xs[l] * 0.2, by + ys[l] * 0.2, hz[l], bx + xs[k] * 0.2, by + ys[k] * 0.2, hz[k], ey / el, -ex / el, 0.0, color, m)
+                    // die Säule z .. zTop: je Abschnitt, in dem der Nachbar nicht verdeckt, eine Fläche
+                    defined int runFrom = -1
+                    for (int zz = z; zz <= zTop + 1; zz++) {
+                        bool open = zz <= zTop && (!rim || !this.RimHidden(nx, ny, zz, m, mats, cut))
+                        if (open && runFrom < 0) { runFrom = zz }
+                        if (!open && runFrom >= 0) {
+                            float za = runFrom * 0.2
+                            float zb = zz * 0.2
+                            part.Quad(bx + xs[k] * 0.2, by + ys[k] * 0.2, za, bx + xs[l] * 0.2, by + ys[l] * 0.2, za, bx + xs[l] * 0.2, by + ys[l] * 0.2, zb, bx + xs[k] * 0.2, by + ys[k] * 0.2, zb, ey / el, -ex / el, 0.0, color, m)
+                            runFrom = -1
+                        }
+                    }
                 }
             }
+        }
+
+        // (PlanFaces) Ist das Voxel j ein volles mit demselben Schnitt p, Material und derselben Farbe?
+        defined bool SameCut(defined int j, defined int p, defined int m, defined int color, byte mats[], byte cols[], byte cut[]) {
+            if (mats[j] != m || cols[j] != color || cut[j] != 2) { return false }
+            if (this.center.plans.Get(j, 0) != p) { return false }
+            if (this.shapeMap != undefined && !Raser.Shape.IsFull(this.shapeMap[j])) { return false }
+            return true
+        }
+
+        // (PlanFaces) Verdeckt der Nachbar (nx, ny, z) die Randkante eines geschnittenen Voxels aus m?
+        defined bool RimHidden(defined int nx, defined int ny, defined int z, defined int m, byte mats[], byte cut[]) {
+            if (nx >= 0 && ny >= 0 && nx < 64 && ny < 64) {
+                defined int ni = nx + (ny << 6) + (z << 12)
+                defined int nm = mats[ni]
+                return nm != 0 && cut[ni] == 0 && (!Raser.Mesher.IsTransparent(nm) || nm == m)
+            }
+            return this.Hides(nx, ny, z, m, false)
         }
 
         undefined SlopedFaces(ChunkMesh mesh, byte mats[], byte cols[], byte cut[], int cutsPerLayer[]) {

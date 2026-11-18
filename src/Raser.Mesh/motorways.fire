@@ -1,0 +1,259 @@
+// Raser.Mesh: Autobahnen und Rastplätze als Netz-Bausteine (wie Raser.BridgeMesher) - Markierungen (Leitlinien zwischen den Fahrstreifen: 6 m
+// Strich, 12 m Lücke; Randlinien durchgezogen, an Auf- und Abfahrten nur die Ränder), Leitplanken (verzinkt: ein Band 0,45 .. 0,75 m mit
+// Pfosten alle 4 m), Betonschutzwände (0,9 m), Lärmschutzwände (4 m) und Schilderbrücken (zwei Stützen, Riegel in 6,5 m, blaue Tafeln über den
+// Fahrstreifen) aus Raser.Motorways; auf Rastplätzen die Markierung der Stellplätze (je 2,6 m ein Strich, 5 m lang, an der längsten Kante der
+// Parkfläche; über 1500 m² Lkw-Stände mit 4 m). Ein Stück gehört dem Block, in dem seine Mitte liegt. Koordinaten kachel-lokal, z absolut.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    // Was eine Kachel an Autobahn hat (einmal berechnet, Raser.NearBuilder hält es je Kachel).
+    class MotorwayParts {
+        List<float> rails
+        List<float> gantries
+        construct() { }
+    }
+
+    class MotorwayMesher {
+        static MotorwayParts Of(Tile tile) {
+            var p = new Raser.MotorwayParts()
+            p.rails = Raser.Motorways.Rails(tile)
+            p.gantries = Raser.Motorways.Gantries(tile)
+            return p
+        }
+
+        static defined bool Inside(defined float x, defined float y, defined float x0, defined float y0, defined float size) {
+            return x >= x0 && y >= y0 && x < x0 + size && y < y0 + size
+        }
+
+        static defined float Ground(Tile tile, defined float x, defined float y) {
+            if (tile.heights == undefined) { return 0.0 }
+            return tile.heights.At(x, y)
+        }
+
+        static undefined Add(MeshPart part, Tile tile, MotorwayParts parts, defined float x0, defined float y0, defined float size) {
+            if (tile == undefined || tile.heights == undefined) { return }
+            Raser.MotorwayMesher.Rails(part, tile, parts.rails, x0, y0, size)
+            Raser.MotorwayMesher.Markings(part, tile, x0, y0, size)
+            Raser.MotorwayMesher.Gantries(part, tile, parts.gantries, x0, y0, size)
+            Raser.MotorwayMesher.Parking(part, tile, x0, y0, size)
+        }
+
+        // Leitplanken, Schutz- und Lärmschutzwände.
+        static undefined Rails(MeshPart part, Tile tile, List<float> rails, defined float x0, defined float y0, defined float size) {
+            int metal = Raser.Palette.Metal
+            int mm = Raser.Material.Metal!int
+            int concrete = Raser.Palette.Concrete
+            int cm = Raser.Material.Concrete!int
+            for (int i = 0; i + 4 < rails.Count; i = i + 5) {
+                float ax = rails[i]
+                float ay = rails[i + 1]
+                float bx = rails[i + 2]
+                float by = rails[i + 3]
+                int kind = Math.Round(rails[i + 4])!int
+                if (!Raser.MotorwayMesher.Inside((ax + bx) * 0.5, (ay + by) * 0.5, x0, y0, size)) { continue }
+                float dx = bx - ax
+                float dy = by - ay
+                float len = Math.Sqrt(dx * dx + dy * dy)
+                if (len < 0.05) { continue }
+                float nx = dy / len
+                float ny = -dx / len
+                float za = Raser.MotorwayMesher.Ground(tile, ax, ay)
+                float zb = Raser.MotorwayMesher.Ground(tile, bx, by)
+                if (kind == 1) {
+                    // das Band (beidseitig) und oben, Pfosten alle 4 m (an jedem zweiten Stück)
+                    float lo = 0.45
+                    float hi = Raser.Motorways.RailHeight
+                    part.Quad(ax, ay, za + lo, bx, by, zb + lo, bx, by, zb + hi, ax, ay, za + hi, nx, ny, 0.0, metal, mm)
+                    part.Quad(ax, ay, za + lo, ax, ay, za + hi, bx, by, zb + hi, bx, by, zb + lo, -nx, -ny, 0.0, metal, mm)
+                    if (Math.Round((ax + ay) * 0.25)!int % 2 == 0) { Raser.BridgeMesher.Block(part, ax, ay, dx / len, dy / len, 0.06, 0.06, za - 0.2, za + hi, metal, mm) }
+                    continue
+                }
+                float h = Raser.Motorways.BarrierHeight
+                float t = 0.25
+                int color = concrete
+                int mat = cm
+                if (kind == 3) {
+                    h = Raser.Motorways.NoiseHeight
+                    t = 0.12
+                    color = Raser.Palette.ConcretePanel
+                }
+                // eine Wand: zwei Seiten und oben
+                float ox = nx * t
+                float oy = ny * t
+                part.Quad(ax + ox, ay + oy, za - 0.2, bx + ox, by + oy, zb - 0.2, bx + ox, by + oy, zb + h, ax + ox, ay + oy, za + h, nx, ny, 0.0, color, mat)
+                part.Quad(ax - ox, ay - oy, za - 0.2, ax - ox, ay - oy, za + h, bx - ox, by - oy, zb + h, bx - ox, by - oy, zb - 0.2, -nx, -ny, 0.0, color, mat)
+                part.Quad(ax - ox, ay - oy, za + h, ax + ox, ay + oy, za + h, bx + ox, by + oy, zb + h, bx - ox, by - oy, zb + h, 0.0, 0.0, 1.0, color, mat)
+            }
+        }
+
+        // Markierungen auf Autobahnen, Kraftfahrstraßen und ihren Auf- und Abfahrten (auf dem Gelände; Brücken haben ihr Deck).
+        static undefined Markings(MeshPart part, Tile tile, defined float x0, defined float y0, defined float size) {
+            foreach (r in tile.data.roads) {
+                bool main = Raser.Motorways.IsMotorway(r.kind)
+                bool link = Raser.Motorways.IsLink(r.kind)
+                if ((!main && !link) || r.layer != 0 || r.points == undefined || r.points.length < 4) { continue }
+                var box = Raser.Box2.Of(r.points)
+                box.Grow(r.width)
+                if (!box.Overlaps(x0, y0, x0 + size, y0 + size)) { continue }
+                bool oneway = Raser.Motorways.Oneway(r)
+                var layout = Raser.Motorways.Layout(r.kind.Substring(8), r.width, r.lanes, oneway)
+                float line[] = Raser.StreetField.Smooth(r.points)
+                float half = r.width / 2.0
+                // die Linien: Versatz (rechts positiv), Breite, gestrichelt
+                var offs = new List<float>()
+                if (oneway) {
+                    foreach (v in [half - layout.shoulder - 0.15, 0.3, 0.0]) { offs.Add(v) }
+                    foreach (v in [-half + layout.margin + 0.15, 0.3, 0.0]) { offs.Add(v) }
+                    for (int k = 1; k < layout.per; k++) {
+                        foreach (v in [half - layout.shoulder - layout.lane * k, 0.15, 1.0]) { offs.Add(v) }
+                    }
+                } else {
+                    foreach (v in [half - layout.shoulder - 0.15, 0.3, 0.0, -half + layout.shoulder + 0.15, 0.3, 0.0, 0.0, 0.3, 0.0]) { offs.Add(v) }
+                }
+                Raser.MotorwayMesher.Lines(part, tile, line, offs, x0, y0, size)
+            }
+        }
+
+        // Linien entlang einer Linie: je Eintrag in offs (Versatz, Breite, gestrichelt 0/1) alle 2 m ein Stück, 4 cm über dem Gelände.
+        static undefined Lines(MeshPart part, Tile tile, float line[], List<float> offs, defined float x0, defined float y0, defined float size) {
+            int white = Raser.Palette.RoadMarking
+            int mat = Raser.Material.Asphalt!int
+            int n = line.length / 2
+            float acc = 0.0
+            for (int i = 0; i + 1 < n; i++) {
+                float ax = line[i * 2]
+                float ay = line[i * 2 + 1]
+                float ex = line[i * 2 + 2] - ax
+                float ey = line[i * 2 + 3] - ay
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len < 0.05) { continue }
+                float dx = ex / len
+                float dy = ey / len
+                float nx = dy
+                float ny = -dx
+                for (float s = 0.0; s < len; s = s + 2.0) {
+                    float s1 = Math.Min(len, s + 2.0)
+                    float px = ax + dx * s
+                    float py = ay + dy * s
+                    float qx = ax + dx * s1
+                    float qy = ay + dy * s1
+                    if (!Raser.MotorwayMesher.Inside((px + qx) * 0.5, (py + qy) * 0.5, x0, y0, size)) { continue }
+                    float along = acc + s
+                    for (int k = 0; k + 2 < offs.Count; k = k + 3) {
+                        float off = offs[k]
+                        float w = offs[k + 1] * 0.5
+                        // gestrichelt: 6 m Strich, 12 m Lücke
+                        if (offs[k + 2] > 0.5 && along % 18.0 >= 6.0) { continue }
+                        float ax2 = px + nx * (off - w)
+                        float ay2 = py + ny * (off - w)
+                        float bx2 = px + nx * (off + w)
+                        float by2 = py + ny * (off + w)
+                        float cx2 = qx + nx * (off + w)
+                        float cy2 = qy + ny * (off + w)
+                        float dx2 = qx + nx * (off - w)
+                        float dy2 = qy + ny * (off - w)
+                        part.Quad(ax2, ay2, Raser.MotorwayMesher.Ground(tile, ax2, ay2) + 0.04, bx2, by2, Raser.MotorwayMesher.Ground(tile, bx2, by2) + 0.04, cx2, cy2, Raser.MotorwayMesher.Ground(tile, cx2, cy2) + 0.04, dx2, dy2, Raser.MotorwayMesher.Ground(tile, dx2, dy2) + 0.04, 0.0, 0.0, 1.0, white, mat)
+                    }
+                }
+                acc = acc + len
+            }
+        }
+
+        // Schilderbrücken: zwei Stützen außen, ein Riegel in 6,5 .. 7 m, darauf zum Verkehr hin blaue Tafeln (je 3,5 x 2 m) mit weißem Rand.
+        static undefined Gantries(MeshPart part, Tile tile, List<float> gantries, defined float x0, defined float y0, defined float size) {
+            int metal = Raser.Palette.Metal
+            int mm = Raser.Material.Metal!int
+            for (int i = 0; i + 4 < gantries.Count; i = i + 5) {
+                float x = gantries[i]
+                float y = gantries[i + 1]
+                if (!Raser.MotorwayMesher.Inside(x, y, x0, y0, size)) { continue }
+                float dx = gantries[i + 2]
+                float dy = gantries[i + 3]
+                float half = gantries[i + 4] / 2.0 + 1.8
+                float nx = dy
+                float ny = -dx
+                float z = Raser.MotorwayMesher.Ground(tile, x, y)
+                foreach (side in [-1.0, 1.0]) {
+                    float px = x + nx * half * side
+                    float py = y + ny * half * side
+                    Raser.BridgeMesher.Block(part, px, py, dx, dy, 0.2, 0.2, Raser.MotorwayMesher.Ground(tile, px, py) - 0.3, z + 7.0, metal, mm)
+                }
+                // der Riegel quer (along = halbe Länge quer: Richtung n)
+                Raser.BridgeMesher.Block(part, x, y, nx, ny, half, 0.25, z + 6.5, z + 7.0, metal, mm)
+                // die Tafeln: über den rechten zwei Fahrstreifen, vor dem Riegel (zum Verkehr: gegen die Fahrtrichtung)
+                foreach (k in [0.0, 1.0]) {
+                    float c = half - 3.5 - k * 4.0
+                    float cx = x + nx * c - dx * 0.3
+                    float cy = y + ny * c - dy * 0.3
+                    float ax = cx - nx * 1.75
+                    float ay = cy - ny * 1.75
+                    float bx = cx + nx * 1.75
+                    float by = cy + ny * 1.75
+                    // weißer Rand, darin blau (5 cm davor)
+                    part.Quad(ax, ay, z + 4.6, bx, by, z + 4.6, bx, by, z + 6.7, ax, ay, z + 6.7, -dx, -dy, 0.0, Raser.Palette.SignWhite, mm)
+                    float ix = nx * 0.1
+                    float iy = ny * 0.1
+                    part.Quad(ax + ix - dx * 0.05, ay + iy - dy * 0.05, z + 4.7, bx - ix - dx * 0.05, by - iy - dy * 0.05, z + 4.7, bx - ix - dx * 0.05, by - iy - dy * 0.05, z + 6.6, ax + ix - dx * 0.05, ay + iy - dy * 0.05, z + 6.6, -dx, -dy, 0.0, Raser.Palette.SignBlue, mm)
+                    // ein weißer Pfeil-Balken als "Schrift"
+                    part.Quad(cx - nx * 1.2 - dx * 0.08, cy - ny * 1.2 - dy * 0.08, z + 5.9, cx + nx * 1.2 - dx * 0.08, cy + ny * 1.2 - dy * 0.08, z + 5.9, cx + nx * 1.2 - dx * 0.08, cy + ny * 1.2 - dy * 0.08, z + 6.15, cx - nx * 1.2 - dx * 0.08, cy - ny * 1.2 - dy * 0.08, z + 6.15, -dx, -dy, 0.0, Raser.Palette.SignWhite, mm)
+                    part.Quad(cx - nx * 0.8 - dx * 0.08, cy - ny * 0.8 - dy * 0.08, z + 5.2, cx + nx * 0.8 - dx * 0.08, cy + ny * 0.8 - dy * 0.08, z + 5.2, cx + nx * 0.8 - dx * 0.08, cy + ny * 0.8 - dy * 0.08, z + 5.45, cx - nx * 0.8 - dx * 0.08, cy - ny * 0.8 - dy * 0.08, z + 5.45, -dx, -dy, 0.0, Raser.Palette.SignWhite, mm)
+                }
+            }
+        }
+
+        // Stellplätze auf den Parkflächen der Rastplätze: Striche quer zur längsten Kante, je 2,6 m (Lkw: 4 m auf großen Flächen), 5 m lang.
+        static undefined Parking(MeshPart part, Tile tile, defined float x0, defined float y0, defined float size) {
+            foreach (rest in tile.data.areas) {
+                if (rest.kind != "highway=rest_area" && rest.kind != "highway=services") { continue }
+                foreach (a in tile.data.areas) {
+                    if (a.kind != "amenity=parking" || a.ring == undefined || a.ring.length < 6) { continue }
+                    var box = Raser.Box2.Of(a.ring)
+                    float mx = (box.minX + box.maxX) * 0.5
+                    float my = (box.minY + box.maxY) * 0.5
+                    if (!Raser.MotorwayMesher.Inside(mx, my, x0, y0, size) || !Raser.Geo.Inside(rest.ring, mx, my)) { continue }
+                    float pitch = 2.6
+                    if (Math.Abs(Raser.Geo.Area(a.ring)) > 1500.0) { pitch = 4.0 }
+                    // die längste Kante
+                    int n = a.ring.length / 2
+                    int best = 0
+                    float bestLen = 0.0
+                    for (int i = 0; i < n; i++) {
+                        int j = (i + 1) % n
+                        float ex = a.ring[j * 2] - a.ring[i * 2]
+                        float ey = a.ring[j * 2 + 1] - a.ring[i * 2 + 1]
+                        float l = Math.Sqrt(ex * ex + ey * ey)
+                        if (l > bestLen) {
+                            bestLen = l
+                            best = i
+                        }
+                    }
+                    if (bestLen < 5.0) { continue }
+                    int j = (best + 1) % n
+                    float ax = a.ring[best * 2]
+                    float ay = a.ring[best * 2 + 1]
+                    float dx = (a.ring[j * 2] - ax) / bestLen
+                    float dy = (a.ring[j * 2 + 1] - ay) / bestLen
+                    // nach innen: links oder rechts der Kante, je nachdem, wo die Mitte liegt
+                    float nx = -dy
+                    float ny = dx
+                    if ((mx - ax) * nx + (my - ay) * ny < 0.0) {
+                        nx = -nx
+                        ny = -ny
+                    }
+                    for (float s = 0.5; s <= bestLen - 0.5; s = s + pitch) {
+                        float px = ax + dx * s
+                        float py = ay + dy * s
+                        float qx = px + nx * 5.0
+                        float qy = py + ny * 5.0
+                        if (!Raser.Geo.Inside(a.ring, (px + qx) * 0.5, (py + qy) * 0.5)) { continue }
+                        float w = 0.06
+                        float z0 = Raser.MotorwayMesher.Ground(tile, px, py) + 0.04
+                        float z1 = Raser.MotorwayMesher.Ground(tile, qx, qy) + 0.04
+                        part.Quad(px - dx * w, py - dy * w, z0, px + dx * w, py + dy * w, z0, qx + dx * w, qy + dy * w, z1, qx - dx * w, qy - dy * w, z1, 0.0, 0.0, 1.0, Raser.Palette.RoadMarking, Raser.Material.Asphalt!int)
+                    }
+                }
+            }
+        }
+    }
+}

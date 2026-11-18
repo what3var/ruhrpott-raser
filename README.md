@@ -25,7 +25,7 @@ und `Raser.Tool` (das Werkzeug der Pipeline):
 
 ```bash
 forge test RuhrpottRaser.firesln                                   # alle Tests
-forge build RuhrpottRaser.firesln --engine native -m RELEASE      # src/Raser.Tool/bin/linux-rel/Raser.Tool
+forge build RuhrpottRaser.firesln --engine native -m RELEASE --toolchain gcc      # src/Raser.Tool/bin/linux-rel/Raser.Tool
 tools/fetch-bochum.sh && tools/build-bochum.sh                     # Testregion Bochum-Innenstadt: Rohdaten -> Chunks -> world.png
 ```
 
@@ -35,16 +35,39 @@ Das Spiel braucht fertige Weltdaten in `world/` (nicht im Repository: Kacheln 31
 mit dem Werkzeug selbst (`src/Raser.Tool/setup.fire`):
 
 ```bash
-forge build RuhrpottRaser.firesln -p Raser.Tool --engine native -m RELEASE -o raser
+forge build RuhrpottRaser.firesln -p Raser.Tool --engine native -m RELEASE --toolchain gcc -o raser
 raser setup                 # Rohdaten laden (DGM1/LoD2 von opengeodata.nrw.de, OSM), importieren, voxelisieren - etwa 40 min
 raser setup --meshes 1      # dazu den Netz-Cache (noch etwa 45 min; sonst baut ihn das Spiel beim Fahren nach und nach)
 raser fetch                 # nur die Rohdaten nach data/raw (fortsetzbar, Vorhandenes wird übersprungen)
 ```
 
+Andere Ausschnitte (je Region eigene Ordner): `--region lichtendorf` ist die A1 an der Raststätte Lichtendorf (Schwerte/Dortmund: Autobahn mit
+drei bis vier Fahrstreifen je Richtung, Rastanlage auf beiden Seiten, Anschlussstelle; 3 x 3 km Kacheln, etwa 45 min mit `--jobs 2`),
+`--bbox lon0,lat0,lon1,lat1` ein beliebiger Ausschnitt in Grad (die 1-km-Kacheln von DGM1 und LoD2 ergeben sich aus den Ecken, OSM kommt in
+Teilen):
+
+```bash
+raser setup --region lichtendorf --raw data/raw-lichtendorf --world world-lichtendorf --jobs 2
+raser-game --world world-lichtendorf --at 402300,5702000
+```
+
 Unter Windows heißt das Programm `raser.exe`; Optionen: `--raw <ordner>` (Rohdaten, Vorgabe `data/raw`), `--world <ordner>` (Vorgabe `world`),
 `--jobs <n>` (Worker-Threads). Voxelisieren und Netz-Cache laufen auf allen Kernen, je Kachel ein Worker (`fire dedicated`); beim Voxelisieren
 braucht ein Worker bis gut 2 GB, darum höchstens so viele, wie in 80 % des freien Speichers passen. Wichtig: das Werkzeug nativ als Release
-bauen (`--engine native -m RELEASE`), in der VM ist es ein Vielfaches langsamer.
+bauen (`--engine native -m RELEASE --toolchain gcc`), in der VM ist es ein Vielfaches langsamer. `--toolchain gcc` (bzw. `clang`, unter Windows `msvc`) ist seit fire 58efe6cb nötig: `forge build` nimmt sonst TinyCC, das schnell übersetzt, aber deutlich langsameren Code erzeugt.
+
+## Menü im Spiel
+
+Esc öffnet das Menü (`src/Raser.Game/menu.fire`, mit dem UI-Toolkit von fire): Weiter, Optionen (Grafik, Steuerung, Ton, Spiel), Steuerung
+(alle Tasten, umbelegbar), Verbindung (online), Beenden. Offline hält es das Spiel an, online läuft die Welt weiter, der eigene Wagen bekommt
+keine Eingaben. Die Optionen stehen in `spiel.json` neben `launcher.json` (`RASER_CONFIG` oder `--config` für einen anderen Ordner,
+`--settings 0` ohne Datei); was auf der Kommandozeile steht (`--size`, `--gpu`, `--render-threads`, `--near`, `--far`, `--workers`, `--no-sky`),
+geht vor (dazu `--fullscreen 1`). Vollbild, Sichtweite, Himmel, Render-Threads und Kamera wirken sofort, Fenstergröße, Renderer und Worker nach einem Neustart.
+
+```bash
+raser-game --menu-shot menu.png [--menu-keys down,enter,right] [--menu-bench 100000]   # das offene Menü ohne Fenster als PNG
+forge test src/Raser.Game/Raser.Game.fireproj --engine native                          # Einstellungen und Tastenbelegung
+```
 
 ## Launcher
 
@@ -60,7 +83,7 @@ Größe, Zeit und SHA-256 der installierten Dateien (so wird beim nächsten Star
 selbst installiert hat und die das Release nicht mehr hat. Netzarbeit läuft in eigenen Threads (`fire dedicated`), das Fenster bleibt bedienbar.
 
 ```bash
-forge build RuhrpottRaser.firesln -p Raser.Launcher --engine native -m RELEASE -o raser-launcher
+forge build RuhrpottRaser.firesln -p Raser.Launcher --engine native -m RELEASE --toolchain gcc -o raser-launcher
 raser-launcher                                                         # das Fenster
 raser-launcher --check --server 127.0.0.1:7480 --user anna --password geheim --install spiel   # ohne Fenster: anmelden, News, Update
 raser-launcher --check ... --register | --no-update | --play           # registrieren / nur vergleichen / danach das Spiel starten

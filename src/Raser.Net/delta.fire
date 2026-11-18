@@ -92,11 +92,12 @@ namespace Raser {
         }
     }
 
-    // Der eigene Zustand als 17 Zahlen (bitgenau): Spieler (Ost, Nord, Richtung, Tempo, Schrittweg, Last), Fahrzeug (Ost, Nord, Richtung, Tempo,
-    // Lenkeinschlag, Stoß Ost, Stoß Nord, Schräglage, Zustand, Tank, Grip). Im Fahrzeug stehen die ersten vier nicht auf der Leitung (der Spieler
+    // Der eigene Zustand als 18 Zahlen (bitgenau): Spieler (Ost, Nord, Richtung, Tempo, Schrittweg, Last), Fahrzeug (Ost, Nord, Richtung, Tempo,
+    // Lenkeinschlag, Stoß Ost, Stoß Nord, Schräglage, Zustand, Tank, Grip, Drehen - das letzte seit Protokoll 5; im Delta nur, wenn es sich ändert,
+    // also fast nie). Im Fahrzeug stehen die ersten vier nicht auf der Leitung (der Spieler
     // sitzt im Fahrzeug, Tempo 0).
     class SelfState {
-        static readonly defined int Count = 17
+        static readonly defined int Count = 18
         defined bool present
         defined bool useHeld
         defined int vehicle
@@ -113,8 +114,8 @@ namespace Raser {
             this.vehicle = 0
             this.kind = 0
             this.sliding = false
-            this.f = new float[17]
-            for (int i = 0; i < 17; i++) { this.f[i] = 0.0 }
+            this.f = new float[Raser.SelfState.Count]
+            for (int i = 0; i < Raser.SelfState.Count; i++) { this.f[i] = 0.0 }
             this.mask = 0
             this.walkerBridge = 0
             this.carBridge = 0
@@ -138,8 +139,8 @@ namespace Raser {
                 s.carBridge = car.bridge
                 s.kind = Raser.Protocol.KindOf(car.kind, false)
                 s.sliding = car.sliding
-                float x[] = [car.east, car.north, car.heading, car.speed, car.steerAngle, car.pushE, car.pushN, car.lean, car.health, car.fuel, car.grip]
-                for (int i = 0; i < 11; i++) { s.f[6 + i] = x[i] }
+                float x[] = [car.east, car.north, car.heading, car.speed, car.steerAngle, car.pushE, car.pushN, car.lean, car.health, car.fuel, car.grip, car.spin]
+                for (int i = 0; i < 12; i++) { s.f[6 + i] = x[i] }
             }
             return s
         }
@@ -153,7 +154,7 @@ namespace Raser {
             s.sliding = this.sliding
             s.walkerBridge = this.walkerBridge
             s.carBridge = this.carBridge
-            for (int i = 0; i < 17; i++) { s.f[i] = this.f[i] }
+            for (int i = 0; i < Raser.SelfState.Count; i++) { s.f[i] = this.f[i] }
             return s
         }
 
@@ -196,6 +197,7 @@ namespace Raser {
                 v.health = this.f[14]
                 v.fuel = this.f[15]
                 v.grip = this.f[16]
+                v.spin = this.f[17]
                 v.bridge = this.carBridge
                 p.selfVehicle = take v
             }
@@ -237,13 +239,13 @@ namespace Raser {
             w.Varint(s.walkerBridge)
             if (s.kind != 0) { w.Varint(s.carBridge) }
             if (!delta) {
-                for (int i = 0; i < 17; i++) { if (s.Sent(i)) { w.Float64(s.f[i]) } }
+                for (int i = 0; i < Raser.SelfState.Count; i++) { if (s.Sent(i)) { w.Float64(s.f[i]) } }
                 return
             }
             int mask = 0
-            for (int i = 0; i < 17; i++) { if (s.Sent(i) && s.f[i] != grund.f[i]) { mask = mask | (1 << i) } }
+            for (int i = 0; i < Raser.SelfState.Count; i++) { if (s.Sent(i) && s.f[i] != grund.f[i]) { mask = mask | (1 << i) } }
             w.Varint(mask)
-            for (int i = 0; i < 17; i++) { if ((mask & (1 << i)) != 0) { w.Float64(s.f[i]) } }
+            for (int i = 0; i < Raser.SelfState.Count; i++) { if ((mask & (1 << i)) != 0) { w.Float64(s.f[i]) } }
         }
 
         static Raser.SelfState ReadSelf(Raser.ByteReader r) {
@@ -261,7 +263,7 @@ namespace Raser {
             s.walkerBridge = r.Varint()
             if (s.kind != 0) { s.carBridge = r.Varint() }
             if ((flags & 16) == 0) {
-                for (int i = 0; i < 17; i++) {
+                for (int i = 0; i < Raser.SelfState.Count; i++) {
                     if (s.Sent(i)) {
                         s.f[i] = r.Float64()
                         s.mask = s.mask | (1 << i)
@@ -271,8 +273,8 @@ namespace Raser {
                 return s
             }
             int mask = r.Varint()
-            if (mask >= (1 << 17)) { throw new Raser.ProtocolException("Eine Maske außerhalb der Zahlen.") }
-            for (int i = 0; i < 17; i++) { if ((mask & (1 << i)) != 0) { s.f[i] = r.Float64() } }
+            if (mask >= (1 << Raser.SelfState.Count)) { throw new Raser.ProtocolException("Eine Maske außerhalb der Zahlen.") }
+            for (int i = 0; i < Raser.SelfState.Count; i++) { if ((mask & (1 << i)) != 0) { s.f[i] = r.Float64() } }
             s.mask = mask
             return s
         }
@@ -445,7 +447,7 @@ namespace Raser {
                 var full = grund.self.Clone()
                 full.useHeld = s.useHeld
                 full.sliding = s.sliding
-                for (int i = 0; i < 17; i++) { if ((s.mask & (1 << i)) != 0) { full.f[i] = s.f[i] } }
+                for (int i = 0; i < Raser.SelfState.Count; i++) { if ((s.mask & (1 << i)) != 0) { full.f[i] = s.f[i] } }
                 next.self = take full
             } else if (s != undefined) { next.self = s.Clone() }
             next.self.Fill(p)
