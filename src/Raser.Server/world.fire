@@ -193,6 +193,12 @@ class RegionServer {
         }
         float start[] = [e, n, 0.0]
         if (this.sim.obstacles.store != undefined) { start = Raser.Physics.StartIn(this.sim.obstacles.TileAt(e, n), e, n) }
+        // steht dort schon ein Fahrzeug (ein anderer kam an denselben Punkt), je 7 m weiter zurück entlang der Straße
+        float sh = start[2] * Math.PI / 180.0
+        for (int k = 0; k < 6 && this.Occupied(start[0], start[1]); k++) {
+            start[0] = start[0] + Math.Sin(sh) * 7.0
+            start[1] = start[1] - Math.Cos(sh) * 7.0
+        }
         var pawn = new Raser.Pawn(p.id)
         pawn.walker.east = start[0]
         pawn.walker.north = start[1]
@@ -212,9 +218,20 @@ class RegionServer {
         var inv = new Raser.Inventory(this.store, this.drops, 5, 4)
         p.inv = take inv
         RegionServer.Starter(p.inv)
+        p.inv.body = p.body
+        // das Bargeld aus der Datenbank (wer schon einmal da war); neu: das Startgeld
+        if (p.storedCash >= 0) { p.inv.cash = p.storedCash } else { p.storedCash = p.inv.cash }
         p.placed = true
         this.Follow(p)
         this.Park(p)
+    }
+
+    // Steht ein Fahrzeug näher als 6 m an (e, n)?
+    defined bool Occupied(defined float e, defined float n) {
+        foreach (v in this.sim.vehicles) {
+            if ((v.body.east - e) * (v.body.east - e) + (v.body.north - n) * (v.body.north - n) < 36.0) { return true }
+        }
+        return false
     }
 
     // Was jeder am Anfang dabeihat (wie offline): Handy, Schlüssel, Kleingeld, Brötchen, Zigaretten, ein Rucksack mit Wasser, Lampe, Werkzeug.
@@ -378,6 +395,21 @@ class RegionServer {
         }
         if (this.trafficWetness != undefined) { t.wetness = this.trafficWetness.wetness }
         t.Step(Raser.SimWorld.Tick, list)
+        // Unfallwagen gegen die Wände (dieselben Hindernisse wie für die Spieler, Raser.Obstacles): wie im Spiel offline (TrafficView)
+        var walls = this.sim.obstacles
+        foreach (c in t.cars) {
+            if (c.state == 0) { continue }
+            var wb = c.body
+            if (Math.Abs(wb.speed) + Math.Abs(wb.pushE) + Math.Abs(wb.pushN) < 0.05) { continue }
+            float wh = wb.heading * Math.PI / 180.0
+            for (int k = 0; k < 2; k++) {
+                float offset = wb.spread - 2.0 * wb.spread * k
+                if (walls.Push(wb.east - Math.Sin(wh) * offset, wb.north + Math.Cos(wh) * offset, wb.radius)) { wb.Collide(offset, walls.pushX, walls.pushY, walls.depth) }
+            }
+            c.east = wb.east
+            c.north = wb.north
+            c.heading = wb.heading
+        }
         foreach (ev in t.events) {
             if (ev == "unfall" || ev == "umgefahren") { Gateway.Log("Verkehr: " + ev) }
         }
@@ -494,13 +526,16 @@ class RegionServer {
         }
     }
 
-    // Ereignis "Spieler umgehauen" (victim, Verursacher: Spieler-ID, 0: niemand). Hier entscheidet später der Server, was er verliert
-    // (Inventar zu Boden, Kleingeld, kaputte Teile - die Regeln kommen aus Raser.Core); jetzt: er liegt LyingTicks lang, alle in der Nähe
-    // bekommen das Ereignis.
+    // Ereignis "Spieler umgehauen" (victim, Verursacher: Spieler-ID, 0: niemand; by: das Fahrzeug). Der Server entscheidet, was er verliert
+    // (Raser.Knockdown aus Raser.Core: Inventar zu Boden, ein Teil des Kleingelds, Kaputtes - Zufall aus Takt und ID, also nachrechenbar); er
+    // liegt LyingTicks lang (die Eingaben zählen nicht), alle in der Nähe bekommen das Ereignis, er selbst den neuen Stand seines Inventars.
     undefined KnockedDown(Player victim, defined int causer, Raser.Vehicle by) {
         victim.lyingUntil = this.tick + RegionServer.LyingTicks
         victim.pawn.walker.speed = 0.0
-        Gateway.Log(victim.name + " umgehauen (von " + Raser.Ids.Format(causer) + ", " + Math.Round(Math.Abs(by.speed) * 3.6) + " km/h)")
+        this.Follow(victim)
+        float impact = Math.Abs(by.speed)
+        var result = Raser.Knockdown.Apply(victim.inv, this.tick * 7919 + (victim.id & 1048575), impact)
+        Gateway.Log(victim.name + " umgehauen (von " + Raser.Ids.Format(causer) + ", " + Math.Round(impact * 3.6) + " km/h): " + result.dropped + " Stapel am Boden, " + result.cashLost + " Cent verloren, " + result.broken + " kaputt, " + result.destroyed + " weg")
         var ev = new Raser.Packet(Raser.Protocol.Event)
         ev.kind = Raser.Protocol.KnockedDown
         ev.id = victim.id
@@ -509,6 +544,7 @@ class RegionServer {
         ev.north = victim.north
         byte frame[] = Raser.Wire.Frame(ev)
         foreach (p in this.players) { if (RegionServer.Near(p, victim)) { p.link.SendFrame(frame) } }
+        this.SendInventory(victim, victim.opSeq, true)
     }
 
     // Sieht p den Spieler q? Gleiche Kachel oder eine der 8 Nachbarn.
@@ -536,6 +572,7 @@ class RegionServer {
                 e.a = q.pawn.vehicle
             }
             if (this.tick < q.lyingUntil) { e.bits = e.bits | Raser.EntityType.Lying }
+            if (q.inv != undefined && q.inv.LampShining()) { e.bits = e.bits | Raser.EntityType.Lamp }
             list.Add(take e)
         }
         foreach (v in this.sim.vehicles) {
@@ -564,6 +601,7 @@ class RegionServer {
         s.tick = this.tick
         s.region = this.region.id
         s.ack = p.pawn.seq
+        s.cash = p.inv.cash
         var car = this.sim.Find(p.pawn.vehicle)
         Raser.Vehicle body = undefined
         if (car != undefined) { body = car.body }
@@ -640,6 +678,11 @@ class RegionServer {
                 if (d != undefined) { touched = d.data }
             }
             ok = onFoot && p.inv.Apply(op)
+        } else if (op.kind == Raser.InvOp.Use) {
+            // benutzen (essen, Lampe, tanken, reparieren): das Fahrzeug ist das nächste der Region
+            p.inv.vehicle = this.NearestBody(p.east, p.north)
+            ok = this.tick >= p.lyingUntil && p.inv.Apply(op)
+            if (p.inv.message != "") { Gateway.Log(p.name + ": " + p.inv.message) }
         } else {
             ok = p.inv.Apply(op)
         }
@@ -656,6 +699,20 @@ class RegionServer {
         }
     }
 
+    // Das Fahrzeug, dessen Mitte (e, n) am nächsten ist (undefined: keins).
+    Raser.Vehicle NearestBody(defined float e, defined float n) {
+        Raser.Vehicle best = undefined
+        float d2 = 1.0e30
+        foreach (v in this.sim.vehicles) {
+            float d = (v.body.east - e) * (v.body.east - e) + (v.body.north - n) * (v.body.north - n)
+            if (d < d2) {
+                d2 = d
+                best = v.body
+            }
+        }
+        return best
+    }
+
     // Der echte Stand des Inventars an p: die IDs, alle Behälter, an die er kommt (die eigenen, der Rucksack auf dem Rücken, der geöffnete).
     undefined SendInventory(Player p, defined int seq, defined bool ok) {
         if (p.inv == undefined) { return }
@@ -663,6 +720,8 @@ class RegionServer {
         var s = new Raser.Packet(Raser.Protocol.InvSet)
         s.seq = seq
         s.ok = ok
+        s.cash = inv.cash
+        s.lamp = inv.lampOn
         int ids[] = [inv.pockets, inv.hands, inv.backpackSlot, inv.phoneSlot, inv.cursor, inv.opened, inv.openedDrop]
         for (int i = 0; i < 7; i++) { s.invIds[i] = ids[i] }
         var send = new List<int>()

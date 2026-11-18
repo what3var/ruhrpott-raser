@@ -55,9 +55,9 @@ namespace Raser {
         // Ereignisse (Event)
         static readonly defined int KnockedDown = 1              // id: der Spieler, other: wer ihn umgehauen hat (0: niemand)
 
-        // Operationen am Inventar über Raser.InvOp hinaus (InvOp.kind)
-        static readonly defined int OpOpen = 5                   // drop: den Rucksack am Boden öffnen
-        static readonly defined int OpClose = 6                  // den geöffneten schließen
+        // Operationen am Inventar über Raser.InvOp hinaus (InvOp.kind; 1 bis 5 sind Raser.InvOp: Move, Swap, Drop, PickUp, Use)
+        static readonly defined int OpOpen = 6                   // drop: den Rucksack am Boden öffnen
+        static readonly defined int OpClose = 7                  // den geöffneten schließen
 
         // Fahrzeugarten: 0 zu Fuß, dann wie Raser.Vehicle.kind.
         static defined int KindOf(string vehicle, defined bool onFoot) {
@@ -93,6 +93,7 @@ namespace Raser {
         static readonly defined int Sliding = 2         // Fahrzeug: rutscht
         static readonly defined int Lying = 4           // Spieler/Fußgänger: liegt (umgehauen)
         static readonly defined int Standing = 8        // NPC: steht (wartet)
+        static readonly defined int Lamp = 16           // Spieler: die Taschenlampe leuchtet
     }
 
     // Eine Entität im Snapshot: ID, Art, Variante, Zustandsbits, Lage, Richtung, Tempo und zwei Zahlen je nach Art.
@@ -189,6 +190,8 @@ namespace Raser {
         defined int ack                 // Snapshot: die zuletzt gerechnete Eingabe; InvOp: die letzte Eingabe des Clients davor
         defined bool admin
         defined bool ok                 // InvSet: die Operation seq ist angenommen
+        defined int cash                // InvSet, Snapshot: das Bargeld des Spielers (Cent)
+        defined bool lamp               // InvSet: die Taschenlampe ist an
         string text                     // Token, Chat, Befehl, Grund, Wetter
         string name                     // Name, Absender, Client-Version
         defined int year
@@ -225,6 +228,8 @@ namespace Raser {
             this.ack = 0
             this.admin = false
             this.ok = false
+            this.cash = 0
+            this.lamp = false
             this.text = ""
             this.name = ""
             this.year = 0
@@ -387,7 +392,8 @@ namespace Raser {
                 w.Varint(Raser.Wire.Angle(p.heading))
             } else if (t == Raser.Protocol.InvSet) {
                 w.Varint(p.seq)
-                w.Byte(Raser.Wire.Flag(p.ok))
+                w.Byte(Raser.Wire.Flag(p.ok) | 2 * Raser.Wire.Flag(p.lamp))
+                w.Varint(p.cash)
                 for (int i = 0; i < 7; i++) { w.Varint(p.invIds[i]) }
                 if (p.containers.Count > Raser.Protocol.MaxContainers) { throw new Raser.ProtocolException("Zu viele Behälter (" + p.containers.Count + ").") }
                 w.Varint(p.containers.Count)
@@ -486,7 +492,10 @@ namespace Raser {
                     p.heading = Raser.Wire.Degrees(r.Varint())
                 } else if (t == Raser.Protocol.InvSet) {
                     p.seq = r.Varint()
-                    p.ok = r.Byte() != 0
+                    int okFlags = r.Byte()
+                    p.ok = (okFlags & 1) != 0
+                    p.lamp = (okFlags & 2) != 0
+                    p.cash = r.Varint()
                     for (int i = 0; i < 7; i++) { p.invIds[i] = r.Varint() }
                     int n = r.Varint()
                     if (n > Raser.Protocol.MaxContainers) { throw new Raser.ProtocolException("Zu viele Behälter (" + n + ").") }
@@ -539,6 +548,7 @@ namespace Raser {
             w.Varint(p.time)
             w.Varint(p.region)
             w.Varint(p.ack)
+            w.Varint(p.cash)
             if (p.self == undefined) { w.Byte(0) } else {
                 int flags = 1
                 if (p.self.useHeld) { flags = flags | 2 }
@@ -582,6 +592,7 @@ namespace Raser {
             p.time = r.Varint()
             p.region = r.Varint()
             p.ack = r.Varint()
+            p.cash = r.Varint()
             int flags = r.Byte()
             if ((flags & 1) != 0) {
                 var self = new Raser.Pawn(0)

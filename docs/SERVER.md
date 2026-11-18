@@ -81,16 +81,16 @@ Protokoll 1 bekommt beim Hello ein Reject ("Protokoll 1 passt nicht, der Server 
 | 4 Command | C → S | Befehlszeile (`/kick name`) |
 | 5 Bye | C → S | - |
 | 6 Input | C → S | Folgenummer der ersten Eingabe, Anzahl (1 bis 8), je Eingabe: Gas 0..100, Bremse 0..100 (je 1 Byte), Lenkung, Gehen, Drehen (-100..100, ZigZag), Flags (Rückwärtsgang, Handbremse, Rennen, E = ein-/aussteigen) |
-| 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Öffnen eines Rucksacks am Boden, 6 Schließen; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden) |
+| 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Use, 6 Öffnen eines Rucksacks am Boden, 7 Schließen; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden), davor die letzte Eingabe des Clients (der Server rechnet die Operation erst nach ihr) |
 | 10 Welcome | S → C | Spieler-ID (global, `Raser.IdAllocator`), Region, Serverzeit (ms), Admin ja/nein, Name, Takte je s (30), Takt des Servers |
 | 11 Reject | S → C | Grund (danach schließt der Server) |
-| 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe; der eigene Spieler (bitgenau, `Float64`): Fahrzeug-ID, Lage, Richtung, Tempo, Schrittweg, Last; im Fahrzeug dessen ganzer Zustand (Art, Lage, Richtung, Tempo, Lenkeinschlag, Stoß, Schräglage, Zustand, Tank, Grip, rutscht); dann die **Entitäten** (neu oder geändert) und die IDs der **verschwundenen** |
+| 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe, das eigene Bargeld (Cent); der eigene Spieler (bitgenau, `Float64`): Fahrzeug-ID, Lage, Richtung, Tempo, Schrittweg, Last; im Fahrzeug dessen ganzer Zustand (Art, Lage, Richtung, Tempo, Lenkeinschlag, Stoß, Schräglage, Zustand, Tank, Grip, rutscht); dann die **Entitäten** (neu oder geändert) und die IDs der **verschwundenen** |
 | 13 Join | S → C | ID und Name eines Spielers (beim Eintritt an alle, beim Welcome die schon Anwesenden) |
 | 14 Leave | S → C | ID |
 | 15 Chat | S → C | Absender, Text, Art (0 Spieler, 1 System, 2 Antwort nur an diesen Client, 3 Fehler) |
 | 16 Weather | S → C | Jahr, Tag, Uhrzeit (Minuten am Tag × 60, also Sekunden), Wetter (Name), Zeitraffer |
 | 18 Kick | S → C | Grund (danach schließt der Server) |
-| 20 InvSet | S → C | die zuletzt geprüfte Operation (Folgenummer) und ob sie angenommen ist; die IDs der eigenen Behälter (Taschen, Hände, Rücken, Handy, Maus), des geöffneten Rucksacks am Boden und seines Gegenstands; alle Behälter, an die der Spieler kommt (`Container.Write`) |
+| 20 InvSet | S → C | die zuletzt geprüfte Operation (Folgenummer) und ob sie angenommen ist, Taschenlampe an, Bargeld (Cent); die IDs der eigenen Behälter (Taschen, Hände, Rücken, Handy, Maus), des geöffneten Rucksacks am Boden und seines Gegenstands; alle Behälter, an die der Spieler kommt (`Container.Write`) |
 | 22 Event | S → C | Art (1: Spieler umgehauen), um wen, Verursacher, Lage |
 
 **Entitäten** (`Raser.Entity`, je Eintrag): ID, Art, Variante, Zustandsbits, Lage, Richtung, Tempo und zwei Zahlen `a`, `b` je nach Art -
@@ -98,7 +98,7 @@ von Anfang an allgemein, damit der Verkehr später ohne neue Nachricht hineinpas
 
 | Art | Variante | Bits | a | b |
 |---|---|---|---|---|
-| 1 Spieler | - | 1 im Fahrzeug, 4 liegt (umgehauen) | Fahrzeug-ID | - |
+| 1 Spieler | - | 1 im Fahrzeug, 4 liegt (umgehauen), 16 Taschenlampe leuchtet | Fahrzeug-ID | - |
 | 2 Fahrzeug (der Spieler, auch geparkt) | Fahrzeugart | 2 rutscht | Fahrer (Spieler-ID, 0 frei) | Schräglage in 1/10 Grad |
 | 3 NPC-Auto | Art/Farbe (Verkehr) | Zustand, 8 steht | frei | frei |
 | 4 Fußgänger | Aussehen (Verkehr) | 4 liegt, 8 steht | frei | frei |
@@ -111,7 +111,9 @@ mit 13 Bytes); der Server schickt jedem Client jeden 2. Takt einen Snapshot (**1
 (ohne das eigene - das steht bitgenau im eigenen Zustand), die Gegenstände am Boden und die NPCs des Verkehrs (bis 200 m). Der Server merkt sich je Client den
 Fingerabdruck jeder Entität (quantisiert, wie sie über die Leitung geht): Unverändertes geht nur alle 2 s noch einmal, was aus dem Interesse fällt
 (oder verschwindet), steht in der Liste der verschwundenen. Gemessen (Bots, 2–3 Spieler, ein paar geparkte Fahrzeuge): **etwa 1,4 bis 3,5 KB/s
-je Client vom Server, 0,4 KB/s zum Server**.
+je Client vom Server, 0,4 KB/s zum Server** - ohne Verkehr. Mit Welt und Verkehr (10 bis 14 Autos, gut 30 Fußgänger in Sicht, die sich fast alle
+in jedem Snapshot bewegen) sind es **etwa 21 bis 25 KB/s** je Client; da hilft später ein Delta gegen den letzten bestätigten Stand statt nur
+"geändert ja/nein".
 
 Ablauf: Der Client schickt Hello; der Server prüft Version und Token (Konto aus der Datenbank), setzt den Spieler in die Region und antwortet
 Welcome, Weather, InvSet und die Joins - oder Reject. Ein zweiter Login desselben Kontos wirft den ersten hinaus.
@@ -140,8 +142,9 @@ einer Eingabe, `Coast` = die Fahrzeuge ohne Fahrer rollen aus). Die Kacheln läd
   wer schneller schickt, fährt nicht schneller (die Bots messen das: doppelt so viele Eingaben, dieselbe Strecke). Über 150 Eingaben je s: Kick.
   Werte außerhalb der Grenzen (Gas 101, Flags 16 ...) lehnt schon `Raser.Wire` ab: Kick.
 - **Spieler gegen Fahrzeug:** zu Fuß hält ihn das Fahrzeug auf (`Physics.Walk`); erwischt ihn eines mit mehr als 5 m/s, ist er **umgehauen**
-  (`RegionServer.KnockedDown(Opfer, Verursacher)`: er liegt 3 s, die Eingaben zählen nicht, alle in der Nähe bekommen das Ereignis). Hier
-  entscheidet später der Server, was er verliert (Inventar zu Boden, Kleingeld, kaputte Teile - die Regeln kommen aus Raser.Core).
+  (`RegionServer.KnockedDown(Opfer, Verursacher, Fahrzeug)`: er liegt 3 s, die Eingaben zählen nicht, alle in der Nähe bekommen das Ereignis).
+  Was er verliert, entscheidet der Server mit `Raser.Knockdown.Apply` (Raser.Core: Inventar zu Boden, ein Teil des Kleingelds, Kaputtes; der
+  Zufall aus Takt und ID); er bekommt danach den neuen Stand seines Inventars.
 - **Verkehr:** `RegionServer.Npcs()` rechnet in jedem Takt nach den Spielern und vor den freien Fahrzeugen `Traffic.Step` um alle Spieler,
   `RegionServer.NpcEntities(p, list)` gibt die NPCs in der Nähe von p in die Snapshots (Entitäten 3 und 4) - siehe "Verkehr und Fußgänger".
 
@@ -238,7 +241,7 @@ die Folge, in der Kacheln kommen, ändert nichts.
 
 ## Persistenz
 
-Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created) und `sessions` (Hash des Tokens,
+Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created, cash) und `sessions` (Hash des Tokens,
 Konto, Ablauf). Spielerlagen werden noch nicht gespeichert. Später: Konten und Inventar in einer gemeinsamen Datenbank der globalen Dienste,
 Deltas der Welt im Key-Value-Store (Konzept, Abschnitt 8).
 
@@ -253,9 +256,18 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
   zu Fuß (und nicht, solange er liegt), höchstens 20 Operationen je s. Er antwortet immer mit `InvSet` (angenommen oder nicht, dazu der echte Stand
   aller Behälter, an die der Spieler kommt). Der Client übernimmt den Stand und wendet die noch offenen Operationen noch einmal an (wie bei der
   Bewegung).
+- **Benutzen** (Art 5, `Inventory.Use`): essen und trinken (der Körper `Raser.Body` des Spielers auf dem Server), rauchen, Taschenlampe an/aus
+  (leuchtet sie, trägt die Entität des Spielers Bit 16), Kanister und Schraubenschlüssel am nächsten Fahrzeug der Region (tanken, reparieren -
+  das Fahrzeug des Servers, es geht mit dem nächsten Snapshot an alle).
+- **Bargeld** (`Inventory.cash`, Cent): Geld am Boden wird beim Aufheben Bargeld. Der Server schickt es mit jedem InvSet und Snapshot und
+  speichert es im Konto (Spalte `cash` der Tabelle `accounts`, sobald es sich ändert und beim Gehen); wer neu ist (-1), bekommt das Startgeld. (Die Behälter selbst
+  werden noch nicht gespeichert: nach dem Neuanmelden gibt es die Anfangsausstattung.)
+- **Umgehauen** (`Raser.Knockdown.Apply`, Samen vom Server): was der Spieler trägt, fällt zu Boden, ein Teil des Bargelds als Geldhäufchen,
+  manches geht kaputt; die Gegenstände kommen als Entitäten in die Snapshots, der Betroffene bekommt sein Inventar neu (InvSet).
 - Gegenstände am Boden sind Entitäten im Snapshot (Art 5). Den Inhalt eines Rucksacks am Boden bekommt nur, wer ihn öffnet (Operation 5) oder
   aufhebt; wer ihn offen hat, bekommt jede Änderung. Gegenstände erzeugt nur der Server.
-- Probe (Bots): Anna setzt ihren Rucksack mit Inhalt ab, Bernd setzt seinen ab, geht hin, hebt Annas auf und sieht den Inhalt (2 Wasser,
+- Probe (Bots): Anna fährt Bernd um, er verliert Bargeld und alles, was er trägt, Anna sammelt es auf; ihr Bargeld ist nach dem
+  Neuanmelden noch da. Anna setzt ihren Rucksack mit Inhalt ab, Bernd setzt seinen ab, geht hin, hebt Annas auf und sieht den Inhalt (2 Wasser,
   Schraubenschlüssel).
 
 ## Jetzt gebaut - und später
@@ -279,7 +291,7 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
 | `src/Raser.Net` | das Protokoll (`Raser.Packet`, `Raser.Entity`, `Raser.Wire`, `Raser.FrameReader`, `Raser.Link`), Vorhersage und Interpolation (`Raser.Prediction`, `Raser.Interpolator`, `Raser.ServerClock`), Befehle (`Raser.Commands`), Passwörter (`Raser.Passwords`) - mit Tests |
 | `src/Raser.Server` | `raser-server`: Launcher-API, Konten, Gateway, Koordinator, Regionsserver (Simulation, Snapshots, Inventar), Uhr und Wetter |
 | `src/Raser.Client` | `NetSession` (Verbindung, Takt, Vorhersage, Entitäten, Inventar, Chat, Konsole), `ChatOverlay` |
-| `src/Raser.Game` | `online.fire`: die anderen Spieler in der Szene; `--bot`: ein Client ohne Welt und Fenster (für Tests); `npcs.fire`: der Verkehr in der Szene |
+| `src/Raser.Game` | `online.fire`: Steuerung über den Server, die Entitäten in der Szene; `--bot`: ein Client ohne Fenster mit Plänen (für Tests); `npcs.fire`: der Verkehr in der Szene |
 
 Probe von Hand: `tools/server-smoke.sh <raser-server> <raser-game> [arbeitsverzeichnis] [welt]` startet den Server, registriert über HTTP,
 verbindet Bots (`raser-game --bot 12 --plan kreis|ablegen|aufheben|schummeln --say "..."`) und prüft, dass sie sich sehen, den Chat lesen, dass

@@ -332,6 +332,8 @@ class Online {
 //   --plan kreis    im Fahrzeug im Kreis (Vollgas, halb links)
 //   --plan ablegen  4 s im Kreis, anhalten, aussteigen, den Rucksack (mit Inhalt) absetzen, weggehen
 //   --plan aufheben zu Fuß (--vehicle fuss): den eigenen Rucksack absetzen, auf einen fremden warten, hingehen, aufheben, den Inhalt drucken
+//   --plan umfahren auf den Spieler --target (Name; sonst den nächsten) zufahren, bis er umgehauen ist, anhalten, aussteigen, aufsammeln
+//   --plan stehen   zu Fuß stehen bleiben und drucken, was beim Umhauen verloren ging
 //   --plan schummeln doppelt so viele Eingaben wie erlaubt mit Vollgas, dann eine Lage wie in v1 (der Server wirft hinaus)
 class NetBot {
     static defined int Run(Options options) {
@@ -369,6 +371,9 @@ class NetBot {
         float cheatOwn = 0.0
         int cheatSeq = 0
         float cheatAcc = 0.0
+        float spawnE = 0.0
+        float spawnN = 0.0
+        bool spawned = false
         int sentBytes0 = 0
         int recvBytes0 = 0
         while (s.Online || s.link.IsOpen) {
@@ -428,7 +433,7 @@ class NetBot {
                         float de = r.east - place[0]
                         float dn = r.north - place[1]
                         float d = Math.Sqrt(de * de + dn * dn)
-                        if (d < 1.2) {
+                        if (d < 2.0) {
                             var op = new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)
                             op.drop = target
                             bool local = s.inv.Apply(op)
@@ -455,6 +460,78 @@ class NetBot {
                         }
                     }
                     print("[" + user + "] Rucksack auf dem Ruecken: " + Raser.Items.Get(s.inv.BackpackItem()).name + ", Inhalt:" + what)
+                    phase = "fertig"
+                }
+            }
+            if (plan == "umfahren") {
+                if (phase == "start") {
+                    // zum Ziel: Vollgas, gelenkt auf seine Lage
+                    RemoteEntity aim = undefined
+                    foreach (r in s.OfType(Raser.EntityType.Player)) { if (options.Get("target", "") == "" || r.name == options.Get("target", "")) { aim = r } }
+                    if (car != undefined && aim != undefined) {
+                        float want = Math.Atan2(-(aim.east - place[0]), aim.north - place[1]) * 180.0 / Math.PI
+                        float diff = Raser.Prediction.Turn(want - car.heading)
+                        left = diff > 2.0
+                        right = diff < -2.0
+                        gas = true
+                    }
+                    if (aim != undefined && (aim.bits & Raser.EntityType.Lamp) != 0 && cheatSeq == 0) {
+                        cheatSeq = 1
+                        print("[" + user + "] sieht die Taschenlampe von " + aim.name)
+                    }
+                    if (s.knocks > 0) {
+                        print("[" + user + "] " + s.NameOf(s.knockedId) + " umgehauen, Bargeld " + s.inv.cash + " Cent, getragen " + s.CarriedAll() + " Stück")
+                        phase = "anhalten"
+                    }
+                } else if (phase == "anhalten" && car != undefined) {
+                    if (Math.Abs(car.speed) > 0.3) { brake = car.speed > 0.0; gas = car.speed < 0.0 } else { use = true }
+                } else if (phase == "anhalten" && car == undefined) {
+                    phase = "sammeln"
+                    phaseAt = t
+                } else if (phase == "sammeln") {
+                    // das nächste am Boden (bis 40 m)
+                    RemoteEntity best = undefined
+                    float bestD = 40.0
+                    foreach (r in s.OfType(Raser.EntityType.Item)) {
+                        float d = Math.Sqrt((r.east - place[0]) * (r.east - place[0]) + (r.north - place[1]) * (r.north - place[1]))
+                        if (d < bestD && !mine.Contains(r.id)) {
+                            bestD = d
+                            best = r
+                        }
+                    }
+                    if (best == undefined || t - phaseAt > 14.0) {
+                        print("[" + user + "] aufgesammelt: " + target + " Gegenstände, Bargeld jetzt " + s.inv.cash + " Cent, getragen " + s.CarriedAll() + " Stück")
+                        phase = "fertig"
+                    } else if (bestD < 2.0) {
+                        var op = new Raser.InvOp(Raser.InvOp.PickUp, 0, 0, 0, 0, 0)
+                        op.drop = best.id
+                        s.inv.Apply(op)
+                        s.SendOp(op)
+                        mine.Add(best.id)
+                        target++
+                    } else {
+                        float want = Math.Atan2(-(best.east - place[0]), best.north - place[1]) * 180.0 / Math.PI
+                        float diff = Raser.Prediction.Turn(want - pred.pawn.walker.heading)
+                        left = diff > 4.0
+                        right = diff < -4.0
+                        gas = Math.Abs(diff) < 60.0
+                    }
+                }
+            } else if (plan == "stehen") {
+                if (phase == "start" && s.hasInventory) {
+                    // die Taschenlampe an (Benutzen, der Server prüft mit Inventory.Use)
+                    var pk = s.inv.Pockets()
+                    for (int k = 0; k < pk.Size; k++) {
+                        if (pk.Item(k) == Raser.Items.Taschenlampe) { s.SendOp(s.inv.UseAt(s.inv.pockets, k)) }
+                    }
+                    cheatSeq = s.inv.cash
+                    cheatAcc = s.CarriedAll()
+                    phase = "warten"
+                } else if (phase == "warten" && s.knocks > 0 && s.knockedId == s.id) {
+                    phase = "liegt"
+                    phaseAt = t
+                } else if (phase == "liegt" && t - phaseAt > 1.0) {
+                    print("[" + user + "] umgehauen von " + s.NameOf(s.knockedBy) + ": Bargeld " + cheatSeq + " -> " + s.inv.cash + " Cent, getragen " + Math.Round(cheatAcc) + " -> " + s.CarriedAll() + " Stück, am Boden " + s.OfType(Raser.EntityType.Item).Count)
                     phase = "fertig"
                 }
             }
@@ -489,6 +566,12 @@ class NetBot {
                 s.Poll()
             } else {
                 s.Control(dt, gas, brake, left, right, false, false, use)
+            }
+            if (!spawned && s.selfKnown && s.hasInventory) { print("[" + user + "] Bargeld " + s.inv.cash + " Cent") }
+            if (!spawned && s.selfKnown) {
+                spawned = true
+                spawnE = s.selfEast
+                spawnN = s.selfNorth
             }
             // der Verkehr: alle 60 Takte (2 s) die NPCs, wie sie der letzte Snapshot zeigt (ID, Lage in cm) - zwei Bots am selben Ort sehen
             // dieselben (tools/server-smoke.sh vergleicht)
@@ -530,7 +613,7 @@ class NetBot {
         }
         var p = s.pred
         float span = Math.Max(1.0, (DateTime.UtcNow.Ticks - began) / 10000000.0 - 1.0)
-        print("[" + user + "] Server-Lage " + Math.Round(s.selfEast * 10.0) / 10.0 + ", " + Math.Round(s.selfNorth * 10.0) / 10.0 + ", " + Math.Round(Math.Sqrt((s.selfEast - at[0].ToFloat()) * (s.selfEast - at[0].ToFloat()) + (s.selfNorth - at[1].ToFloat()) * (s.selfNorth - at[1].ToFloat()))) + " m vom Start; " + s.OfType(Raser.EntityType.Vehicle).Count + " Fahrzeuge in Sicht")
+        print("[" + user + "] Server-Lage " + Math.Round(s.selfEast * 10.0) / 10.0 + ", " + Math.Round(s.selfNorth * 10.0) / 10.0 + ", " + Math.Round(Math.Sqrt((s.selfEast - spawnE) * (s.selfEast - spawnE) + (s.selfNorth - spawnN) * (s.selfNorth - spawnN))) + " m vom Start; " + s.OfType(Raser.EntityType.Vehicle).Count + " Fahrzeuge in Sicht")
         print("[" + user + "] " + npcSeen)
         print("[" + user + "] Vorhersage: " + p.reconciled + " Abgleiche, " + p.corrected + " mit Fehler, max Korrektur " + Math.Round(p.maxCorrection * 1000.0) / 1000.0 + " m, im Mittel " + Math.Round(p.sumCorrection / Math.Max(1, p.reconciled) * 10000.0) / 10000.0 + " m, Spruenge " + p.snaps + ", offen " + p.pending.Count)
         print("[" + user + "] Bandbreite: empfangen " + Math.Round((s.link.receivedBytes - recvBytes0) / span) + " B/s, gesendet " + Math.Round((s.link.sentBytes - sentBytes0) / span) + " B/s")
