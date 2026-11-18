@@ -76,6 +76,23 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 - `Send(new float[n])` lehnt der Typprüfer mit TC029 ab („An object goes into a channel only with a word … - or fresh ('new', the result of a
   call)“) - für ein Array zählt `new` nicht als frisch, das Ergebnis eines Aufrufs schon.
 
+## UI-Toolkit im Spiel (das Menü, src/Raser.Game/menu.fire)
+
+Das Menü im Spiel ist ein `UI.Root` als Ebene über dem Bild von scene3d: das Root zeichnet in einen eigenen, durchsichtigen Framebuffer
+(`WindowBackground` mit Alpha 0), das Spiel legt ihn mit `Blit(..., BlitMode.Blend)` über sein Bild und gibt die Ereignisse aus seiner Schleife mit
+`root.Dispatch(ev)` herein; gezeichnet wird mit `root.Update()` (nur was sich geändert hat). Das geht - aber nur mit Umwegen. Stand fire master 6db80cbb.
+
+| Fund | Umweg im Projekt | Stand |
+|---|---|---|
+| **Ein Root ohne eigenes Fenster fehlt.** `new UI.Root(fb, window)` nimmt das Fenster in Beschlag: `EnableEvents`, `window.onCycle` (zeichnen im Takt des Fensters), `AutoResize = true`, `TouchMouse = false`, `PresentArea` je Bild. Ein Spiel, das sein Fenster selbst betreibt (`win.Tick()`, `win.NextEvent()`), will nur zeichnen lassen und Ereignisse hineingeben. | nach dem Konstruktor zurückstellen: `win.onCycle = undefined`, `win.AutoResize = false`, `win.TouchMouse = true`, `root.PartialPresent = false`; Ereignisse mit `root.Dispatch(ev)` (öffentlich, aber nicht dokumentiert), Zeichnen mit `root.Update()` | **Wunsch:** `new UI.Root(framebuffer)` ohne Fenster (Ebene/eingebettet): kein Zugriff aufs Fenster, `Dispatch(ev)` und `Update()` dokumentiert, der Mauszeiger über ein Lambda |
+| **Skalieren ohne Größenänderung fehlt.** Das Root übernimmt die Skalierung des Systems mit `ApplyScaling`, und das vergrößert **Framebuffer und Fenster** (`framebuffer.Resize`, `window.SetSize`) - auf einem 150-%-Bildschirm hätte das Öffnen des Menüs das Spielfenster verändert. Ein Spielmenü skaliert mit der Größe des Bildes, nicht mit dem System. | vor dem Root `SystemTheme.Current().scale = 1.0`, danach von Hand `root.scaling`, `root.renderer.scale`, `root.cw/ch`, `root.CheckSize()` | **Wunsch:** `root.SetScale(s, resize: false)` (logische Größe = Framebuffer / s) |
+| Kein Regler bzw. Auswahlfeld mit ← → (Slider, „Stepper“): für Spieloptionen der übliche Eintrag. `ComboBox` öffnet eine Liste, das passt nicht zu einem Menü mit Pfeiltasten und Gamepad. | eigenes Element `MenuChoice` (`WantsKey` für Links/Rechts) | Wunsch: `UI.Slider` und eine Auswahl mit Pfeilen |
+| Fokus folgt nicht der Maus: Maus über einem Eintrag und Fokus auf einem anderen zeigen zwei helle Zeilen. In Spielmenüs ist beides dasselbe. | `Hover` der eigenen Einträge setzt den Fokus | Wunsch: `root.FocusFollowsPointer` |
+| `Root.KeyDown(key, mod)` kennt keinen Scancode. Tasten, die nach ihrer Lage zählen (Y/X bzw. Z/X der Leiste), lassen sich im Root nicht unterscheiden. | das Belegen der Tasten liest das Ereignis vor `Dispatch` | Wunsch: der Scancode in `KeyDown` (oder `root.lastScancode`) |
+| Das Fenster kann kein Vollbild. | Optionen zeigen „Vollbild: nicht verfügbar“ | Wunsch: `Window.Fullscreen` (randlos über den ganzen Bildschirm) |
+| `new SolidBrush(0)` ist undurchsichtiges Schwarz, nicht durchsichtig (auch `SetPixel(x, y, 0)`); `0x00FFFFFF` oder `UI.Color.Transparent()` (256) sind durchsichtig. | `UI.Color.Transparent()` | Verhalten? Ein Satz in der Doku der Farben fehlt |
+| **Compiler: `readonly` wird nach dem Namen geprüft, nicht nach dem Ziel.** Gibt es irgendwo ein `static readonly ... Cursor` (bei uns `Raser.ContainerKind.Cursor`), scheitert `this.window.Cursor = c` im Paket `ui` (eine Eigenschaft mit `set` von `Window`): „'Cursor' is 'readonly' and can only be assigned inside a constructor of its class“. Nachgestellt: `class Kind { static readonly defined int Cursor = 6 }`, `class W { defined int Cursor { get {...} set {...} } }`, `w.Cursor = 3` - E4000. | `ContainerKind.Cursor` heißt jetzt `ContainerKind.Held` | **muss behoben werden** |
+
 ## Netz
 
 - **Kein Rückfall auf IPv4 bei leerem Host:** `new Net.TcpListener("", port)` und `new Http.Server("", port)` lauschen auf IPv6 (mit IPv4 darin);

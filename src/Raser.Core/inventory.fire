@@ -143,7 +143,7 @@ namespace Raser {
         static readonly defined int BackpackSlot = 3    // der Platz für den Rucksack auf dem Rücken
         static readonly defined int PhoneSlot = 4       // der Platz für das Handy
         static readonly defined int Backpack = 5        // der Inhalt eines Rucksacks: Kleines und Mittleres
-        static readonly defined int Cursor = 6          // was der Spieler gerade mit der Maus hält (ein Platz)
+        static readonly defined int Held = 6            // (nicht "Cursor": docs/FIRE.md) was der Spieler gerade mit der Maus hält (ein Platz)
 
         static string Name(defined int kind) {
             if (kind == Raser.ContainerKind.Pockets) { return "Hosentaschen" }
@@ -151,7 +151,7 @@ namespace Raser {
             if (kind == Raser.ContainerKind.BackpackSlot) { return "Ruecken" }
             if (kind == Raser.ContainerKind.PhoneSlot) { return "Handy" }
             if (kind == Raser.ContainerKind.Backpack) { return "Rucksack" }
-            if (kind == Raser.ContainerKind.Cursor) { return "Hand" }
+            if (kind == Raser.ContainerKind.Held) { return "Hand" }
             return "?"
         }
 
@@ -161,7 +161,7 @@ namespace Raser {
             var t = Raser.Items.Get(item)
             if (t == undefined) { return false }
             if (kind == Raser.ContainerKind.Pockets) { return t.size <= 1 }
-            if (kind == Raser.ContainerKind.Hands || kind == Raser.ContainerKind.Cursor) { return true }
+            if (kind == Raser.ContainerKind.Hands || kind == Raser.ContainerKind.Held) { return true }
             if (kind == Raser.ContainerKind.BackpackSlot) { return t.IsBackpack }
             if (kind == Raser.ContainerKind.PhoneSlot) { return t.phone }
             if (kind == Raser.ContainerKind.Backpack) { return t.size <= 2 }
@@ -554,7 +554,7 @@ namespace Raser {
             this.hands = store.Create(Raser.ContainerKind.Hands, handSlots)
             this.backpackSlot = store.Create(Raser.ContainerKind.BackpackSlot, 1)
             this.phoneSlot = store.Create(Raser.ContainerKind.PhoneSlot, 1)
-            this.cursor = store.Create(Raser.ContainerKind.Cursor, 1)
+            this.cursor = store.Create(Raser.ContainerKind.Held, 1)
         }
 
         Raser.Container Pockets() { return this.store.Find(this.pockets) }
@@ -861,7 +861,7 @@ namespace Raser {
             if (!this.Reaches(op.source)) { return false }
             var c = this.store.Find(op.source)
             if (c == undefined || !c.Valid(op.sourceSlot) || c.Empty(op.sourceSlot)) { return false }
-            if (c.kind == Raser.ContainerKind.Cursor) { return false }
+            if (c.kind == Raser.ContainerKind.Held) { return false }
             int item = c.Item(op.sourceSlot)
             int count = c.Amount(op.sourceSlot)
             int data = c.Data(op.sourceSlot)

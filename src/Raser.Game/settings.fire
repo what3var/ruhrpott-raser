@@ -1,0 +1,321 @@
+// Raser.Game: die Einstellungen des Spiels in <Konfigurationsordner>/spiel.json (neben launcher.json: %APPDATA%\RuhrpottRaser unter Windows,
+// ~/Library/Application Support/RuhrpottRaser auf dem Mac, sonst $XDG_CONFIG_HOME/ruhrpott-raser bzw. ~/.config/ruhrpott-raser; --config ordner
+// oder RASER_CONFIG nimmt einen anderen). Beim Start gelesen (GameSettings.Load); was auf der Kommandozeile steht, geht vor: die Datei füllt nur die
+// Optionen, die dort fehlen. Das Menü (menu.fire) ändert und speichert sie.
+//
+// Die Tastenbelegung: jede Aktion hat ihre Standardtaste (so steht sie in main.fire und im Inventar). Ist eine umbelegt, übersetzt Translate die
+// Ereignisse des Fensters vorher zurück auf die Standardtaste - main.fire und items.fire bleiben, wie sie sind. Belegen tauscht: hat eine andere
+// Aktion die neue Taste, bekommt sie die alte.
+#import "filesystem"
+#import "json"
+#import "raser.client"
+
+class GameSettings {
+    // Grafik
+    string size                     // Fenstergröße "960x600" (Neustart)
+    defined bool gpu                // Renderer Grafikkarte statt Software (Neustart)
+    defined int renderThreads       // Threads des Software-Renderers (0: automatisch)
+    defined int near                // Radius der nahen Stufe in Blöcken
+    defined int far                 // Radius der fernen Stufe
+    defined int workers             // Worker für das Nachladen (Neustart)
+    defined bool sky                // Himmel zeichnen
+    // Spiel
+    defined float camera            // Abstand der Verfolgerkamera (Faktor auf den Standard)
+    defined float smooth            // wie schnell sie dem Wagen nachdreht (je s; klein: weich)
+    string layout                   // "de" (QWERTZ: Y/X) oder "en" (QWERTY: Z/X) - nur für die Beschriftung, die Leiste nimmt die Scancodes
+    // Ton (noch keiner: nur gemerkt)
+    defined int volume
+    // Tasten: Aktion -> Taste
+    Dictionary<string, int> keys
+    // was die Kommandozeile vorgibt (Name der Option -> ihr Wert)
+    Dictionary<string, string> fromCli
+    // Taste -> Standardtaste (nur die umbelegten; leer: nichts zu übersetzen)
+    Dictionary<int, int> remap
+    string file                     // undefined: nicht gespeichert (Messläufe)
+    string error                    // die letzte Meldung beim Lesen oder Schreiben ("" keine)
+
+    construct() {
+        this.size = "960x600"
+        this.gpu = false
+        this.renderThreads = 0
+        this.near = 1
+        this.far = 5
+        this.workers = 3
+        this.sky = true
+        this.camera = 1.0
+        this.smooth = 4.0
+        this.layout = "de"
+        this.volume = 80
+        this.keys = new Dictionary<string, int>()
+        this.fromCli = new Dictionary<string, string>()
+        this.remap = new Dictionary<int, int>()
+        this.file = undefined
+        this.error = ""
+        string ids[] = GameSettings.ActionIds()
+        int defaults[] = GameSettings.ActionKeys()
+        for (int i = 0; i < ids.length; i++) { this.keys[ids[i]] = defaults[i] }
+    }
+
+    // ---- die Aktionen ----
+
+    static string[] ActionIds() {
+        return ["gas", "bremse", "links", "rechts", "handbremse", "rennen", "einsteigen", "kamera", "inventar", "aufheben", "rucksack", "handy", "karte",
+            "benutzen", "wegwerfen", "zurueck", "wetter", "uhr-vor", "uhr-zurueck"]
+    }
+
+    static string[] ActionLabels() {
+        return ["Gas / vorwärts", "Bremse / rückwärts", "Lenken links", "Lenken rechts", "Handbremse", "Rennen (zu Fuß)", "Aus- und einsteigen", "Kamera wechseln",
+            "Inventar", "Aufheben", "Rucksack absetzen", "Handy", "Karte", "Benutzen", "Wegwerfen", "Leiste: vorige Hand", "Nächstes Wetter", "Uhr vor",
+            "Uhr zurück"]
+    }
+
+    // die Standardtasten (wie main.fire und das Inventar sie abfragen)
+    static int[] ActionKeys() {
+        return [119, 115, 97, 100, 32, 1073742049, 101, 99, 105, 102, 98, 104, 109, 117, 116, 113, 114, 1073741890, 1073741891]
+    }
+
+    // Tasten, die nicht belegt werden können: Esc (Menü), Enter (Chat), Rücktaste, Tab (Inventar), 1-6 (Leiste), Y/X/Z (Leiste, Scancodes), ^ und `
+    // (Konsole), + - = (Zoom der Karte), Pfeiltasten (fahren und im Menü wählen).
+    static bool Reserved(defined int key, defined int scancode) {
+        if (key == 27 || key == 13 || key == 8 || key == 9 || key == 94 || key == 96 || key == 43 || key == 45 || key == 61) { return true }
+        if (key >= 49 && key <= 54) { return true }
+        if (key == 120 || key == 121 || key == 122 || scancode == 27 || scancode == 29 || scancode == 53) { return true }
+        if (key >= 1073741903 && key <= 1073741906) { return true }
+        return false
+    }
+
+    defined int KeyOf(string id) { return this.keys.Get(id, 0) }
+
+    // Belegt die Aktion mit der Taste; hatte eine andere Aktion sie, bekommt die die bisherige Taste dieser. Gibt die getauschte Aktion ("" keine).
+    string Assign(string id, defined int key) {
+        int old = this.KeyOf(id)
+        string swapped = ""
+        foreach (other in GameSettings.ActionIds()) {
+            if (other != id && this.KeyOf(other) == key) {
+                this.keys[other] = old
+                swapped = other
+            }
+        }
+        this.keys[id] = key
+        this.Rebuild()
+        return swapped
+    }
+
+    // Alle Tasten wieder auf den Standard.
+    undefined ResetKeys() {
+        string ids[] = GameSettings.ActionIds()
+        int defaults[] = GameSettings.ActionKeys()
+        for (int i = 0; i < ids.length; i++) { this.keys[ids[i]] = defaults[i] }
+        this.Rebuild()
+    }
+
+    // Die Übersetzung neu: die Taste einer umbelegten Aktion wird ihre Standardtaste; eine Standardtaste, die jetzt keiner Aktion gehört, wird stumm (0).
+    undefined Rebuild() {
+        this.remap.Clear()
+        string ids[] = GameSettings.ActionIds()
+        int defaults[] = GameSettings.ActionKeys()
+        var used = new Dictionary<int, bool>()
+        for (int i = 0; i < ids.length; i++) { used[this.KeyOf(ids[i])] = true }
+        for (int i = 0; i < ids.length; i++) {
+            int k = this.KeyOf(ids[i])
+            if (k != defaults[i]) {
+                this.remap[k] = defaults[i]
+                if (!used.ContainsKey(defaults[i])) { this.remap[defaults[i]] = 0 }
+            }
+        }
+    }
+
+    // Ein Ereignis des Fensters: die Taste einer umbelegten Aktion auf ihre Standardtaste (im Ereignis selbst). Ohne Umbelegung: nichts.
+    undefined Translate(any ev) {
+        if (this.remap.Count == 0) { return }
+        if (ev[0] != EventType.KeyDown && ev[0] != EventType.KeyUp) { return }
+        int key = ev[1]
+        if (this.remap.ContainsKey(key)) { ev[1] = this.remap[key] }
+    }
+
+    // Der Name einer Taste für die Anzeige.
+    static string KeyName(defined int key) {
+        if (key == 0) { return "-" }
+        if (key == 32) { return "Leertaste" }
+        if (key == 1073742049) { return "Umschalt links" }
+        if (key == 1073742053) { return "Umschalt rechts" }
+        if (key == 1073742048) { return "Strg links" }
+        if (key == 1073742052) { return "Strg rechts" }
+        if (key == 1073742050) { return "Alt" }
+        if (key == 1073742054) { return "Alt Gr" }
+        if (key >= 1073741882 && key <= 1073741893) { return "F" + (key - 1073741881) }
+        if (key == 1073741906) { return "Pfeil hoch" }
+        if (key == 1073741905) { return "Pfeil runter" }
+        if (key == 1073741904) { return "Pfeil links" }
+        if (key == 1073741903) { return "Pfeil rechts" }
+        if (key == 1073741897) { return "Einfg" }
+        if (key == 1073741898) { return "Pos1" }
+        if (key == 1073741901) { return "Ende" }
+        if (key == 1073741899) { return "Bild hoch" }
+        if (key == 1073741902) { return "Bild runter" }
+        if (key == 127) { return "Entf" }
+        if (key >= 1073741913 && key <= 1073741922) { return "Num " + ((key - 1073741912) % 10) }
+        if (key == 228) { return "Ä" }
+        if (key == 246) { return "Ö" }
+        if (key == 252) { return "Ü" }
+        if (key == 223) { return "ß" }
+        if (key > 32 && key < 127) { return key.ToChar().ToString().ToUpper() }
+        return "Taste " + key
+    }
+
+    // ---- Datei und Kommandozeile ----
+
+    // Der Ordner der Einstellungen (wie der des Launchers, Launcher.Paths.ConfigDir).
+    static string ConfigDir() {
+        string own = Environment.Get("RASER_CONFIG")
+        if (own != undefined && own != "") { return own }
+        string home = IO.Directory.GetHomeDirectory()
+        if (Environment.Platform == "windows") {
+            string appData = Environment.Get("APPDATA")
+            if (appData != undefined && appData != "") { return IO.Path.Combine(appData, "RuhrpottRaser") }
+            return IO.Path.Combine(home, "AppData", "Roaming", "RuhrpottRaser")
+        }
+        if (Environment.Platform == "macos") { return IO.Path.Combine(home, "Library", "Application Support", "RuhrpottRaser") }
+        string xdg = Environment.Get("XDG_CONFIG_HOME")
+        if (xdg != undefined && xdg != "") { return IO.Path.Combine(xdg, "ruhrpott-raser") }
+        return IO.Path.Combine(home, ".config", "ruhrpott-raser")
+    }
+
+    // Liest die Datei und ergänzt die Optionen, die die Kommandozeile nicht nennt. Messläufe ohne Fenster (--shot, --auto, --live, --bot, ...) und
+    // --settings 0 lassen die Datei aus: sie sollen auf jedem Rechner dasselbe messen.
+    static GameSettings Load(Options options) {
+        var s = new GameSettings()
+        foreach (name in ["size", "gpu", "render-threads", "near", "far", "workers", "no-sky"]) {
+            string v = options.Get(name, "")
+            if (v != "") { s.fromCli[name] = v }
+        }
+        foreach (name in ["shot", "auto", "live", "inventory-shot", "bench-model", "bot", "minimap-probe"]) {
+            if (options.Get(name, "") != "") { return s }
+        }
+        if (options.Get("settings", "") == "0") { return s }
+        s.file = IO.Path.Combine(options.Get("config", GameSettings.ConfigDir()), "spiel.json")
+        try {
+            if (IO.File.Exists(s.file)) { s.Read(IO.File.ReadAllText(s.file)) }
+        } catch (Exception e) { s.error = "Einstellungen nicht lesbar: " + e.message }
+        s.ApplyTo(options)
+        return s
+    }
+
+    // Die Werte der Datei als Optionen, wo die Kommandozeile nichts sagt.
+    undefined ApplyTo(Options options) {
+        this.Fill(options, "size", this.size)
+        if (this.gpu) { this.Fill(options, "gpu", "1") }
+        this.Fill(options, "render-threads", "" + this.renderThreads)
+        this.Fill(options, "near", "" + this.near)
+        this.Fill(options, "far", "" + this.far)
+        this.Fill(options, "workers", "" + this.workers)
+        if (!this.sky) { this.Fill(options, "no-sky", "1") }
+    }
+
+    undefined Fill(Options options, string name, string value) {
+        if (options.Get(name, "") == "") { options.values[name] = value }
+    }
+
+    // Steht die Option auf der Kommandozeile? (Dann gilt die, nicht die Datei.)
+    defined bool Overridden(string name) { return this.fromCli.ContainsKey(name) }
+
+    undefined Read(string text) {
+        any o = Json.Parse(text)
+        if (!(o is of JsonObject)) { return }
+        any v = o.Get("size")
+        if (v is of string) {
+            string sv = v
+            var parts = sv.Split("x")
+            if (parts.length == 2 && parts[0].ToInt() >= 320 && parts[1].ToInt() >= 200) { this.size = v }
+        }
+        this.gpu = GameSettings.Flag(o.Get("gpu"), this.gpu)
+        this.renderThreads = GameSettings.Whole(o.Get("renderThreads"), this.renderThreads, 0, 64)
+        this.near = GameSettings.Whole(o.Get("near"), this.near, -1, 4)
+        this.far = GameSettings.Whole(o.Get("far"), this.far, 1, 12)
+        this.workers = GameSettings.Whole(o.Get("workers"), this.workers, 0, 16)
+        this.sky = GameSettings.Flag(o.Get("sky"), this.sky)
+        this.camera = GameSettings.Number(o.Get("camera"), this.camera, 0.5, 2.0)
+        this.smooth = GameSettings.Number(o.Get("smooth"), this.smooth, 1.0, 20.0)
+        this.volume = GameSettings.Whole(o.Get("volume"), this.volume, 0, 100)
+        any layout = o.Get("layout")
+        if (layout == "de" || layout == "en") { this.layout = layout }
+        any keys = o.Get("keys")
+        if (keys is of JsonObject) {
+            foreach (id in GameSettings.ActionIds()) {
+                int k = GameSettings.Whole(keys.Get(id), 0, 1, 2000000000)
+                if (k > 0 && !GameSettings.Reserved(k, 0)) { this.keys[id] = k }
+            }
+            // doppelt belegt (von Hand geändert)? Dann alle zurück
+            var seen = new Dictionary<int, bool>()
+            bool twice = false
+            foreach (id in GameSettings.ActionIds()) {
+                if (seen.ContainsKey(this.KeyOf(id))) { twice = true }
+                seen[this.KeyOf(id)] = true
+            }
+            if (twice) {
+                this.ResetKeys()
+                this.error = "Tastenbelegung doppelt - zurückgesetzt"
+            }
+        }
+        this.Rebuild()
+    }
+
+    static defined bool Flag(any v, defined bool fallback) {
+        if (v is of bool) { return v }
+        return fallback
+    }
+
+    static defined int Whole(any v, defined int fallback, defined int lo, defined int hi) {
+        if (v is of int || v is of float) {
+            float f = v
+            int i = Math.Round(f)!int
+            if (i >= lo && i <= hi) { return i }
+        }
+        return fallback
+    }
+
+    static defined float Number(any v, defined float fallback, defined float lo, defined float hi) {
+        if (v is of int || v is of float) {
+            float f = v
+            if (f >= lo && f <= hi) { return f }
+        }
+        return fallback
+    }
+
+    string ToJson() {
+        string keys = ""
+        foreach (id in GameSettings.ActionIds()) {
+            if (keys != "") { keys = keys + ",\n" }
+            keys = keys + "    " + Json.Serialize(id) + ": " + this.KeyOf(id)
+        }
+        return "{\n  \"size\": " + Json.Serialize(this.size) + ",\n  \"gpu\": " + GameSettings.Bool(this.gpu) + ",\n  \"renderThreads\": " + this.renderThreads + ",\n  \"near\": " + this.near +
+            ",\n  \"far\": " + this.far + ",\n  \"workers\": " + this.workers + ",\n  \"sky\": " + GameSettings.Bool(this.sky) + ",\n  \"camera\": " + GameSettings.Decimal(this.camera) +
+            ",\n  \"smooth\": " + GameSettings.Decimal(this.smooth) + ",\n  \"layout\": " + Json.Serialize(this.layout) + ",\n  \"volume\": " + this.volume +
+            ",\n  \"keys\": {\n" + keys + "\n  }\n}\n"
+    }
+
+    static string Bool(defined bool b) {
+        if (b) { return "true" }
+        return "false"
+    }
+
+    // eine Zahl mit Punkt (JSON), auf zwei Stellen
+    static string Decimal(defined float f) {
+        int c = Math.Round(f * 100.0)!int
+        string s = (c / 100) + "." + ((c % 100) / 10) + (c % 10)
+        return s
+    }
+
+    // Schreibt die Datei (über eine Zwischendatei); gibt "" oder die Meldung.
+    string Save() {
+        if (this.file == undefined) { return "" }
+        try {
+            string dir = IO.Path.GetDirectoryName(this.file)
+            if (!IO.Directory.Exists(dir)) { IO.Directory.CreateDirectory(dir) }
+            IO.File.WriteAllText(this.file + ".neu", this.ToJson())
+            IO.File.Move(this.file + ".neu", this.file, true)
+            this.error = ""
+        } catch (Exception e) { this.error = "Einstellungen nicht gespeichert: " + e.message }
+        return this.error
+    }
+}
