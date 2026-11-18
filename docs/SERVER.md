@@ -192,7 +192,7 @@ Server das nächste Mal schickt.
 Im Mehrspieler simuliert der Server alle NPCs (Autos und Fußgänger), die Clients zeichnen nur, was in den Snapshots kommt. Offline (ohne
 `--server`) rechnet das Spiel selbst mit demselben Code. Die Simulation steckt in der Bibliothek `src/Raser.Traffic` (Import
 `raser.traffic`, Referenzen: Raser.Core, Raser.World, Raser.Mesh - alle ohne scene3d): `Raser.RoadGraph` (Spurgraph aus den Straßen der
-Kacheln) und `Raser.Traffic` (Simulation). Keine Uhr, keine Threads, Zufall nur aus Seeds (`Raser.TrafficRandom`, je Auto und Fußgänger
+Kacheln) und `Raser.Traffic` (Simulation). Die Simulation hat keine Uhr und keine Threads (nur der Bau des Graphen läuft in einem Worker, siehe 2.), Zufall nur aus Seeds (`Raser.TrafficRandom`, je Auto und Fußgänger
 eigener): derselbe Seed, dieselben Kacheln und dieselben Eingaben geben dasselbe Ergebnis. Der Graph wird nach Straßen-ID sortiert gebaut -
 die Folge, in der Kacheln kommen, ändert nichts.
 
