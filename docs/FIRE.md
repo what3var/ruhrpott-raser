@@ -12,6 +12,8 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 | Ein Objekt, das einem Konstruktor übergeben und in einem Feld gespeichert wird, stirbt mit dem Aufrufer, wenn es ein Temporärwert war (`new Voxelizer(Sample.Make(), ...)`). | `try x.TakeTo(this)` in den Konstruktoren | Absicht (Besitzmodell); leicht zu vergessen, ein Hinweis des Typprüfers wäre hilfreich |
 | **Wunsch: ein Schlüsselwort `replace`** für das Überschreiben eines Felds: es löscht das bisherige Objekt (bzw. Array, Container), wenn es im Besitz des Objekts ist, und setzt dann den neuen Wert. Hintergrund: ein Feld neu zu belegen (`this.d = new Dictionary<...>()`, `this.one = take b`, `this.a = undefined`) gibt das Alte **absichtlich nicht** frei - sonst müsste fire jedes Mal sämtliche Referenzen auf das Objekt und alle seine Kinder prüfen. Das Löschen darf deshalb **niemals implizit** passieren, nur mit `replace`. | heute `delete this.f` vor dem Überschreiben (`MeshBatch.Pack`), bzw. `List` + `Clear` (`WorldView.making`) | Idee |
 
+| Elemente mit `RemoveAt` aus einer Liste nehmen, die aus `Json.Deserialize` kam, und die Liste danach wieder schreiben: „A value to write to JSON is destroyed“ (gefunden in Raser.Greens mit fire master, nativ). | die Liste mit `TakeAt` umlegen und die behaltenen mit `take` zurück | offen |
+
 ## scene3d
 
 | Was | Warum | Stand |

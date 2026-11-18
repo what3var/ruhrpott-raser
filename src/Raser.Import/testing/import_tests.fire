@@ -144,7 +144,7 @@ class OsmTests {
         Testing.Assert.AreEqual(5.5, features[0].width)
         Testing.Assert.AreEqual("osm:way/10", features[0].source)
         Testing.Assert.IsTrue(features[1].area)
-        Testing.Assert.AreEqual("landuse=grass", features[1].kind)
+        Testing.Assert.AreEqual("leisure=park", features[1].kind)
         Testing.Assert.AreEqual(8, features[1].points.length)
         Testing.Assert.AreEqual(3.5, features[2].width)
         Testing.Assert.AreEqual(Raser.Material.Paving, features[2].surface)
