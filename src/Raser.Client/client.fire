@@ -334,6 +334,14 @@ class Atmosphere {
         if (this.drawSky) { this.sky.Draw() }
     }
 
+    // Ein Bild im Hintergrund (scene3d Camera.RenderAsync): das vorige, inzwischen fertige Bild kommt in den Framebuffer (WaitRender - danach das HUD
+    // darüber), das nächste beginnt mit dem Stand von jetzt und wird gezeichnet, während das Spiel schon das übernächste rechnet. Ein Bild Verzug.
+    undefined RenderAsync() {
+        this.cam.WaitRender()
+        if (this.drawSky) { this.sky.Follow() }
+        this.cam.RenderAsync()
+    }
+
     // Die Laternenköpfe einer Kachel (Ost, Nord, Höhe in der Welt): der Mast 4,9 m hoch, der Kopf 0,7 m zur Straße (wie Raser.Props.Lamp).
     List<float> LampsOf(Raser.TileKey key) {
         string name = key + ""
@@ -906,8 +914,8 @@ class WorldView {
         return now
     }
 
-    // Der Worker-Thread: Aufträge, bis der Kanal zu ist - baut die Stufe (Raser.NearBuilder) und gleich ihre Modelle (scene3d sperrt seine Aufrufe
-    // über Threads hinweg; so bleibt dem Hauptprogramm nur noch das Einsetzen).
+    // Der Worker-Thread: Aufträge, bis der Kanal zu ist - baut die Stufe (Raser.NearBuilder) und gleich ihre Modelle (scene3d ist thread-sicher, ab
+    // fire-scene3d 1.0.2 hält Model.FromArrays hier das Hauptprogramm nicht mehr auf; dem bleibt nur noch das Einsetzen).
     static undefined Work(Channel<Raser.NearJob> jobs, Channel<LodSet> results, string root, defined float e, defined float n, defined float z, defined bool opaqueOnly, defined bool useCache) {
         var builder = new Raser.NearBuilder(root, e, n, z, opaqueOnly)
         builder.useCache = useCache

@@ -21,6 +21,8 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 |---|---|---|
 | Nebel auch auf der GPU (laut Doku nur Fast und Software). | Hardware-Renderer | offen |
 | Kacheln (`Scene.LightCulling`) und Spiegelungen (`Object.Reflectivity`) auch auf der GPU. | Hardware-Renderer | offen |
+| **In der VM sind die Aufrufe in die Bibliothek eines Pakets einer nach dem anderen**, auch mit `"threadSafe": true` (die Sperre des Wrappers, `native/abi/fire_pkg_wrapper.h`): ein `Model.FromArrays` im Worker hält dort das Hauptprogramm auf, bis das Modell fertig ist (nativ nicht mehr, ab fire-scene3d 1.0.2). | das Spiel läuft nativ | offen (Wunsch: ohne Sperre für Pakete, die thread-sicher sind) |
+| **Die GPU lädt jedes neue Netz einzeln und wartet zweimal darauf** (`s3d_gpu_deviceBuffer`: Vertices und Indizes je ein `submitAndWait`), und zwar in dem Bild, das es zuerst zeigt; ohne DirectDrawing wird außerdem jedes Bild zurückgelesen und gewartet. Kommen viele Blöcke auf einmal, stockt das Bild. Mit `RenderAsync` geschieht beides im Render-Thread von scene3d. | `--async 1` (Standard) | offen (Wunsch: Uploads gesammelt in einem Puffer, oder schon im Worker) |
 
 ## scene3d: gemischt oder nicht
 
@@ -31,6 +33,10 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
   Software), oder `hasAlpha` nur, wenn das Objekt durchsichtige Texel wirklich benutzt.
 
 ## Threads
+
+- **Eine Paketversion mit Zusatz zählt als 1.0.0** (`ProjectBuilder.PackageVersion`): `"version": "1.0.1-sky"` im Manifest eines Pakets wird
+  stillschweigend `1.0.0` - der Cache der nativen Bibliotheken (`/tmp/fire-packages/<name>-<version>`) hält dann die alte, die neue Version
+  greift nicht. Umweg: nur Ziffern (`1.0.2`). Wunsch: der Zusatz bleibt Teil der Version, oder eine Warnung. Stand fire native-c 658559be.
 
 - **Zahlen-Arrays kosten beim Abholen aus einem Kanal Zeit je Wert, Byte-Puffer nicht - auch mit `take`** (ein Worker schickt ein Objekt mit
   einem Array, das Hauptprogramm misst sein `TryReceive`). `Send(take x)` gibt laut Doku weiter wie `handover`; trotzdem kosten 2 Mio. Werte
