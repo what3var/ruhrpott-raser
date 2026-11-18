@@ -5,6 +5,8 @@
 //   raser ... --auto 20 [--steer 0.2] [--back 1] --shot bild.png     ohne Fenster: so viele Sekunden Vollgas (mit festem Lenkeinschlag, auch
 //                                                       rückwärts), dann ein Bild; --look 30 dreht die Kamera, --pitch 20 hebt sie (Grad),
 //                                                       --sun 1 / --moon 1 blickt zur Sonne bzw. zum Mond; --no-sky 1: ohne Himmel (zum Messen)
+//                                                       --heading 90: in diese Richtung starten, --brake 1: die letzte Sekunde bremsen,
+//                                                       --gap 22: die anderen Klassen so weit dahinter (Stöße mit Anlauf)
 //   --date 2026-07-01 (auch 07-01): das Jahr zählt nur für den Mond
 //   --traffic 24 --people 30: höchstens so viele Autos und Fußgänger um den Spieler (0: keine; npcs.fire), --warm s: vorher s Sekunden Verkehr
 //
