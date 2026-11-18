@@ -190,6 +190,7 @@ class ShapeTests {
         Testing.Assert.IsTrue(Raser.Palette.IsFacade(Raser.Palette.Clinker + 3))
         Testing.Assert.IsFalse(Raser.Palette.IsFacade(Raser.Palette.SignRed))
         Testing.Assert.IsFalse(Raser.Palette.IsFacade(Raser.Palette.DoorGreen))
+        Testing.Assert.IsTrue(Raser.Palette.IsFacade(Raser.Palette.PanelRed + 3))
         // Dreckstufen: in den Bänken die nächsten drei Einträge, sonst + 32 je Stufe; höchstens 3
         Testing.Assert.AreEqual(Raser.Palette.BrickCross + 2, Raser.Palette.Dirty(Raser.Palette.BrickCross, 2))
         Testing.Assert.AreEqual(Raser.Palette.BrickCross + 3, Raser.Palette.Dirty(Raser.Palette.BrickCross + 2, 5))

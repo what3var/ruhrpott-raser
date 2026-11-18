@@ -115,6 +115,26 @@ namespace Raser {
                 tile.data.buildings.Add(this.Building(lb, e0, n0))
             }
 
+            // OSM-Tags der Gebäude: der Umriss, der die Mitte des LoD2-Gebäudes enthält
+            foreach (b in tile.data.buildings) {
+                int n = b.footprint.length / 2
+                float cx = 0.0
+                float cy = 0.0
+                for (int k = 0; k < n; k++) {
+                    cx = cx + b.footprint[k * 2]
+                    cy = cy + b.footprint[k * 2 + 1]
+                }
+                cx = cx / n + e0
+                cy = cy / n + n0
+                for (int i = 0; i < this.features.Count; i++) {
+                    if (this.features[i].kind != "osm:building" || !this.featureBoxes[i].Contains(cx, cy)) { continue }
+                    if (Raser.Geo.Inside(this.features[i].points, cx, cy)) {
+                        b.tags = this.features[i].tags
+                        break
+                    }
+                }
+            }
+
             // Straßen und Flächen
             for (int i = 0; i < this.features.Count; i++) {
                 if (!this.featureBoxes[i].Overlaps(minX, minY, maxX, maxY)) { continue }
@@ -123,6 +143,16 @@ namespace Raser {
                 for (int k = 0; k < f.points.length; k = k + 2) {
                     local[k] = f.points[k] - e0
                     local[k + 1] = f.points[k + 1] - n0
+                }
+                if (f.kind == "osm:building") { continue }
+                if (f.kind.StartsWith("zone:")) {
+                    var z = new Raser.Area()
+                    z.source = f.source
+                    z.id = Raser.Ids.Stable(Raser.IdKind.Area, f.source)
+                    z.kind = f.kind.Substring(5)
+                    z.ring = take local
+                    tile.data.zones.Add(take z)
+                    continue
                 }
                 if (f.area) {
                     var a = new Raser.Area()
@@ -299,7 +329,7 @@ namespace Raser {
         }
 
         static string PoiKind(Dictionary<string, string> tags) {
-            string keys[] = ["amenity", "shop", "tourism", "leisure", "craft", "office"]
+            string keys[] = ["amenity", "shop", "tourism", "leisure", "craft", "office", "place"]
             foreach (k in keys) {
                 if (tags.ContainsKey(k)) { return k + "=" + tags[k] }
             }
@@ -355,6 +385,7 @@ namespace Raser {
         static undefined AssignFunctions(Tile tile) {
             foreach (p in tile.data.pois) {
                 foreach (b in tile.data.buildings) {
+                    if (p.kind.StartsWith("place=")) { break }          // Ortsnamen sind keine Nutzung
                     if (Raser.Geo.Inside(b.footprint, p.x, p.y)) {
                         // eine Kirche bleibt eine Kirche (auch wenn sie heute Konzertsaal oder Café ist): nur der Name kommt dazu
                         if (b.function != "alkis=31001_3041") { b.function = p.kind }

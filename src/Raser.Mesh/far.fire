@@ -28,7 +28,7 @@ namespace Raser {
                 if (b.footprint == undefined || b.footprint.length < 6 || b.ridge <= b.ground) { continue }
                 this.models.Add(new Raser.RoofModel(b, seed))
             }
-            Raser.HouseStyle.Assign(this.models, tile.data.roads, tile.key.x * 256.0, tile.key.y * 256.0, seed)
+            Raser.HouseStyle.Assign(this.models, tile.data, tile.key.x * 256.0, tile.key.y * 256.0, seed)
             this.areaBoxes = new List<Box2>()
             foreach (a in tile.data.areas) { this.areaBoxes.Add(Raser.Box2.Of(a.ring)) }
             this.roadBoxes = new List<Box2>()

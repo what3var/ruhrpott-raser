@@ -401,6 +401,14 @@ namespace Raser {
                 if (x % 8 == 0 || y % 16 == 0) { return 1.6 + grain * 0.03 }
                 return 1.0 + Raser.Atlas.Smooth(x, y, 32, s + 450, 128) * 0.12 + (Raser.Atlas.Hash(x / 8, y / 16, s + 460) * 2.0 - 1.0) * 0.06
             }
+            // Sandwichpaneele: waagerecht, je Paneel 80 cm mit Fuge und einer feinen Sicke in der Mitte
+            if (b == Raser.Palette.PanelWhite || b == Raser.Palette.PanelRed) {
+                float f = 1.0 + blot * 0.03 + grain * 0.01 + (Raser.Atlas.Hash(0, y / 8, s + 470) * 2.0 - 1.0) * 0.015
+                if (y % 8 == 0) { f = f - 0.12 }
+                if (y % 8 == 4) { f = f + 0.03 }
+                if (x % 64 == 0) { f = f - 0.05 }
+                return f
+            }
             // Trapezblech: senkrechte Rippen alle 40 cm (Grat hell, Tal dunkel), Stöße alle 6,4 m
             if (b == Raser.Palette.MetalRibbed || b == Raser.Palette.MetalBlue) {
                 float f = 1.0 + grain * 0.01 + blot * 0.03
@@ -464,6 +472,11 @@ namespace Raser {
             if (b == Raser.Palette.CurtainDark) {
                 if (x % 8 == 0 || y % 16 == 0) { return 170 }
                 return 120
+            }
+            if (b == Raser.Palette.PanelWhite || b == Raser.Palette.PanelRed) {
+                if (y % 8 == 0) { return 95 }
+                if (y % 8 == 4) { return 140 }
+                return 130
             }
             if (b == Raser.Palette.MetalRibbed || b == Raser.Palette.MetalBlue) {
                 if (x % 4 == 0) { return 175 }

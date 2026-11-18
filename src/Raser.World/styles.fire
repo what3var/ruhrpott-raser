@@ -12,6 +12,20 @@
 //   Fensterläden, Balkone - und die Dreckstufe für Wand und Dach.
 // Ziel ist ein stimmiges Bild des Ruhrgebiets, nicht der echte Bestand (keine Baujahre, keine Fotos).
 namespace Raser {
+    // Was die Wahl eines Hauses über seine Umgebung weiß (Raser.HouseStyle.Assign).
+    class HouseContext {
+        TileData data
+        defined float area
+        defined float cx            // die Mitte (kachel-lokal, m)
+        defined float cy
+        defined int setting
+        defined int type
+        defined int id              // Hash der ID (mit Seed)
+        defined int fam             // Hash der Familie
+
+        construct() { }
+    }
+
     class HouseStyle {
         // die Bautypen
         static readonly defined int Small = 0       // Siedlungs- und Zechenhaus, Einfamilienhaus
@@ -58,17 +72,25 @@ namespace Raser {
         }
 
         // Wählt das Aussehen aller Gebäude einer Kachel (Ursprung der Kachel in der Welt: e0, n0 in m; roads: ihre Straßen).
-        static undefined Assign(List<RoofModel> models, List<Road> roads, defined float e0, defined float n0, defined int seed) {
+        static undefined Assign(List<RoofModel> models, TileData data, defined float e0, defined float n0, defined int seed) {
             int n = models.Count
             defined float areas[n]
+            for (int i = 0; i < n; i++) { areas[i] = Math.Abs(Raser.Geo.Area(models[i].building.footprint)) }
+            List<Road> roads = undefined
+            if (data != undefined) { roads = data.roads }
             for (int i = 0; i < n; i++) {
                 var m = models[i]
-                areas[i] = Math.Abs(Raser.Geo.Area(m.building.footprint))
-                Raser.HouseStyle.Choose(m, areas[i], Raser.HouseStyle.Neighbourhood(m, roads, e0, n0), seed)
+                var ctx = new Raser.HouseContext()
+                ctx.data = data
+                ctx.area = areas[i]
+                ctx.cx = (m.box.minX + m.box.maxX) / 2.0
+                ctx.cy = (m.box.minY + m.box.maxY) / 2.0
+                ctx.setting = Raser.HouseStyle.SettingOf(m, i, models, areas, data)
+                Raser.HouseStyle.Choose(m, ctx, Raser.HouseStyle.Neighbourhood(m, roads, e0, n0), seed)
             }
             // Teile sehen aus wie das große Gebäude, an das sie stoßen (nicht an der Kachelgrenze: die Nachbarkachel kennt das große vielleicht nicht)
             for (int i = 0; i < n; i++) {
-                if (areas[i] >= 90.0 || Raser.HouseStyle.OnEdge(models[i])) { continue }
+                if (areas[i] >= 90.0 || Raser.HouseStyle.OnEdge(models[i]) || models[i].kind != 0) { continue }
                 int best = -1
                 for (int j = 0; j < n; j++) {
                     if (j == i || areas[j] < areas[i] * 2.0 || areas[j] < 60.0) { continue }
@@ -76,6 +98,143 @@ namespace Raser {
                     if (Raser.HouseStyle.Touches(models[i], models[j])) { best = j }
                 }
                 if (best >= 0) { Raser.HouseStyle.Follow(models[i], models[best]) }
+            }
+        }
+
+        // die Orte (Raser.RoofModel.setting)
+        static readonly defined int Town = 0           // Wohngebiet, Vorort
+        static readonly defined int Center = 1         // Innenstadt: dicht, große Häuser
+        static readonly defined int OldTown = 2        // Altstadt, alter Ortskern: dicht, kleine alte Häuser
+        static readonly defined int Rural = 3          // Dorf, Hof, locker zwischen Feldern
+        static readonly defined int Industrial = 4     // Industriegebiet
+        static readonly defined int Commercial = 5     // Gewerbe- und Einkaufsgebiet
+
+        // Liegt (x, y) in einem Gebiet der Art kind (Flächen mit Belag oder Gebiete ohne, Raser.TileData.zones)?
+        static string ZoneAt(TileData data, defined float x, defined float y) {
+            if (data == undefined) { return "" }
+            string found = ""
+            foreach (z in data.zones) {
+                if (Raser.Geo.Inside(z.ring, x, y)) {
+                    // die feinere Angabe gewinnt: Altstadt und Hof vor Ort, Ort vor Nutzung
+                    if (z.kind == "historic=district" || (z.name != undefined && z.name.Contains("Altstadt"))) { return "historic=district" }
+                    if (found == "" || z.kind == "landuse=farmyard" || z.kind == "landuse=industrial") { found = z.kind }
+                }
+            }
+            if (found != "") { return found }
+            foreach (a in data.areas) {
+                if ((a.kind == "landuse=industrial" || a.kind == "landuse=commercial" || a.kind == "landuse=retail") && Raser.Geo.Inside(a.ring, x, y)) { return a.kind }
+            }
+            return ""
+        }
+
+        // Der Ort eines Hauses aus den Daten: Gebiete (OSM landuse, place, historic), Felder in der Nähe, wie dicht und wie groß die Häuser ringsum
+        // sind, das Baujahr (OSM start_date). Häuser an der Kachelgrenze nur nach den Gebieten (die Nachbarkachel kennt andere Nachbarn).
+        static defined int SettingOf(RoofModel m, defined int self, List<RoofModel> models, defined float areas[], TileData data) {
+            Building b = m.building
+            float cx = (m.box.minX + m.box.maxX) / 2.0
+            float cy = (m.box.minY + m.box.maxY) / 2.0
+            string zone = Raser.HouseStyle.ZoneAt(data, cx, cy)
+            if (zone == "historic=district") { return Raser.HouseStyle.OldTown }
+            if (zone == "landuse=industrial") { return Raser.HouseStyle.Industrial }
+            if (zone == "landuse=commercial" || zone == "landuse=retail") { return Raser.HouseStyle.Commercial }
+            if (zone == "landuse=farmyard" || zone == "place=hamlet" || zone == "place=farm" || zone == "place=isolated_dwelling") { return Raser.HouseStyle.Rural }
+            string year = b.Tag("start_date")
+            if (year != undefined && year.length >= 4) {
+                any y = year.Substring(0, 4).TryToInt()
+                if (y != undefined && y < 1850) { return Raser.HouseStyle.OldTown }
+            }
+            if (Raser.HouseStyle.OnEdge(m)) {
+                if (zone == "place=village") { return Raser.HouseStyle.Rural }
+                return Raser.HouseStyle.Town
+            }
+            // ringsum (50 m): wie viele Häuser, wie groß, wie viele mit Steildach; Felder und Wiesen bis 60 m
+            int near = 0
+            float sum = 0.0
+            int pitched = 0
+            for (int j = 0; j < models.Count; j++) {
+                if (j == self || areas[j] < 25.0) { continue }
+                float dx = (models[j].box.minX + models[j].box.maxX) / 2.0 - cx
+                float dy = (models[j].box.minY + models[j].box.maxY) / 2.0 - cy
+                if (dx * dx + dy * dy > 2500.0) { continue }
+                near++
+                sum = sum + areas[j]
+                if (models[j].pitched) { pitched++ }
+            }
+            bool fields = false
+            if (data != undefined) {
+                foreach (a in data.areas) {
+                    if (a.kind != "landuse=farmland" && a.kind != "landuse=forest") { continue }
+                    if (Raser.Geo.Inside(a.ring, cx, cy) || Raser.HouseStyle.RingDistance(a.ring, cx, cy) < 60.0) { fields = true }
+                }
+                foreach (z in data.zones) {
+                    if (z.kind != "landuse=farmland" && z.kind != "landuse=meadow") { continue }
+                    if (Raser.HouseStyle.RingDistance(z.ring, cx, cy) < 60.0) { fields = true }
+                }
+            }
+            if (fields && near <= 8) { return Raser.HouseStyle.Rural }
+            if (zone == "place=village" && near <= 14) { return Raser.HouseStyle.Rural }
+            if (near >= 14) {
+                float mean = sum / near
+                if (mean < 220.0 && pitched * 10 >= near * 7) { return Raser.HouseStyle.OldTown }
+                if (mean >= 350.0) { return Raser.HouseStyle.Center }
+            }
+            return Raser.HouseStyle.Town
+        }
+
+        static defined float RingDistance(float ring[], defined float x, defined float y) {
+            int n = ring.length / 2
+            float best = 1.0e30
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                float d = Raser.Geo.DistanceToSegment(x, y, ring[k * 2], ring[k * 2 + 1], ring[l * 2], ring[l * 2 + 1])
+                if (d < best) { best = d }
+            }
+            return best
+        }
+
+        // Was der Ort am Aussehen ändert: Fachwerk in der Altstadt (Balken auf weißem Putz) und auf dem Land (Ausfachung aus rotem Backstein), dort
+        // auch Scheunen; im Industrie- und Gewerbegebiet kein Fachwerk.
+        static undefined Local(RoofModel m, HouseContext ctx) {
+            Building b = m.building
+            int type = ctx.type
+            int id = ctx.id
+            float h = b.eaves - b.ground
+            bool small = type == Raser.HouseStyle.Small || (type == Raser.HouseStyle.Old && h < 12.0)
+            if (ctx.setting == Raser.HouseStyle.Industrial || ctx.setting == Raser.HouseStyle.Commercial) {
+                m.timberColor = 0
+                return
+            }
+            if (ctx.setting == Raser.HouseStyle.OldTown && small && m.pitched) {
+                if (Raser.HouseStyle.Rand(id, 0, 21) < 0.4) {
+                    m.wallColor = Raser.HouseStyle.Of([Raser.Palette.Plaster, Raser.Palette.Plaster, Raser.Palette.PlasterCream], id, 22)
+                    m.timberColor = Raser.Palette.Timber
+                    m.plinthColor = Raser.Palette.Sandstone
+                    m.plinthVoxels = 3
+                    m.gableColor = 0
+                }
+                m.roofColor = Raser.HouseStyle.Of([Raser.Palette.RoofTiles, Raser.Palette.RoofDark, Raser.Palette.RoofSlate], id, 23)
+            }
+            if (ctx.setting == Raser.HouseStyle.Rural && m.pitched) {
+                string f = b.function
+                if (f == undefined) { f = "" }
+                bool barn = f.StartsWith("alkis=31001_27") || b.Tag("building") == "barn" || b.Tag("building") == "farm_auxiliary" || b.Tag("building") == "stable"
+                if (small || barn) {
+                    float r = Raser.HouseStyle.Rand(id, 0, 24)
+                    if (r < 0.35) {
+                        m.wallColor = Raser.HouseStyle.Of([Raser.Palette.Brick, Raser.Palette.BrickDark, Raser.Palette.BrickLight], id, 25)
+                        m.timberColor = Raser.Palette.Timber
+                        m.gableColor = 0
+                    } else if (r < 0.7 || barn) {
+                        m.wallColor = Raser.HouseStyle.Of([Raser.Palette.Brick, Raser.Palette.BrickDark, Raser.Palette.Brick], id, 25)
+                    }
+                    m.plinthColor = Raser.Palette.StoneGrey
+                    m.plinthVoxels = 2
+                    m.roofColor = Raser.HouseStyle.Of([Raser.Palette.RoofTiles, Raser.Palette.RoofDark, Raser.Palette.RoofOrange], id, 26)
+                    if (barn) {
+                        m.dormers = false
+                        m.sillColor = 0
+                    }
+                }
             }
         }
 
@@ -147,7 +306,7 @@ namespace Raser {
             if (b == Raser.Palette.Brick || b == Raser.Palette.BrickDark || b == Raser.Palette.BrickLight || b == Raser.Palette.BrickYellow || b == Raser.Palette.BrickBrown || b == Raser.Palette.BrickCross || b == Raser.Palette.Clinker) { return Raser.Material.Brick!int }
             if (b == Raser.Palette.Sandstone || b == Raser.Palette.StoneGrey) { return Raser.Material.Rock!int }
             if (b == Raser.Palette.WashedConcrete || b == Raser.Palette.ConcretePanel || b == Raser.Palette.Concrete || b == Raser.Palette.Eternit) { return Raser.Material.Concrete!int }
-            if (b == Raser.Palette.CurtainDark || b == Raser.Palette.MetalRibbed || b == Raser.Palette.MetalBlue || b == Raser.Palette.Slate) { return Raser.Material.Metal!int }
+            if (b == Raser.Palette.CurtainDark || b == Raser.Palette.MetalRibbed || b == Raser.Palette.MetalBlue || b == Raser.Palette.PanelWhite || b == Raser.Palette.PanelRed || b == Raser.Palette.Slate) { return Raser.Material.Metal!int }
             if (b == Raser.Palette.Timber) { return Raser.Material.Wood!int }
             return Raser.Material.Plaster!int
         }
@@ -158,15 +317,25 @@ namespace Raser {
         static defined int Of(int options[], defined int h, defined int salt) { return options[Raser.HouseStyle.Pick(h, 0, salt, options.length)] }
 
         // Das Aussehen eines Gebäudes für sich.
-        static undefined Choose(RoofModel m, defined float area, defined int place, defined int seed) {
+        static undefined Choose(RoofModel m, HouseContext ctx, defined int place, defined int seed) {
             Building b = m.building
+            float area = ctx.area
             int type = Raser.HouseStyle.TypeOf(m, area)
+            m.setting = ctx.setting
+            m.kind = 0
+            m.facadeStyle = -1
+            m.bandColor = 0
+            m.canopy = false
+            m.sheds = false
             m.houseType = type
             // die Familie: je Straße (oder Zelle des Viertels) und Bautyp; das Haus: nach seiner ID. Jedes fünfte Altbau- oder Siedlungshaus
             // tanzt aus der Reihe (eine andere Familie)
             int id = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), b.id), seed)
             int fam = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), place), type), seed)
             if ((type == Raser.HouseStyle.Old || type == Raser.HouseStyle.Small) && Raser.HouseStyle.Rand(id, 0, 14) < 0.2) { fam = Raser.Fnv.AddInt(fam, id) }
+            ctx.id = id
+            ctx.fam = fam
+            ctx.type = type
             m.wallColor = Raser.Palette.Plaster
             m.roofColor = Raser.Palette.RoofTiles
             m.plinthColor = 0
@@ -210,7 +379,11 @@ namespace Raser {
                 if (type == Raser.HouseStyle.Small) { m.dormers = Raser.HouseStyle.Rand(fam, 0, 13) < 0.6 }
                 if (type == Raser.HouseStyle.Old) { m.dormers = Raser.HouseStyle.Rand(id, 0, 13) < 0.4 }
             }
-                        // ein Sockel in Wandfarbe ist keiner
+            // der Ort: Fachwerk in der Altstadt (weiß verputzt) und auf dem Land (rote Ziegel zwischen den Balken), keins im Gewerbegebiet
+            Raser.HouseStyle.Local(m, ctx)
+            // besondere Gebäude mit eigenem Aussehen und eigenen Bausteinen (Raser.BuildingKinds)
+            Raser.BuildingKinds.Apply(m, ctx)
+            // ein Sockel in Wandfarbe ist keiner
             if (Raser.Palette.BaseOf(m.plinthColor) == Raser.Palette.BaseOf(m.wallColor)) { m.plinthColor = 0 }
             if (m.plinthColor == 0) { m.plinthVoxels = 0 }
             if (!m.pitched) {

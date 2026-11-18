@@ -297,7 +297,7 @@ class VoxelizerTests {
         tile.heights = take raster
         var b = new Raser.Building()
         b.source = "test:schraeg"
-        b.function = "alkis=51009_1610"      // ohne Fenster und Türen (hier geht es um die Form)
+        b.function = "alkis=53001_1800"      // ohne Fenster und Türen (hier geht es um die Form)
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
         // ein Parallelogramm: die untere Kante steigt 1:2 von (2, 2) nach (10, 6)
         b.footprint = [2.0, 2.0, 10.0, 6.0, 10.0, 11.0, 2.0, 11.0]
@@ -335,7 +335,7 @@ class VoxelizerTests {
         tile.heights = take raster
         var b = new Raser.Building()
         b.source = "test:turm"
-        b.function = "alkis=51009_1610"      // ohne Fenster und Türen (hier geht es um die Form)
+        b.function = "alkis=53001_1800"      // ohne Fenster und Türen (hier geht es um die Form)
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
         // ein Kreis mit 2 m Radius um (6, 6) aus 32 Punkten: im Raster der Mittelpunkt (30, 30), Radius 10 Voxel
         float fp[] = new float[64]
@@ -535,7 +535,7 @@ class VoxelizerTests {
         }
         Testing.Assert.IsTrue(house >= 4)
         // eine Überdachung: nichts
-        b.function = "alkis=51009_1610"
+        b.function = "alkis=53001_1800"
         var none = Raser.Facade.Plan(b, roads)
         none.At(11.7, 10.1)
         Testing.Assert.AreEqual(Raser.Facade.Wall, none.ground)
@@ -550,7 +550,7 @@ class VoxelizerTests {
         var b = new Raser.Building()
         b.source = "test:satteldach"
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
-        b.function = "alkis=51009_1610"
+        b.function = "alkis=53001_1800"
         // 10 x 8 m, First entlang x (die längere Seite), Traufe 64 m, First 69 m: Neigung 5 m auf 4 m
         b.footprint = [10.0, 10.0, 20.0, 10.0, 20.0, 18.0, 10.0, 18.0]
         b.ground = 60.0
@@ -594,7 +594,7 @@ class VoxelizerTests {
         var b = new Raser.Building()
         b.source = "test:torhaus"
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
-        b.function = "alkis=51009_1610"
+        b.function = "alkis=53001_1800"
         b.footprint = [2.0, 2.0, 12.0, 2.0, 12.0, 10.0, 2.0, 10.0]
         b.ground = 60.0
         b.eaves = 70.0
@@ -950,5 +950,58 @@ class HouseStyleTests {
         again.Add(new Raser.RoofModel(row2, 1))
         Raser.HouseStyle.Assign(again, undefined, 376000.0, 5705000.0, 1)
         Testing.Assert.AreEqual(Raser.Palette.BaseOf(again[0].roofColor), Raser.Palette.BaseOf(again[2].roofColor))
+    }
+}
+
+class KindTests {
+    static Raser.Building Flat(string source, float footprint[], defined float eaves, string function) {
+        var b = new Raser.Building()
+        b.source = source
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        b.footprint = footprint
+        b.ground = 60.0
+        b.eaves = eaves
+        b.ridge = eaves
+        b.roofType = Raser.RoofType.Flat
+        b.function = function
+        return b
+    }
+
+    [Test "Besondere Gebäude: Tankstelle mit Dach auf Stützen, Halle im Industriegebiet, Parkhaus, Ort aus den Gebieten"]
+    undefined Kinds() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        // Tankstelle: Shop und Dach (Überdachung) 10 m daneben; eine Halle im Industriegebiet; ein Parkhaus
+        tile.data.buildings.Add(KindTests.Flat("test:shop", [10.0, 10.0, 18.0, 10.0, 18.0, 16.0, 10.0, 16.0], 64.0, "amenity=fuel"))
+        tile.data.buildings.Add(KindTests.Flat("test:dach", [10.0, 22.0, 26.0, 22.0, 26.0, 32.0, 10.0, 32.0], 65.0, "alkis=51009_1610"))
+        tile.data.buildings.Add(KindTests.Flat("test:halle", [100.0, 100.0, 140.0, 100.0, 140.0, 125.0, 100.0, 125.0], 68.0, "alkis=31001_2000"))
+        tile.data.buildings.Add(KindTests.Flat("test:parkhaus", [60.0, 150.0, 90.0, 150.0, 90.0, 180.0, 60.0, 180.0], 71.2, "alkis=31001_2461"))
+        var zone = new Raser.Area()
+        zone.source = "test:gewerbe"
+        zone.kind = "landuse=industrial"
+        zone.ring = [90.0, 90.0, 160.0, 90.0, 160.0, 140.0, 90.0, 140.0]
+        tile.data.zones.Add(take zone)
+        var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
+        Testing.Assert.AreEqual(Raser.BuildingKinds.Fuel, v.models[0].kind)
+        Testing.Assert.AreEqual(Raser.BuildingKinds.FuelCanopy, v.models[1].kind)
+        Testing.Assert.IsTrue(v.models[1].canopy)
+        Testing.Assert.AreEqual(Raser.HouseStyle.Industrial, v.models[2].setting)
+        Testing.Assert.AreEqual(Raser.BuildingKinds.Hall, v.models[2].kind)
+        Testing.Assert.AreEqual(Raser.Facade.Hall, v.models[2].facade.style)
+        Testing.Assert.AreEqual(Raser.BuildingKinds.ParkingGarage, v.models[3].kind)
+        // unter dem Tankstellendach frei (Mitte 18, 27 m: Säule 90, 135; Boden 60 m = Voxel 300, im Chunk 4 z 44), an der Ecke eine Stütze
+        var c = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 2, 4))
+        Testing.Assert.AreEqual(0, c.MaterialAt(90 - 64, 135 - 128, 50))
+        var corner = v.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20 + 1, 4))
+        Testing.Assert.AreEqual(Raser.Material.Concrete!int, corner.MaterialAt(50, 110 - 64, 50))
+        // die Halle: Tore zur Straße gibt es nur mit Straße - aber Lichtbänder und keinen Zwischenboden
+        var panes = new List<float>()
+        v.models[2].facade.Panes(v.models[2].building, v.models[2].groundVoxel, panes)
+        bool band = false
+        for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+            if (Math.Round(panes[k + 6])!int == Raser.Facade.Clerestory) { band = true }
+        }
+        Testing.Assert.IsTrue(band)
     }
 }
