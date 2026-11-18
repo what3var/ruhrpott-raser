@@ -69,6 +69,7 @@ class NetSession {
     Raser.Prediction pred           // undefined bis zum Welcome
     Raser.Obstacles obstacles       // (bis zum Welcome; dann gehört es der Vorhersage)
     Raser.ServerClock clock
+    Raser.SnapshotHistory history   // die letzten Snapshots (Grundlagen der Deltas)
     defined float rate              // Takte je s (vom Server)
     defined float accumulator       // Zeit seit dem letzten Takt (s)
     defined bool useLatch           // E gedrückt, der nächste Takt nimmt es mit
@@ -117,6 +118,7 @@ class NetSession {
         this.obstacles = undefined
         this.rate = 30.0
         this.clock = new Raser.ServerClock(30.0)
+        this.history = new Raser.SnapshotHistory()
         this.accumulator = 0.0
         this.useLatch = false
         this.serverTick = 0
@@ -232,7 +234,9 @@ class NetSession {
     undefined SendControls(Raser.Controls c) {
         var list = new List<Raser.Controls>()
         list.Add(c.Clone())
-        this.link.Send(Raser.Packet.Inputs(list))
+        var m = Raser.Packet.Inputs(list)
+        m.ack = this.history.latest
+        this.link.Send(m)
     }
 
     // Die Lage des Spielers fürs Inventar (Reichweite beim Aufheben).
@@ -379,16 +383,25 @@ class NetSession {
         this.serverTick = p.tick
         this.clock.Observe(p.tick, NetSession.Seconds())
         float at = p.tick / this.rate
-        foreach (id in p.gone) { this.entities.Remove(id) }
+        // der volle Stand aus Grundlage und Delta (Raser.SnapshotHistory); p.entities sind danach alle, die der Client jetzt kennt
+        if (!this.history.Resolve(p)) {
+            this.Lost("ein Snapshot ohne Grundlage (Takt " + p.baseTick + ")")
+            return
+        }
+        var seen = new HashSet<int>()
         foreach (e in p.entities) {
             if (e.id == this.id) { continue }
+            seen.Add(e.id)
             RemoteEntity r = undefined
             if (this.entities.ContainsKey(e.id)) { r = this.entities[e.id] }
+            bool changed = true
             if (r == undefined || r.type != e.type) {
                 var made = new RemoteEntity(e.id, e.type)
                 this.entities[e.id] = made
                 made.TakeTo(this.entities)
                 r = this.entities[e.id]
+            } else {
+                changed = r.east != e.east || r.north != e.north || r.heading != e.heading || r.speed != e.speed || r.b != e.b
             }
             r.variant = e.variant
             r.bits = e.bits
@@ -399,14 +412,12 @@ class NetSession {
             r.heading = e.heading
             r.speed = e.speed
             if (e.type == Raser.EntityType.Player) { r.name = this.NameOf(e.id) }
-            r.path.Add(at, e.east, e.north, e.heading, e.speed, e.b / 10.0)
+            // ein neuer Punkt der Bahn, wenn sich etwas bewegt hat (weit weg kommt nur jeder 2. Snapshot neu) oder es steht
+            if (changed || e.speed == 0.0) { r.path.Add(at, e.east, e.north, e.heading, e.speed, e.b / 10.0) }
         }
-        // was sich nicht geändert hat, steht weiter da: ein Punkt zur Zeit dieses Snapshots (sonst liefe die Interpolation voraus)
-        foreach (pair in this.entities) {
-            var r = pair.Value
-            var path = r.path
-            if (path.Count > 0 && path.samples[path.samples.Count - 6] < at && r.speed == 0.0) { path.Add(at, r.east, r.north, r.heading, 0.0, r.b / 10.0) }
-        }
+        var vanished = new List<int>()
+        foreach (pair in this.entities) { if (!seen.Contains(pair.Key)) { vanished.Add(pair.Key) } }
+        foreach (id in vanished) { this.entities.Remove(id) }
         // die Gegenstände am Boden: genau die Entitäten der Art Item
         this.drops.all.Clear()
         foreach (pair in this.entities) {

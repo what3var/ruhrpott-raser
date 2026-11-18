@@ -47,7 +47,7 @@ class AuthorityTests {
         var p = Raser.Packet.Inputs(list)
         byte frame[] = Raser.Wire.Frame(p)
         // eine Eingabe sind 7 Bytes, der Rahmen 2 + Art + Nummer + Anzahl
-        Testing.Assert.IsTrue(frame.length <= 2 + 1 + 2 + 1 + 3 * 8, "kompakt: " + frame.length + " Bytes")
+        Testing.Assert.IsTrue(frame.length <= 2 + 1 + 2 + 1 + 1 + 3 * 8, "kompakt: " + frame.length + " Bytes")
         var back = AuthorityTests.Round(p)
         Testing.Assert.AreEqual(3, back.controls.Count)
         for (int i = 0; i < 3; i++) {
@@ -87,6 +87,7 @@ class AuthorityTests {
         s.ack = 50
         s.SetSelf(pawn, car.body)
         var back = AuthorityTests.Round(s)
+        Testing.Assert.IsTrue(new Raser.SnapshotHistory().Resolve(back))
         Testing.Assert.AreEqual(77, back.self.vehicle)
         Testing.Assert.AreEqual("motorrad", back.selfVehicle.kind)
         var b = car.body
@@ -154,6 +155,7 @@ class AuthorityTests {
         pred.prevE = pred.curE
         pred.prevN = pred.curN
         var queue = new List<Raser.Controls>()
+        var history = new Raser.SnapshotHistory()
         for (int tick = 1; tick <= 400; tick++) {
             // der Client: eine Eingabe je Takt, sofort gerechnet
             var c = AuthorityTests.Script(tick)
@@ -179,6 +181,7 @@ class AuthorityTests {
                 s.SetSelf(sp, body)
                 foreach (v in server.vehicles) { if (v.id != sp.vehicle) { s.entities.Add(Raser.Entity.OfVehicle(v)) } }
                 var back = AuthorityTests.Round(s)
+                history.Resolve(back)
                 pred.Reconcile(back)
                 pred.Decay(1.0 / 30.0)
             }

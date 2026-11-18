@@ -13,6 +13,7 @@ namespace Raser {
         Raser.SimWorld world            // die Hindernisse und die Fahrzeuge (aus den Snapshots; das eigene vorhergesagt)
         Raser.Pawn pawn
         List<Raser.Controls> pending    // gerechnet, noch nicht bestätigt
+        Dictionary<int, Raser.Pawn> ghosts  // die anderen Spieler zu Fuß (aus dem Snapshot): man weicht ihnen aus wie auf dem Server
         Dictionary<int, Raser.Entity> known  // je Fahrzeug der letzte Stand des Servers (vor dem Nachrechnen wird alles darauf zurückgesetzt)
         defined int seq                 // die Nummer der letzten Eingabe
         defined bool reverse            // der Gang (aus den Tasten, wie im Spiel)
@@ -43,6 +44,7 @@ namespace Raser {
             this.pawn = new Raser.Pawn(id)
             this.pending = new List<Raser.Controls>()
             this.known = new Dictionary<int, Raser.Entity>()
+            this.ghosts = new Dictionary<int, Raser.Pawn>(Owns.Values)
             this.seq = 0
             this.reverse = false
             this.ready = false
@@ -133,6 +135,33 @@ namespace Raser {
             v.driver = e.a
         }
 
+        // Die anderen zu Fuß (Spieler, Fußgänger) aus dem Snapshot in die Welt der Vorhersage (Raser.SimWorld.Crowd). entities: alle, die der
+        // Client jetzt kennt.
+        undefined Crowd(List<Raser.Entity> entities) {
+            var w = this.world
+            w.pawns.Clear()
+            w.discs.Clear()
+            var seen = new HashSet<int>()
+            foreach (e in entities) {
+                if (e.type == Raser.EntityType.Pedestrian) {
+                    w.discs.Add(e.east)
+                    w.discs.Add(e.north)
+                    continue
+                }
+                if (e.type != Raser.EntityType.Player || (e.bits & Raser.EntityType.InVehicle) != 0 || e.id == this.pawn.id) { continue }
+                if (!this.ghosts.ContainsKey(e.id)) { this.ghosts[e.id] = new Raser.Pawn(e.id) }
+                var g = this.ghosts[e.id]
+                g.walker.east = e.east
+                g.walker.north = e.north
+                g.walker.heading = e.heading
+                seen.Add(e.id)
+                w.pawns.Add(g)
+            }
+            var gone = new List<int>()
+            foreach (pair in this.ghosts) { if (!seen.Contains(pair.Key)) { gone.Add(pair.Key) } }
+            foreach (id in gone) { this.ghosts.Remove(id) }
+        }
+
         undefined Forget(defined int id) {
             this.known.Remove(id)
             if (id != this.pawn.vehicle) { this.world.Remove(id) }
@@ -166,6 +195,7 @@ namespace Raser {
             // die anderen Fahrzeuge: was der Snapshot bringt, sonst der letzte Stand des Servers
             foreach (id in s.gone) { this.Forget(id) }
             foreach (e in s.entities) { this.SyncVehicle(e) }
+            this.Crowd(s.entities)
             foreach (pair in this.known) { this.Restore(pair.Value) }
             this.ready = true
             this.Mark()

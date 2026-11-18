@@ -1,0 +1,93 @@
+// Raser.Sim: die Kacheln der Hindernisse aus einem eigenen Thread (Server) - das Laden (JSON, bis 1 MB je Kachel) hält so den Takt nicht an.
+//
+// Request(namen) bestellt Kacheln ("x_y") beim Worker (`fire dedicated`: er wartet in den Natives beim Lesen). Der Regionsserver übernimmt
+// das Ergebnis an einer festen Taktgrenze (Bestellung bei T, Übernahme bei T + N; ist der Worker dann noch nicht fertig, wartet der Takt):
+// so hängt nicht vom Timing ab, ab welchem Takt eine Wand steht - wie beim Straßengraphen (Raser.GraphWorker).
+#import "time"
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    // Ein Auftrag und seine Antwort.
+    class TileJob {
+        defined int id
+        List<string> names              // die bestellten Kacheln
+        List<Raser.Tile> tiles          // die Antwort: die geladenen (in der Folge von names, ohne die fehlenden)
+        List<string> found              // ... und ihre Namen
+        defined int ticks               // so lange hat der Worker gebraucht
+
+        construct() {
+            this.names = new List<string>()
+            this.tiles = new List<Raser.Tile>(Owns.Values)
+            this.found = new List<string>()
+            this.ticks = 0
+        }
+    }
+
+    class TileWorker {
+        Channel<Raser.TileJob> jobs
+        Channel<Raser.TileJob> done
+        defined int made
+        List<Raser.TileJob> ready       // fertig, noch nicht übernommen
+
+        construct(string world) {
+            this.jobs = new Channel<Raser.TileJob>(256)
+            this.done = new Channel<Raser.TileJob>(256)
+            this.ready = new List<Raser.TileJob>(Owns.Values)
+            this.made = 0
+            var jobs = this.jobs
+            var done = this.done
+            fire dedicated taking world with jobs, done { Raser.TileWorker.Work(jobs, done, world) }
+        }
+
+        static undefined Work(Channel<Raser.TileJob> jobs, Channel<Raser.TileJob> done, string world) {
+            Raser.FileTileStore store = undefined
+            if (world != "") { store = new Raser.FileTileStore(world) }
+            foreach (job in jobs) {
+                int t0 = DateTime.Now.Ticks
+                foreach (n in job.names) {
+                    var key = Raser.TileKey.Parse(n)
+                    if (key == undefined || store == undefined) { continue }
+                    var tile = store.Load(key)
+                    if (tile == undefined) { continue }
+                    job.tiles.Add(take tile)
+                    job.found.Add(n)
+                }
+                job.ticks = DateTime.Now.Ticks - t0
+                done.Send(take job)
+            }
+        }
+
+        // Bestellt die Kacheln names; gibt die Nummer des Auftrags.
+        defined int Request(List<string> names) {
+            this.made++
+            var job = new Raser.TileJob()
+            job.id = this.made
+            foreach (n in names) { job.names.Add(n) }
+            this.jobs.Send(take job)
+            return this.made
+        }
+
+        // Holt den Auftrag id ab; wartet höchstens seconds s darauf. undefined: nicht fertig geworden.
+        Raser.TileJob Take(defined int id, defined float seconds = 30.0) {
+            int until = DateTime.Now.Ticks + Math.Round(seconds * 10000000.0)!int
+            while (true) {
+                for (int i = 0; i < this.ready.Count; i++) {
+                    if (this.ready[i].id == id) {
+                        return this.ready.TakeAt(i)
+                    }
+                }
+                var got = this.done.TryReceive()
+                if (got == undefined) {
+                    if (DateTime.Now.Ticks >= until) { return undefined }
+                    got = this.done.Receive()
+                    if (got == undefined) { return undefined }
+                }
+                this.ready.Add(take got)
+            }
+            return undefined
+        }
+
+        undefined Close() { this.jobs.Close() }
+    }
+}

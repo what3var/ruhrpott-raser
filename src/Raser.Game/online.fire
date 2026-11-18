@@ -334,8 +334,41 @@ class Online {
 //   --plan aufheben zu Fuß (--vehicle fuss): den eigenen Rucksack absetzen, auf einen fremden warten, hingehen, aufheben, den Inhalt drucken
 //   --plan umfahren auf den Spieler --target (Name; sonst den nächsten) zufahren, bis er umgehauen ist, anhalten, aussteigen, aufsammeln
 //   --plan stehen   zu Fuß stehen bleiben und drucken, was beim Umhauen verloren ging
+//   --plan gerade   im Fahrzeug geradeaus (Vollgas)
+//   --plan gehen    zu Fuß 3 s geradeaus, dann stehen (für die Probe des gespeicherten Stands)
+//   --plan zueinander zu Fuß auf den Spieler --target zu (rennen) und den kleinsten Abstand drucken (vom Server)
+// Pläne zu Fuß steigen erst aus, Pläne im Fahrzeug erst ins nächste ein (der Server setzt jeden dorthin, wo er zuletzt war).
 //   --plan schummeln doppelt so viele Eingaben wie erlaubt mit Vollgas, dann eine Lage wie in v1 (der Server wirft hinaus)
 class NetBot {
+    // Lage (cm, nach dem Server), Fahrzeug und Inventar (Bargeld, Lampe, je Behälter seine Stapel) als eine Zeile.
+    static string Stand(NetSession s) {
+        string what = "Lage " + Math.Round(s.selfEast * 100.0)!int + "," + Math.Round(s.selfNorth * 100.0)!int
+        var car = s.pred.Car()
+        if (car != undefined) { what = what + " im " + car.name + " (Zustand " + Math.Round(car.health * 1000.0)!int + ", Tank " + Math.Round(car.fuel * 1000.0)!int + ")" }
+        what = what + ", Bargeld " + s.inv.cash + ", Lampe " + s.inv.lampOn + ", Inventar"
+        var ids = new List<int>()
+        foreach (id in [s.inv.pockets, s.inv.hands, s.inv.backpackSlot, s.inv.phoneSlot, s.inv.cursor]) { ids.Add(id) }
+        var bp = s.inv.Backpack()
+        if (bp != undefined) { ids.Add(bp.id) }
+        foreach (id in ids) {
+            var c = s.store.Find(id)
+            if (c == undefined) {
+                what = what + " ?"
+                continue
+            }
+            what = what + " " + Raser.ContainerKind.Name(c.kind) + ":"
+            for (int i = 0; i < c.Size; i++) {
+                if (c.Empty(i)) { continue }
+                var t = Raser.Items.Get(c.Item(i))
+                // (ein Rucksack zeigt auf seinen Behälter - dessen ID ist nach dem Neuanmelden eine andere)
+                string data = "/" + c.Data(i)
+                if (t.IsBackpack) { data = "" }
+                what = what + t.key + "x" + c.Amount(i) + data + ","
+            }
+        }
+        return what
+    }
+
     static defined int Run(Options options) {
         float seconds = options.Get("bot", "10").ToFloat()
         string user = options.Get("user", "bot")
@@ -376,6 +409,11 @@ class NetBot {
         bool spawned = false
         int sentBytes0 = 0
         int recvBytes0 = 0
+        bool ranUp = false
+        bool told = false
+        float least = 1000.0
+        bool footPlan = plan == "aufheben" || plan == "stehen" || plan == "zueinander" || plan == "gehen"
+        bool carPlan = plan == "kreis" || plan == "gerade" || plan == "umfahren" || plan == "ablegen"
         while (s.Online || s.link.IsOpen) {
             int now = DateTime.UtcNow.Ticks
             float t = (now - began) / 10000000.0
@@ -390,7 +428,55 @@ class NetBot {
             var pred = s.pred
             var car = pred.Car()
             float place[] = pred.world.PlaceOf(pred.pawn)
-            if (plan == "kreis" || (plan == "ablegen" && t < 4.0)) {
+            // der gespeicherte Stand beim Eintritt (zum Vergleich nach dem Neuanmelden)
+            if (!told && s.selfKnown && s.hasInventory && pred.ready) {
+                told = true
+                print("[" + user + "] Stand am Anfang: " + NetBot.Stand(s))
+            }
+            if (!pred.ready) {
+                // noch nicht in der Welt (der Server lädt die Kacheln um ihn)
+            } else if (footPlan && car != undefined) {
+                if (Math.Abs(car.speed) > 0.3) { brake = car.speed > 0.0; gas = car.speed < 0.0 } else { use = true }
+            } else if (carPlan && car == undefined && phase == "start") {
+                // zum nächsten Fahrzeug und einsteigen
+                RemoteEntity near = undefined
+                float best = 60.0
+                foreach (r in s.OfType(Raser.EntityType.Vehicle)) {
+                    float d = Math.Sqrt((r.east - place[0]) * (r.east - place[0]) + (r.north - place[1]) * (r.north - place[1]))
+                    if (d < best && r.a == 0) {
+                        best = d
+                        near = r
+                    }
+                }
+                if (near != undefined) {
+                    if (best < 3.0) { use = (Math.Floor(t * 4.0)!int % 2) == 0 } else {
+                        float want = Math.Atan2(-(near.east - place[0]), near.north - place[1]) * 180.0 / Math.PI
+                        float diff = Raser.Prediction.Turn(want - pred.pawn.walker.heading)
+                        left = diff > 4.0
+                        right = diff < -4.0
+                        gas = Math.Abs(diff) < 60.0
+                    }
+                }
+            } else if (plan == "gerade") {
+                gas = car != undefined
+            } else if (plan == "gehen") {
+                gas = t < 3.0
+            } else if (plan == "zueinander") {
+                foreach (r in s.OfType(Raser.EntityType.Player)) {
+                    if (r.name != options.Get("target", "")) { continue }
+                    float de = r.east - place[0]
+                    float dn = r.north - place[1]
+                    float want = Math.Atan2(-de, dn) * 180.0 / Math.PI
+                    float diff = Raser.Prediction.Turn(want - pred.pawn.walker.heading)
+                    left = diff > 4.0
+                    right = diff < -4.0
+                    gas = true
+                    // der Abstand nach dem Server: die eigene Lage und die des anderen aus demselben Snapshot
+                    float se = s.selfEast - r.east
+                    float sn = s.selfNorth - r.north
+                    least = Math.Min(least, Math.Sqrt(se * se + sn * sn))
+                }
+            } else if (plan == "kreis" || (plan == "ablegen" && t < 4.0)) {
                 gas = car != undefined
                 left = true
             } else if (plan == "ablegen") {
@@ -465,11 +551,15 @@ class NetBot {
             }
             if (plan == "umfahren") {
                 if (phase == "start") {
-                    // zum Ziel: Vollgas, gelenkt auf seine Lage
+                    // zum Ziel: Vollgas, gelenkt auf seine Lage (ist es zu nah, erst Anlauf nehmen: 35 m weg)
                     RemoteEntity aim = undefined
                     foreach (r in s.OfType(Raser.EntityType.Player)) { if (options.Get("target", "") == "" || r.name == options.Get("target", "")) { aim = r } }
+                    float away = 0.0
+                    if (aim != undefined) { away = Math.Sqrt((aim.east - place[0]) * (aim.east - place[0]) + (aim.north - place[1]) * (aim.north - place[1])) }
+                    if (away > 35.0) { ranUp = true }
                     if (car != undefined && aim != undefined) {
                         float want = Math.Atan2(-(aim.east - place[0]), aim.north - place[1]) * 180.0 / Math.PI
+                        if (!ranUp) { want = want + 180.0 }
                         float diff = Raser.Prediction.Turn(want - car.heading)
                         left = diff > 2.0
                         right = diff < -2.0
@@ -518,7 +608,7 @@ class NetBot {
                     }
                 }
             } else if (plan == "stehen") {
-                if (phase == "start" && s.hasInventory) {
+                if (phase == "start" && s.hasInventory && pred.ready && car == undefined) {
                     // die Taschenlampe an (Benutzen, der Server prüft mit Inventory.Use)
                     var pk = s.inv.Pockets()
                     for (int k = 0; k < pk.Size; k++) {
@@ -613,6 +703,13 @@ class NetBot {
         }
         var p = s.pred
         float span = Math.Max(1.0, (DateTime.UtcNow.Ticks - began) / 10000000.0 - 1.0)
+        if (plan == "zueinander") { print("[" + user + "] kleinster Abstand zu " + options.Get("target", "") + ": " + Math.Round(least * 1000.0) / 1000.0 + " m") }
+        // der Stand am Ende (wenn nichts mehr offen ist)
+        for (int k = 0; k < 20 && s.pendingOps.Count > 0; k++) {
+            s.Poll()
+            Sleep(50ms)
+        }
+        print("[" + user + "] Stand am Ende: " + NetBot.Stand(s))
         print("[" + user + "] Server-Lage " + Math.Round(s.selfEast * 10.0) / 10.0 + ", " + Math.Round(s.selfNorth * 10.0) / 10.0 + ", " + Math.Round(Math.Sqrt((s.selfEast - spawnE) * (s.selfEast - spawnE) + (s.selfNorth - spawnN) * (s.selfNorth - spawnN))) + " m vom Start; " + s.OfType(Raser.EntityType.Vehicle).Count + " Fahrzeuge in Sicht")
         print("[" + user + "] " + npcSeen)
         print("[" + user + "] Vorhersage: " + p.reconciled + " Abgleiche, " + p.corrected + " mit Fehler, max Korrektur " + Math.Round(p.maxCorrection * 1000.0) / 1000.0 + " m, im Mittel " + Math.Round(p.sumCorrection / Math.Max(1, p.reconciled) * 10000.0) / 10000.0 + " m, Spruenge " + p.snaps + ", offen " + p.pending.Count)
