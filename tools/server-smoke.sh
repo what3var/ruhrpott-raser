@@ -66,13 +66,15 @@ wait $BP $CP $AP
 "$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 40 --plan stehen --vehicle fuss --at 376100,5705030 > "$WORK/bernd3.log" 2>&1 &
 BP=$!
 sleep 1
-"$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 38 --plan umfahren --target Bernd --at 376100,5705000 "${WORLDARG[@]}" > "$WORK/anna3.log" 2>&1
+"$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 38 --plan umfahren --target Bernd --tp 1 --at 376100,5705000 "${WORLDARG[@]}" > "$WORK/anna3.log" 2>&1
 wait $BP
 sleep 1
 "$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 3 --plan stehen --vehicle fuss --at 376100,5705000 > "$WORK/anna4.log" 2>&1
 # Runde 5: Dora (neu) geht 3 s, meldet sich neu an (Stand wie zuletzt), dann startet der Server neu, Dora wieder (Stand wie zuletzt).
 "$GAME" --server 127.0.0.1:$GP --token "$D" --user Dora --bot 6 --plan gehen --vehicle fuss --at 390000,5710000 > "$WORK/dora1.log" 2>&1
 "$GAME" --server 127.0.0.1:$GP --token "$D" --user Dora --bot 5 --plan gehen > "$WORK/dora2.log" 2>&1
+# (eine Sekunde, damit der Server das Gehen verarbeitet und speichert; ein harter Abbruch verliert höchstens die letzten 10 s)
+sleep 1
 kill $PID; wait $PID 2>/dev/null
 start_server
 D=$(curl -s -X POST -d '{"user": "Dora", "password": "geheim321"}' "$API/api/login" | token)
