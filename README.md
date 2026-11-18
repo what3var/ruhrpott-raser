@@ -46,6 +46,19 @@ Unter Windows heißt das Programm `raser.exe`; Optionen: `--raw <ordner>` (Rohda
 braucht ein Worker bis gut 2 GB, darum höchstens so viele, wie in 80 % des freien Speichers passen. Wichtig: das Werkzeug nativ als Release
 bauen (`--engine native -m RELEASE`), in der VM ist es ein Vielfaches langsamer.
 
+## Menü im Spiel
+
+Esc öffnet das Menü (`src/Raser.Game/menu.fire`, mit dem UI-Toolkit von fire): Weiter, Optionen (Grafik, Steuerung, Ton, Spiel), Steuerung
+(alle Tasten, umbelegbar), Verbindung (online), Beenden. Offline hält es das Spiel an, online läuft die Welt weiter, der eigene Wagen bekommt
+keine Eingaben. Die Optionen stehen in `spiel.json` neben `launcher.json` (`RASER_CONFIG` oder `--config` für einen anderen Ordner,
+`--settings 0` ohne Datei); was auf der Kommandozeile steht (`--size`, `--gpu`, `--render-threads`, `--near`, `--far`, `--workers`, `--no-sky`),
+geht vor. Sichtweite, Himmel, Render-Threads und Kamera wirken sofort, Fenstergröße, Renderer und Worker nach einem Neustart.
+
+```bash
+raser-game --menu-shot menu.png [--menu-keys down,enter,right] [--menu-bench 100000]   # das offene Menü ohne Fenster als PNG
+forge test src/Raser.Game/Raser.Game.fireproj --engine native                          # Einstellungen und Tastenbelegung
+```
+
 ## Launcher
 
 `Raser.Launcher` ist das Programm, mit dem Spieler anfangen: Anmeldung oder Registrierung am Spielserver (HTTP/JSON, Port 7480), News, Version mit
