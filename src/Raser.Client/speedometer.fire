@@ -1,0 +1,173 @@
+// Raser.Client: der Tacho unten rechts, nur im Fahrzeug - ein dunkler, halb durchsichtiger Kreis (die Welt scheint durch), schlanke helle
+// Skalenstriche und Zahlen über 270°, ein farbiger Bogen für das Tempo (türkis, ab 70 % orange, ab 90 % rot) mit einem schmalen Zeiger, die große
+// Zahl in der Mitte; unten zwei schmale Bögen: links der Tank, rechts der Zustand.
+//
+// Die Skala passt zum Fahrzeug (Auto 200, Transporter 160, Motorrad 220, Fahrrad 40 km/h). Günstig: das Zifferblatt (Kreis, Striche, Zahlen,
+// die leeren Bögen) wird je Skala einmal als Bild mit Alpha gezeichnet und je Bild nur mit BlitMode.Blend aufgelegt; neu sind je Bild nur die
+// Bögen, der Zeiger und die Zahl.
+#import "graphics"
+#import "raser.core"
+
+class Speedometer {
+    static readonly defined int Size = 176
+
+    Dictionary<int, Framebuffer> dials          // je Skala (km/h) das Zifferblatt
+    SolidBrush paint
+    Pen pen
+    Font font
+    Font boldFont
+
+    construct() {
+        this.dials = new Dictionary<int, Framebuffer>(Owns.Values)
+        this.paint = new SolidBrush(0xFFFFFFFF)
+        this.pen = new Pen(0xFFFFFFFF, 2)
+        this.font = HudStyle.Medium()
+        this.boldFont = HudStyle.Bold()
+    }
+
+    // Das Ende der Skala (km/h) für ein Fahrzeug.
+    static defined int ScaleOf(Raser.Vehicle v) {
+        if (v.kind == "auto") { return 200 }
+        if (v.kind == "transporter") { return 160 }
+        if (v.kind == "motorrad") { return 220 }
+        if (v.kind == "fahrrad") { return 40 }
+        return Math.Max(40, Math.Ceiling(v.topSpeed * 3.6 / 20.0)!int * 20)
+    }
+
+    // Der Winkel (Bogenmaß, mathematisch: 0 rechts, gegen den Uhrzeigersinn) zu einem Anteil der Skala: von links unten (225°) im Uhrzeigersinn
+    // bis rechts unten (-45°).
+    static defined float Angle(defined float part) { return (225.0 - 270.0 * Math.Clamp(part, 0.0, 1.0)) * Math.PI / 180.0 }
+
+    // Ein Bogen der Breite width um (cx, cy) mit dem Radius radius (Mitte des Bandes) von a0 nach a1 (Bogenmaß), als Vierecke je höchstens 4°.
+    undefined Arc(Renderer r, defined float cx, defined float cy, defined float radius, defined float width, defined float a0, defined float a1, defined int argb) {
+        if (Math.Abs(a1 - a0) < 0.001) { return }
+        this.paint.Color = HudStyle.Color(argb)
+        int steps = Math.Max(1, Math.Ceiling(Math.Abs(a1 - a0) / (4.0 * Math.PI / 180.0))!int)
+        float ri = radius - width / 2.0
+        float ro = radius + width / 2.0
+        for (int i = 0; i < steps; i++) {
+            float b0 = a0 + (a1 - a0) * i / steps
+            float b1 = a0 + (a1 - a0) * (i + 1) / steps
+            r.FillPolygon([cx + Math.Cos(b0) * ri, cy - Math.Sin(b0) * ri, cx + Math.Cos(b0) * ro, cy - Math.Sin(b0) * ro, cx + Math.Cos(b1) * ro, cy - Math.Sin(b1) * ro, cx + Math.Cos(b1) * ri, cy - Math.Sin(b1) * ri], this.paint)
+        }
+    }
+
+    // Die Bögen unten für Tank (links) und Zustand (rechts): Winkel in Grad.
+    static readonly defined float GaugeFrom = 236.0
+    static readonly defined float GaugeTo = 266.0
+
+    // Das Zifferblatt zu einer Skala (einmal gezeichnet).
+    Framebuffer Dial(defined int scale) {
+        if (this.dials.ContainsKey(scale)) { return this.dials[scale] }
+        int s = Speedometer.Size
+        var fb = new Framebuffer(s, s)
+        // ganz durchsichtig (ClearTo(0) ließ die Ecken schwarz)
+        byte clear[] = new byte[s * s * 4]
+        clear.Fill(0)
+        fb.WriteBytes(clear)
+        var r = new Renderer(fb)
+        float c = s / 2.0
+        float radius = c - 2.0
+        // der Kreis: dunkel, halb durchsichtig, mit einem feinen hellen Rand
+        r.AlphaBlending = false
+        this.paint.Color = HudStyle.Color(0x9A0C1016)
+        r.FillCircle(Math.Round(c)!int, Math.Round(c)!int, Math.Round(radius)!int, this.paint)
+        r.AlphaBlending = true
+        this.pen.Width = 1
+        this.pen.Color = HudStyle.Color(0x50FFFFFF)
+        r.DrawCircle(Math.Round(c)!int, Math.Round(c)!int, Math.Round(radius)!int, this.pen)
+        // das leere Band für das Tempo
+        this.Arc(r, c, c, radius - 13.0, 5.0, Speedometer.Angle(0.0), Speedometer.Angle(1.0), 0x30FFFFFF)
+        // Striche und Zahlen
+        int major = 20
+        int minor = 10
+        if (scale <= 60) {
+            major = 10
+            minor = 5
+        }
+        for (int v = 0; v <= scale; v = v + minor) {
+            float a = Speedometer.Angle(v * 1.0 / scale)
+            bool big = v % major == 0
+            float r0 = radius - 22.0
+            float r1 = radius - 28.0
+            if (big) { r1 = radius - 32.0 }
+            this.pen.Width = 1
+            this.pen.Color = HudStyle.Color(0xA0FFFFFF)
+            if (big) {
+                this.pen.Width = 2
+                this.pen.Color = HudStyle.Color(0xF0FFFFFF)
+            }
+            r.DrawLine(Math.Round(c + Math.Cos(a) * r0)!int, Math.Round(c - Math.Sin(a) * r0)!int, Math.Round(c + Math.Cos(a) * r1)!int, Math.Round(c - Math.Sin(a) * r1)!int, this.pen)
+            if (big && (scale <= 60 || v % (major * 2) == 0 || scale <= 120)) {
+                string text = "" + v
+                float rt = radius - 44.0
+                int tw = r.TextWidth(text, this.font, 13)
+                int th = r.TextHeight(this.font, 13)
+                this.paint.Color = HudStyle.Color(0xD8E8F0FF)
+                r.DrawText(Math.Round(c + Math.Cos(a) * rt - tw / 2.0)!int, Math.Round(c - Math.Sin(a) * rt - th / 2.0)!int, text, this.paint, undefined, this.font, 13)
+            }
+        }
+        // die leeren Bögen für Tank und Zustand, unten
+        float gr = radius - 8.0
+        this.Arc(r, c, c, gr, 3.0, Speedometer.GaugeFrom * Math.PI / 180.0, Speedometer.GaugeTo * Math.PI / 180.0, 0x40FFFFFF)
+        this.Arc(r, c, c, gr, 3.0, (540.0 - Speedometer.GaugeFrom) * Math.PI / 180.0, (540.0 - Speedometer.GaugeTo) * Math.PI / 180.0, 0x40FFFFFF)
+        this.paint.Color = HudStyle.Color(0xA0E0E8F0)
+        r.DrawText(Math.Round(c - 54.0)!int, Math.Round(c + 52.0)!int, "Tank", this.paint, undefined, this.font, 12)
+        r.DrawText(Math.Round(c + 54.0)!int - r.TextWidth("Zustand", this.font, 12), Math.Round(c + 52.0)!int, "Zustand", this.paint, undefined, this.font, 12)
+        this.dials[scale] = fb
+        return this.dials[scale]
+    }
+
+    // Zeichnet den Tacho für das Fahrzeug v unten rechts (über der Leiste bleibt frei).
+    undefined Draw(Renderer r, defined int width, defined int height, Raser.Vehicle v) {
+        int s = Speedometer.Size
+        int scale = Speedometer.ScaleOf(v)
+        int x = width - s - 14
+        int y = height - s - 12
+        r.Blit(this.Dial(scale), x, y, BlitMode.Blend)
+        float c = s / 2.0
+        float cx = x + c
+        float cy = y + c
+        float radius = c - 2.0
+        float kmh = Math.Abs(v.speed) * 3.6
+        float part = Math.Clamp(kmh / scale, 0.0, 1.0)
+        int color = 0xFF30D8E8
+        if (part > 0.7) { color = 0xFFFFA030 }
+        if (part > 0.9) { color = 0xFFFF4040 }
+        this.Arc(r, cx, cy, radius - 13.0, 5.0, Speedometer.Angle(0.0), Speedometer.Angle(part), color)
+        // der Zeiger: schmal, vom Rand der Zahl bis an das Band
+        float a = Speedometer.Angle(part)
+        this.pen.Width = 2
+        this.pen.Color = HudStyle.Color(0xFFFFFFFF)
+        r.DrawLine(Math.Round(cx + Math.Cos(a) * 34.0)!int, Math.Round(cy - Math.Sin(a) * 34.0)!int, Math.Round(cx + Math.Cos(a) * (radius - 18.0))!int, Math.Round(cy - Math.Sin(a) * (radius - 18.0))!int, this.pen)
+        // die Zahl
+        string text = "" + Math.Round(kmh)
+        int tw = r.TextWidth(text, this.boldFont, 40)
+        int th = r.TextHeight(this.boldFont, 40)
+        this.paint.Color = HudStyle.Color(0xFFFFFFFF)
+        r.DrawText(Math.Round(cx - tw / 2.0)!int, Math.Round(cy - th / 2.0 - 4.0)!int, text, this.paint, undefined, this.boldFont, 40)
+        this.paint.Color = HudStyle.Color(0xB0E0E8F0)
+        int uw = r.TextWidth("km/h", this.font, 13)
+        r.DrawText(Math.Round(cx - uw / 2.0)!int, Math.Round(cy + th / 2.0 - 6.0)!int, "km/h", this.paint, undefined, this.font, 13)
+        // Tank (links unten) und Zustand (rechts unten): von außen zur Mitte gefüllt
+        float gr = radius - 8.0
+        float span = Speedometer.GaugeTo - Speedometer.GaugeFrom
+        if (v.tank > 0.0) {
+            int fc = 0xFF60E070
+            if (v.fuel < 0.25) { fc = 0xFFFFB030 }
+            if (v.fuel < 0.1) { fc = 0xFFFF4040 }
+            this.Arc(r, cx, cy, gr, 3.0, Speedometer.GaugeFrom * Math.PI / 180.0, (Speedometer.GaugeFrom + span * Math.Clamp(v.fuel, 0.0, 1.0)) * Math.PI / 180.0, fc)
+        }
+        int hc = 0xFF60E070
+        if (v.health < 0.5) { hc = 0xFFFFB030 }
+        if (v.health < 0.2) { hc = 0xFFFF4040 }
+        this.Arc(r, cx, cy, gr, 3.0, (540.0 - Speedometer.GaugeFrom) * Math.PI / 180.0, (540.0 - Speedometer.GaugeFrom - span * Math.Clamp(v.health, 0.0, 1.0)) * Math.PI / 180.0, hc)
+        if (v.health <= 0.0 || (v.tank > 0.0 && v.fuel <= 0.0)) {
+            string warn = "kaputt"
+            if (v.health > 0.0) { warn = "Tank leer" }
+            int ww = r.TextWidth(warn, this.boldFont, 15)
+            this.paint.Color = HudStyle.Color(0xFFFF5050)
+            r.DrawText(Math.Round(cx - ww / 2.0)!int, Math.Round(cy + 36.0)!int, warn, this.paint, undefined, this.boldFont, 15)
+        }
+    }
+}

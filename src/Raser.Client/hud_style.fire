@@ -1,0 +1,34 @@
+// Raser.Client: Schrift und Farben der Anzeige (Inventar, Leiste, Tacho).
+//
+// Die Schrift ist Rajdhani (Indian Type Foundry, SIL Open Font License 1.1, assets/fonts/OFL.txt) - schmal, gut lesbar, klare Ziffern. Sie ist als
+// Ressource in das Programm eingebettet (new Resource: der Compiler legt die Bytes ins Programm), also liefert der Launcher sie mit dem Spiel aus;
+// zur Laufzeit wird nichts gesucht.
+//
+// Farben: die Pinsel des Renderers erwarten 0xAABBGGRR (wie S3D.Rgb); HudStyle.Color nimmt das gewohnte 0xAARRGGBB.
+#import "graphics"
+
+class HudStyle {
+    static Font medium = undefined
+    static Font bold = undefined
+
+    static Font Medium() {
+        if (HudStyle.medium == undefined) { HudStyle.medium = Fonts.Add(new Resource("../../assets/fonts/Rajdhani-Medium.ttf"), "rajdhani-medium") }
+        return HudStyle.medium
+    }
+
+    static Font Bold() {
+        if (HudStyle.bold == undefined) { HudStyle.bold = Fonts.Add(new Resource("../../assets/fonts/Rajdhani-Bold.ttf"), "rajdhani-bold") }
+        return HudStyle.bold
+    }
+
+    // 0xAARRGGBB -> 0xAABBGGRR
+    static defined int Color(defined int argb) { return (argb & 0xFF00FF00) | ((argb >> 16) & 0xFF) | ((argb & 0xFF) << 16) }
+
+    // Ein Betrag in Cent als Text: "23,50 €".
+    static string Money(defined int cents) {
+        int c = Math.Abs(cents)
+        string s = (c / 100) + "," + ((c % 100) / 10) + (c % 10) + " €"
+        if (cents < 0) { s = "-" + s }
+        return s
+    }
+}

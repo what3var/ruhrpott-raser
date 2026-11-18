@@ -1,0 +1,260 @@
+// Raser.Client: die Modelle der Gegenstände in der Szene - am Boden, in der Hand, der Rucksack auf dem Rücken. Je Gegenstand ein Netz aus wenigen
+// Quadern (Model.FromArrays), gefärbt über eine Palette als Textur (64 x 1 Texel, die Texturkoordinaten zeigen auf die Mitte eines Texels): so
+// ist jeder Gegenstand in der Szene EIN Objekt, gleich aus wie vielen Teilen, und alle teilen sich Netz und Textur.
+//
+// Lage im Modell (m): x nach rechts, y nach oben, vorn ist -z (wie die Fahrzeuge: Object.RotationY = Richtung); (0, 0, 0) ist die Mitte unten.
+// Die Gegenstände sind etwas größer als echt (scale 1,3), damit man sie am Boden sieht. Rucksäcke gibt es zweimal: am Boden (die Riemen liegen
+// vorn) und getragen (der Ursprung liegt am Rücken der Figur, der Rucksack reicht nach hinten +z, die Riemen gehen über die Schultern nach vorn).
+#import "scene3d"
+#import "graphics"
+#import "raser.core"
+
+class ItemModels {
+    static readonly defined int Colors = 64
+
+    List<Model> ground             // je Gegenstand (Nummer) das Modell am Boden bzw. in der Hand
+    List<Model> worn               // je Rucksack das Modell auf dem Rücken (sonst undefined)
+    Texture palette
+    List<int> colors                // die Palette (0xAARRGGBB)
+    // beim Bauen
+    List<float> pos
+    List<float> uv
+    List<int> idx
+
+    construct() {
+        this.colors = new List<int>()
+        this.ground = new List<Model>()
+        this.worn = new List<Model>()
+        this.pos = new List<float>()
+        this.uv = new List<float>()
+        this.idx = new List<int>()
+        for (int i = 0; i < Raser.Items.Count; i++) {
+            var m = this.Build(i, false)
+            this.ground.Add(take m)
+            var w = this.Build(i, true)
+            if (w == undefined) { this.worn.Add(undefined) } else { this.worn.Add(take w) }
+        }
+        byte px[] = new byte[ItemModels.Colors * 4]
+        px.Fill(255)
+        for (int i = 0; i < this.colors.Count && i < ItemModels.Colors; i++) {
+            int c = this.colors[i]
+            px[i * 4] = (c >> 16) & 255
+            px[i * 4 + 1] = (c >> 8) & 255
+            px[i * 4 + 2] = c & 255
+            px[i * 4 + 3] = 255
+        }
+        this.palette = new Texture(ItemModels.Colors, 1, px)
+    }
+
+    // Ein Objekt für den Gegenstand (worn: der Rucksack auf dem Rücken); noch nicht in der Szene.
+    Object Make(defined int item, defined bool worn) {
+        Model m = undefined
+        if (item > 0 && item < this.ground.Count) { m = this.ground[item] }
+        if (worn && item > 0 && item < this.worn.Count && this.worn[item] != undefined) { m = this.worn[item] }
+        if (m == undefined) { m = this.ground[Raser.Items.Schluessel] }
+        var o = new Object(m)
+        o.KeepMeshCoordinates = true
+        o.Texture = this.palette
+        return o
+    }
+
+    // Die Nummer einer Farbe in der Palette (neu, wenn es sie noch nicht gibt).
+    defined int Ink(defined int argb) {
+        int at = this.colors.IndexOf(argb)
+        if (at >= 0) { return at }
+        if (this.colors.Count >= ItemModels.Colors) { return 0 }
+        this.colors.Add(argb)
+        return this.colors.Count - 1
+    }
+
+    // Ein Quader von (x0, y0, z0) bis (x1, y1, z1) in einer Farbe (0xRRGGBB) - die Flächen gegen den Uhrzeigersinn von außen.
+    undefined Box(defined float x0, defined float y0, defined float z0, defined float x1, defined float y1, defined float z1, defined int rgb) {
+        int k = this.Ink(rgb)
+        float u = (k + 0.5) / ItemModels.Colors
+        float xs[] = [x0, x1]
+        float ys[] = [y0, y1]
+        float zs[] = [z0, z1]
+        // je Fläche vier Ecken als Indizes (0/1) in x, y, z
+        int faces[] = [1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0]
+        for (int f = 0; f < 6; f++) {
+            int first = this.pos.Count / 3
+            for (int c = 0; c < 4; c++) {
+                int at = f * 12 + c * 3
+                this.pos.Add(xs[faces[at]])
+                this.pos.Add(ys[faces[at + 1]])
+                this.pos.Add(zs[faces[at + 2]])
+                this.uv.Add(u)
+                this.uv.Add(0.5)
+            }
+            this.idx.Add(first)
+            this.idx.Add(first + 1)
+            this.idx.Add(first + 2)
+            this.idx.Add(first)
+            this.idx.Add(first + 2)
+            this.idx.Add(first + 3)
+        }
+    }
+
+    // Ein Quader um die Mitte (cx, cz) unten bei y0: Breite w, Höhe h, Tiefe d.
+    undefined Block(defined float cx, defined float y0, defined float cz, defined float w, defined float h, defined float d, defined int rgb) {
+        this.Box(cx - w / 2.0, y0, cz - d / 2.0, cx + w / 2.0, y0 + h, cz + d / 2.0, rgb)
+    }
+
+    // Das Netz eines Gegenstands (worn: Rucksack auf dem Rücken; andere Gegenstände: undefined).
+    Model Build(defined int item, defined bool worn) {
+        this.pos.Clear()
+        this.uv.Clear()
+        this.idx.Clear()
+        var t = Raser.Items.Get(item)
+        if (worn && (t == undefined || !t.IsBackpack)) { return undefined }
+        if (item == Raser.Items.Handy) {
+            this.Block(0.0, 0.0, 0.0, 0.08, 0.012, 0.155, 0x202024)
+            this.Block(0.0, 0.012, -0.003, 0.068, 0.002, 0.125, 0x3C82D2)
+            this.Block(0.0, 0.012, 0.068, 0.02, 0.002, 0.006, 0x8C8C96)
+        } else if (item == Raser.Items.Schluessel) {
+            // Ring, Schaft, Bart
+            this.Box(-0.045, 0.0, -0.02, -0.005, 0.008, -0.012, 0xE1B93C)
+            this.Box(-0.045, 0.0, 0.012, -0.005, 0.008, 0.02, 0xE1B93C)
+            this.Box(-0.045, 0.0, -0.02, -0.037, 0.008, 0.02, 0xE1B93C)
+            this.Box(-0.013, 0.0, -0.02, -0.005, 0.008, 0.02, 0xE1B93C)
+            this.Box(-0.005, 0.001, -0.004, 0.07, 0.007, 0.004, 0xCDA032)
+            this.Box(0.035, 0.001, 0.004, 0.045, 0.007, 0.014, 0xCDA032)
+            this.Box(0.055, 0.001, 0.004, 0.068, 0.007, 0.012, 0xCDA032)
+        } else if (item == Raser.Items.Geld) {
+            // ein Schein und ein paar Münzstapel
+            this.Block(0.02, 0.0, 0.0, 0.14, 0.003, 0.07, 0x5A9A64)
+            this.Block(0.02, 0.003, 0.0, 0.05, 0.001, 0.05, 0xA0D0A0)
+            this.Block(-0.06, 0.0, -0.03, 0.026, 0.02, 0.026, 0xEBC346)
+            this.Block(-0.06, 0.02, -0.03, 0.022, 0.003, 0.022, 0xFFE68C)
+            this.Block(-0.04, 0.0, 0.035, 0.026, 0.012, 0.026, 0xB0B4BC)
+            this.Block(-0.075, 0.0, 0.02, 0.026, 0.008, 0.026, 0xEBC346)
+        } else if (item == Raser.Items.Broetchen) {
+            this.Block(0.0, 0.0, 0.0, 0.11, 0.035, 0.075, 0xC0822F)
+            this.Block(0.0, 0.035, 0.0, 0.095, 0.02, 0.06, 0xD9A050)
+            this.Block(0.0, 0.055, 0.0, 0.06, 0.008, 0.035, 0xE8BC70)
+            this.Block(0.0, 0.056, 0.0, 0.07, 0.008, 0.006, 0x8C5420)
+        } else if (item == Raser.Items.Pommes) {
+            // die Schale (weiß, roter Rand), Pommes, Ketchup und Mayo
+            this.Block(0.0, 0.0, 0.0, 0.13, 0.045, 0.085, 0xF5F5F0)
+            this.Block(0.0, 0.035, -0.043, 0.13, 0.01, 0.004, 0xC82828)
+            this.Block(0.0, 0.035, 0.043, 0.13, 0.01, 0.004, 0xC82828)
+            float fx[] = [-0.045, -0.025, -0.005, 0.015, 0.035, 0.05, -0.035, 0.0, 0.03]
+            float fz[] = [-0.02, 0.015, -0.025, 0.02, -0.01, 0.018, 0.0, 0.005, -0.028]
+            float fh[] = [0.07, 0.065, 0.075, 0.06, 0.07, 0.062, 0.068, 0.078, 0.064]
+            for (int i = 0; i < fx.length; i++) { this.Block(fx[i], 0.02, fz[i], 0.012, fh[i], 0.012, 0xFAD250) }
+            this.Block(-0.025, 0.045, 0.012, 0.035, 0.012, 0.03, 0xD22D23)
+            this.Block(0.02, 0.045, -0.012, 0.03, 0.012, 0.028, 0xF8F4E0)
+        } else if (item == Raser.Items.Wasser) {
+            this.Block(0.0, 0.0, 0.0, 0.07, 0.17, 0.07, 0x9CCDF0)
+            this.Block(0.0, 0.06, 0.0, 0.074, 0.05, 0.074, 0x2864C8)
+            this.Block(0.0, 0.17, 0.0, 0.05, 0.03, 0.05, 0xBEE1FA)
+            this.Block(0.0, 0.2, 0.0, 0.03, 0.03, 0.03, 0xBEE1FA)
+            this.Block(0.0, 0.23, 0.0, 0.034, 0.016, 0.034, 0x1E3C8C)
+        } else if (item == Raser.Items.Werkzeug) {
+            // der Griff, am Ende der Maulschlüssel mit zwei Backen
+            this.Block(0.0, 0.0, 0.02, 0.03, 0.012, 0.2, 0xB9BEC8)
+            this.Block(0.0, 0.0, -0.09, 0.045, 0.012, 0.03, 0x9EA3AD)
+            this.Block(-0.026, 0.0, -0.118, 0.018, 0.012, 0.04, 0xB9BEC8)
+            this.Block(0.026, 0.0, -0.118, 0.018, 0.012, 0.04, 0xB9BEC8)
+            this.Block(0.0, 0.0, 0.122, 0.04, 0.012, 0.03, 0x9EA3AD)
+        } else if (item == Raser.Items.Taschenlampe) {
+            this.Block(0.0, 0.0, 0.03, 0.042, 0.042, 0.15, 0xC83228)
+            this.Block(0.0, 0.042, 0.03, 0.012, 0.006, 0.03, 0x281414)
+            this.Block(0.0, -0.006, -0.06, 0.058, 0.054, 0.04, 0xB9BEC8)
+            this.Block(0.0, 0.0, -0.081, 0.046, 0.042, 0.003, 0xFFF5C8)
+        } else if (item == Raser.Items.Kanister) {
+            this.Block(0.0, 0.0, 0.0, 0.16, 0.28, 0.3, 0xC3231E)
+            // die Prägung (ein X auf beiden Seiten) und der Rand
+            this.Block(0.0, 0.05, 0.0, 0.17, 0.02, 0.2, 0x961A16)
+            this.Block(0.0, 0.2, 0.0, 0.17, 0.02, 0.2, 0x961A16)
+            this.Block(0.0, 0.07, -0.05, 0.17, 0.13, 0.02, 0x961A16)
+            this.Block(0.0, 0.07, 0.05, 0.17, 0.13, 0.02, 0x961A16)
+            // drei Griffe oben, der Ausguss
+            this.Block(0.0, 0.28, 0.06, 0.03, 0.05, 0.03, 0xC3231E)
+            this.Block(0.0, 0.28, 0.12, 0.03, 0.05, 0.03, 0xC3231E)
+            this.Block(0.0, 0.33, 0.09, 0.03, 0.02, 0.09, 0xC3231E)
+            this.Block(0.0, 0.28, -0.1, 0.05, 0.04, 0.05, 0xF0C828)
+        } else if (item == Raser.Items.Zigaretten) {
+            this.Block(0.0, 0.0, 0.0, 0.056, 0.022, 0.088, 0xC81E23)
+            this.Block(0.0, 0.0, -0.034, 0.057, 0.023, 0.02, 0xF5F5F0)
+            this.Block(0.0, 0.022, 0.005, 0.03, 0.001, 0.03, 0xF5F5F0)
+            this.Block(-0.012, 0.004, -0.05, 0.008, 0.008, 0.016, 0xE69638)
+            this.Block(0.0, 0.004, -0.05, 0.008, 0.008, 0.016, 0xE69638)
+            this.Block(0.012, 0.004, -0.05, 0.008, 0.008, 0.016, 0xE69638)
+        } else if (t != undefined && t.IsBackpack) {
+            this.Backpack(item, worn)
+        } else {
+            this.Block(0.0, 0.0, 0.0, 0.1, 0.1, 0.1, 0xC800C8)
+        }
+        // etwas größer als echt
+        float scale = 1.3
+        if (t != undefined && t.IsBackpack) { scale = 1.0 }
+        var p = new float[this.pos.Count]
+        for (int i = 0; i < this.pos.Count; i++) { p[i] = this.pos[i] * scale }
+        var u = new float[this.uv.Count]
+        for (int i = 0; i < this.uv.Count; i++) { u[i] = this.uv[i] }
+        var ix = new int[this.idx.Count]
+        for (int i = 0; i < this.idx.Count; i++) { ix[i] = this.idx[i] }
+        return Model.FromArrays(p, u, ix)
+    }
+
+    // Turnbeutel, Rucksack, Trekkingrucksack. Der Körper reicht von z 0 (am Rücken bzw. vorn) bis z d (hinten); worn: die Riemen gehen oben über die
+    // Schultern nach vorn (-z) und vor der Brust hinunter; am Boden liegen sie als Schlaufen vor dem Rucksack.
+    undefined Backpack(defined int item, defined bool worn) {
+        float w = 0.32
+        float h = 0.42
+        float d = 0.17
+        int body = 0x46783C
+        int dark = 0x2E5228
+        int strap = 0x282828
+        if (item == Raser.Items.Turnbeutel) {
+            w = 0.34
+            h = 0.4
+            d = 0.04
+            body = 0x3C6EBE
+            dark = 0x284C8A
+            strap = 0xF0F0F0
+        }
+        if (item == Raser.Items.Trekkingrucksack) {
+            w = 0.36
+            h = 0.62
+            d = 0.24
+            body = 0xDC6E1E
+            dark = 0x9A4A14
+            strap = 0x2A2A30
+        }
+        this.Box(-w / 2.0, 0.0, 0.0, w / 2.0, h, d, body)
+        if (item == Raser.Items.Turnbeutel) {
+            // oben zusammengezogen, die Kordeln
+            this.Box(-w / 2.0 + 0.04, h, 0.005, w / 2.0 - 0.04, h + 0.03, d - 0.005, dark)
+        } else {
+            // der Deckel, die Fronttasche mit Schnallen
+            this.Box(-w / 2.0 - 0.006, h - 0.13, -0.004, w / 2.0 + 0.006, h + 0.02, d + 0.01, dark)
+            this.Box(-w * 0.36, 0.05, d, w * 0.36, 0.05 + h * 0.36, d + 0.05, dark)
+            this.Box(-w * 0.2, h - 0.15, d + 0.01, -w * 0.2 + 0.025, h - 0.1, d + 0.014, 0xE0C040)
+            this.Box(w * 0.2 - 0.025, h - 0.15, d + 0.01, w * 0.2, h - 0.1, d + 0.014, 0xE0C040)
+        }
+        if (item == Raser.Items.Trekkingrucksack) {
+            // Isomatte unten quer, Seitentaschen
+            this.Box(-w / 2.0 - 0.05, 0.0, d * 0.2, w / 2.0 + 0.05, 0.1, d * 0.8, 0x3C6EBE)
+            this.Box(-w / 2.0 - 0.04, 0.12, d * 0.25, -w / 2.0, 0.32, d * 0.85, 0x5A5A64)
+            this.Box(w / 2.0, 0.12, d * 0.25, w / 2.0 + 0.04, 0.32, d * 0.85, 0x5A5A64)
+        }
+        float sw = 0.045
+        if (item == Raser.Items.Turnbeutel) { sw = 0.012 }
+        foreach (side in [-1.0, 1.0]) {
+            float sx = side * w * 0.28
+            if (worn) {
+                // über die Schulter nach vorn, vor der Brust hinunter
+                this.Box(sx - sw / 2.0, h - 0.01, -0.27, sx + sw / 2.0, h + 0.02, 0.0, strap)
+                this.Box(sx - sw / 2.0, h * 0.25, -0.29, sx + sw / 2.0, h + 0.02, -0.26, strap)
+                if (item == Raser.Items.Turnbeutel) {
+                    this.Box(sx - sw / 2.0, h * 0.25, -0.27, sx + sw / 2.0, h * 0.25 + 0.02, 0.0, strap)
+                }
+            } else {
+                // am Boden: Schlaufen vorn am Körper
+                this.Box(sx - sw / 2.0, 0.02, -0.02, sx + sw / 2.0, h - 0.02, 0.0, strap)
+            }
+        }
+    }
+}
