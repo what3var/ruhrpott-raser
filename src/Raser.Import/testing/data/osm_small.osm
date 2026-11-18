@@ -31,6 +31,24 @@
   <tag k="highway" v="footway"/>
   <tag k="width" v="3,5 m"/>
  </way>
+ <way id="14">
+  <nd ref="1"/>
+  <nd ref="2"/>
+  <nd ref="3"/>
+  <nd ref="4"/>
+  <nd ref="1"/>
+  <tag k="landuse" v="residential"/>
+  <tag k="name" v="Altstadt"/>
+ </way>
+ <way id="15">
+  <nd ref="1"/>
+  <nd ref="2"/>
+  <nd ref="3"/>
+  <nd ref="4"/>
+  <nd ref="1"/>
+  <tag k="building" v="retail"/>
+  <tag k="start_date" v="1910"/>
+ </way>
  <way id="13">
   <nd ref="2"/>
   <nd ref="7"/>

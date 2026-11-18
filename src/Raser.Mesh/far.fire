@@ -355,8 +355,8 @@ namespace Raser {
                     material = Raser.Material.Wood!int
                 } else if (kind == Raser.Facade.Louvre) {
                     color = Raser.Palette.Wood + 96
-                } else if (kind == Raser.Facade.Garage) {
-                    color = Raser.Palette.Metal + 32
+                } else if (kind == Raser.Facade.Garage || kind == Raser.Facade.Gate) {
+                    color = Raser.FarMesher.GateColor(m, kind, slot)
                     material = Raser.Material.Metal!int
                 } else {
                     float chance = 0.35
@@ -372,6 +372,14 @@ namespace Raser {
                 }
             }
             Raser.FarMesher.Dormers(part, undefined, m, 0.0, 0.0, -1.0)
+            Raser.KindParts.Build(part, undefined, m, this, 0.0, 0.0, -1.0)
+        }
+
+        // Die Farbe eines Tors: Garagenhof je Tor eine (grau, grün, blau, weiß, rot, Holz), Halle die der Halle (RoofModel.doorColor).
+        static defined int GateColor(RoofModel m, defined int kind, defined int slot) {
+            if (kind == Raser.Facade.Gate) { return m.doorColor }
+            if (m.kind == Raser.BuildingKinds.Garages) { return Raser.HouseStyle.Of([Raser.Palette.Metal + 32, Raser.Palette.DoorGreen, Raser.Palette.DoorBlue, Raser.Palette.SignWhite, Raser.Palette.DoorRed, Raser.Palette.Wood + 64, Raser.Palette.Metal + 32], m.building.id + slot, 50) }
+            return Raser.Palette.Metal + 32
         }
 
         // Gauben auf Steildächern (RoofModel.dormers, Raser.HouseStyle): über jedem zweiten Fenster des obersten Geschosses einer Traufseite eine
@@ -673,6 +681,7 @@ namespace Raser {
                 panes.Clear()
                 m.facade.Panes(m.building, m.groundVoxel, panes)
                 Raser.FarMesher.Dormers(opaque, glass, m, x0, y0, size)
+                Raser.KindParts.Build(opaque, glass, m, this, x0, y0, size)
                 for (int k = 0; k + 8 < panes.Count; k = k + 9) {
                     float ax = panes[k]
                     float ay = panes[k + 1]
@@ -746,8 +755,15 @@ namespace Raser {
                         glass.Quad(ax, ay, z1, bx, by, z1, bx, by, z1 + 0.4, ax, ay, z1 + 0.4, nx, ny, 0.0, Raser.Palette.Glass, Raser.Material.Glass!int)
                         continue
                     }
-                    if (kind == Raser.Facade.Garage) {
-                        opaque.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, Raser.Palette.Metal + 32, Raser.Material.Metal!int)
+                    if (kind == Raser.Facade.Garage || kind == Raser.Facade.Gate) {
+                        // Tor: im Garagenhof jedes in seiner Farbe, an Hallen in der Farbe der Halle; Rolltore mit Lamellen
+                        int gc = Raser.FarMesher.GateColor(m, kind, slot)
+                        opaque.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, nx, ny, 0.0, gc, Raser.Material.Metal!int)
+                        if (kind == Raser.Facade.Gate) {
+                            for (float zq = z0 + 0.3; zq < z1 - 0.1; zq = zq + 0.3) {
+                                opaque.Quad(ax + nx * 0.01, ay + ny * 0.01, zq, bx + nx * 0.01, by + ny * 0.01, zq, bx + nx * 0.01, by + ny * 0.01, zq + 0.04, ax + nx * 0.01, ay + ny * 0.01, zq + 0.04, nx, ny, 0.0, Raser.Palette.Dirty(gc, 2), Raser.Material.Metal!int)
+                            }
+                        }
                         continue
                     }
                     // Glas: nachts Licht hinter gut einem Drittel der Fenster, den meisten Läden (je Fenster und Geschoss gleich)
@@ -1227,13 +1243,24 @@ namespace Raser {
                     float tp = m.RoofAt(px - onx * 0.05, py - ony * 0.05)
                     float tq = m.RoofAt(qx - onx * 0.05, qy - ony * 0.05)
                     float top = Math.Max(tp, tq)
-                    for (float z0 = Math.Floor(g / 12.8) * 12.8; z0 < top; z0 = z0 + 12.8) {
-                        float zb = Math.Max(g, z0)
+                    // Dach auf Stützen: nur die Blende der Platte (40 cm)
+                    float wallFrom = g
+                    if (m.canopy) { wallFrom = Math.Min(tp, tq) - 0.4 }
+                    for (float z0 = Math.Floor(wallFrom / 12.8) * 12.8; z0 < top; z0 = z0 + 12.8) {
+                        float zb = Math.Max(wallFrom, z0)
                         float zp = Math.Max(Math.Min(tp, z0 + 12.8), zb)
                         float zq = Math.Max(Math.Min(tq, z0 + 12.8), zb)
                         if (zp <= zb && zq <= zb) { continue }
                         part.Quad(px, py, zb, qx, qy, zb, qx, qy, zq, px, py, zp, onx, ony, 0.0, m.wallColor, wall)
                     }
+                }
+                // Dach auf Stützen: an jeder Ecke eine Stütze (25 cm), dazu die Unterseite der Platte
+                if (m.canopy) {
+                    float ta = m.RoofAt(ax - onx * 0.05, ay - ony * 0.05)
+                    float pcx = ax - onx * 0.15 + dx / len * 0.15
+                    float pcy = ay - ony * 0.15 + dy / len * 0.15
+                    Raser.FarMesher.Box(part, pcx - 0.12, pcy - 0.12, g, pcx + 0.12, pcy + 0.12, ta - 0.4, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                    continue
                 }
                 // Sockel und Gesims wie in den Voxeln (Raser.HouseStyle), knapp vor der Wand
                 float fl = m.groundVoxel * 0.2

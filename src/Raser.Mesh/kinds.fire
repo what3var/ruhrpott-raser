@@ -1,0 +1,244 @@
+// Raser.Mesh: die eigenen Bausteine der besonderen Gebäude im Netz (Raser.BuildingKinds in Raser.World wählt die Art und das Aussehen).
+//
+// Je Art ein Fall in Raser.KindParts.Build: Tankstelle (Zapfsäulen auf Inseln unter dem Dach, Preismast an der Straße, Blende am Shop), Markt
+// (Vordach über der Front, Werbeband), Kiosk (Markise, Schild), Halle (Sheddach auf dem flachen Dach), Garagenhof (Tore in verschiedenen Farben,
+// in Raser.FarMesher.Windows). Nur im Netz: das Voxeldach darunter bleibt, durch Zapfsäulen und Mast fährt man hindurch.
+// Ein Teil gehört dem Block, in dem die Mitte seines Gebäudes liegt (size <= 0: alle, die ferne Stufe); glass undefined: Glas als Fläche.
+// Keine echten Marken: Bänder und Blenden in neutralen Farben, ohne Schrift.
+namespace Raser {
+    class KindParts {
+        static undefined Build(MeshPart opaque, MeshPart glass, RoofModel m, FarMesher far, defined float x0, defined float y0, defined float size) {
+            if (m.kind == Raser.BuildingKinds.None) { return }
+            float cx = (m.box.minX + m.box.maxX) / 2.0
+            float cy = (m.box.minY + m.box.maxY) / 2.0
+            if (size > 0.0 && (cx < x0 || cy < y0 || cx >= x0 + size || cy >= y0 + size)) { return }
+            if (m.facade == undefined) { return }
+            if (m.kind == Raser.BuildingKinds.FuelCanopy) {
+                Raser.KindParts.Pumps(opaque, m, far)
+                Raser.KindParts.PriceSign(opaque, m, far)
+            } else if (m.kind == Raser.BuildingKinds.Fuel) {
+                Raser.KindParts.Band(opaque, m, 0.9, 0.2, false)
+            } else if (m.kind == Raser.BuildingKinds.Market) {
+                Raser.KindParts.Band(opaque, m, 1.4, 0.4, false)
+                Raser.KindParts.Porch(opaque, m)
+            } else if (m.kind == Raser.BuildingKinds.Kiosk) {
+                Raser.KindParts.Band(opaque, m, 0.7, 0.2, true)
+                Raser.KindParts.Awnings(opaque, m)
+            } else if (m.kind == Raser.BuildingKinds.Hall || m.kind == Raser.BuildingKinds.Workshop) {
+                if (m.sheds) { Raser.KindParts.Sheds(opaque, glass, m) }
+            }
+        }
+
+        // Ein Quader mit fünf Seiten (ohne Boden), entlang u (Einheitsvektor) ausgerichtet: Mitte (x, y), halbe Länge a entlang u, halbe Breite c quer.
+        static undefined Box(MeshPart part, defined float x, defined float y, defined float ux, defined float uy, defined float a, defined float c, defined float z0, defined float z1, defined int color, defined int material) {
+            float vx = -uy
+            float vy = ux
+            float p0x = x - ux * a - vx * c
+            float p0y = y - uy * a - vy * c
+            float p1x = x + ux * a - vx * c
+            float p1y = y + uy * a - vy * c
+            float p2x = x + ux * a + vx * c
+            float p2y = y + uy * a + vy * c
+            float p3x = x - ux * a + vx * c
+            float p3y = y - uy * a + vy * c
+            part.Quad(p0x, p0y, z1, p1x, p1y, z1, p2x, p2y, z1, p3x, p3y, z1, 0.0, 0.0, 1.0, color, material)
+            part.Quad(p0x, p0y, z0, p1x, p1y, z0, p1x, p1y, z1, p0x, p0y, z1, -vx, -vy, 0.0, color, material)
+            part.Quad(p2x, p2y, z0, p3x, p3y, z0, p3x, p3y, z1, p2x, p2y, z1, vx, vy, 0.0, color, material)
+            part.Quad(p3x, p3y, z0, p0x, p0y, z0, p0x, p0y, z1, p3x, p3y, z1, -ux, -uy, 0.0, color, material)
+            part.Quad(p1x, p1y, z0, p2x, p2y, z0, p2x, p2y, z1, p1x, p1y, z1, ux, uy, 0.0, color, material)
+        }
+
+        // Tankstelle: Inseln (Bordstein 15 cm) entlang der langen Seite des Dachs, alle 5 m, je zwei Zapfsäulen (weiß, oben in der Farbe der
+        // Station, ein dunkles Feld als Anzeige).
+        static undefined Pumps(MeshPart part, RoofModel m, FarMesher far) {
+            float ux = m.dx
+            float uy = m.dy
+            float vx = -uy
+            float vy = ux
+            int n = Math.Max(1, Math.Floor(m.halfAlong * 2.0 / 5.0)!int)
+            int rows = 1
+            if (m.halfAcross > 5.0) { rows = 2 }
+            int mat = Raser.Material.Metal!int
+            for (int row = 0; row < rows; row++) {
+                float across = m.midAcross
+                if (rows == 2) { across = m.midAcross + (row - 0.5) * m.halfAcross }
+                for (int i = 0; i < n; i++) {
+                    float along = m.midAlong - m.halfAlong + (i + 0.5) * m.halfAlong * 2.0 / n
+                    float x = ux * along + vx * across
+                    float y = uy * along + vy * across
+                    float g = far.GroundAt(x, y)
+                    Raser.KindParts.Box(part, x, y, ux, uy, 1.6, 0.6, g, g + 0.15, Raser.Palette.Concrete, Raser.Material.Concrete!int)
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float px = x + ux * 0.8 * side
+                        float py = y + uy * 0.8 * side
+                        Raser.KindParts.Box(part, px, py, ux, uy, 0.3, 0.45, g + 0.15, g + 1.55, Raser.Palette.SignWhite, mat)
+                        Raser.KindParts.Box(part, px, py, ux, uy, 0.3, 0.45, g + 1.55, g + 1.85, m.bandColor, mat)
+                        // die Anzeige auf beiden Seiten quer zur Insel
+                        part.Quad(px - ux * 0.2 + vx * 0.46, py - uy * 0.2 + vy * 0.46, g + 1.1, px + ux * 0.2 + vx * 0.46, py + uy * 0.2 + vy * 0.46, g + 1.1, px + ux * 0.2 + vx * 0.46, py + uy * 0.2 + vy * 0.46, g + 1.4, px - ux * 0.2 + vx * 0.46, py - uy * 0.2 + vy * 0.46, g + 1.4, vx, vy, 0.0, Raser.Palette.Window, mat)
+                        part.Quad(px + ux * 0.2 - vx * 0.46, py + uy * 0.2 - vy * 0.46, g + 1.1, px - ux * 0.2 - vx * 0.46, py - uy * 0.2 - vy * 0.46, g + 1.1, px - ux * 0.2 - vx * 0.46, py - uy * 0.2 - vy * 0.46, g + 1.4, px + ux * 0.2 - vx * 0.46, py + uy * 0.2 - vy * 0.46, g + 1.4, -vx, -vy, 0.0, Raser.Palette.Window, mat)
+                    }
+                }
+            }
+        }
+
+        // Preismast: 6 m hoch an der Ecke des Dachs zur Straße (3 m davor), oben ein Feld in der Farbe der Station, darunter drei weiße Preistafeln.
+        static undefined PriceSign(MeshPart part, RoofModel m, FarMesher far) {
+            var f = m.facade
+            int best = -1
+            for (int r = 0; r < f.runs.Count; r++) {
+                if (!f.runs[r].street) { continue }
+                if (best < 0 || f.runs[r].distance < f.runs[best].distance) { best = r }
+            }
+            if (best < 0) { return }
+            f.PointOn(best, 0.5)
+            float x = f.px + f.pnx * 3.0
+            float y = f.py + f.pny * 3.0
+            float ux = f.pny
+            float uy = -f.pnx
+            float g = far.GroundAt(x, y)
+            int mat = Raser.Material.Metal!int
+            Raser.KindParts.Box(part, x, y, ux, uy, 0.8, 0.2, g, g + 6.0, Raser.Palette.Metal + 64, mat)
+            Raser.KindParts.Box(part, x, y, ux, uy, 0.85, 0.22, g + 4.6, g + 6.1, m.bandColor, mat)
+            for (int k = 0; k < 3; k++) {
+                float z = g + 1.6 + k * 0.95
+                for (int side = -1; side <= 1; side = side + 2) {
+                    float ox = f.pnx * 0.23 * side
+                    float oy = f.pny * 0.23 * side
+                    part.Quad(x - ux * 0.7 + ox, y - uy * 0.7 + oy, z, x + ux * 0.7 + ox, y + uy * 0.7 + oy, z, x + ux * 0.7 + ox, y + uy * 0.7 + oy, z + 0.75, x - ux * 0.7 + ox, y - uy * 0.7 + oy, z + 0.75, f.pnx * side, f.pny * side, 0.0, Raser.Palette.SignWhite, mat)
+                }
+            }
+        }
+
+        // Ein Band auf der Wand (Werbeband, Blende, Schild) entlang der Läufe zur Straße: below m unter der Traufe, height hoch, 4 cm vor der Wand.
+        // onlyMain: nur auf der Hauptseite (der Lauf mit der Tür, sonst der nächste zur Straße).
+        static undefined Band(MeshPart part, RoofModel m, defined float below, defined float height, defined bool onlyMain) {
+            var f = m.facade
+            float top = m.building.eaves - below + height
+            float bottom = m.building.eaves - below
+            if (bottom < m.groundVoxel * 0.2 + 2.4) { return }
+            int main = Raser.KindParts.MainRun(m)
+            for (int r = 0; r < f.runs.Count; r++) {
+                var fr = f.runs[r]
+                if (r != main && (onlyMain || !fr.street)) { continue }
+                for (float s = 0.0; s < fr.length - 0.05; s = s + 2.0) {
+                    float e = Math.Min(s + 2.0, fr.length)
+                    f.PointOn(r, s)
+                    float ax = f.px + f.pnx * 0.04
+                    float ay = f.py + f.pny * 0.04
+                    float nx = f.pnx
+                    float ny = f.pny
+                    f.PointOn(r, e)
+                    float bx = f.px + f.pnx * 0.04
+                    float by = f.py + f.pny * 0.04
+                    part.Quad(ax, ay, bottom, bx, by, bottom, bx, by, top, ax, ay, top, nx, ny, 0.0, m.bandColor, Raser.Material.Metal!int)
+                }
+            }
+        }
+
+        // Die Hauptseite: der Lauf mit einer Tür im Erdgeschoss, sonst der nächste zur Straße, sonst der längste.
+        static defined int MainRun(RoofModel m) {
+            var f = m.facade
+            int best = 0
+            for (int r = 0; r < f.runs.Count; r++) {
+                foreach (s in f.runs[r].ground) {
+                    if (s.kind == Raser.Facade.GlassDoor || s.kind == Raser.Facade.Door || s.kind == Raser.Facade.RaisedDoor) { return r }
+                }
+                if (f.runs[r].length > f.runs[best].length) { best = r }
+            }
+            int street = -1
+            for (int r = 0; r < f.runs.Count; r++) {
+                if (f.runs[r].street && (street < 0 || f.runs[r].distance < f.runs[street].distance)) { street = r }
+            }
+            if (street >= 0) { return street }
+            return best
+        }
+
+        // Vordach über der Front eines Markts: 2,5 m tief auf 3,2 m Höhe über die ganze Hauptseite, vorn eine Blende in der Farbe des Bands.
+        static undefined Porch(MeshPart part, RoofModel m) {
+            var f = m.facade
+            int r = Raser.KindParts.MainRun(m)
+            var fr = f.runs[r]
+            float z = m.groundVoxel * 0.2 + 3.2
+            if (z > m.building.eaves - 0.6) { return }
+            int mat = Raser.Material.Concrete!int
+            for (float s = 0.0; s < fr.length - 0.05; s = s + 2.0) {
+                float e = Math.Min(s + 2.0, fr.length)
+                f.PointOn(r, s)
+                float ax = f.px
+                float ay = f.py
+                float nx = f.pnx * 2.5
+                float ny = f.pny * 2.5
+                f.PointOn(r, e)
+                float bx = f.px
+                float by = f.py
+                part.Quad(ax, ay, z + 0.25, bx, by, z + 0.25, bx + nx, by + ny, z + 0.25, ax + nx, ay + ny, z + 0.25, 0.0, 0.0, 1.0, Raser.Palette.Metal, mat)
+                part.Quad(ax, ay, z, bx, by, z, bx + nx, by + ny, z, ax + nx, ay + ny, z, 0.0, 0.0, -1.0, Raser.Palette.SignWhite, mat)
+                part.Quad(ax + nx, ay + ny, z, bx + nx, by + ny, z, bx + nx, by + ny, z + 0.25, ax + nx, ay + ny, z + 0.25, f.pnx, f.pny, 0.0, m.bandColor, mat)
+            }
+        }
+
+        // Markisen über den Scheiben eines Kiosks zur Straße: schräg 1,2 m vor die Wand, in Streifen (Farbe des Kiosks und Weiß).
+        static undefined Awnings(MeshPart part, RoofModel m) {
+            var f = m.facade
+            float z = m.groundVoxel * 0.2 + 2.6
+            for (int r = 0; r < f.runs.Count; r++) {
+                var fr = f.runs[r]
+                if (!fr.street) { continue }
+                int stripe = 0
+                for (float s = 0.3; s < fr.length - 0.3; s = s + 0.5) {
+                    f.PointOn(r, s)
+                    float ax = f.px
+                    float ay = f.py
+                    float nx = f.pnx
+                    float ny = f.pny
+                    f.PointOn(r, Math.Min(s + 0.5, fr.length - 0.3))
+                    float bx = f.px
+                    float by = f.py
+                    int col = m.bandColor
+                    if (stripe % 2 == 1) { col = Raser.Palette.SignWhite }
+                    stripe++
+                    part.Quad(ax + nx * 0.05, ay + ny * 0.05, z, bx + nx * 0.05, by + ny * 0.05, z, bx + nx * 1.2, by + ny * 1.2, z - 0.4, ax + nx * 1.2, ay + ny * 1.2, z - 0.4, nx * 0.3, ny * 0.3, 0.95, col, Raser.Material.Wood!int)
+                    part.Quad(ax + nx * 1.2, ay + ny * 1.2, z - 0.65, bx + nx * 1.2, by + ny * 1.2, z - 0.65, bx + nx * 1.2, by + ny * 1.2, z - 0.4, ax + nx * 1.2, ay + ny * 1.2, z - 0.4, nx, ny, 0.0, col, Raser.Material.Wood!int)
+                }
+            }
+        }
+
+        // Sheddach: Reihen quer zur langen Seite alle 6 m - eine senkrechte Glasfläche (1,4 m) und dahinter die schräge Dachfläche (4,5 m) bis aufs
+        // flache Dach; an den Enden die Dreiecke.
+        static undefined Sheds(MeshPart opaque, MeshPart glass, RoofModel m) {
+            float ux = m.dx
+            float uy = m.dy
+            float vx = -uy
+            float vy = ux
+            float z = Math.Floor(m.building.eaves / 0.2) * 0.2 + 0.2
+            float c0 = m.midAcross - m.halfAcross + 1.0
+            float c1 = m.midAcross + m.halfAcross - 1.0
+            if (c1 - c0 < 3.0) { return }
+            int roof = m.building.roof!int
+            for (float a = m.midAlong - m.halfAlong + 1.0; a + 6.0 <= m.midAlong + m.halfAlong - 0.5; a = a + 6.0) {
+                // die Ränder des Grundrisses quer: nur, wo die Reihe ganz auf dem Dach liegt
+                float gx0 = ux * a + vx * c0
+                float gy0 = uy * a + vy * c0
+                float gx1 = ux * a + vx * c1
+                float gy1 = uy * a + vy * c1
+                float bx0 = gx0 + ux * 4.5
+                float by0 = gy0 + uy * 4.5
+                float bx1 = gx1 + ux * 4.5
+                float by1 = gy1 + uy * 4.5
+                if (!m.Contains(gx0, gy0) || !m.Contains(gx1, gy1) || !m.Contains(bx0, by0) || !m.Contains(bx1, by1)) { continue }
+                float zt = z + 1.4
+                if (glass == undefined) {
+                    opaque.Quad(gx0, gy0, z, gx1, gy1, z, gx1, gy1, zt, gx0, gy0, zt, -ux, -uy, 0.0, Raser.Palette.Window, Raser.Material.Concrete!int)
+                } else {
+                    opaque.Quad(gx0 + ux * 0.05, gy0 + uy * 0.05, z, gx1 + ux * 0.05, gy1 + uy * 0.05, z, gx1 + ux * 0.05, gy1 + uy * 0.05, zt, gx0 + ux * 0.05, gy0 + uy * 0.05, zt, -ux, -uy, 0.0, Raser.Palette.Window, Raser.Material.Concrete!int)
+                    glass.Quad(gx0, gy0, z, gx1, gy1, z, gx1, gy1, zt, gx0, gy0, zt, -ux, -uy, 0.0, Raser.Palette.Glass, Raser.Material.Glass!int)
+                }
+                float sl = 1.4 / 4.5
+                float nl = Math.Sqrt(1.0 + sl * sl)
+                opaque.Quad(gx0, gy0, zt, gx1, gy1, zt, bx1, by1, z, bx0, by0, z, ux * sl / nl, uy * sl / nl, 1.0 / nl, m.roofColor, roof)
+                opaque.Quad(gx0, gy0, z, bx0, by0, z, gx0, gy0, zt, gx0, gy0, zt, -vx, -vy, 0.0, m.wallColor, Raser.Material.Metal!int)
+                opaque.Quad(gx1, gy1, z, bx1, by1, z, gx1, gy1, zt, gx1, gy1, zt, vx, vy, 0.0, m.wallColor, Raser.Material.Metal!int)
+            }
+        }
+    }
+}

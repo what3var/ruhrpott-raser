@@ -958,7 +958,9 @@ class KindTests {
         var b = new Raser.Building()
         b.source = source
         b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
-        b.footprint = footprint
+        float fp[] = new float[footprint.length]
+        for (int i = 0; i < fp.length; i++) { fp[i] = footprint[i] }
+        b.footprint = take fp
         b.ground = 60.0
         b.eaves = eaves
         b.ridge = eaves

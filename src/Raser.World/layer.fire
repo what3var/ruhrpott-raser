@@ -83,7 +83,8 @@ namespace Raser {
     class Area {
         defined int id
         string source
-        string kind               // "landuse=grass", "natural=water", "amenity=parking" ...
+        string kind
+        string name               // Gebiete (TileData.zones): der Name ("Altstadt" ...)               // "landuse=grass", "natural=water", "amenity=parking" ...
         float ring[]
         Material surface
         defined int color

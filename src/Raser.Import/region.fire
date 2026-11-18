@@ -150,6 +150,7 @@ namespace Raser {
                     z.source = f.source
                     z.id = Raser.Ids.Stable(Raser.IdKind.Area, f.source)
                     z.kind = f.kind.Substring(5)
+                    z.name = f.name
                     z.ring = take local
                     tile.data.zones.Add(take z)
                     continue

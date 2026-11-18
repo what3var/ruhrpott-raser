@@ -222,6 +222,8 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 31: Ort (Altstadt, Land, Industrie ...) und besondere Gebäude (Raser.BuildingKinds): Dach auf Stützen, Parkhaus mit offenen Geschossen,
+        //     Hallen mit Rolltoren und Lichtbändern; Fachwerk mit Ziegeln auf dem Land; Gebiete und OSM-Tags der Gebäude aus dem Import
         // 30: Aussehen je Gebäude (Raser.HouseStyle): Bautyp, Farbfamilie je Viertel, Fassaden-Farben (Palette 128 .. 159, 180 .. 247), Sockel,
         //     Gesims, Giebel, Fachwerk, Wandmaterial; unter der Traufe und am Fuß schmutziger
         // 29: Durchfahrten 25 cm breiter in den Voxeln (glatte Seitenwände im eingehängten Gewölbe)
@@ -248,7 +250,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 30
+        static readonly defined int Version = 31
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
