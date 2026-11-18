@@ -51,28 +51,29 @@ AP=$!
 "$GAME" --server 127.0.0.1:$GP --token "falsch" --user Anna --bot 2 > "$WORK/falsch.log" 2>&1
 wait $BP $AP
 
-# Runde 2: Anna fährt, hält, steigt aus und setzt ihren Rucksack ab; Bernd (zu Fuß) setzt seinen ab, geht zu Annas und hebt ihn auf; Carla schummelt
-# (doppelt so viele Eingaben, dann eine Lage wie in v1).
+# Runde 2: Anna fährt, hält, steigt aus und setzt ihren Rucksack ab; Bernd (zu Fuß) setzt seinen ab, geht zu Annas und hebt ihn auf.
 "$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 40 --plan aufheben --vehicle fuss --at 376100,5705000 > "$WORK/bernd2.log" 2>&1 &
 BP=$!
-"$GAME" --server 127.0.0.1:$GP --token "$C" --user Carla --bot 8 --plan schummeln --at 376300,5705000 > "$WORK/carla.log" 2>&1 &
-CP=$!
 "$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 40 --plan ablegen --at 376100,5705000 "${WORLDARG[@]}" > "$WORK/anna2.log" 2>&1 &
 AP=$!
-wait $BP $CP $AP
+wait $BP $AP
 
 # Runde 3: Anna fährt Bernd (zu Fuß) um - Bernd verliert Bargeld und Gegenstände, Anna sammelt sie auf; dann meldet Anna sich neu an: ihr Bargeld
 # kommt aus der Datenbank.
 "$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 40 --plan stehen --vehicle fuss --at 376100,5705030 > "$WORK/bernd3.log" 2>&1 &
 BP=$!
 sleep 1
-"$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 38 --plan umfahren --target Bernd --at 376100,5705000 "${WORLDARG[@]}" > "$WORK/anna3.log" 2>&1
+"$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 38 --plan umfahren --target Bernd --tp 1 --at 376100,5705000 "${WORLDARG[@]}" > "$WORK/anna3.log" 2>&1
 wait $BP
 sleep 1
 "$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 3 --plan stehen --vehicle fuss --at 376100,5705000 > "$WORK/anna4.log" 2>&1
+# Runde 4: Carla schummelt allein (doppelt so viele Eingaben, dann eine Lage wie in v1) - allein, damit ihr Wagen niemanden umfährt.
+"$GAME" --server 127.0.0.1:$GP --token "$C" --user Carla --bot 8 --plan schummeln --at 376300,5705000 > "$WORK/carla.log" 2>&1
 # Runde 5: Dora (neu) geht 3 s, meldet sich neu an (Stand wie zuletzt), dann startet der Server neu, Dora wieder (Stand wie zuletzt).
 "$GAME" --server 127.0.0.1:$GP --token "$D" --user Dora --bot 6 --plan gehen --vehicle fuss --at 390000,5710000 > "$WORK/dora1.log" 2>&1
 "$GAME" --server 127.0.0.1:$GP --token "$D" --user Dora --bot 5 --plan gehen > "$WORK/dora2.log" 2>&1
+# (eine Sekunde, damit der Server das Gehen verarbeitet und speichert; ein harter Abbruch verliert höchstens die letzten 10 s)
+sleep 1
 kill $PID; wait $PID 2>/dev/null
 start_server
 D=$(curl -s -X POST -d '{"user": "Dora", "password": "geheim321"}' "$API/api/login" | token)
@@ -129,7 +130,9 @@ if near_spawn "$WORK/bernd.log" && near_spawn "$WORK/dora1.log"; then echo "ok: 
 same_stand() { E1=$(sed -n 's/.*Stand am Ende: //p' "$1"); S2=$(sed -n 's/.*Stand am Anfang: //p' "$2"); [ -n "$E1" ] && [ "$E1" = "$S2" ]; }
 if same_stand "$WORK/dora1.log" "$WORK/dora2.log"; then echo "ok: Inventar und Lage nach dem Neuanmelden gleich"; else echo "FEHLT: Inventar und Lage nach dem Neuanmelden gleich"; ok=0; fi
 if same_stand "$WORK/dora2.log" "$WORK/dora3.log"; then echo "ok: Inventar und Lage nach dem Neustart des Servers gleich"; else echo "FEHLT: Inventar und Lage nach dem Neustart des Servers gleich"; ok=0; fi
-if same_stand "$WORK/bernd3.log" "$WORK/bernd5.log" || [ -z "$WORLD" ]; then echo "ok: Bernds Stand (nach dem Umhauen) über den Neustart"; else echo "FEHLT: Bernds Stand über den Neustart"; ok=0; fi
+# (Bernd: nur Bargeld und Inventar - seine Lage darf der Server um 1 m verschieben, wenn dort schon jemand steht)
+same_inv() { E1=$(sed -n 's/.*Stand am Ende: .*\(Bargeld.*\)/\1/p' "$1"); S2=$(sed -n 's/.*Stand am Anfang: .*\(Bargeld.*\)/\1/p' "$2"); [ -n "$E1" ] && [ "$E1" = "$S2" ]; }
+if same_inv "$WORK/bernd3.log" "$WORK/bernd5.log" || [ -z "$WORLD" ]; then echo "ok: Bernds Inventar (nach dem Umhauen) über den Neustart"; else echo "FEHLT: Bernds Inventar über den Neustart"; ok=0; fi
 # zu Fuß gegen zu Fuß: nie näher als 0,7 m (bis auf die cm der Snapshots)
 least() { sed -n 's/.*kleinster Abstand zu [A-Za-z]*: \([0-9.]*\) m.*/\1/p' "$1"; }
 LD=$(least "$WORK/dora4.log"); LE=$(least "$WORK/erik.log")

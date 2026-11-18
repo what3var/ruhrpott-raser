@@ -251,7 +251,9 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 32
+        // 33: Wälder, Parks und Grünflächen bepflanzt und möbliert (Raser.Greens beim Laden): Baumarten, Unterwuchs, Bänke, Spielgeräte, Tore,
+        //     Hecken, Lauben, Gräber, Schilf; Waldboden
+        static readonly defined int Version = 33
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile

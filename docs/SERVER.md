@@ -1,4 +1,4 @@
-# Server: Stand M4 (autoritativ, Protokoll v2)
+# Server: Stand M4 (autoritativ, Protokoll v4)
 
 Wie Spieler, Launcher und Server zusammenspielen. Grundlage ist das Konzept, Abschnitt 8 (Koordinator, Regionsserver, globale Dienste) und
 die Roadmap, M4. Hier steht, was jetzt gebaut ist und was später kommt.
@@ -64,27 +64,28 @@ Feste Schnittstelle für den Launcher. JSON in UTF-8, Fehler als `{"error": "...
 Der Launcher startet das Spiel mit `--server <host>:7481 --token <token> --user <name>`. Die Liste der Dateien (Größe, SHA-256) entsteht beim Start
 des Servers; ein neuer Build heißt: Server neu starten.
 
-## Spielprotokoll (TCP, Port 7481), Version 2
+## Spielprotokoll (TCP, Port 7481), Version 4
 
 **Rahmen:** 2 Byte Länge (Little Endian), dann so viele Bytes Nachricht: 1 Byte Art, dann die Felder (`Raser.ByteWriter`: Varints, ZigZag für
 Vorzeichen, Texte als Länge + UTF-8, `Float64` bitgenau). Lage in cm (UTM 32, Ost/Nord), Richtung in 1/100 Grad, Tempo in cm/s. Ein Client darf
 höchstens 1 KiB je Rahmen schicken, der Server bis 64 KiB.
 
 Der Server ist maßgeblich: der Client schickt keine Lagen mehr, nur seine **Eingaben je Takt** und **Operationen am Inventar**. Ein Client mit
-Protokoll 1 bekommt beim Hello ein Reject ("Protokoll 1 passt nicht, der Server spricht 2: bitte den Launcher aktualisieren."); eine State-Nachricht
-(Lage wie in v1) wirft hinaus.
+einer anderen Version bekommt beim Hello ein Reject ("Protokoll 2 passt nicht, der Server spricht 4: bitte den Launcher aktualisieren."); eine
+State-Nachricht (Lage wie in v1) wirft hinaus. Seit v3 sind Snapshots Deltas gegen den letzten bestätigten (siehe unten), v4 trägt dazu die
+Brückenebene im eigenen Zustand.
 
 | Art | Richtung | Inhalt |
 |---|---|---|
-| 1 Hello | C → S | Protokollversion (2), Token, Name\|Client-Version, Fahrzeugart zum Start (0 zu Fuß, 1 Auto, 2 Transporter, 3 Motorrad, 4 Fahrrad), gewünschter Startpunkt (Ost, Nord) |
+| 1 Hello | C → S | Protokollversion (4), Token, Name\|Client-Version, Fahrzeugart für einen neuen Spieler (0 zu Fuß, 1 Auto, 2 Transporter, 3 Motorrad, 4 Fahrrad), ein Startpunkt (Ost, Nord - **der Server nimmt ihn nicht**: er wählt selbst) |
 | 3 Chat | C → S | Text (höchstens 200 Zeichen) |
 | 4 Command | C → S | Befehlszeile (`/kick name`) |
 | 5 Bye | C → S | - |
-| 6 Input | C → S | Folgenummer der ersten Eingabe, Anzahl (1 bis 8), je Eingabe: Gas 0..100, Bremse 0..100 (je 1 Byte), Lenkung, Gehen, Drehen (-100..100, ZigZag), Flags (Rückwärtsgang, Handbremse, Rennen, E = ein-/aussteigen) |
+| 6 Input | C → S | Folgenummer der ersten Eingabe, Anzahl (1 bis 8), **der zuletzt empfangene Snapshot (Takt: die Bestätigung)**, je Eingabe: Gas 0..100, Bremse 0..100 (je 1 Byte), Lenkung, Gehen, Drehen (-100..100, ZigZag), Flags (Rückwärtsgang, Handbremse, Rennen, E = ein-/aussteigen) |
 | 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Öffnen eines Rucksacks am Boden, 6 Schließen, 7 Use; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden), davor die letzte Eingabe des Clients (der Server rechnet die Operation erst nach ihr) |
 | 10 Welcome | S → C | Spieler-ID (global, `Raser.IdAllocator`), Region, Serverzeit (ms), Admin ja/nein, Name, Takte je s (30), Takt des Servers |
 | 11 Reject | S → C | Grund (danach schließt der Server) |
-| 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe, das eigene Bargeld (Cent); der eigene Spieler (bitgenau, `Float64`): Fahrzeug-ID, Lage, Richtung, Tempo, Schrittweg, Last; im Fahrzeug dessen ganzer Zustand (Art, Lage, Richtung, Tempo, Lenkeinschlag, Stoß, Schräglage, Zustand, Tank, Grip, rutscht); dann die **Entitäten** (neu oder geändert) und die IDs der **verschwundenen** |
+| 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe, das eigene Bargeld (Cent), **die Grundlage** (ein bestätigter Takt; 0: keine); der eigene Zustand (bitgenau, `Float64`, gegen die Grundlage nur die geänderten Zahlen: `Raser.SelfState`); die **Entitäten** als Delta: neue ganz, geänderte nur mit ihren geänderten Feldern, die verschwundenen (`Raser.Delta`) |
 | 13 Join | S → C | ID und Name eines Spielers (beim Eintritt an alle, beim Welcome die schon Anwesenden) |
 | 14 Leave | S → C | ID |
 | 15 Chat | S → C | Absender, Text, Art (0 Spieler, 1 System, 2 Antwort nur an diesen Client, 3 Fehler) |
@@ -107,13 +108,19 @@ von Anfang an allgemein, damit der Verkehr später ohne neue Nachricht hineinpas
 **Takt:** Server und Client rechnen mit festen **30 Takten je s** (`Raser.SimWorld.Tick`). Der Client schickt je Takt eine Eingabe (ein Rahmen
 mit 13 Bytes); der Server schickt jedem Client jeden 2. Takt einen Snapshot (**15 je s**), dazu alle 10 s und bei jeder Änderung das Wetter.
 
-**Interesse und Deltas:** Ein Snapshot enthält, was auf der Kachel des Spielers und den 8 Nachbarn ist: die anderen Spieler, alle Fahrzeuge
-(ohne das eigene - das steht bitgenau im eigenen Zustand), die Gegenstände am Boden und die NPCs des Verkehrs (bis 200 m). Der Server merkt sich je Client den
-Fingerabdruck jeder Entität (quantisiert, wie sie über die Leitung geht): Unverändertes geht nur alle 2 s noch einmal, was aus dem Interesse fällt
-(oder verschwindet), steht in der Liste der verschwundenen. Gemessen (Bots, 2–3 Spieler, ein paar geparkte Fahrzeuge): **etwa 1,4 bis 3,5 KB/s
-je Client vom Server, 0,4 KB/s zum Server** - ohne Verkehr. Mit Welt und Verkehr (10 bis 14 Autos, gut 30 Fußgänger in Sicht, die sich fast alle
-in jedem Snapshot bewegen) sind es **etwa 21 bis 25 KB/s** je Client; da hilft später ein Delta gegen den letzten bestätigten Stand statt nur
-"geändert ja/nein".
+**Interesse und Deltas (v3):** Ein Snapshot enthält, was auf der Kachel des Spielers und den 8 Nachbarn ist: die anderen Spieler, alle Fahrzeuge
+(ohne das eigene - das steht bitgenau im eigenen Zustand), die Gegenstände am Boden und die NPCs des Verkehrs (bis 200 m). Er ist ein **Delta
+gegen den letzten Snapshot, den der Client bestätigt hat** (jede Eingabe trägt den Takt des zuletzt empfangenen): der Server hebt je Client auf, was
+er ihm zu welchem Takt geschickt hat (`Raser.SnapState`, die Entitäten quantisiert, so wie sie über die Leitung gehen, und den eigenen Zustand,
+höchstens 2 s), der Client die letzten Stände je Takt (`Raser.SnapshotHistory`, 2 s). Neue Entitäten gehen ganz, geänderte nur mit einer Maske
+und den geänderten Feldern - Lage, Richtung, Tempo als Differenz zur Grundlage (meist 1 bis 2 Bytes), das Aussehen (Variante, a) also nur beim
+ersten Mal -, verschwundene als Liste; IDs stehen sortiert als Abstand zur vorigen (die NPCs zählen fortlaufend: 1 Byte). Was weiter als 100 m
+weg ist, wird nur in jedem 2. Snapshot erneuert (dazwischen gilt die Grundlage; so steht es auch im Gedächtnis des Servers). Ist keine
+Grundlage da (Anfang, Bestätigung älter als 1,6 s), geht alles ganz. Vom eigenen Zustand gehen nur die geänderten Zahlen (Maske über 17),
+im Fahrzeug ohne die Lage des Spielers (er sitzt darin).
+
+Gemessen (Bots, Smoke-Probe): ohne Verkehr **0,4 bis 1 KB/s je Client vom Server**, 0,4 KB/s zum Server; mit Welt und Verkehr (10 bis 14
+Autos, gut 30 Fußgänger in Sicht) **BANDBREITE_VERKEHR** - vorher (v2: jede geänderte Entität ganz) 21 bis 25 KB/s.
 
 Ablauf: Der Client schickt Hello; der Server prüft Version und Token (Konto aus der Datenbank), setzt den Spieler in die Region und antwortet
 Welcome, Weather, InvSet und die Joins - oder Reject. Ein zweiter Login desselben Kontos wirft den ersten hinaus.
@@ -121,8 +128,7 @@ Welcome, Weather, InvSet und die Joins - oder Reject. Ein zweiter Login desselbe
 **Prüfungen auf dem Server:** Hello innerhalb von 5 s, sonst zu. Unbekannte Art, zu langer Rahmen, Felder, die nicht passen (auch Eingaben
 außerhalb der Grenzen), eine Lage (State, v1) oder etwas vor dem Hello: Kick. Eingaben: siehe unten (höchstens 30 je s gerechnet, Kick über 150
 je s). Chat und Befehle: höchstens 5 auf einmal, dann einer je s; Text ohne Steuerzeichen, höchstens 200 Zeichen. Operationen am Inventar:
-höchstens 20 je s. Wer 30 s nichts schickt, fliegt. Der Startpunkt aus dem Hello muss in der Region liegen (sonst der Standard); später kommt er
-aus der Datenbank.
+höchstens 20 je s. Wer 30 s nichts schickt, fliegt. Den Startpunkt wählt der Server (siehe "Persistenz"); Admins springen mit `/tp`.
 
 ## Autoritative Simulation
 
@@ -130,11 +136,21 @@ Der Regionsserver rechnet die Welt mit **demselben Code wie der Client** (Biblio
 `Raser.Vehicle.Step`, `Collide`, Schaden, Tank, Schräglage; Teilschritte von höchstens 0,5 m; Stöße zwischen Fahrzeugen mit `Vehicle.Shove`;
 Gehen mit `Raser.Walker`; Aus- und Einsteigen), `Raser.Obstacles` (Grundrisse mit Durchfahrten und Pfosten der Kacheln - früher in
 `client.fire`, dort bleibt `Obstacles` als dünne Unterklasse), `Raser.SimWorld` (Fahrzeuge mit IDs, `Control` = ein Takt eines Spielers mit
-einer Eingabe, `Coast` = die Fahrzeuge ohne Fahrer rollen aus). Die Kacheln lädt der Server bei Bedarf (dort, wo Spieler sind) und vergisst alle
-10 s die, auf denen und neben denen niemand ist.
+einer Eingabe, `Coast` = die Fahrzeuge ohne Fahrer rollen aus, `Crowd` = zu Fuß gegen zu Fuß).
 
-- **Fahrzeuge** gehören der Region und haben IDs (`Raser.IdKind.Vehicle`): beim Eintritt bekommt der Spieler eines der gewünschten Art (auf der
-  nächsten Straße, er sitzt darin), auf jeder Kachel, die ein Spieler zuerst betritt, parkt der Server bis zu 6 am Straßenrand
+**Kacheln ohne Warten:** Die Hindernisse lädt auf dem Server ein eigener Thread (`Raser.TileWorker`, `fire dedicated`); `Raser.Obstacles` lädt
+dort nicht selbst (`manual`). Je Takt bestellt der Regionsserver die 3 x 3 Kacheln um jeden Spieler, die noch fehlen, und übernimmt eine Bestellung
+genau **60 Takte (2 s) später** (`RegionServer.Tiles`; ist der Worker dann noch nicht fertig, wartet der Takt - so hängt nicht vom Timing ab,
+ab welchem Takt eine Wand steht, wie beim Straßengraphen). Ein Spieler kommt erst in die Welt, wenn die Kacheln um seinen Startpunkt da sind
+(`Spawn`, bis dahin keine Snapshots und keine Eingaben). Alle 10 s vergisst der Server die Kacheln, auf denen und neben denen niemand ist.
+
+**Zu Fuß gegen zu Fuß:** Spieler zu Fuß und Fußgänger des Verkehrs sind Kreise mit 0,35 m (`SimWorld.Crowd`): wer geht, wird aus den anderen
+hinausgeschoben (in der Folge der Spieler; die Fußgänger mit ihrer Lage nach dem letzten Takt). In der Vorhersage stehen die anderen als Schatten
+aus dem Snapshot (`Raser.Prediction.Crowd`) - dieselbe Rechnung, bitgleich, solange der andere steht. Zwei Spieler kommen sich nie näher als 0,7 m
+(Smoke-Probe: 0,69 m, die cm der Snapshots).
+
+- **Fahrzeuge** gehören der Region und haben IDs (`Raser.IdKind.Vehicle`): ein neuer Spieler bekommt beim Eintritt eines der gewünschten Art (am
+  Spawn-Punkt, er sitzt darin; wer wiederkommt, bekommt sein gespeichertes zurück), auf jeder Kachel, die ein Spieler zuerst betritt, parkt der Server bis zu 6 am Straßenrand
   (`Raser.Physics.Parking`). E (Flag in der Eingabe, gewechselt bei der Flanke) steigt im Stand aus bzw. in das nächste freie Fahrzeug (3,5 m)
   ein. Geht der Spieler, bleibt sein Fahrzeug stehen; das für ihn erzeugte verschwindet, wenn niemand darin sitzt.
 - **Eingaben:** je Spieler eine Warteschlange (höchstens 32; nur neuere Folgenummern). Je Takt bekommt jeder Spieler ein Guthaben von einer
@@ -252,9 +268,19 @@ layer-Tag sind für den Verkehr ebenerdig.
 
 ## Persistenz
 
-Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created, cash) und `sessions` (Hash des Tokens,
-Konto, Ablauf). Spielerlagen werden noch nicht gespeichert. Später: Konten und Inventar in einer gemeinsamen Datenbank der globalen Dienste,
-Deltas der Welt im Key-Value-Store (Konzept, Abschnitt 8).
+SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created, cash), `sessions` (Hash des Tokens,
+Konto, Ablauf) und **`saves`** (Konto, Stand als BLOB, Zeit). Der Stand eines Spielers (`PlayerSave` in `src/Raser.Server/saves.fire`):
+
+- Lage und Richtung; sein Fahrzeug (das, in dem er sitzt, sonst das für ihn erzeugte): Art, Lage, Richtung, Zustand, Tank, und ob er darin sitzt;
+- Körperwerte (`Raser.Body`: Puste, Sättigung, Durst), Bargeld und Lampe (`Inventory.WriteState`);
+- alle seine Behälter mit Inhalt - die fünf eigenen und jeder Rucksack darin (`Container.Write`). Beim Lesen bekommen die Behälter neue IDs aus dem
+  IdAllocator der Region; Rucksäcke, die auf einen Behälter zeigen, werden umgeschrieben.
+
+Gespeichert wird beim Gehen (vor `Leave`) und alle 10 s für alle (ein Neustart des Servers verliert höchstens so viel). Beim Eintritt liest der
+Server den Stand: der Spieler kommt genau dort wieder in die Welt, mit seinem Fahrzeug und seinem Inventar. **Den Startpunkt wählt der Server**:
+die gespeicherte Lage, sonst der Spawn-Punkt der Region (auf der nächsten Straße; steht dort schon ein Fahrzeug, je 7 m weiter zurück; zu Fuß
+nicht auf einem anderen). Der Startpunkt im Hello zählt nicht. Gegenstände am Boden werden noch nicht gespeichert (sie bleiben, solange der Server
+läuft). Später: Konten und Inventar in einer gemeinsamen Datenbank der globalen Dienste, Deltas der Welt im Key-Value-Store (Konzept, Abschnitt 8).
 
 ## Inventar über den Server
 
@@ -272,7 +298,7 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
   das Fahrzeug des Servers, es geht mit dem nächsten Snapshot an alle).
 - **Bargeld** (`Inventory.cash`, Cent): Geld am Boden wird beim Aufheben Bargeld. Der Server schickt es mit jedem InvSet und Snapshot und
   speichert es im Konto (Spalte `cash` der Tabelle `accounts`, sobald es sich ändert und beim Gehen); wer neu ist (-1), bekommt das Startgeld. (Die Behälter selbst
-  werden noch nicht gespeichert: nach dem Neuanmelden gibt es die Anfangsausstattung.)
+  werden mit dem Stand des Spielers gespeichert: siehe "Persistenz".)
 - **Umgehauen** (`Raser.Knockdown.Apply`, Samen vom Server): was der Spieler trägt, fällt zu Boden, ein Teil des Bargelds als Geldhäufchen,
   manches geht kaputt; die Gegenstände kommen als Entitäten in die Snapshots, der Betroffene bekommt sein Inventar neu (InvSet).
 - Gegenstände am Boden sind Entitäten im Snapshot (Art 5). Den Inhalt eines Rucksacks am Boden bekommt nur, wer ihn öffnet (Operation 5) oder
@@ -286,7 +312,7 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
 | Jetzt | Später |
 |---|---|
 | ein Prozess, ein Regionsserver | Koordinator, mehrere Regionsserver, Randzone, Übergabe mit Hysterese |
-| der Server rechnet alles aus Eingaben (30 Takte je s), Client mit Vorhersage und Abgleich, die anderen interpoliert | Kacheln in einem eigenen Thread laden (jetzt hält der erste Besuch einer Kachel den Takt kurz an); Startpunkt und Inventar speichern (jetzt wählt der Client den Startpunkt beim Hello) |
+| der Server rechnet alles aus Eingaben (30 Takte je s), Client mit Vorhersage und Abgleich, die anderen interpoliert; Kacheln aus einem Worker; Stände in SQLite, Startpunkt vom Server | Gegenstände am Boden speichern; die Datenbank aus dem Takt in einen eigenen Thread (jetzt alle 10 s ein paar ms) |
 | Spieler gegen Fahrzeuge nur beim Gehen und beim Umhauen | Kollision Fahrzeug gegen Spieler mit Rückstoß; Verzögerungsausgleich (Lag Compensation) für Treffer |
 | TCP mit eigenem Rahmen | UDP für Lagen, TCP für Zuverlässiges |
 | HTTP ohne TLS | TLS (Reverse-Proxy oder `Http.Server.UseTls`), sonst gehen Passwort und Token im Klartext |

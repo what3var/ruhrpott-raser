@@ -91,6 +91,7 @@ namespace Raser {
             var treeOff = new List<float>()
             foreach (p in tile.data.props) {
                 if (p.kind != "tree") { continue }
+                if (p.source != undefined && p.source.StartsWith("green:")) { continue }        // Wald und Park sind keine Baumreihen
                 int best = -1
                 float bestEdge = 1.0e30
                 float bs = 0.0

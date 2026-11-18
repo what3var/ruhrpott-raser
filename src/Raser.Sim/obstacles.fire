@@ -47,12 +47,17 @@ namespace Raser {
                     box.Grow(2.0)
                     list.Add(take box)
                 }
-                // die Pfosten: Baumstämme, Laternen, Ampeln (Beete, Büsche, Bänke, Schilder halten nicht auf)
+                // die Pfosten: Baumstämme, Laternen, Ampeln, Hecken, Spielgeräte, Lauben (Beete, Büsche, Farne, Bänke, Schilder halten nicht auf)
                 if (loaded.data.props != undefined) {
                     foreach (p in loaded.data.props) {
                         float r = 0.0
                         if (p.kind == "tree") { r = 0.3 }
                         if (p.kind == "lamp" || p.kind == "signal") { r = 0.12 }
+                        // Grün und Spiel (Raser.Greens): Hecken (je Stück 2 m), Spielgeräte, Lauben, Tore
+                        if (p.kind == "hedge") { r = 0.7 }
+                        if (p.kind == "swing" || p.kind == "slide" || p.kind == "climber") { r = 0.9 }
+                        if (p.kind == "shed") { r = 1.2 }
+                        if (p.kind == "goal" || p.kind == "hoop") { r = 0.25 }
                         if (r <= 0.0) { continue }
                         float pe = key.East + p.x
                         float pn = key.North + p.y

@@ -70,6 +70,7 @@ class Player {
     defined int snapAck             // der zuletzt bestätigte Snapshot (Takt)
     defined int sentBytes           // Bytes der Snapshots (zum Messen)
     defined int lyingUntil          // umgehauen: liegt bis zu diesem Takt
+    defined bool replaced           // ein neuer Login desselben Kontos hat übernommen (sein Stand ist gespeichert; nicht noch einmal)
     defined int storedCash          // das Bargeld in der Datenbank (-1: neu)
     Raser.Body body                 // Essen, Trinken (Inventory.Use)
 
@@ -113,6 +114,7 @@ class Player {
         this.snapAck = 0
         this.sentBytes = 0
         this.lyingUntil = 0
+        this.replaced = false
         this.storedCash = -1
         this.body = new Raser.Body()
     }
@@ -240,8 +242,13 @@ class Gateway {
             return
         }
         // ein zweiter Login desselben Kontos wirft den ersten hinaus
+        // (auch eine Verbindung, die schon zu ist, aber noch nicht abgeräumt: ihr Stand kommt erst in die Datenbank, dann wird er gelesen)
         foreach (other in this.players) {
-            if (other != p && other.Welcomed && other.account == account.id) { this.Kick(other, "Mit diesem Konto hat sich jemand anderes angemeldet.", false) }
+            if (other != p && other.Welcomed && other.account == account.id && !other.replaced) {
+                this.Save(other)
+                other.replaced = true
+                this.Kick(other, "Mit diesem Konto hat sich jemand anderes angemeldet.", false)
+            }
         }
         p.account = account.id
         p.name = account.name
@@ -372,6 +379,7 @@ class Gateway {
 
     // Den Stand von p in die Datenbank (wenn er schon in der Welt ist).
     undefined Save(Player p) {
+        if (p.replaced) { return }
         byte data[] = this.regionServer.SaveOf(p)
         if (data != undefined) { this.accounts.StoreSave(p.account, data) }
     }

@@ -415,6 +415,7 @@ class NetBot {
         bool told = false
         float least = 1000.0
         float farthest = 0.0
+        float carSince = 1000.0
         int lastSeqSeen = 0
         float lastSeqAt = 0.0
         bool stallTold = false
@@ -434,6 +435,7 @@ class NetBot {
             bool sprint = false
             var pred = s.pred
             var car = pred.Car()
+            if (car == undefined) { carSince = 1000.0 } else if (carSince > t) { carSince = t }
             float place[] = pred.world.PlaceOf(pred.pawn)
             // der gespeicherte Stand beim Eintritt (zum Vergleich nach dem Neuanmelden)
             if (!told && s.selfKnown && s.hasInventory && pred.ready) {
@@ -558,7 +560,28 @@ class NetBot {
                 }
             }
             if (plan == "umfahren") {
-                if (phase == "start") {
+                // mit --tp 1 (Admin): erst zum Ziel springen (4 m hinter ihm, in seiner Richtung), dann gerade rückwärts Anlauf nehmen - der Weg zurück
+                // ist derselbe wie der hin, also frei
+                // (erst, wenn der Server das Einsteigen schon gerechnet hat: /tp gilt sofort, die Eingaben erst im Takt)
+                if (phase == "start" && car != undefined && options.Get("tp", "") != "" && !ranUp && t - carSince > 1.0 && pred.pending.Count < 10) {
+                    s.Say("/tp " + options.Get("target", ""))
+                    phase = "tp"
+                    phaseAt = t
+                } else if (phase == "tp" && t - phaseAt > 1.5) {
+                    phase = "zurueck"
+                } else if (phase == "zurueck") {
+                    RemoteEntity aim2 = undefined
+                    foreach (r in s.OfType(Raser.EntityType.Player)) { if (r.name == options.Get("target", "")) { aim2 = r } }
+                    float back = 0.0
+                    if (aim2 != undefined) { back = Math.Sqrt((aim2.east - place[0]) * (aim2.east - place[0]) + (aim2.north - place[1]) * (aim2.north - place[1])) }
+                    if (back > 30.0 && car != undefined) {
+                        // anhalten, dann los
+                        if (Math.Abs(car.speed) > 0.3) { gas = car.speed < 0.0 } else {
+                            ranUp = true
+                            phase = "start"
+                        }
+                    } else { brake = true }
+                } else if (phase == "start") {
                     // zum Ziel: Vollgas, gelenkt auf seine Lage (ist es zu nah, erst Anlauf nehmen: 35 m weg)
                     RemoteEntity aim = undefined
                     foreach (r in s.OfType(Raser.EntityType.Player)) { if (options.Get("target", "") == "" || r.name == options.Get("target", "")) { aim = r } }
@@ -722,8 +745,8 @@ class NetBot {
         var p = s.pred
         float span = Math.Max(1.0, (DateTime.UtcNow.Ticks - began) / 10000000.0 - 1.0)
         if (plan == "zueinander") { print("[" + user + "] kleinster Abstand zu " + options.Get("target", "") + ": " + Math.Round(least * 1000.0) / 1000.0 + " m") }
-        // der Stand am Ende (wenn nichts mehr offen ist)
-        for (int k = 0; k < 20 && s.pendingOps.Count > 0; k++) {
+        // der Stand am Ende (wenn nichts mehr offen ist: keine Eingabe, keine Operation - ohne Eingaben bewegt der Server den Spieler nicht)
+        for (int k = 0; k < 30 && (s.pendingOps.Count > 0 || s.pred.pending.Count > 0); k++) {
             s.Poll()
             Sleep(50ms)
         }

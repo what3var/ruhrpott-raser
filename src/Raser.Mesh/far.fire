@@ -145,6 +145,8 @@ namespace Raser {
             // Baumscheiben: ein grünes Quadrat um jeden Stamm, der nicht in einem Grünstreifen steht (Raser.Props.TreePit); im Gehweg auf seiner Höhe
             foreach (p in this.tile.data.props) {
                 if (p.kind != "tree") { continue }
+                // Bäume in Wald und Park (Raser.Greens) stehen ohne Baumscheibe im Grün
+                if (p.source != undefined && p.source.StartsWith("green:")) { continue }
                 if (p.x < x0 || p.y < y0 || p.x >= x0 + size || p.y >= y0 + size) { continue }
                 if (side > 0) {
                     int si = Math.Clamp(Math.Floor((p.x - x0) / size * side)!int, 0, side - 1)
@@ -208,16 +210,27 @@ namespace Raser {
                 if (p.x < x0 || p.y < y0 || p.x >= x0 + size || p.y >= y0 + size) { continue }
                 float h = p.height
                 if (h <= 0.0) { h = 12.0 }
-                if (p.detail == "needleleaved") { h = Math.Max(h, 14.0) }
+                bool needle = p.detail == "needleleaved" || p.detail == "fichte"
+                if (needle) { h = Math.Max(h, 14.0) }
                 float g = this.GroundAt(p.x, p.y)
                 float r = h * 0.3
                 float trunk = h * 0.4
-                if (p.detail == "needleleaved") {
+                if (needle) {
                     r = h * 0.2
                     trunk = h * 0.15
                 }
+                if (p.detail == "birke") { r = h * 0.22 }
+                if (p.detail == "kiefer") {
+                    r = h * 0.2
+                    trunk = h * 0.65
+                }
+                // im Wald (dicht) von weitem nur jeder zweite Baum, dafür mit breiterer Krone: die Kronen schließen sich, halb so viele Flächen
+                if (p.source != undefined && p.source.StartsWith("green:landuse=forest")) {
+                    if (Raser.Props.Rand(p.id, 5, 0) < 0.5) { continue }
+                    r = r * 1.35
+                }
                 Raser.FarMesher.Box(part, p.x - 0.2, p.y - 0.2, g, p.x + 0.2, p.y + 0.2, g + trunk, Raser.Palette.Bark, Raser.Material.Wood!int)
-                Raser.FarMesher.Crown(part, p.x, p.y, g + trunk, g + h, r, p.detail == "needleleaved", p.id)
+                Raser.FarMesher.Crown(part, p.x, p.y, g + trunk, g + h, r, needle, p.id)
             }
             return part
         }

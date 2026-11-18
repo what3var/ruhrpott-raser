@@ -84,6 +84,7 @@ namespace Raser {
             if (tile == undefined || tile.data == undefined || tile.data.props == undefined || tile.data.roads == undefined) { return }
             foreach (p in tile.data.props) {
                 if (p.kind != "tree") { continue }
+                if (p.source != undefined && p.source.StartsWith("green:")) { continue }        // im Grün gepflanzt (Raser.Greens): frei von Wegen
                 float x = p.x
                 float y = p.y
                 for (int round = 0; round < 3; round++) {
@@ -156,11 +157,23 @@ namespace Raser {
         static VoxelModel Make(string kind, defined float height, defined int variant, defined float angle, string detail) {
             int quarters = Math.Round(angle / 90.0)!int
             if (kind == "tree") {
-                if (detail == "needleleaved") { return Raser.Props.Conifer(height, variant) }
-                return Raser.Props.Tree(height, variant)
+                if (detail == "needleleaved" || detail == "fichte") { return Raser.Props.Conifer(height, variant) }
+                return Raser.Props.Tree(height, variant, detail)
             }
+            // Grün und Spiel (Raser.Greens)
+            if (kind == "fern") { return Raser.Props.Fern(variant) }
+            if (kind == "reed") { return Raser.Props.Reed(variant) }
+            if (kind == "hedge") { return Raser.Props.Hedge(variant).Turned(quarters) }
+            if (kind == "sandbox") { return Raser.Props.Sandbox() }
+            if (kind == "swing") { return Raser.Props.Swing().Turned(quarters) }
+            if (kind == "slide") { return Raser.Props.Slide().Turned(quarters) }
+            if (kind == "climber") { return Raser.Props.Climber() }
+            if (kind == "goal") { return Raser.Props.Goal().Turned(quarters) }
+            if (kind == "hoop") { return Raser.Props.Hoop().Turned(quarters) }
+            if (kind == "shed") { return Raser.Props.Shed(variant).Turned(quarters) }
+            if (kind == "grave") { return Raser.Props.Grave(variant) }
             if (kind == "lamp") { return Raser.Props.Lamp().Turned(quarters) }
-            if (kind == "bush") { return Raser.Props.Bush(variant) }
+            if (kind == "bush") { return Raser.Props.Bush(variant, detail == "flowers") }
             if (kind == "bench") { return Raser.Props.Bench().Turned(quarters) }
             if (kind == "bin") { return Raser.Props.Bin() }
             if (kind == "sign") { return Raser.Props.Sign(detail).Turned(quarters) }
@@ -169,7 +182,7 @@ namespace Raser {
         }
 
         // Ein niedriger Strauch im Beet (0,4 .. 0,6 m): ein löchriger Hügel aus Blättern, bei manchen ein paar Blüten (rosa, gelb oder weiß).
-        static VoxelModel Bush(defined int v) {
+        static VoxelModel Bush(defined int v, defined bool flowers = false) {
             int r = 2 + Math.Floor(Raser.Props.Rand(v, 40, 0) * 2.0)!int          // Radius 2 .. 3 Voxel
             int h = 2 + Math.Floor(Raser.Props.Rand(v, 41, 0) * 2.0)!int          // Höhe 2 .. 3 Voxel
             int size = r * 2 + 1
@@ -177,6 +190,13 @@ namespace Raser {
             int flower = 0
             float pick = Raser.Props.Rand(v, 42, 0)
             if (pick < 0.3) { flower = Raser.Palette.FlowerPink } else if (pick < 0.45) { flower = Raser.Palette.FlowerYellow } else if (pick < 0.6) { flower = Raser.Palette.FlowerWhite }
+            // ein Blumenbeet: immer Blüten, mehr davon
+            float bloom = 0.18
+            if (flowers) {
+                int fl[] = [Raser.Palette.FlowerPink, Raser.Palette.FlowerYellow, Raser.Palette.FlowerWhite, Raser.Palette.SignRed, Raser.Palette.FlowerPink, Raser.Palette.SignBlue]
+                flower = fl[((v % 6) + 6) % 6]
+                bloom = 0.5
+            }
             int leaves = Raser.Material.Leaves!int
             for (int z = 0; z < h; z++) {
                 for (int y = 0; y < size; y++) {
@@ -188,7 +208,7 @@ namespace Raser {
                         if (d > 1.0 || Raser.Props.Rand(v, 43 + z, x * 31 + y) < 0.2) { continue }
                         int color = Raser.Palette.LeavesDark
                         if (z == h - 1 || Raser.Props.Rand(v, 50 + z, x * 31 + y) < 0.35) { color = Raser.Palette.Leaves }
-                        if (flower != 0 && z >= h - 2 && Raser.Props.Rand(v, 60 + z, x * 31 + y) < 0.18) { color = flower }
+                        if (flower != 0 && z >= h - 2 && Raser.Props.Rand(v, 60 + z, x * 31 + y) < bloom) { color = flower }
                         m.Set(x - r, y - r, z, leaves, color)
                     }
                 }
@@ -197,22 +217,47 @@ namespace Raser {
         }
 
         // Ein Laubbaum: Stamm, schräg aufsteigende Äste, an ihren Enden und oben löchrige Blattbüschel (oben heller, unten dunkler).
-        static VoxelModel Tree(defined float height, defined int v) {
+        // species (Raser.Greens): buche (dichte, tief ansetzende Krone), eiche (breit, knorrig, dunkel), birke (schlank, weißer Stamm, hell),
+        // ahorn (rund), kiefer (hoher rötlicher Stamm, flache Krone oben); sonst ein Laubbaum wie bisher.
+        static VoxelModel Tree(defined float height, defined int v, string species = undefined) {
             float h = height
             if (h <= 0.0) { h = 8.0 + Raser.Props.Rand(v, 1, 0) * 8.0 }
             h = Math.Clamp(h, 4.0, 30.0)
             int hv = Math.Round(h / 0.2)!int
-            int crown = Math.Round(hv * 0.32)!int                 // Radius der Krone (Voxel)
+            if (species == "kiefer") { return Raser.Props.Pine(hv, v) }
+            float crownF = 0.32
+            float trunkF = 0.55
+            int bark = Raser.Palette.Bark
+            int tone = 0
+            if (species == "buche") {
+                crownF = 0.3
+                trunkF = 0.45
+            } else if (species == "eiche") {
+                crownF = 0.38
+                trunkF = 0.42
+                tone = 2
+            } else if (species == "birke") {
+                crownF = 0.2
+                trunkF = 0.5
+                bark = Raser.Palette.Plaster
+                tone = 1
+            }
+            int crown = Math.Round(hv * crownF)!int                 // Radius der Krone (Voxel)
             int size = crown * 2 + 9
             // hoch genug für die Krone: der Stamm bis höchstens 0,7 hv, darüber die Krone (Mitte 0,55 crown, Halbachse 0,7 crown, ausgefranst) - dazu Rand
             var m = new Raser.VoxelModel(size, size, hv + crown + 8)
-            int bark = Raser.Material.Wood!int
+            int wood = Raser.Material.Wood!int
             int thick = 1
-            if (h > 9.0) { thick = 2 }
-            int trunkTop = Math.Round(hv * (0.55 + Raser.Props.Rand(v, 2, 0) * 0.15))!int
+            if (h > 9.0 && species != "birke") { thick = 2 }
+            int trunkTop = Math.Round(hv * (trunkF + Raser.Props.Rand(v, 2, 0) * 0.15))!int
             for (int z = 0; z < trunkTop; z++) {
                 for (int a = 0; a < thick; a++) {
-                    for (int b = 0; b < thick; b++) { m.Set(a, b, z, bark, Raser.Palette.Bark) }
+                    for (int b = 0; b < thick; b++) {
+                        int bc = bark
+                        // die Birke: dunkle Querstreifen im weißen Stamm
+                        if (species == "birke" && Raser.Props.Rand(v, z, 5) < 0.2) { bc = Raser.Palette.Metal + 96 }
+                        m.Set(a, b, z, wood, bc)
+                    }
                 }
             }
             // Äste
@@ -230,18 +275,19 @@ namespace Raser {
                     ex = Math.Cos(dir) * t
                     ey = Math.Sin(dir) * t
                     ez = start + rise * t
-                    m.Set(Math.Round(ex)!int, Math.Round(ey)!int, Math.Round(ez)!int, bark, Raser.Palette.Bark)
+                    m.Set(Math.Round(ex)!int, Math.Round(ey)!int, Math.Round(ez)!int, wood, bark)
                 }
                 float r = crown * (0.45 + Raser.Props.Rand(v, 14, k) * 0.25)
-                Raser.Props.Blob(m, ex, ey, ez + r * 0.3, r, r * 0.75, v * 31 + k, hv)
+                Raser.Props.Blob(m, ex, ey, ez + r * 0.3, r, r * 0.75, v * 31 + k, hv, tone)
             }
             // die Krone oben
-            Raser.Props.Blob(m, 0.0, 0.0, trunkTop + crown * 0.55, crown * 0.8, crown * 0.7, v * 31 + 99, hv)
+            Raser.Props.Blob(m, 0.0, 0.0, trunkTop + crown * 0.55, crown * 0.8, crown * 0.7, v * 31 + 99, hv, tone)
             return m
         }
 
         // Ein Blattbüschel: ein Ellipsoid mit Löchern und ausgefranstem Rand; die Farbe nach Höhe und Zufall.
-        static undefined Blob(VoxelModel m, defined float cx, defined float cy, defined float cz, defined float r, defined float rz, defined int seed, defined int top) {
+        // tone: 0 gemischt, 1 hell (Birke), 2 dunkel (Eiche, Kiefer).
+        static undefined Blob(VoxelModel m, defined float cx, defined float cy, defined float cz, defined float r, defined float rz, defined int seed, defined int top, defined int tone = 0) {
             int ri = Math.Ceiling(r)!int + 1
             int rzi = Math.Ceiling(rz)!int + 1
             int leaves = Raser.Material.Leaves!int
@@ -258,7 +304,16 @@ namespace Raser {
                         int color = Raser.Palette.Leaves
                         float up = z * 1.0 / top
                         float pick = Raser.Props.Rand(seed + 7, x * 131 + y, z)
-                        if (pick < 0.25 - up * 0.2) { color = Raser.Palette.LeavesDark } else if (pick > 0.85 - up * 0.3) { color = Raser.Palette.LeavesLight }
+                        float dark = 0.25 - up * 0.2
+                        float light = 0.85 - up * 0.3
+                        if (tone == 1) {
+                            dark = 0.05
+                            light = 0.45
+                        } else if (tone == 2) {
+                            dark = 0.55
+                            light = 0.97
+                        }
+                        if (pick < dark) { color = Raser.Palette.LeavesDark } else if (pick > light) { color = Raser.Palette.LeavesLight }
                         m.Set(x, y, z, leaves, color)
                     }
                 }
@@ -289,6 +344,259 @@ namespace Raser {
                         if (n > 0.8) { color = Raser.Palette.Leaves }
                         m.Set(dx, dy, z, Raser.Material.Leaves!int, color)
                     }
+                }
+            }
+            return m
+        }
+
+        // Kiefer: hoher, rötlicher Stamm (bis 70 %), oben eine flache, dunkle Krone aus zwei, drei Schirmen.
+        static VoxelModel Pine(defined int hv, defined int v) {
+            int crown = Math.Round(hv * 0.2)!int
+            int size = crown * 2 + 7
+            var m = new Raser.VoxelModel(size, size, hv + 6)
+            int top = Math.Round(hv * 0.72)!int
+            for (int z = 0; z < top; z++) { m.Set(0, 0, z, Raser.Material.Wood!int, Raser.Palette.BrickLight + 32) }
+            for (int k = 0; k < 3; k++) {
+                float dir = Raser.Props.Rand(v, 70, k) * 6.2832
+                float off = crown * 0.35 * k / 2.0
+                float cz = top + 1.0 + k * 3.0 + Raser.Props.Rand(v, 71, k) * 2.0
+                float cx = Math.Cos(dir) * off
+                float cy = Math.Sin(dir) * off
+                for (int t = 0; t <= Math.Round(off)!int; t++) { m.Set(Math.Round(Math.Cos(dir) * t)!int, Math.Round(Math.Sin(dir) * t)!int, Math.Round(cz)!int - 1, Raser.Material.Wood!int, Raser.Palette.Bark) }
+                Raser.Props.Blob(m, cx, cy, cz, crown * (0.75 - k * 0.15), crown * 0.28, v * 37 + k, hv, 2)
+            }
+            return m
+        }
+
+        // Farn: ein paar Wedel flach über dem Boden (40 cm).
+        static VoxelModel Fern(defined int v) {
+            var m = new Raser.VoxelModel(7, 7, 3)
+            int leaves = Raser.Material.Leaves!int
+            for (int k = 0; k < 5; k++) {
+                float dir = k * 1.2566 + Raser.Props.Rand(v, 80, 0)
+                for (int t = 0; t <= 3; t++) {
+                    int z = 0
+                    if (t >= 1 && t <= 2) { z = 1 }
+                    int c = Raser.Palette.LeavesLight
+                    if (t == 3) { c = Raser.Palette.Leaves }
+                    m.Set(Math.Round(Math.Cos(dir) * t)!int, Math.Round(Math.Sin(dir) * t)!int, z, leaves, c)
+                }
+            }
+            m.Set(0, 0, 0, leaves, Raser.Palette.Leaves)
+            return m
+        }
+
+        // Schilf: dünne Halme (bis 1,6 m), oben bräunlich.
+        static VoxelModel Reed(defined int v) {
+            var m = new Raser.VoxelModel(5, 5, 9)
+            int leaves = Raser.Material.Leaves!int
+            for (int k = 0; k < 6; k++) {
+                int dx = Math.Floor(Raser.Props.Rand(v, 90, k) * 5.0)!int - 2
+                int dy = Math.Floor(Raser.Props.Rand(v, 91, k) * 5.0)!int - 2
+                int h = 5 + Math.Floor(Raser.Props.Rand(v, 92, k) * 4.0)!int
+                for (int z = 0; z < h; z++) {
+                    int c = Raser.Palette.LeavesLight
+                    if (z >= h - 1) { c = Raser.Palette.Field }
+                    m.Set(dx, dy, z, leaves, c)
+                }
+            }
+            return m
+        }
+
+        // Hecke: ein Stück von 2 m (entlang x), 80 cm breit, 1,2 m hoch, dicht geschnitten.
+        static VoxelModel Hedge(defined int v) {
+            var m = new Raser.VoxelModel(11, 4, 6)
+            m.ox = 5
+            m.oy = 2
+            int leaves = Raser.Material.Leaves!int
+            for (int z = 0; z < 6; z++) {
+                for (int y = -2; y <= 1; y++) {
+                    for (int x = -5; x <= 5; x++) {
+                        int c = Raser.Palette.LeavesDark
+                        float r = Raser.Props.Rand(v, x * 31 + y, z)
+                        if (r > 0.75 || z == 5) { c = Raser.Palette.Leaves }
+                        if (z == 5 && r < 0.15) { continue }
+                        m.Set(x, y, z, leaves, c)
+                    }
+                }
+            }
+            return m
+        }
+
+        // Sandkasten: Holzrand 3 x 3 m (30 cm hoch), innen Sand.
+        static VoxelModel Sandbox() {
+            var m = new Raser.VoxelModel(15, 15, 2)
+            int wood = Raser.Material.Wood!int
+            for (int y = -7; y <= 7; y++) {
+                for (int x = -7; x <= 7; x++) {
+                    bool rim = x == -7 || x == 7 || y == -7 || y == 7
+                    if (rim) {
+                        m.Set(x, y, 0, wood, Raser.Palette.Wood)
+                        m.Set(x, y, 1, wood, Raser.Palette.Wood)
+                    } else { m.Set(x, y, 0, Raser.Material.Sand!int, Raser.Palette.Sand) }
+                }
+            }
+            return m
+        }
+
+        // Schaukel: zwei A-Gestelle (2,4 m) mit Querbalken (3 m entlang x), zwei Sitze an Ketten.
+        static VoxelModel Swing() {
+            var m = new Raser.VoxelModel(17, 9, 13)
+            m.ox = 8
+            m.oy = 4
+            int metal = Raser.Material.Metal!int
+            foreach (x in [-8, 8]) {
+                for (int z = 0; z < 12; z++) {
+                    int spread = Math.Max(0, (11 - z) / 3)
+                    m.Set(x, -spread, z, metal, Raser.Palette.SignRed)
+                    m.Set(x, spread, z, metal, Raser.Palette.SignRed)
+                }
+            }
+            for (int x = -8; x <= 8; x++) { m.Set(x, 0, 12, metal, Raser.Palette.SignRed) }
+            foreach (sx in [-4, 4]) {
+                for (int z = 3; z < 12; z++) {
+                    m.Set(sx - 1, 0, z, metal, Raser.Palette.Metal)
+                    m.Set(sx + 1, 0, z, metal, Raser.Palette.Metal)
+                }
+                for (int x = sx - 1; x <= sx + 1; x++) { m.Set(x, 0, 2, Raser.Material.Wood!int, Raser.Palette.SignBlue) }
+            }
+            return m
+        }
+
+        // Rutsche: Leiter hinten, Plattform (1,4 m), die Bahn nach vorn (+x) bis zum Boden.
+        static VoxelModel Slide() {
+            var m = new Raser.VoxelModel(18, 5, 9)
+            m.ox = 3
+            m.oy = 2
+            int metal = Raser.Material.Metal!int
+            for (int z = 0; z < 8; z++) {
+                m.Set(-3, -2, z, metal, Raser.Palette.SignYellow)
+                m.Set(-3, 2, z, metal, Raser.Palette.SignYellow)
+                if (z % 2 == 1) {
+                    for (int y = -1; y <= 1; y++) { m.Set(-3, y, z, metal, Raser.Palette.Metal) }
+                }
+            }
+            for (int y = -2; y <= 2; y++) {
+                for (int x = -3; x <= 0; x++) { m.Set(x, y, 7, Raser.Material.Wood!int, Raser.Palette.Wood) }
+            }
+            for (int x = 1; x <= 14; x++) {
+                int z = 7 - Math.Round((x - 1) * 7.0 / 13.0)!int
+                for (int y = -1; y <= 1; y++) { m.Set(x, y, z, metal, Raser.Palette.SignBlue) }
+                m.Set(x, -2, z + 1, metal, Raser.Palette.SignBlue)
+                m.Set(x, 2, z + 1, metal, Raser.Palette.SignBlue)
+            }
+            return m
+        }
+
+        // Klettergerüst: ein Würfel aus Stangen (2 m), Sprossen alle 40 cm.
+        static VoxelModel Climber() {
+            var m = new Raser.VoxelModel(11, 11, 11)
+            int metal = Raser.Material.Metal!int
+            for (int z = 0; z <= 10; z++) {
+                for (int y = -5; y <= 5; y++) {
+                    for (int x = -5; x <= 5; x++) {
+                        bool edgeX = x == -5 || x == 5
+                        bool edgeY = y == -5 || y == 5
+                        bool post = edgeX && edgeY
+                        bool rung = z % 2 == 0 && z > 0 && (edgeX || edgeY) && (x % 5 == 0 || y % 5 == 0)
+                        bool top = z == 10 && (edgeX || edgeY || x == 0 || y == 0)
+                        if (post || rung || top) {
+                            int c = Raser.Palette.SignGreen
+                            if (z == 10) { c = Raser.Palette.SignYellow }
+                            m.Set(x, y, z, metal, c)
+                        }
+                    }
+                }
+            }
+            return m
+        }
+
+        // Fußballtor: 5 m breit (entlang y), 2 m hoch, weiß, das Netz nach hinten (-x) angedeutet.
+        static VoxelModel Goal() {
+            var m = new Raser.VoxelModel(6, 27, 11)
+            m.ox = 5
+            m.oy = 13
+            int metal = Raser.Material.Metal!int
+            for (int z = 0; z <= 10; z++) {
+                m.Set(0, -13, z, metal, Raser.Palette.SignWhite)
+                m.Set(0, 13, z, metal, Raser.Palette.SignWhite)
+            }
+            for (int y = -13; y <= 13; y++) {
+                m.Set(0, y, 10, metal, Raser.Palette.SignWhite)
+                if (y % 3 == 0) {
+                    for (int x = -5; x <= -1; x++) { m.Set(x, y, Math.Round(10.0 + x * 1.6)!int, metal, Raser.Palette.Metal) }
+                }
+            }
+            for (int x = -5; x <= 0; x++) {
+                m.Set(x, -13, 0, metal, Raser.Palette.SignWhite)
+                m.Set(x, 13, 0, metal, Raser.Palette.SignWhite)
+            }
+            return m
+        }
+
+        // Basketballkorb: Mast (3 m), Brett und Ring nach vorn (+x).
+        static VoxelModel Hoop() {
+            var m = new Raser.VoxelModel(8, 7, 18)
+            m.ox = 1
+            m.oy = 3
+            int metal = Raser.Material.Metal!int
+            for (int z = 0; z < 17; z++) { m.Set(0, 0, z, metal, Raser.Palette.Metal + 64) }
+            for (int z = 12; z <= 17; z++) {
+                for (int y = -3; y <= 3; y++) { m.Set(2, y, z, metal, Raser.Palette.SignWhite) }
+            }
+            for (int y = -1; y <= 1; y++) {
+                m.Set(3, y, 13, metal, Raser.Palette.SignRed)
+                m.Set(5, y, 13, metal, Raser.Palette.SignRed)
+            }
+            m.Set(4, -1, 13, metal, Raser.Palette.SignRed)
+            m.Set(4, 1, 13, metal, Raser.Palette.SignRed)
+            m.Set(1, 0, 15, metal, Raser.Palette.Metal + 64)
+            return m
+        }
+
+        // Gartenlaube: 2,4 x 2 m aus Holz (grün, braun oder rot gestrichen), Satteldach, Tür vorn.
+        static VoxelModel Shed(defined int v) {
+            var m = new Raser.VoxelModel(13, 11, 14)
+            int wood = Raser.Material.Wood!int
+            int colors[] = [Raser.Palette.Wood, Raser.Palette.DoorGreen, Raser.Palette.Wood + 32, Raser.Palette.DoorRed, Raser.Palette.Wood, Raser.Palette.DoorBlue]
+            int c = colors[((v % 6) + 6) % 6]
+            for (int z = 0; z < 10; z++) {
+                for (int y = -5; y <= 5; y++) {
+                    for (int x = -6; x <= 6; x++) {
+                        bool wall = x == -6 || x == 6 || y == -5 || y == 5
+                        if (!wall) { continue }
+                        int col = c
+                        if (x == 6 && y >= -1 && y <= 1 && z < 9) { col = Raser.Palette.Wood + 64 }      // die Tür
+                        if (y == -5 && x >= -2 && x <= 2 && z >= 4 && z <= 6) { col = Raser.Palette.Glass }
+                        m.Set(x, y, z, wood, col)
+                    }
+                }
+            }
+            for (int k = 0; k <= 5; k++) {
+                for (int x = -7; x <= 7; x++) {
+                    m.Set(x, -6 + k, 10 + k / 2, Raser.Material.RoofTiles!int, Raser.Palette.RoofDark)
+                    m.Set(x, 6 - k, 10 + k / 2, Raser.Material.RoofTiles!int, Raser.Palette.RoofDark)
+                }
+            }
+            return m
+        }
+
+        // Grab: Stein (60 x 20 cm, 80 cm hoch; grau, Sandstein oder dunkel) am Kopfende, davor das bepflanzte Beet.
+        static VoxelModel Grave(defined int v) {
+            var m = new Raser.VoxelModel(5, 10, 5)
+            m.ox = 2
+            m.oy = 8
+            int stones[] = [Raser.Palette.StoneGrey, Raser.Palette.Sandstone, Raser.Palette.Metal + 96, Raser.Palette.StoneGrey]
+            int stone = stones[((v % 4) + 4) % 4]
+            for (int z = 0; z < 4; z++) {
+                for (int x = -1; x <= 1; x++) { m.Set(x, 1, z, Raser.Material.Rock!int, stone) }
+            }
+            m.Set(0, 1, 4, Raser.Material.Rock!int, stone)
+            for (int y = -7; y <= 0; y++) {
+                for (int x = -2; x <= 2; x++) {
+                    bool rim = x == -2 || x == 2 || y == -7
+                    if (rim) { m.Set(x, y, 0, Raser.Material.Rock!int, Raser.Palette.Concrete) } else { m.Set(x, y, 0, Raser.Material.Leaves!int, Raser.Palette.LeavesDark) }
+                    if (!rim && Raser.Props.Rand(v, x, y) < 0.25) { m.Set(x, y, 1, Raser.Material.Leaves!int, Raser.Palette.FlowerPink) }
                 }
             }
             return m

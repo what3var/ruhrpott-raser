@@ -10,8 +10,10 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 | Statische Felder werden in Deklarationsreihenfolge initialisiert; ein Initialisierer, der ein später deklariertes statisches Feld liest, bekommt `undefined`. | Reihenfolge der Klassen in `voxel.fire` beachten | **muss behoben werden:** der Compiler soll zur Compilezeit ermitteln, welcher Initialisierer von welchem statischen Feld abhängt, und in dieser Reihenfolge initialisieren (ein Zyklus ist ein Fehler) |
 | Ein Ausdruck kann nicht mit `&&` auf der nächsten Zeile weitergehen (Zeilenende beendet die Anweisung). | Eine Zeile | Verhalten |
 | Ein Objekt, das einem Konstruktor übergeben und in einem Feld gespeichert wird, stirbt mit dem Aufrufer, wenn es ein Temporärwert war (`new Voxelizer(Sample.Make(), ...)`). | `try x.TakeTo(this)` in den Konstruktoren | Absicht (Besitzmodell); leicht zu vergessen, ein Hinweis des Typprüfers wäre hilfreich |
-| `x.TakeLocal()` in einem `if`-Block bindet `x` an diesen Block; ein `return x` danach gibt ein zerstörtes Objekt zurück (DestroyedException beim Aufrufer, VM und nativ). | `var fb = take this.f` statt `TakeLocal` (`MapJob.TakeImage`) | Verhalten laut Doku; ein Hinweis des Typprüfers (TakeLocal in einem inneren Block, Wert verlässt ihn) hätte den Absturz des Spiels verhindert |
+| `x.TakeLocal()` in einem `if`-Block bindet `x` an diesen Block; ein `return x` danach gibt ein zerstörtes Objekt zurück (DestroyedException beim Aufrufer, VM und nativ). | kein `TakeLocal` mehr; die Karte hält ihre Bilder in `Dictionary(Owns.Values)` (`Minimap.Prepare`) | Verhalten laut Doku; ein Hinweis des Typprüfers (TakeLocal in einem inneren Block, Wert verlässt ihn) hätte den Absturz des Spiels verhindert |
 | **Wunsch: ein Schlüsselwort `replace`** für das Überschreiben eines Felds: es löscht das bisherige Objekt (bzw. Array, Container), wenn es im Besitz des Objekts ist, und setzt dann den neuen Wert. Hintergrund: ein Feld neu zu belegen (`this.d = new Dictionary<...>()`, `this.one = take b`, `this.a = undefined`) gibt das Alte **absichtlich nicht** frei - sonst müsste fire jedes Mal sämtliche Referenzen auf das Objekt und alle seine Kinder prüfen. Das Löschen darf deshalb **niemals implizit** passieren, nur mit `replace`. | heute `delete this.f` vor dem Überschreiben (`MeshBatch.Pack`), bzw. `List` + `Clear` (`WorldView.making`) | Idee |
+
+| Elemente mit `RemoveAt` aus einer Liste nehmen, die aus `Json.Deserialize` kam, und die Liste danach wieder schreiben: „A value to write to JSON is destroyed“ (gefunden in Raser.Greens mit fire master, nativ). | die Liste mit `TakeAt` umlegen und die behaltenen mit `take` zurück | offen |
 
 ## scene3d
 
@@ -75,6 +77,10 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
   call)“) - für ein Array zählt `new` nicht als frisch, das Ergebnis eines Aufrufs schon.
 
 ## Netz
+
+- **Kein Rückfall auf IPv4 bei leerem Host:** `new Net.TcpListener("", port)` und `new Http.Server("", port)` lauschen auf IPv6 (mit IPv4 darin);
+  hat der Rechner kein IPv6 (ein Container nach dem Neustart), werfen beide „socket: Address family not supported by protocol“, statt auf
+  `0.0.0.0` zurückzufallen. Umweg in raser-server (`Server.ListenHost`): erst leer probieren, sonst `0.0.0.0`. Wunsch: der Rückfall in fire.
 
 - **`Http.Download` kann keine Antworten mit `Transfer-Encoding: chunked`** („A chunked download is not supported.“). Die OSM-API
   (`api.openstreetmap.org/api/0.6/map`) antwortet so; DGM1/LoD2 von opengeodata.nrw.de gehen. Umweg in `raser fetch` (src/Raser.Tool/setup.fire):

@@ -272,7 +272,14 @@ namespace Raser {
             // Asphalt: feines Korn, dunklere Flicken
             if (c == 7) { return 1.0 + grain * 0.06 + Math.Min(0.0, blot) * 0.12 }
             // Gras, Wald, Feld: Korn und Flecken
-            if (c == 2 || c == 24 || c == 25) { return 1.0 + grain * 0.09 + blot * 0.08 + mid * 0.05 }
+            // Waldboden: Laub, Moos und Erde - kräftige Flecken, einzelne helle Blätter und dunkle Stellen
+            if (c == 24) {
+                float leaf = Raser.Atlas.Hash(x, y, s + 1200)
+                float f = 1.0 + grain * 0.12 + blot * 0.12 + mid * 0.08
+                if (leaf > 0.86) { f = f + 0.28 } else if (leaf < 0.08) { f = f - 0.22 }
+                return f
+            }
+            if (c == 2 || c == 25) { return 1.0 + grain * 0.09 + blot * 0.08 + mid * 0.05 }
             // Erde, Sand, Schotter, Fels, Gleis
             if (c == 1 || c == 3 || c == 4 || c == 5 || c == 26) { return 1.0 + grain * 0.10 + blot * 0.06 }
             // Laub: kräftiges Korn (Blätter, Licht und Schatten), Flecken

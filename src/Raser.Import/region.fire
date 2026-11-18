@@ -284,39 +284,8 @@ namespace Raser {
 
         // Bestreut Wälder (alle 5 m ein Baum, verrückt) und Parks (alle 12 m, jeder zweite) mit Bäumen - deterministisch aus der ID der Fläche;
         // nicht in Gebäuden und nicht auf Straßen.
-        static undefined Scatter(Tile tile) {
-            foreach (a in tile.data.areas) {
-                float step = 0.0
-                float chance = 1.0
-                if (a.kind == "landuse=forest" || a.kind == "natural=wood") { step = 5.0 }
-                if (a.kind == "leisure=park") {
-                    step = 12.0
-                    chance = 0.5
-                }
-                if (step == 0.0) { continue }
-                var box = Raser.Box2.Of(a.ring)
-                int n = 0
-                for (float gy = Math.Floor(Math.Max(box.minY, 0.0) / step) * step; gy < Math.Min(box.maxY, 256.0); gy = gy + step) {
-                    for (float gx = Math.Floor(Math.Max(box.minX, 0.0) / step) * step; gx < Math.Min(box.maxX, 256.0); gx = gx + step) {
-                        int cell = Math.Round(gx / step)!int * 7919 + Math.Round(gy / step)!int
-                        if (Raser.Props.Rand(a.id, cell, 0) > chance) { continue }
-                        float x = gx + Raser.Props.Rand(a.id, cell, 1) * step
-                        float y = gy + Raser.Props.Rand(a.id, cell, 2) * step
-                        if (x < 0.0 || y < 0.0 || x >= 256.0 || y >= 256.0) { continue }
-                        if (!Raser.Geo.Inside(a.ring, x, y) || Raser.Region.Occupied(tile, x, y)) { continue }
-                        var prop = new Raser.Prop()
-                        prop.source = "fill:" + a.source + "/" + cell
-                        prop.id = Raser.Ids.Stable(Raser.IdKind.Prop, prop.source)
-                        prop.kind = "tree"
-                        prop.x = x
-                        prop.y = y
-                        if (step == 5.0 && Raser.Props.Rand(a.id, cell, 3) < 0.3) { prop.detail = "needleleaved" }
-                        tile.data.props.Add(take prop)
-                        n++
-                    }
-                }
-            }
-        }
+        // (Wälder und Parks bepflanzt Raser.Greens beim Laden jeder Kachel - nicht mehr der Import.)
+        static undefined Scatter(Tile tile) { }
 
         // Steht dort ein Gebäude oder eine Straße (mit 1 m Abstand)?
         static defined bool Occupied(Tile tile, defined float x, defined float y) {
