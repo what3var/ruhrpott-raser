@@ -42,6 +42,7 @@ class Minimap {
     defined int spentTicks          // Zeit im letzten Draw (Ticks; zum Messen)
     SolidBrush paint
     Pen pen
+    MinimapWorker worker            // lädt und zeichnet die Kachelbilder in einem eigenen Thread (undefined: ohne Welt)
 
     construct(Obstacles obstacles) {
         this.obstacles = obstacles
@@ -63,6 +64,8 @@ class Minimap {
         this.spentTicks = 0
         this.paint = new SolidBrush(0xFFFFFFFF)
         this.pen = new Pen(0xFF000000, 2)
+        this.worker = undefined
+        if (obstacles.store != undefined) { this.worker = new MinimapWorker(obstacles.store.root) }
     }
 
     defined float MetersPerPixel {
@@ -105,17 +108,21 @@ class Minimap {
         return 0
     }
 
-    // Das Bild einer Kachel (undefined: es gibt sie nicht).
+    // Das Bild einer Kachel (undefined: es gibt sie nicht) - gleich, in diesem Thread (für Bilder ohne Fenster; im Spiel zeichnet der Worker).
     Framebuffer Paint(Raser.TileKey key) {
         string name = key.ToString()
         this.obstacles.Need(key, name)
-        var tile = this.obstacles.tiles[name]
+        var tile = this.obstacles.tiles.Get(name, undefined)
         if (tile == undefined) { return undefined }
+        return Minimap.PaintTile(tile, this.paint)
+    }
+
+    // Das Bild einer geladenen Kachel (ohne Zustand der Karte: so geht es auch im Worker).
+    static Framebuffer PaintTile(Raser.Tile tile, SolidBrush paint) {
         int t = Minimap.Tile
         var fb = new Framebuffer(t, t)
         var r = new Renderer(fb)
         r.ClearTo(Minimap.Back)
-        var paint = this.paint
         // Flächen, die mit niedriger Priorität zuerst
         var order = new List<Raser.Area>()
         foreach (a in tile.data.areas) {
@@ -223,11 +230,30 @@ class Minimap {
             }
         }
         int left = budget
+        // was der Worker fertig hat (nur, was noch gebraucht wird)
+        if (this.worker != undefined) {
+            var job = this.worker.done.TryReceive()
+            while (job != undefined) {
+                this.worker.ordered.Remove(job.name)
+                var tk = Raser.TileKey.Parse(job.name)
+                if (tk != undefined && Math.Abs(tk.x - key.x) <= 1 && Math.Abs(tk.y - key.y) <= 1 && !this.tiles.ContainsKey(job.name)) {
+                    this.tiles[job.name] = job.TakeImage()
+                    this.dirty = true
+                }
+                delete job
+                job = this.worker.done.TryReceive()
+            }
+        }
         for (int dy = -1; dy <= 1; dy++) {
             for (int dx = -1; dx <= 1; dx++) {
                 var k = new Raser.TileKey(this.centerX + dx, this.centerY + dy)
                 string name = k.ToString()
                 if (this.tiles.ContainsKey(name)) { continue }
+                // im Spiel: beim Worker bestellen (Laden und Zeichnen dauern gut 100 ms), das Bild kommt in einem späteren Bild
+                if (this.worker != undefined && budget < 9) {
+                    this.worker.Order(name)
+                    continue
+                }
                 if (left <= 0) { continue }
                 left--
                 var fb = this.Paint(k)
@@ -421,4 +447,89 @@ class Minimap {
         r.DrawText(x0 + s - bar - 42, by, scale, this.paint, undefined, font, 15)
         this.spentTicks = DateTime.Now.Ticks - t0
     }
+}
+
+// Probe ohne Fenster (raser-game --minimap-probe 1 --world ... --at e,n): 6 s lang 25 m/s nach Osten (über Kachelgrenzen) - je Bild Prepare
+// wie im Spiel; gedruckt wird das längste Prepare und wie viele Kachelbilder kamen.
+class MinimapProbe {
+    static defined int Run(string world, defined float e, defined float n) {
+        var map = new Minimap(new Obstacles(world))
+        int worst = 0
+        int frames = 0
+        float x = e
+        int began = DateTime.UtcNow.Ticks
+        while (DateTime.UtcNow.Ticks - began < 60000000) {
+            int t0 = DateTime.UtcNow.Ticks
+            map.Prepare(x, n, 1)
+            worst = Math.Max(worst, DateTime.UtcNow.Ticks - t0)
+            frames++
+            x = x + 25.0 / 30.0
+            Sleep(33ms)
+        }
+        int images = 0
+        foreach (pair in map.tiles) { if (pair.Value != undefined) { images++ } }
+        print("Karte: " + frames + " Bilder, " + Math.Round((x - e) / 256.0 * 10.0) / 10.0 + " Kacheln gefahren, längstes Prepare " + (worst / 10000.0) + " ms, " + images + " Kachelbilder, Worker " + (map.worker != undefined))
+        if (map.worker != undefined) { map.worker.Close() }
+        return 0
+    }
+}
+
+// Ein Kachelbild, bestellt beim Worker der Karte.
+class MapJob {
+    string name                     // "x_y"
+    Framebuffer image               // die Antwort (undefined: keine Kachel)
+
+    construct(string name) {
+        this.name = name
+        this.image = undefined
+    }
+
+    Framebuffer TakeImage() {
+        var fb = this.image
+        this.image = undefined
+        if (fb != undefined) { fb.TakeLocal() }
+        return fb
+    }
+}
+
+// Lädt Kacheln (JSON, bis 1 MB) und zeichnet ihr Bild in einem eigenen Thread (`fire dedicated`: er wartet beim Lesen in den Natives) -
+// so hält eine neue Kachel das Bild nicht mehr an (vorher gut 100 ms). Die Karte holt die fertigen Bilder je Bild ab.
+class MinimapWorker {
+    Channel<MapJob> jobs
+    Channel<MapJob> done
+    HashSet<string> ordered         // bestellt, noch nicht abgeholt
+
+    construct(string world) {
+        this.jobs = new Channel<MapJob>(64)
+        this.done = new Channel<MapJob>(64)
+        this.ordered = new HashSet<string>()
+        var jobs = this.jobs
+        var done = this.done
+        fire dedicated taking world with jobs, done { MinimapWorker.Work(jobs, done, world) }
+    }
+
+    static undefined Work(Channel<MapJob> jobs, Channel<MapJob> done, string world) {
+        var store = new Raser.FileTileStore(world)
+        var paint = new SolidBrush(0xFFFFFFFF)
+        foreach (job in jobs) {
+            var key = Raser.TileKey.Parse(job.name)
+            if (key != undefined) {
+                var tile = store.Load(key)
+                if (tile != undefined) {
+                    var fb = Minimap.PaintTile(tile, paint)
+                    job.image = take fb
+                }
+                delete tile
+            }
+            done.Send(take job)
+        }
+    }
+
+    undefined Order(string name) {
+        if (this.ordered.Contains(name)) { return }
+        this.ordered.Add(name)
+        this.jobs.Send(new MapJob(name))
+    }
+
+    undefined Close() { this.jobs.Close() }
 }

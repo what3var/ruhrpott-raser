@@ -1,0 +1,182 @@
+// Die Tests der Delta-Snapshots (Protokoll v3), von "zu Fuß gegen zu Fuß" und des Workers für Kacheln.
+#import "testing"
+
+class DeltaTests {
+    static Raser.Packet Round(Raser.Packet p) {
+        byte frame[] = Raser.Wire.Frame(p)
+        var frames = new Raser.FrameReader(Raser.Protocol.MaxServerFrame)
+        frames.Feed(frame, 0, frame.length)
+        return Raser.Wire.Decode(frames.Next())
+    }
+
+    // Die Szene zum Takt t: 40 NPCs, die fahren bzw. gehen (einige kommen und gehen), ein Fahrzeug, das steht.
+    static List<Raser.Entity> Scene(defined int t) {
+        var list = new List<Raser.Entity>()
+        for (int i = 0; i < 40; i++) {
+            if (i % 7 == 3 && (t / 20) % 2 == 1) { continue }
+            int type = Raser.EntityType.Pedestrian
+            float v = 1.4
+            if (i < 12) {
+                type = Raser.EntityType.NpcCar
+                v = 11.0
+            }
+            var e = new Raser.Entity(1000000 + i, type)
+            e.variant = 4210752 + i
+            e.a = 77 * i
+            e.east = 376000.0 + i * 5.0 + t * v / 15.0
+            e.north = 5705000.0 + Math.Sin(t * 0.05 + i) * 3.0
+            e.heading = (i * 37 + t) % 360
+            e.speed = v
+            list.Add(take e)
+        }
+        var car = new Raser.Entity(500, Raser.EntityType.Vehicle)
+        car.variant = 1
+        car.east = 376010.0
+        car.north = 5705004.0
+        list.Add(take car)
+        return list
+    }
+
+    [Test "Delta gegen den bestätigten Snapshot: der Client hat genau den Stand des Servers, viel kleiner als ganz"]
+    undefined Delta() {
+        var sent = new Dictionary<int, Raser.SnapState>(Owns.Values)
+        var client = new Raser.SnapshotHistory()
+        var acks = new List<int>()
+        int full = 0
+        int delta = 0
+        var pawn = new Raser.Pawn(9)
+        for (int t = 2; t <= 240; t = t + 2) {
+            pawn.walker.east = 376100.0 + t * 0.07
+            pawn.walker.stride = t * 0.07
+            var scene = DeltaTests.Scene(t)
+            var s = new Raser.Packet(Raser.Protocol.Snapshot)
+            s.tick = t
+            s.SetSelf(pawn, undefined)
+            var state = new Raser.SnapState(t)
+            foreach (e in scene) {
+                var q = Raser.EntityQ.Of(e)
+                state.entities[q.id] = q.Clone()
+                s.quant.Add(take q)
+            }
+            state.self = Raser.SelfState.Of(s.self, s.selfVehicle)
+            // die Bestätigung kommt 3 Snapshots später an; jede 10. geht verloren (dann bleibt die alte Grundlage)
+            int ack = 0
+            for (int k = 0; k < acks.Count; k++) { if (acks[k] <= t - 6 && acks[k] % 20 != 0) { ack = acks[k] } }
+            if (ack > 0 && sent.ContainsKey(ack)) {
+                s.baseTick = ack
+                s.baseState = sent[ack]
+            }
+            full = full + Raser.Wire.Encode(DeltaTests.Full(scene, pawn, t)).length
+            byte body[] = Raser.Wire.Encode(s)
+            delta = delta + body.length
+            sent[t] = take state
+            var back = Raser.Wire.Decode(body)
+            Testing.Assert.IsTrue(client.Resolve(back), "Grundlage da bei Takt " + t)
+            acks.Add(t)
+            // genau der Stand des Servers
+            Testing.Assert.AreEqual(sent[t].entities.Count, back.entities.Count, "Zahl bei Takt " + t)
+            foreach (e in back.entities) {
+                var q = Raser.EntityQ.Of(e)
+                var want = sent[t].entities[e.id]
+                Testing.Assert.AreEqual(0, q.Diff(want), "Entität " + e.id + " bei Takt " + t)
+            }
+            Testing.Assert.IsTrue(back.self.walker.east == pawn.walker.east && back.self.walker.stride == pawn.walker.stride, "eigener Zustand bitgenau bei Takt " + t)
+        }
+        print("Snapshots: ganz " + full + " Bytes, als Delta " + delta + " Bytes (" + Math.Round(delta * 100.0 / full) + " %)")
+        Testing.Assert.IsTrue(delta * 100 < full * 45, "Delta deutlich kleiner: " + delta + " / " + full)
+    }
+
+    static Raser.Packet Full(List<Raser.Entity> scene, Raser.Pawn pawn, defined int t) {
+        var s = new Raser.Packet(Raser.Protocol.Snapshot)
+        s.tick = t
+        s.SetSelf(pawn, undefined)
+        foreach (e in scene) { s.entities.Add(e.Clone()) }
+        return s
+    }
+
+    [Test "Ohne Grundlage ist ein Delta nicht zu lesen"]
+    undefined Missing() {
+        var s = new Raser.Packet(Raser.Protocol.Snapshot)
+        s.tick = 10
+        var grund = new Raser.SnapState(4)
+        s.baseTick = 4
+        s.baseState = grund
+        var back = DeltaTests.Round(s)
+        Testing.Assert.IsFalse(new Raser.SnapshotHistory().Resolve(back))
+    }
+
+    [Test "Zu Fuß gegen zu Fuß: zwei Spieler und ein Fußgänger überlappen nie, auf Server und Vorhersage gleich"]
+    undefined Crowd() {
+        foreach (round in [0, 1]) {
+            var w = new Raser.SimWorld(new Raser.Obstacles(""))
+            var a = new Raser.Pawn(1)
+            var b = new Raser.Pawn(2)
+            a.walker.east = 0.0
+            a.walker.heading = -90.0
+            b.walker.east = 10.0
+            b.walker.north = 0.2
+            b.walker.heading = 90.0
+            w.pawns.Add(a)
+            w.pawns.Add(b)
+            w.discs.Add(5.0)
+            w.discs.Add(3.0)
+            float least = 100.0
+            for (int i = 1; i <= 200; i++) {
+                var c = new Raser.Controls(i)
+                c.forward = 100
+                if (i > 100) { c.turn = 30 }
+                w.Control(a, c)
+                w.Control(b, c)
+                float d = Math.Sqrt((a.walker.east - b.walker.east) * (a.walker.east - b.walker.east) + (a.walker.north - b.walker.north) * (a.walker.north - b.walker.north))
+                least = Math.Min(least, d)
+                float dd = Math.Sqrt((a.walker.east - 5.0) * (a.walker.east - 5.0) + (a.walker.north - 3.0) * (a.walker.north - 3.0))
+                Testing.Assert.IsTrue(dd >= 0.69, "Abstand zum Fußgänger " + dd)
+            }
+            Testing.Assert.IsTrue(least >= 0.69, "kleinster Abstand " + least)
+            Testing.Assert.IsTrue(least < 1.5, "sie sind sich begegnet: " + least)
+        }
+        // dieselbe Rechnung in der Vorhersage: der andere als Schatten aus dem Snapshot
+        var server = new Raser.SimWorld(new Raser.Obstacles(""))
+        var me = new Raser.Pawn(1)
+        var other = new Raser.Pawn(2)
+        other.walker.east = 2.0
+        server.pawns.Add(me)
+        server.pawns.Add(other)
+        var pred = new Raser.Prediction(new Raser.Obstacles(""), 1)
+        var e = new Raser.Entity(2, Raser.EntityType.Player)
+        e.east = 2.0
+        var list = new List<Raser.Entity>()
+        list.Add(take e)
+        pred.Crowd(list)
+        pred.ready = true
+        me.walker.heading = -90.0
+        pred.pawn.walker.heading = -90.0
+        for (int i = 1; i <= 60; i++) {
+            var c = new Raser.Controls(i)
+            c.forward = 100
+            server.Control(me, c)
+            pred.Step(c)
+        }
+        Testing.Assert.IsTrue(me.walker.east == pred.pawn.walker.east && me.walker.north == pred.pawn.walker.north, "bitgleich: " + me.walker.east + " / " + pred.pawn.walker.east)
+        Testing.Assert.IsTrue(me.walker.east < 1.31 + 0.0001, "aufgehalten: " + me.walker.east)
+    }
+
+    [Test "Kacheln aus dem Worker: Auftrag und Abholen, auch ohne Welt"]
+    undefined Tiles() {
+        var worker = new Raser.TileWorker("")
+        var names = new List<string>()
+        names.Add("1469_22285")
+        names.Add("1470_22285")
+        int id = worker.Request(names)
+        var job = worker.Take(id, 10.0)
+        Testing.Assert.IsTrue(job != undefined)
+        Testing.Assert.AreEqual(2, job.names.Count)
+        Testing.Assert.AreEqual(0, job.tiles.Count)
+        var o = new Raser.Obstacles("")
+        o.manual = true
+        o.Install(Raser.TileKey.Parse("1469_22285"), "1469_22285", undefined)
+        Testing.Assert.IsTrue(o.tiles.ContainsKey("1469_22285"))
+        Testing.Assert.IsFalse(o.Push(1469 * 256.0 + 10.0, 22285 * 256.0 + 10.0, 1.0))
+        worker.Close()
+    }
+}

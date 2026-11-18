@@ -58,21 +58,22 @@ class WireTests {
         b.b = -123
         s.entities.Add(take a)
         s.entities.Add(take b)
-        s.gone.Add(5)
         var back = WireTests.Round(s)
+        Testing.Assert.IsTrue(new Raser.SnapshotHistory().Resolve(back), "ohne Grundlage: alles ganz")
         Testing.Assert.AreEqual(1795000000123, back.time)
         Testing.Assert.AreEqual(4711, back.tick)
         Testing.Assert.AreEqual(99, back.ack)
         Testing.Assert.IsTrue(back.self == undefined)
         Testing.Assert.AreEqual(2, back.entities.Count)
-        Testing.Assert.AreEqual(Raser.Ids.Stable(Raser.IdKind.Player, "a"), back.entities[0].id)
-        Testing.Assert.AreEqual(42, back.entities[1].id)
-        Testing.Assert.AreEqual(3, back.entities[1].variant)
-        Testing.Assert.AreEqual(-123, back.entities[1].b)
-        Testing.Assert.AreNear(5705010.25, back.entities[1].north, 0.001)
-        Testing.Assert.AreNear(179.99, back.entities[1].heading, 0.001)
-        Testing.Assert.AreEqual(1, back.gone.Count)
-        Testing.Assert.AreEqual(5, back.gone[0])
+        // (die Folge ist die der IDs: erst 42, dann der Spieler)
+        int k = 0
+        if (back.entities[0].id != 42) { k = 1 }
+        Testing.Assert.AreEqual(Raser.Ids.Stable(Raser.IdKind.Player, "a"), back.entities[1 - k].id)
+        Testing.Assert.AreEqual(42, back.entities[k].id)
+        Testing.Assert.AreEqual(3, back.entities[k].variant)
+        Testing.Assert.AreEqual(-123, back.entities[k].b)
+        Testing.Assert.AreNear(5705010.25, back.entities[k].north, 0.001)
+        Testing.Assert.AreNear(179.99, back.entities[k].heading, 0.001)
 
         var w = new Raser.Packet(Raser.Protocol.Weather)
         w.year = 2026

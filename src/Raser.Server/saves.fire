@@ -1,0 +1,130 @@
+// Raser.Server: der Stand eines Spielers in der Datenbank (Tabelle saves, je Konto ein BLOB) - Lage, sein Fahrzeug (Art, Lage, Zustand,
+// Tank), Körperwerte, Bargeld, Lampe und alle seine Behälter mit Inhalt (auch die Rucksäcke darin). Gespeichert beim Gehen und alle 10 s,
+// gelesen beim Eintritt: der Spieler macht genau dort weiter. Behälter bekommen beim Lesen neue IDs (IdAllocator der Region); Rucksäcke, die auf
+// einen Behälter zeigen (data), werden umgeschrieben.
+#import "raser.core"
+#import "raser.sim"
+#import "raser.net"
+
+// Was der Server beim Eintritt aus dem Stand braucht, bevor der Spieler in die Welt kommt (die Kacheln müssen erst da sein).
+class SavedPlace {
+    defined float east
+    defined float north
+    defined float heading
+    defined bool inVehicle
+    defined int kind                // sein Fahrzeug (Raser.Protocol.KindOf; 0: keins)
+    defined float carEast
+    defined float carNorth
+    defined float carHeading
+    defined float health
+    defined float fuel
+
+    construct() {
+        this.kind = 0
+        this.inVehicle = false
+    }
+}
+
+class PlayerSave {
+    static readonly defined int Version = 1
+
+    // Der Stand von p als Bytes. car: sein Fahrzeug (in dem er sitzt oder das für ihn erzeugt wurde; undefined: keins).
+    static byte[] Write(Player p, Raser.Vehicle car, defined bool inVehicle) {
+        var w = new Raser.ByteWriter(512)
+        w.Varint(PlayerSave.Version)
+        var k = p.pawn.walker
+        w.Float64(k.east)
+        w.Float64(k.north)
+        w.Float64(k.heading)
+        int flags = 0
+        if (car != undefined) { flags = 2 }
+        if (inVehicle && car != undefined) { flags = flags | 1 }
+        w.Byte(flags)
+        if (car != undefined) {
+            w.Byte(Raser.Protocol.KindOf(car.kind, false))
+            foreach (x in [car.east, car.north, car.heading, car.health, car.fuel]) { w.Float64(x) }
+        }
+        p.body.Write(w)
+        p.inv.WriteState(w)
+        p.inv.Write(w)
+        var list = PlayerSave.Containers(p.inv)
+        w.Varint(list.Count)
+        foreach (c in list) { c.Write(w) }
+        return w.ToBytes()
+    }
+
+    // Alle Behälter des Spielers: die eigenen fünf und jeder Rucksack darin (mit Inhalt; ein Rucksack kommt nie in einen Rucksack).
+    static List<Raser.Container> Containers(Raser.Inventory inv) {
+        var list = new List<Raser.Container>()
+        foreach (id in [inv.pockets, inv.hands, inv.backpackSlot, inv.phoneSlot, inv.cursor]) {
+            var c = inv.store.Find(id)
+            if (c == undefined) { continue }
+            list.Add(c)
+            for (int i = 0; i < c.Size; i++) {
+                var t = Raser.Items.Get(c.Item(i))
+                if (t == undefined || !t.IsBackpack) { continue }
+                var bag = inv.store.Find(c.Data(i))
+                if (bag != undefined) { list.Add(bag) }
+            }
+        }
+        return list
+    }
+
+    // Liest den Stand in p (Körper, Bargeld, Inventar mit neuen Behältern in store) und gibt die Lage zurück; undefined: unlesbar (dann fängt
+    // der Spieler neu an).
+    static SavedPlace Read(byte data[], Player p, Raser.ContainerStore store, Raser.ItemDrops drops) {
+        try {
+            var r = new Raser.ByteReader(data)
+            if (r.Varint() != PlayerSave.Version) { return undefined }
+            var place = new SavedPlace()
+            place.east = r.Float64()
+            place.north = r.Float64()
+            place.heading = r.Float64()
+            int flags = r.Byte()
+            if ((flags & 2) != 0) {
+                place.kind = r.Byte()
+                if (place.kind < 1 || place.kind > 4) { return undefined }
+                place.inVehicle = (flags & 1) != 0
+                place.carEast = r.Float64()
+                place.carNorth = r.Float64()
+                place.carHeading = r.Float64()
+                place.health = r.Float64()
+                place.fuel = r.Float64()
+            }
+            p.body.Read(r)
+            var inv = new Raser.Inventory(store, drops, 0, 0)
+            inv.ReadState(r)
+            inv.ReadIds(r)
+            int n = r.Varint()
+            if (n > 64) { return undefined }
+            var map = new Dictionary<int, int>()
+            var made = new List<Raser.Container>()
+            for (int i = 0; i < n; i++) {
+                var old = Raser.Container.Read(r)
+                int id = store.Create(old.kind, old.Size)
+                var c = store.Find(id)
+                for (int s = 0; s < old.Size; s++) { c.Set(s, old.Item(s), old.Amount(s), old.Data(s)) }
+                map[old.id] = id
+                made.Add(c)
+            }
+            // die Rucksäcke zeigen auf ihre neuen Behälter
+            foreach (c in made) {
+                for (int s = 0; s < c.Size; s++) {
+                    var t = Raser.Items.Get(c.Item(s))
+                    if (t != undefined && t.IsBackpack && map.ContainsKey(c.Data(s))) { c.Set(s, c.Item(s), c.Amount(s), map[c.Data(s)]) }
+                }
+            }
+            inv.pockets = map.Get(inv.pockets, 0)
+            inv.hands = map.Get(inv.hands, 0)
+            inv.backpackSlot = map.Get(inv.backpackSlot, 0)
+            inv.phoneSlot = map.Get(inv.phoneSlot, 0)
+            inv.cursor = map.Get(inv.cursor, 0)
+            if (inv.pockets == 0 || inv.hands == 0 || inv.backpackSlot == 0 || inv.phoneSlot == 0 || inv.cursor == 0) { return undefined }
+            p.inv = take inv
+            return place
+        } catch (Exception e) {
+            Gateway.Log("Stand von " + p.name + " unlesbar: " + e.message)
+        }
+        return undefined
+    }
+}

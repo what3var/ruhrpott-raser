@@ -10,6 +10,7 @@ namespace Raser {
     class Obstacles {
         Raser.FileTileStore store
         Dictionary<string, Raser.Tile> tiles
+        defined bool manual             // nicht selbst laden: die Kacheln kommen über Install (Server, Raser.TileWorker)
         Dictionary<string, List<Raser.Box2>> boxes
         Dictionary<int, List<float>> passages         // je Gebäude (ID) seine Durchfahrten, bei Bedarf
         Dictionary<int, List<float>> posts            // je Zelle (8 m) die Pfosten darin: Ost, Nord, Radius (Baumstämme, Laternen, Ampeln)
@@ -17,6 +18,7 @@ namespace Raser {
 
         // world "": ohne Welt (keine Hindernisse - Bots und Tests ohne Daten).
         construct(string world) {
+            this.manual = false
             this.store = undefined
             if (world != undefined && world != "") { this.store = new Raser.FileTileStore(world) }
             this.tiles = new Dictionary<string, Raser.Tile>()
@@ -28,9 +30,16 @@ namespace Raser {
 
         // Die Kachel zu einem Schlüssel mit den Rechtecken ihrer Gebäude (um 2 m gewachsen), bei Bedarf geladen.
         undefined Need(Raser.TileKey key, string name) {
-            if (this.tiles.ContainsKey(name)) { return }
+            if (this.tiles.ContainsKey(name) || this.manual) { return }
             Raser.Tile loaded = undefined
             if (this.store != undefined) { loaded = this.store.Load(key) }
+            this.Install(key, name, take loaded)
+        }
+
+        // Eine geladene Kachel übernehmen (undefined: dort gibt es keine). Mit manual (Server: Raser.TileWorker lädt in einem eigenen Thread)
+        // kommen die Kacheln nur so herein - fehlt eine, steht dort nichts im Weg.
+        undefined Install(Raser.TileKey key, string name, Raser.Tile loaded) {
+            if (this.tiles.ContainsKey(name)) { return }
             var list = new List<Raser.Box2>()
             if (loaded != undefined) {
                 foreach (b in loaded.data.buildings) {
@@ -72,7 +81,7 @@ namespace Raser {
             var key = Raser.TileKey.Of(e, n)
             string name = key + ""
             this.Need(key, name)
-            return this.tiles[name]
+            return this.tiles.Get(name, undefined)
         }
 
         // Ein Kreis (Radius bis 1,9 m) um (e, n) gegen die Gebäude: true, wenn er in einer Wand steckt - dann zeigt (pushX, pushY) aus der Wand
@@ -86,7 +95,7 @@ namespace Raser {
             string name = key + ""
             this.Need(key, name)
             this.depth = 0.0
-            var tile = this.tiles[name]
+            var tile = this.tiles.Get(name, undefined)
             if (tile == undefined) { return false }
             // die Pfosten in den Zellen ringsum
             int ce = Math.Floor(e / 8.0)!int
@@ -227,7 +236,7 @@ namespace Raser {
             var key = Raser.TileKey.Of(e, n)
             string name = key + ""
             this.Need(key, name)
-            var tile = this.tiles[name]
+            var tile = this.tiles.Get(name, undefined)
             if (tile == undefined || tile.data.props == undefined) { return undefined }
             float best = 1.0e30
             float result[] = undefined
@@ -384,7 +393,7 @@ namespace Raser {
             var key = Raser.TileKey.Of(e, n)
             string name = key + ""
             this.Need(key, name)
-            var tile = this.tiles[name]
+            var tile = this.tiles.Get(name, undefined)
             if (tile == undefined) { return false }
             var bx = this.boxes[name]
             float x = e - key.East

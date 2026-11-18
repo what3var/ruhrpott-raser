@@ -129,16 +129,21 @@ namespace Raser {
         static readonly defined float Tick = 1.0 / 30.0     // s je Takt
         static readonly defined float Reach = 3.5           // so weit (m) reicht der Spieler zum Einsteigen
         static readonly defined float StopSpeed = 1.5       // aussteigen nur langsamer als das (m/s)
+        static readonly defined float PersonRadius = 0.35   // ein Mensch (Spieler, Fußgänger) als Kreis: zwei stehen mindestens 0,7 m auseinander
 
         Raser.Obstacles obstacles
         List<Raser.SimVehicle> vehicles
         List<Raser.Vehicle> bodies      // dieselben Fahrzeuge (Verweise) für Raser.Physics
+        List<Raser.Pawn> pawns          // die Spieler (Verweise; auf dem Server alle, in der Vorhersage die anderen): zu Fuß weicht man sich aus
+        List<float> discs               // Fußgänger des Verkehrs: je Ost, Nord (Radius Raser.SimWorld.PersonRadius)
         defined float wetness
 
         construct(Raser.Obstacles obstacles) {
             this.obstacles = try take obstacles
             this.vehicles = new List<Raser.SimVehicle>()
             this.bodies = new List<Raser.Vehicle>()
+            this.pawns = new List<Raser.Pawn>()
+            this.discs = new List<float>()
             this.wetness = 0.0
         }
 
@@ -231,8 +236,20 @@ namespace Raser {
                 p.walker.speed = 0.0
             } else {
                 Raser.Physics.Walk(p.walker, this.bodies, this.obstacles, dt, c.forward / 100.0, c.turn / 100.0, c.IsSprint)
+                this.Crowd(p)
             }
             return changed
+        }
+
+        // Zu Fuß gegen die anderen zu Fuß (Spieler und Fußgänger des Verkehrs): einfache Kreise, wer sich bewegt, wird hinausgeschoben (in der Folge
+        // der Liste - auf dem Server und in der Vorhersage dieselbe Rechnung).
+        undefined Crowd(Raser.Pawn p) {
+            var w = p.walker
+            foreach (o in this.pawns) {
+                if (o == p || o.id == p.id || !o.OnFoot) { continue }
+                w.Avoid(o.walker.east, o.walker.north, Raser.SimWorld.PersonRadius * 2.0 - 0.35)
+            }
+            for (int i = 0; i + 1 < this.discs.Count; i = i + 2) { w.Avoid(this.discs[i], this.discs[i + 1], Raser.SimWorld.PersonRadius * 2.0 - 0.35) }
         }
 
         // Die Fahrzeuge ohne Fahrer rollen und rutschen aus (ein Takt).

@@ -272,6 +272,11 @@ class Game {
         var options = new Options(items)
         // --bot s: ein Spieler ohne Welt und Fenster am Server (online.fire)
         if (options.Get("bot", "") != "") { return NetBot.Run(options) }
+        // --minimap-probe 1: die Kachelbilder der Karte aus dem Worker, ohne Fenster (minimap.fire)
+        if (options.Get("minimap-probe", "") != "") {
+            var mp = options.Get("at", "376117,5705005").Split(",")
+            return MinimapProbe.Run(options.Get("world", "world"), mp[0].ToFloat(), mp[1].ToFloat())
+        }
         string world = options.Get("world", "world")
         var store = new Raser.FileTileStore(world)
         var at = options.Get("at", "376117,5705005").Split(",")

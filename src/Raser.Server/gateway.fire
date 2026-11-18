@@ -58,15 +58,17 @@ class Player {
     defined int lastSeq             // die letzte angekommene Eingabe
     defined float credit            // so viele Eingaben darf der Server jetzt rechnen (je Takt eine dazu, höchstens RegionServer.Burst)
     defined int dropped             // verworfene Eingaben (zu viele auf einmal)
-    defined int wantKind            // aus dem Hello: Fahrzeugart (0 zu Fuß) und Startpunkt
-    defined float wantEast
-    defined float wantNorth
+    defined int wantKind            // aus dem Hello: Fahrzeugart für einen neuen Spieler (0 zu Fuß); den Startpunkt wählt der Server
+    byte saved[]                    // der gespeicherte Stand (PlayerSave; undefined: neu)
+    SavedPlace spawn                // ... daraus die Lage (undefined: ein Spawn-Punkt der Region)
+    defined int spawnAt             // in diesem Takt kommt er in die Welt (wenn die Kacheln um ihn da sind)
     Raser.Inventory inv             // undefined bis zum Eintritt; die Behälter stehen im Speicher der Region
     Bucket ops
     List<Raser.Packet> waitingOps   // Operationen, deren Eingabe davor noch nicht gerechnet ist
     defined int opSeq               // die zuletzt geprüfte Operation am Inventar
-    Dictionary<int, int> known      // je Entität, die sein Client hat: ihr Fingerabdruck
-    Dictionary<int, int> knownAt    // ... und der Takt, zu dem sie zuletzt ging
+    Dictionary<int, Raser.SnapState> sent  // was sein Client zu welchem Takt bekam (die Grundlagen der Deltas)
+    defined int snapAck             // der zuletzt bestätigte Snapshot (Takt)
+    defined int sentBytes           // Bytes der Snapshots (zum Messen)
     defined int lyingUntil          // umgehauen: liegt bis zu diesem Takt
     defined int storedCash          // das Bargeld in der Datenbank (-1: neu)
     Raser.Body body                 // Essen, Trinken (Inventory.Use)
@@ -100,14 +102,16 @@ class Player {
         this.credit = 0.0
         this.dropped = 0
         this.wantKind = 1
-        this.wantEast = 0.0
-        this.wantNorth = 0.0
+        this.saved = undefined
+        this.spawn = undefined
+        this.spawnAt = 0
         this.inv = undefined
         this.ops = new Bucket(20.0, 20.0)
         this.waitingOps = new List<Raser.Packet>()
         this.opSeq = 0
-        this.known = new Dictionary<int, int>()
-        this.knownAt = new Dictionary<int, int>()
+        this.sent = new Dictionary<int, Raser.SnapState>(Owns.Values)
+        this.snapAck = 0
+        this.sentBytes = 0
         this.lyingUntil = 0
         this.storedCash = -1
         this.body = new Raser.Body()
@@ -245,8 +249,8 @@ class Gateway {
         p.id = this.ids.Next(Raser.IdKind.Player)
         p.storedCash = this.accounts.Cash(account.id)
         p.wantKind = m.kind
-        p.wantEast = m.east
-        p.wantNorth = m.north
+        // (den Startpunkt im Hello nimmt der Server nicht: die gespeicherte Lage, sonst ein Spawn-Punkt; Admins springen mit /tp)
+        p.saved = this.accounts.LoadSave(account.id)
         this.regionServer.Enter(p)
         var welcome = new Raser.Packet(Raser.Protocol.Welcome)
         welcome.id = p.id
@@ -291,6 +295,8 @@ class Gateway {
             this.Kick(p, "Zu viele Eingaben.", false)
             return
         }
+        // der zuletzt empfangene Snapshot: die Grundlage des nächsten Deltas (nur einer, den der Server auch geschickt hat)
+        if (m.ack > p.snapAck && p.sent.ContainsKey(m.ack)) { p.snapAck = m.ack }
         this.regionServer.Queue(p, m)
     }
 
@@ -353,6 +359,7 @@ class Gateway {
     // Eine Verbindung ist zu: aus der Region, den anderen Bescheid sagen.
     undefined Drop(Player p) {
         if (!p.Welcomed) { return }
+        this.Save(p)
         this.regionServer.Leave(p)
         if (p.inv != undefined) { this.accounts.SetCash(p.account, p.inv.cash) }
         Gateway.Log(p.name + " ist weg (" + p.link.reason + ")")
@@ -361,6 +368,17 @@ class Gateway {
         this.Broadcast(gone, p)
         this.Broadcast(Raser.Packet.Said("Server", p.name + " ist weg.", Raser.Protocol.FromSystem), p)
         p.id = 0
+    }
+
+    // Den Stand von p in die Datenbank (wenn er schon in der Welt ist).
+    undefined Save(Player p) {
+        byte data[] = this.regionServer.SaveOf(p)
+        if (data != undefined) { this.accounts.StoreSave(p.account, data) }
+    }
+
+    // Alle Stände (alle 10 s): ein Neustart des Servers verliert höchstens so viel.
+    undefined SaveAll() {
+        foreach (p in this.players) { if (p.Welcomed) { this.Save(p) } }
     }
 
     Player Find(string name) {

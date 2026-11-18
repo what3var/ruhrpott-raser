@@ -55,6 +55,8 @@ class Accounts {
         this.db.Execute("CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account)")
         // das Bargeld des Spielers (Cent; -1: noch nie im Spiel - dann bekommt er das Startgeld)
         try { this.db.Execute("ALTER TABLE accounts ADD COLUMN cash INTEGER NOT NULL DEFAULT -1") } catch (Exception e) { }
+        // der Stand jedes Spielers (Lage, Fahrzeug, Körper, Inventar: PlayerSave)
+        this.db.Execute("CREATE TABLE IF NOT EXISTS saves (account INTEGER PRIMARY KEY, data BLOB NOT NULL, saved INTEGER NOT NULL)")
     }
 
     static defined int Now() { return (DateTime.UtcNow.Ticks - TimeSpan.UnixEpoch) / 10000000 }
@@ -128,6 +130,17 @@ class Accounts {
         if (rows.Count == 0) { return undefined }
         var row = rows[0]
         return new Account(row.Int("id"), row.Text("name"), row.Int("admin") != 0)
+    }
+
+    // Der gespeicherte Stand (PlayerSave); undefined: keiner.
+    byte[] LoadSave(defined int account) {
+        var rows = this.db.Rows("SELECT data FROM saves WHERE account = ?", [account])
+        if (rows.Count == 0) { return undefined }
+        return rows[0].Bytes("data")
+    }
+
+    undefined StoreSave(defined int account, byte data[]) {
+        this.db.Execute("INSERT OR REPLACE INTO saves (account, data, saved) VALUES (?, ?, ?)", [account, data, Accounts.Now()])
     }
 
     // Das gespeicherte Bargeld (Cent); -1: noch keins.

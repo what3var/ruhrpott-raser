@@ -1,0 +1,463 @@
+// Raser.Net: Snapshots als Delta (Protokoll v3) - gegen den letzten Snapshot, den der Client bestätigt hat (Input trägt die Nummer des
+// zuletzt empfangenen Takts).
+//
+// Der Server merkt sich je Client, was er ihm zu welchem Takt geschickt hat (Raser.SnapState: die Entitäten quantisiert, wie sie über die
+// Leitung gehen, und den eigenen Zustand). Ein neuer Snapshot nennt seine Grundlage (base, den bestätigten Takt; 0: keine) und enthält nur:
+// neue Entitäten ganz, geänderte nur mit den geänderten Feldern (Lage, Richtung, Tempo als Differenz zur Grundlage - meist 1 bis 2 Bytes; das
+// Aussehen nur beim ersten Mal), die verschwundenen, und vom eigenen Zustand nur die geänderten Zahlen (bitgenau). IDs stehen sortiert als
+// Abstand zur vorigen. Der Client hebt die letzten Stände auf (Raser.SnapshotHistory) und baut daraus den vollen Stand.
+#import "raser.core"
+#import "raser.sim"
+
+namespace Raser {
+    // Eine Entität, wie sie über die Leitung geht: ganze Zahlen (cm, 1/100 Grad, cm/s).
+    class EntityQ {
+        defined int id
+        defined int type
+        defined int variant
+        defined int bits
+        defined int e
+        defined int n
+        defined int h
+        defined int v
+        defined int a
+        defined int b
+        defined int mask                // beim Lesen eines geänderten: welche Felder kamen
+
+        construct(defined int id, defined int type) {
+            this.id = id
+            this.type = type
+            this.variant = 0
+            this.bits = 0
+            this.e = 0
+            this.n = 0
+            this.h = 0
+            this.v = 0
+            this.a = 0
+            this.b = 0
+            this.mask = 0
+        }
+
+        static Raser.EntityQ Of(Raser.Entity x) {
+            var q = new Raser.EntityQ(x.id, x.type)
+            q.variant = x.variant
+            q.bits = x.bits
+            q.e = Raser.Wire.Cm(x.east)
+            q.n = Raser.Wire.Cm(x.north)
+            q.h = Raser.Wire.Angle(x.heading)
+            q.v = Raser.Wire.Cm(x.speed)
+            q.a = x.a
+            q.b = x.b
+            return q
+        }
+
+        Raser.Entity ToEntity() {
+            var x = new Raser.Entity(this.id, this.type)
+            x.variant = this.variant
+            x.bits = this.bits
+            x.east = this.e / 100.0
+            x.north = this.n / 100.0
+            x.heading = Raser.Wire.Degrees(this.h)
+            x.speed = this.v / 100.0
+            x.a = this.a
+            x.b = this.b
+            return x
+        }
+
+        Raser.EntityQ Clone() {
+            var q = new Raser.EntityQ(this.id, this.type)
+            q.variant = this.variant
+            q.bits = this.bits
+            q.e = this.e
+            q.n = this.n
+            q.h = this.h
+            q.v = this.v
+            q.a = this.a
+            q.b = this.b
+            return q
+        }
+
+        // Welche Felder sich gegen base geändert haben (1 Variante, 2 Bits, 4 Ost, 8 Nord, 16 Richtung, 32 Tempo, 64 a, 128 b).
+        defined int Diff(Raser.EntityQ grund) {
+            int m = 0
+            if (this.variant != grund.variant) { m = m | 1 }
+            if (this.bits != grund.bits) { m = m | 2 }
+            if (this.e != grund.e) { m = m | 4 }
+            if (this.n != grund.n) { m = m | 8 }
+            if (this.h != grund.h) { m = m | 16 }
+            if (this.v != grund.v) { m = m | 32 }
+            if (this.a != grund.a) { m = m | 64 }
+            if (this.b != grund.b) { m = m | 128 }
+            return m
+        }
+    }
+
+    // Der eigene Zustand als 17 Zahlen (bitgenau): Spieler (Ost, Nord, Richtung, Tempo, Schrittweg, Last), Fahrzeug (Ost, Nord, Richtung, Tempo,
+    // Lenkeinschlag, Stoß Ost, Stoß Nord, Schräglage, Zustand, Tank, Grip). Im Fahrzeug stehen die ersten vier nicht auf der Leitung (der Spieler
+    // sitzt im Fahrzeug, Tempo 0).
+    class SelfState {
+        static readonly defined int Count = 17
+        defined bool present
+        defined bool useHeld
+        defined int vehicle
+        defined int kind                // Raser.Protocol.KindOf (0: zu Fuß)
+        defined bool sliding
+        defined float f[]
+        defined int mask                // beim Lesen: welche Zahlen kamen (alle: kein Delta)
+        defined int walkerBridge        // die Ebene (Brücke) des Spielers bzw. seines Fahrzeugs (Raser.Sim, 0: Gelände)
+        defined int carBridge
+
+        construct() {
+            this.present = false
+            this.useHeld = false
+            this.vehicle = 0
+            this.kind = 0
+            this.sliding = false
+            this.f = new float[17]
+            for (int i = 0; i < 17; i++) { this.f[i] = 0.0 }
+            this.mask = 0
+            this.walkerBridge = 0
+            this.carBridge = 0
+        }
+
+        static Raser.SelfState Of(Raser.Pawn pawn, Raser.Vehicle car) {
+            var s = new Raser.SelfState()
+            if (pawn == undefined) { return s }
+            s.present = true
+            s.useHeld = pawn.useHeld
+            s.vehicle = pawn.vehicle
+            var k = pawn.walker
+            s.f[0] = k.east
+            s.f[1] = k.north
+            s.f[2] = k.heading
+            s.f[3] = k.speed
+            s.f[4] = k.stride
+            s.f[5] = k.load
+            s.walkerBridge = k.bridge
+            if (car != undefined) {
+                s.carBridge = car.bridge
+                s.kind = Raser.Protocol.KindOf(car.kind, false)
+                s.sliding = car.sliding
+                float x[] = [car.east, car.north, car.heading, car.speed, car.steerAngle, car.pushE, car.pushN, car.lean, car.health, car.fuel, car.grip]
+                for (int i = 0; i < 11; i++) { s.f[6 + i] = x[i] }
+            }
+            return s
+        }
+
+        Raser.SelfState Clone() {
+            var s = new Raser.SelfState()
+            s.present = this.present
+            s.useHeld = this.useHeld
+            s.vehicle = this.vehicle
+            s.kind = this.kind
+            s.sliding = this.sliding
+            s.walkerBridge = this.walkerBridge
+            s.carBridge = this.carBridge
+            for (int i = 0; i < 17; i++) { s.f[i] = this.f[i] }
+            return s
+        }
+
+        // Steht Zahl i auf der Leitung?
+        defined bool Sent(defined int i) {
+            if (this.kind == 0) { return i < 6 }
+            return i >= 4
+        }
+
+        // Spieler und Fahrzeug daraus (für Raser.Prediction).
+        undefined Fill(Raser.Packet p) {
+            if (!this.present) { return }
+            var pawn = new Raser.Pawn(0)
+            pawn.useHeld = this.useHeld
+            pawn.vehicle = this.vehicle
+            var k = pawn.walker
+            k.stride = this.f[4]
+            k.load = this.f[5]
+            k.bridge = this.walkerBridge
+            if (this.kind == 0) {
+                k.east = this.f[0]
+                k.north = this.f[1]
+                k.heading = this.f[2]
+                k.speed = this.f[3]
+            } else {
+                k.east = this.f[6]
+                k.north = this.f[7]
+                k.heading = this.f[8]
+                k.speed = 0.0
+                var v = Raser.Vehicle.Of(Raser.Protocol.VehicleOf(this.kind))
+                v.sliding = this.sliding
+                v.east = this.f[6]
+                v.north = this.f[7]
+                v.heading = this.f[8]
+                v.speed = this.f[9]
+                v.steerAngle = this.f[10]
+                v.pushE = this.f[11]
+                v.pushN = this.f[12]
+                v.lean = this.f[13]
+                v.health = this.f[14]
+                v.fuel = this.f[15]
+                v.grip = this.f[16]
+                v.bridge = this.carBridge
+                p.selfVehicle = take v
+            }
+            p.self = take pawn
+        }
+    }
+
+    // Was ein Client zu einem Takt hat (bzw. der Server ihm geschickt hat).
+    class SnapState {
+        defined int tick
+        Dictionary<int, Raser.EntityQ> entities
+        Raser.SelfState self
+
+        construct(defined int tick) {
+            this.tick = tick
+            this.entities = new Dictionary<int, Raser.EntityQ>(Owns.Values)
+            this.self = new Raser.SelfState()
+        }
+    }
+
+    class Delta {
+        // Schreibt den eigenen Zustand: Flags (1 da, 2 E gehalten, 4 im Fahrzeug, 8 rutscht, 16 Delta), Fahrzeug-ID, Art, dann die Zahlen -
+        // gegen base nur die geänderten (mit Maske), sonst alle, die auf der Leitung stehen.
+        static undefined WriteSelf(Raser.ByteWriter w, Raser.SelfState s, Raser.SelfState grund) {
+            if (!s.present) {
+                w.Byte(0)
+                return
+            }
+            bool delta = grund != undefined && grund.present && grund.vehicle == s.vehicle && grund.kind == s.kind
+            int flags = 1
+            if (s.useHeld) { flags = flags | 2 }
+            if (s.kind != 0) { flags = flags | 4 }
+            if (s.sliding) { flags = flags | 8 }
+            if (delta) { flags = flags | 16 }
+            w.Byte(flags)
+            w.Varint(s.vehicle)
+            if (s.kind != 0) { w.Byte(s.kind) }
+            // die Ebene immer ganz (klein; Protokoll 4)
+            w.Varint(s.walkerBridge)
+            if (s.kind != 0) { w.Varint(s.carBridge) }
+            if (!delta) {
+                for (int i = 0; i < 17; i++) { if (s.Sent(i)) { w.Float64(s.f[i]) } }
+                return
+            }
+            int mask = 0
+            for (int i = 0; i < 17; i++) { if (s.Sent(i) && s.f[i] != grund.f[i]) { mask = mask | (1 << i) } }
+            w.Varint(mask)
+            for (int i = 0; i < 17; i++) { if ((mask & (1 << i)) != 0) { w.Float64(s.f[i]) } }
+        }
+
+        static Raser.SelfState ReadSelf(Raser.ByteReader r) {
+            var s = new Raser.SelfState()
+            int flags = r.Byte()
+            if ((flags & 1) == 0) { return s }
+            s.present = true
+            s.useHeld = (flags & 2) != 0
+            s.sliding = (flags & 8) != 0
+            s.vehicle = r.Varint()
+            if ((flags & 4) != 0) {
+                s.kind = r.Byte()
+                if (s.kind < 1 || s.kind > 4) { throw new Raser.ProtocolException("Unbekannte Fahrzeugart " + s.kind + ".") }
+            }
+            s.walkerBridge = r.Varint()
+            if (s.kind != 0) { s.carBridge = r.Varint() }
+            if ((flags & 16) == 0) {
+                for (int i = 0; i < 17; i++) {
+                    if (s.Sent(i)) {
+                        s.f[i] = r.Float64()
+                        s.mask = s.mask | (1 << i)
+                    }
+                }
+                s.mask = -1
+                return s
+            }
+            int mask = r.Varint()
+            if (mask >= (1 << 17)) { throw new Raser.ProtocolException("Eine Maske außerhalb der Zahlen.") }
+            for (int i = 0; i < 17; i++) { if ((mask & (1 << i)) != 0) { s.f[i] = r.Float64() } }
+            s.mask = mask
+            return s
+        }
+
+        // Die Entitäten: neue (ganz), geänderte (Maske und Differenzen), verschwundene - je sortiert nach ID, als Abstand zur vorigen.
+        static undefined WriteEntities(Raser.ByteWriter w, List<Raser.EntityQ> current, Dictionary<int, Raser.EntityQ> grund) {
+            var byId = new Dictionary<int, Raser.EntityQ>()
+            var ids = new List<int>()
+            foreach (q in current) {
+                if (byId.ContainsKey(q.id)) { continue }
+                byId[q.id] = q
+                ids.Add(q.id)
+            }
+            ids.Sort()
+            var fresh = new List<int>()
+            var changed = new List<int>()
+            foreach (id in ids) {
+                if (grund == undefined || !grund.ContainsKey(id) || grund[id].type != byId[id].type) { fresh.Add(id) }
+                else if (byId[id].Diff(grund[id]) != 0) { changed.Add(id) }
+            }
+            var gone = new List<int>()
+            if (grund != undefined) {
+                foreach (pair in grund) { if (!byId.ContainsKey(pair.Key) || pair.Value.type != byId[pair.Key].type) { gone.Add(pair.Key) } }
+                gone.Sort()
+            }
+            if (fresh.Count + changed.Count > Raser.Protocol.MaxEntities) { throw new Raser.ProtocolException("Zu viele Entitäten.") }
+            int prev = 0
+            w.Varint(fresh.Count)
+            foreach (id in fresh) {
+                var q = byId[id]
+                w.Varint(id - prev)
+                prev = id
+                w.Byte(q.type)
+                w.Varint(q.variant)
+                w.Byte(q.bits)
+                w.SignedVarint(q.e)
+                w.SignedVarint(q.n)
+                w.Varint(q.h)
+                w.SignedVarint(q.v)
+                w.Varint(q.a)
+                w.SignedVarint(q.b)
+            }
+            prev = 0
+            w.Varint(changed.Count)
+            foreach (id in changed) {
+                var q = byId[id]
+                var o = grund[id]
+                int m = q.Diff(o)
+                w.Varint(id - prev)
+                prev = id
+                w.Byte(m)
+                if ((m & 1) != 0) { w.Varint(q.variant) }
+                if ((m & 2) != 0) { w.Byte(q.bits) }
+                if ((m & 4) != 0) { w.SignedVarint(q.e - o.e) }
+                if ((m & 8) != 0) { w.SignedVarint(q.n - o.n) }
+                if ((m & 16) != 0) { w.SignedVarint(Raser.Delta.Turn(q.h - o.h)) }
+                if ((m & 32) != 0) { w.SignedVarint(q.v - o.v) }
+                if ((m & 64) != 0) { w.Varint(q.a) }
+                if ((m & 128) != 0) { w.SignedVarint(q.b) }
+            }
+            prev = 0
+            w.Varint(gone.Count)
+            foreach (id in gone) {
+                w.Varint(id - prev)
+                prev = id
+            }
+        }
+
+        // Eine Differenz von 1/100 Grad nach -18000 .. 17999.
+        static defined int Turn(defined int d) {
+            int t = d % 36000
+            if (t < 0) { t = t + 36000 }
+            if (t >= 18000) { t = t - 36000 }
+            return t
+        }
+
+        static undefined ReadEntities(Raser.ByteReader r, Raser.Packet p) {
+            int n = r.Varint()
+            if (n > Raser.Protocol.MaxEntities) { throw new Raser.ProtocolException("Zu viele Entitäten im Snapshot (" + n + ").") }
+            int id = 0
+            for (int i = 0; i < n; i++) {
+                id = id + r.Varint()
+                int type = r.Byte()
+                if (type < 1 || type > Raser.EntityType.Last) { throw new Raser.ProtocolException("Unbekannte Entität " + type + ".") }
+                var q = new Raser.EntityQ(id, type)
+                q.variant = r.Varint()
+                q.bits = r.Byte()
+                q.e = r.SignedVarint()
+                q.n = r.SignedVarint()
+                q.h = r.Varint()
+                if (q.h >= 36000) { throw new Raser.ProtocolException("Eine Richtung außerhalb des Kreises.") }
+                q.v = r.SignedVarint()
+                q.a = r.Varint()
+                q.b = r.SignedVarint()
+                q.mask = 255
+                p.news.Add(take q)
+            }
+            int c = r.Varint()
+            if (c > Raser.Protocol.MaxEntities) { throw new Raser.ProtocolException("Zu viele Entitäten im Snapshot (" + c + ").") }
+            id = 0
+            for (int i = 0; i < c; i++) {
+                id = id + r.Varint()
+                var q = new Raser.EntityQ(id, 0)
+                int m = r.Byte()
+                q.mask = m
+                if ((m & 1) != 0) { q.variant = r.Varint() }
+                if ((m & 2) != 0) { q.bits = r.Byte() }
+                if ((m & 4) != 0) { q.e = r.SignedVarint() }
+                if ((m & 8) != 0) { q.n = r.SignedVarint() }
+                if ((m & 16) != 0) { q.h = r.SignedVarint() }
+                if ((m & 32) != 0) { q.v = r.SignedVarint() }
+                if ((m & 64) != 0) { q.a = r.Varint() }
+                if ((m & 128) != 0) { q.b = r.SignedVarint() }
+                p.changes.Add(take q)
+            }
+            int g = r.Varint()
+            if (g > Raser.Protocol.MaxEntities) { throw new Raser.ProtocolException("Zu viele verschwundene Entitäten (" + g + ").") }
+            id = 0
+            for (int i = 0; i < g; i++) {
+                id = id + r.Varint()
+                p.gone.Add(id)
+            }
+        }
+    }
+
+    // Der Client: die letzten Stände je Takt. Resolve baut aus einem gelesenen Snapshot (Grundlage + Delta) den vollen Stand, legt ihn ab und
+    // setzt im Packet self, selfVehicle und entities (alle, die der Client jetzt kennt).
+    class SnapshotHistory {
+        Dictionary<int, Raser.SnapState> states
+        defined int latest
+
+        construct() {
+            this.states = new Dictionary<int, Raser.SnapState>(Owns.Values)
+            this.latest = 0
+        }
+
+        // false: die Grundlage fehlt (dann ist der Snapshot nicht zu lesen - sollte nicht vorkommen: der Client bestätigt nur, was er hat).
+        defined bool Resolve(Raser.Packet p) {
+            Raser.SnapState grund = undefined
+            if (p.baseTick != 0) {
+                if (!this.states.ContainsKey(p.baseTick)) { return false }
+                grund = this.states[p.baseTick]
+            }
+            var next = new Raser.SnapState(p.tick)
+            if (grund != undefined) {
+                foreach (pair in grund.entities) { next.entities[pair.Key] = pair.Value.Clone() }
+            }
+            foreach (id in p.gone) { next.entities.Remove(id) }
+            foreach (c in p.changes) {
+                if (!next.entities.ContainsKey(c.id)) { return false }
+                var q = next.entities[c.id]
+                int m = c.mask
+                if ((m & 1) != 0) { q.variant = c.variant }
+                if ((m & 2) != 0) { q.bits = c.bits }
+                if ((m & 4) != 0) { q.e = q.e + c.e }
+                if ((m & 8) != 0) { q.n = q.n + c.n }
+                if ((m & 16) != 0) {
+                    q.h = (q.h + c.h) % 36000
+                    if (q.h < 0) { q.h = q.h + 36000 }
+                }
+                if ((m & 32) != 0) { q.v = q.v + c.v }
+                if ((m & 64) != 0) { q.a = c.a }
+                if ((m & 128) != 0) { q.b = c.b }
+            }
+            foreach (q in p.news) { next.entities[q.id] = q.Clone() }
+            // der eigene Zustand: ganz oder die geänderten Zahlen auf die Grundlage
+            var s = p.rawSelf
+            if (s != undefined && s.present && s.mask != -1) {
+                if (grund == undefined || !grund.self.present) { return false }
+                var full = grund.self.Clone()
+                full.useHeld = s.useHeld
+                full.sliding = s.sliding
+                for (int i = 0; i < 17; i++) { if ((s.mask & (1 << i)) != 0) { full.f[i] = s.f[i] } }
+                next.self = take full
+            } else if (s != undefined) { next.self = s.Clone() }
+            next.self.Fill(p)
+            p.entities.Clear()
+            foreach (pair in next.entities) { p.entities.Add(pair.Value.ToEntity()) }
+            this.states[p.tick] = take next
+            this.latest = p.tick
+            // nur die letzten 64 Takte (2 s) aufheben
+            var old = new List<int>()
+            foreach (t in this.states.Keys) { if (t < p.tick - 64) { old.Add(t) } }
+            foreach (t in old) { this.states.Remove(t) }
+            return true
+        }
+    }
+}

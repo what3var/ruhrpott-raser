@@ -92,11 +92,23 @@ class Server {
             float dt = (start - last) / 10000000.0
             last = start
             clock.Advance(dt)
-            gateway.Tick()
+            try {
+                gateway.Tick()
+            } catch (Exception e) {
+                Gateway.Log("FEHLER im Gateway: " + e.message)
+                throw e
+            }
             int steps = 0
             while (start >= due && steps < 5) {
                 int t0 = DateTime.UtcNow.Ticks
-                region.Step(Gateway.Millis())
+                try {
+                    region.Step(Gateway.Millis())
+                } catch (Exception e) {
+                    Gateway.Log("FEHLER im Takt " + region.tick + ": " + e.message)
+                    throw e
+                }
+                // alle 10 s die Stände der Spieler in die Datenbank
+                if (region.tick % 300 == 0) { gateway.SaveAll() }
                 worst = Math.Max(worst, DateTime.UtcNow.Ticks - t0)
                 due = due + tickTicks
                 steps++
