@@ -109,6 +109,11 @@ Platten mit Fugen, Putz und Beton mit ruhigen Flecken, Gras und Erde mit Körnun
 Dreckstufe (sauber bis stark verrußt: dunkler, Flecken, Laufspuren) für Wand und Dach. Alles prozedural; gleiche Flächen bleiben große Rechtecke, die
 Abwechslung kommt aus der Textur.
 
+**Umsetzung (Generator 30):** Fassaden und Dächer haben im Atlas feinere Kacheln (zwei Texel je Voxel, 10 cm: Ziegel im Läufer- oder Kreuzverband,
+Dachziegel in Reihen, Schiefer, Quader, Platten, Blech) in eigenen Fassaden-Farben der Palette. Welche ein Haus bekommt, wählt `Raser.HouseStyle`
+ohne Foto aus den Daten: Bautyp (Nutzung, Höhe, Dach, Grundriss), eine Farbfamilie je Straße und Bautyp (die Häuser einer Siedlung sind verwandt,
+aber nicht gleich), die ID für das einzelne Haus - dazu Sockel, Gesims, Giebel, Fachwerk, Rahmen, Türen, Fensterbänke, Läden, Balkone und Gauben.
+
 **Rendering:** Pixel werden nearest-neighbor gerendert, aber antialiased. Das geschieht als „sharp bilinear“ direkt im Shader (Pixel-Art-AA über `fwidth`) statt mit vorab hochskalierten Texturen. Der Effekt ist derselbe, es braucht keinen zusätzlichen Speicher und funktioniert in jeder Entfernung.
 
 ## 4. Nacht-Atmosphäre

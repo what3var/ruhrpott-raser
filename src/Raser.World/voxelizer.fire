@@ -1418,9 +1418,10 @@ namespace Raser {
                         }
                         int fw = q1 - q0
                         if (fw >= 1) {
+                            // je Lage ein Voxel der Strebe (so bleibt sie eine durchgehende Linie, auch in schmalen Feldern)
                             int q = p - q0
                             if (mirror) { q = q1 - p }
-                            beam = s - 5 == Math.Round(q * 6.0 / fw)!int
+                            beam = q == Math.Round((s - 5) * fw / 6.0)!int
                         }
                     }
                 }

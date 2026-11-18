@@ -222,7 +222,12 @@ namespace Raser {
             if (b.roofColor != Raser.Palette.RoofTiles && b.roofColor != Raser.Palette.RoofFlat) { m.roofColor = b.roofColor }
             // je Gebäude eine Dreckstufe für Wand und Dach (wie bisher aus ID und Seed)
             int dh = Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), b.id), seed)
-            int dirt = Raser.RoofModel.DirtLevel(dh >> 8)
+            // die Wand etwas sauberer als bisher (45 % sauber, 35 % leicht, 15 % mittel, 5 % stark): Pastell bleibt Pastell
+            int dp = ((dh >> 8) & 1023) % 100
+            int dirt = 0
+            if (dp >= 45) { dirt = 1 }
+            if (dp >= 80) { dirt = 2 }
+            if (dp >= 95) { dirt = 3 }
             m.wallMaterial = Raser.HouseStyle.MaterialOf(m.wallColor)
             m.wallColor = Raser.Palette.Dirty(m.wallColor, dirt)
             m.roofColor = Raser.Palette.Dirty(m.roofColor, Raser.RoofModel.DirtLevel(dh >> 16))
