@@ -485,9 +485,9 @@ class MapJob {
     }
 
     Framebuffer TakeImage() {
-        var fb = this.image
+        // (nicht `fb.TakeLocal()` in einem `if`: dann gehört das Bild dem if-Block und ist beim return schon zerstört)
+        var fb = take this.image
         this.image = undefined
-        if (fb != undefined) { fb.TakeLocal() }
         return fb
     }
 }
