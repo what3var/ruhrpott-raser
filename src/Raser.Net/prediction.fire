@@ -134,6 +134,7 @@ namespace Raser {
             if ((e.bits & Raser.EntityType.OnBridge) != 0) { b.bridge = this.world.obstacles.DeckUnder(e.east, e.north) }
             b.pushE = 0.0
             b.pushN = 0.0
+            b.spin = 0.0
             v.driver = e.a
         }
 

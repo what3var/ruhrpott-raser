@@ -475,6 +475,45 @@ class StateTests {
         t.States(states, 1000.0, 100.0, 50.0)
         Testing.Assert.AreEqual(0, states.Count)
     }
+
+    [Test "Aufprall außermittig: das Auto dreht sich; von außen angestoßen (Unfallwagen, abgestellter Wagen) wird es auch ein Unfallwagen"]
+    undefined ImpactSpin() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        tile.data.roads.Add(Net.Road(1, "residential", [0.0, 100.0, 600.0, 100.0], 6.0))
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        var t = Scene.Of(g)
+        var c = Scene.Car(t, 150.0, 98.5, -90.0, 0.0)
+        c.wish = 0.0
+        // der Spieler kommt von Süden, 1,5 m östlich der Mitte: er trifft die Nase (das Auto fährt nach Osten) - sie dreht nach Norden, links
+        var players = new List<float>()
+        foreach (x in [151.5, 95.0, 0.0, 10.0, 1.0, 1.1, 1.0]) { players.Add(x) }
+        float most = 0.0
+        for (int i = 0; i < 12; i++) {
+            players[1] = players[1] + 10.0 / 30.0
+            t.Step(1.0 / 30.0, players)
+            most = Math.Max(most, c.body.spin)
+        }
+        Testing.Assert.IsTrue(c.state >= 1)
+        Testing.Assert.IsTrue(most > 10.0, "dreht " + most)
+        // ein zweites Auto bekommt einen Stoß von außen (pushE): im nächsten Schritt ist es ein Unfallwagen und rutscht
+        var d = Scene.Car(t, 185.0, 98.5, -90.0, 0.0)
+        d.wish = 0.0
+        players[1] = 50.0
+        t.Step(1.0 / 30.0, players)
+        Testing.Assert.AreEqual(0, d.state)
+        d.body.pushN = 4.0
+        float n0 = d.north
+        t.Step(1.0 / 30.0, players)
+        Testing.Assert.AreEqual(1, d.state)
+        Testing.Assert.IsTrue(d.north > n0 + 0.05, "gerutscht " + (d.north - n0))
+        var bodies = new List<Raser.Vehicle>()
+        var loose = new List<bool>()
+        t.Bodies(bodies, loose)
+        Testing.Assert.AreEqual(t.cars.Count, bodies.Count)
+        Testing.Assert.IsTrue(loose[0] && loose[1])
+    }
 }
 
 class WorkerTests {

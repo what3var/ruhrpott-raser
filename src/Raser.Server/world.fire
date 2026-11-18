@@ -146,6 +146,10 @@ class RegionServer {
     Raser.Traffic traffic           // undefined: kein Verkehr
     Raser.Weather trafficWetness    // die Nässe für die Physik der Unfallwagen (das Wetter der Uhr)
     List<float> trafficPlayers
+    List<Raser.Vehicle> wreckBodies      // für Wrecks (Verweise, je Takt neu)
+    List<bool> wreckLoose
+    List<Raser.Vehicle> wreckVehicles
+    List<bool> wreckDriven
     List<Raser.NpcState> npcStates
     Raser.GraphWorker trafficWorker // baut den Straßengraphen in einem eigenen Thread
     string trafficWant              // die zuletzt bestellten Kacheln
@@ -178,6 +182,10 @@ class RegionServer {
         this.defaultNorth = 5705005.0
         this.traffic = undefined
         this.trafficPlayers = new List<float>()
+        this.wreckBodies = new List<Raser.Vehicle>()
+        this.wreckLoose = new List<bool>()
+        this.wreckVehicles = new List<Raser.Vehicle>()
+        this.wreckDriven = new List<bool>()
         this.npcStates = new List<Raser.NpcState>()
         this.trafficWorker = undefined
         this.trafficWant = ""
@@ -563,21 +571,9 @@ class RegionServer {
         }
         if (this.trafficWetness != undefined) { t.wetness = this.trafficWetness.wetness }
         t.Step(Raser.SimWorld.Tick, list)
-        // Unfallwagen gegen die Wände (dieselben Hindernisse wie für die Spieler, Raser.Obstacles): wie im Spiel offline (TrafficView)
-        var walls = this.sim.obstacles
-        foreach (c in t.cars) {
-            if (c.state == 0) { continue }
-            var wb = c.body
-            if (Math.Abs(wb.speed) + Math.Abs(wb.pushE) + Math.Abs(wb.pushN) < 0.05) { continue }
-            float wh = wb.heading * Math.PI / 180.0
-            for (int k = 0; k < 2; k++) {
-                float offset = wb.spread - 2.0 * wb.spread * k
-                if (walls.Push(wb.east - Math.Sin(wh) * offset, wb.north + Math.Cos(wh) * offset, wb.radius)) { wb.Collide(offset, walls.pushX, walls.pushY, walls.depth) }
-            }
-            c.east = wb.east
-            c.north = wb.north
-            c.heading = wb.heading
-        }
+        // Unfallwagen gegen die Wände, gegeneinander und gegen die Fahrzeuge der Spieler, abgestellte Fahrzeuge der Spieler gegen die Autos des
+        // Verkehrs (Raser.Physics.Wrecks: dieselben Hindernisse und Stöße wie für die Spieler, wie im Spiel offline in TrafficView)
+        RegionServer.Wrecks(t, this.sim, this.wreckBodies, this.wreckLoose, this.wreckVehicles, this.wreckDriven)
         foreach (ev in t.events) {
             if (ev == "unfall" || ev == "umgefahren") { Gateway.Log("Verkehr: " + ev) }
         }
@@ -589,6 +585,8 @@ class RegionServer {
             var cb = c.body
             foreach (v in this.sim.vehicles) {
                 var b = v.body
+                // (die abgestellten stoßen in Wrecks an, mit Stoß auf beide)
+                if (v.driver == 0) { continue }
                 if ((b.east - c.east) * (b.east - c.east) + (b.north - c.north) * (b.north - c.north) > 144.0) { continue }
                 float h = b.heading * Math.PI / 180.0
                 for (int k = 0; k < 2; k++) {
@@ -608,6 +606,20 @@ class RegionServer {
                 for (float q = 1.0; q > -1.5; q = q - 1.0) { w.Avoid(c.east - Math.Sin(ch) * cb.spread * q, c.north + Math.Cos(ch) * cb.spread * q, cb.radius - 0.05) }
             }
         }
+    }
+
+    // Die Unfallwagen des Verkehrs und die Fahrzeuge der Welt gegeneinander und gegen die Wände (Raser.Physics.Wrecks); die Listen werden neu
+    // gefüllt (Verweise).
+    static undefined Wrecks(Raser.Traffic t, Raser.SimWorld sim, List<Raser.Vehicle> bodies, List<bool> loose, List<Raser.Vehicle> vehicles, List<bool> driven) {
+        t.Bodies(bodies, loose)
+        vehicles.Clear()
+        driven.Clear()
+        foreach (v in sim.vehicles) {
+            vehicles.Add(v.body)
+            driven.Add(v.driver != 0)
+        }
+        Raser.Physics.Wrecks(bodies, loose, vehicles, driven, sim.obstacles)
+        t.Follow()
     }
 
     // Die Straßen der 3 x 3 Kacheln um jeden Spieler: ändert sich die Menge, bestellt der Server beim Worker (Raser.GraphWorker, eigener

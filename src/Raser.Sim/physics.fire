@@ -104,59 +104,130 @@ namespace Raser {
             return found
         }
 
-        // Ein Schritt des Wagens mit Aufprall an Gebäuden und Fahrzeugen (in Teilschritten von höchstens 0,5 m): der Wagen rutscht an Wänden entlang,
-        // angefahrene Fahrzeuge stößt er an. true: aufgeprallt.
-        static defined bool Advance(Raser.Vehicle car, List<Raser.Vehicle> all, Raser.Obstacles obstacles, defined float dt, defined float throttle, defined float brake, defined float steer, defined bool reverse, defined float wetness) {
-            float pace = Math.Abs(car.speed) + Math.Abs(car.pushE) + Math.Abs(car.pushN)
+        // Ein Schritt des Wagens mit Aufprall an Gebäuden, Brücken und Fahrzeugen (in Teilschritten von höchstens 0,5 m): der Wagen rutscht an
+        // Wänden entlang, angefahrene Fahrzeuge bekommen einen Stoß am Berührpunkt (Raser.Vehicle.Impact: beide, mit Drehung) und prallen danach
+        // selbst an Wänden ab. Dasselbe für jedes bewegte Fahrzeug, ob gefahren oder angestoßen (Parked, SimWorld.Coast) - so stößt ein
+        // angestoßenes das nächste an. grid: die Fahrzeuge nach Zellen (Raser.BodyGrid, für alle gebaut; undefined: alle durchsehen). true: aufgeprallt.
+        static defined bool Advance(Raser.Vehicle car, List<Raser.Vehicle> all, Raser.Obstacles obstacles, defined float dt, defined float throttle, defined float brake, defined float steer, defined bool reverse, defined float wetness, Raser.BodyGrid grid = undefined) {
+            float pace = Math.Abs(car.speed) + Math.Abs(car.pushE) + Math.Abs(car.pushN) + Math.Abs(car.spin) * Math.PI / 180.0 * (car.spread + car.radius)
             int parts = Math.Max(1, Math.Ceiling(pace * dt / 0.5)!int)
+            // die Fahrzeuge, die erreichbar sind (einmal je Schritt: Breitphase)
+            var near = Raser.Physics.Candidates(car, all, grid, pace * dt + 1.0)
             bool hit = false
             for (int i = 0; i < parts; i++) {
-                float e0 = car.east
-                float n0 = car.north
                 car.Step(dt / parts, throttle, brake, steer, reverse, wetness)
                 // Brücken: auf das Deck nur über eine Rampe, unten fährt man durch (Raser.Obstacles.Level)
                 car.bridge = obstacles.Level(car.east, car.north, car.bridge)
-                // zwei Kreise (vorn, hinten) gegen die Wände
-                for (int c = 0; c < 2; c++) {
-                    float offset = car.spread - 2.0 * car.spread * c
-                    float h = car.heading * Math.PI / 180.0
-                    float ce = car.east - Math.Sin(h) * offset
-                    float cn = car.north + Math.Cos(h) * offset
-                    if (obstacles.Push(ce, cn, car.radius, car.bridge == 0)) {
-                        if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
-                    }
-                    // auf der Brücke die Brüstungen, darunter die Pfeiler
-                    if (obstacles.PushBridge(ce, cn, car.radius, car.bridge)) {
-                        if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
-                    }
-                    // die anderen Fahrzeuge (auf derselben Ebene): angefahren rutschen sie los (Vehicle.Shove)
-                    foreach (other in all) {
-                        if (other == car || other.bridge != car.bridge) { continue }
-                        float oh = other.heading * Math.PI / 180.0
-                        for (int oc = 0; oc < 2; oc++) {
-                            float oo = other.spread - 2.0 * other.spread * oc
-                            float dx = ce - (other.east - Math.Sin(oh) * oo)
-                            float dy = cn - (other.north + Math.Cos(oh) * oo)
-                            float d = Math.Sqrt(dx * dx + dy * dy)
-                            float deep = car.radius + other.radius - d
-                            if (deep > 0.0 && d > 0.0001) {
-                                float into = car.Collide(offset, dx / d, dy / d, deep)
-                                car.Shove(other, dx / d, dy / d, into)
-                                if (into > 0.5) { hit = true }
-                            }
-                        }
-                    }
+                if (Raser.Physics.Walls(car, obstacles)) { hit = true }
+                if (Raser.Physics.Bump(car, near, obstacles)) { hit = true }
+            }
+            return hit
+        }
+
+        // Die zwei Kreise (vorn, hinten) eines Fahrzeugs gegen die Wände: Gebäude und Pfosten (auf einer Brücke ohne die Pfosten), auf der Brücke
+        // die Brüstungen, darunter die Pfeiler. true: mit mehr als 0,5 m/s aufgeprallt.
+        static defined bool Walls(Raser.Vehicle car, Raser.Obstacles obstacles) {
+            bool hit = false
+            for (int c = 0; c < 2; c++) {
+                float offset = car.spread - 2.0 * car.spread * c
+                float h = car.heading * Math.PI / 180.0
+                float ce = car.east - Math.Sin(h) * offset
+                float cn = car.north + Math.Cos(h) * offset
+                if (obstacles.Push(ce, cn, car.radius, car.bridge == 0)) {
+                    if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
+                }
+                h = car.heading * Math.PI / 180.0
+                ce = car.east - Math.Sin(h) * offset
+                cn = car.north + Math.Cos(h) * offset
+                if (obstacles.PushBridge(ce, cn, car.radius, car.bridge)) {
+                    if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
                 }
             }
             return hit
         }
 
-        // Die abgestellten Fahrzeuge (alle außer driven; undefined: alle) rollen und rutschen aus, gebremst.
-        static undefined Parked(Raser.Vehicle driven, List<Raser.Vehicle> vehicles, Raser.Obstacles obstacles, defined float dt, defined float wetness) {
+        // Ein Fahrzeug gegen die anderen in near (auf derselben Ebene), je Kreis gegen Kreis: Stoß am Berührpunkt (Raser.Vehicle.Impact); das
+        // angestoßene wird gleich gegen die Wände gehalten (so schiebt man keinen Wagen in ein Haus). true: mit mehr als 0,5 m/s.
+        static defined bool Bump(Raser.Vehicle car, List<Raser.Vehicle> near, Raser.Obstacles obstacles) {
+            bool hit = false
+            foreach (other in near) {
+                if (other == car || other.bridge != car.bridge) { continue }
+                // grob: weiter als beide lang sind, berührt sich nichts
+                float reach = car.spread + car.radius + other.spread + other.radius
+                float de = other.east - car.east
+                float dn = other.north - car.north
+                if (de * de + dn * dn > reach * reach) { continue }
+                bool touched = false
+                for (int c = 0; c < 2; c++) {
+                    float offset = car.spread - 2.0 * car.spread * c
+                    for (int oc = 0; oc < 2; oc++) {
+                        float h = car.heading * Math.PI / 180.0
+                        float oh = other.heading * Math.PI / 180.0
+                        float oo = other.spread - 2.0 * other.spread * oc
+                        float dx = car.east - Math.Sin(h) * offset - (other.east - Math.Sin(oh) * oo)
+                        float dy = car.north + Math.Cos(h) * offset - (other.north + Math.Cos(oh) * oo)
+                        float d = Math.Sqrt(dx * dx + dy * dy)
+                        float deep = car.radius + other.radius - d
+                        if (deep > 0.0 && d > 0.0001) {
+                            touched = true
+                            if (Raser.Vehicle.Impact(car, offset, other, oo, dx / d, dy / d, deep) > 0.5) { hit = true }
+                        }
+                    }
+                }
+                if (touched && obstacles != undefined) { Raser.Physics.Walls(other, obstacles) }
+            }
+            return hit
+        }
+
+        // Die Fahrzeuge aus all, die car in diesem Schritt erreichen kann (ohne car): aus dem Gitter, sonst alle in Reichweite.
+        static List<Raser.Vehicle> Candidates(Raser.Vehicle car, List<Raser.Vehicle> all, Raser.BodyGrid grid, defined float travel) {
+            var found = new List<Raser.Vehicle>()
+            float reach = travel + car.spread + car.radius + Raser.BodyGrid.Margin
+            if (grid != undefined) {
+                grid.Near(car.east, car.north, reach, found)
+            } else {
+                foreach (v in all) {
+                    float de = v.east - car.east
+                    float dn = v.north - car.north
+                    if (de * de + dn * dn <= reach * reach) { found.Add(v) }
+                }
+            }
+            for (int i = found.Count - 1; i >= 0; i--) { if (found[i] == car) { found.RemoveAt(i) } }
+            return found
+        }
+
+        // Steht oder ruht das Fahrzeug (kein Tempo, kein Rutschen, kein Drehen)?
+        static defined bool Resting(Raser.Vehicle v) { return v.speed == 0.0 && v.pushE == 0.0 && v.pushN == 0.0 && v.spin == 0.0 }
+
+        // Die abgestellten Fahrzeuge (alle außer driven; undefined: alle) rollen und rutschen aus, gebremst - und stoßen dabei an Wände und
+        // andere Fahrzeuge wie ein gefahrenes.
+        static undefined Parked(Raser.Vehicle driven, List<Raser.Vehicle> vehicles, Raser.Obstacles obstacles, defined float dt, defined float wetness, Raser.BodyGrid grid = undefined) {
             foreach (v in vehicles) {
-                if (v == driven) { continue }
-                if (v.speed == 0.0 && v.pushE == 0.0 && v.pushN == 0.0) { continue }
-                Raser.Physics.Advance(v, vehicles, obstacles, dt, 0.0, 1.0, 0.0, false, wetness)
+                if (v == driven || Raser.Physics.Resting(v)) { continue }
+                Raser.Physics.Advance(v, vehicles, obstacles, dt, 0.0, 1.0, 0.0, false, wetness, grid)
+            }
+        }
+
+        // Die Unfallwagen des Verkehrs (Raser.Traffic: npc, loose[i] - sie rollen frei, nach Raser.Vehicle.Step) gegen die Wände (auf dem
+        // Gelände), gegen die anderen Autos des Verkehrs und gegen die Fahrzeuge der Spieler (vehicles); dazu die abgestellten Fahrzeuge der
+        // Spieler (driven[k] false), die sich bewegen, gegen alle Autos des Verkehrs. Je ein Stoß am Berührpunkt (Raser.Vehicle.Impact): ein Auto
+        // des Verkehrs, das so einen Stoß bekommt, rutscht los (Raser.Traffic macht im nächsten Schritt einen Unfallwagen daraus). Die
+        // gefahrenen prallen an den Autos des Verkehrs selbst ab (dort, wo sie gerechnet werden).
+        static undefined Wrecks(List<Raser.Vehicle> npc, List<bool> loose, List<Raser.Vehicle> vehicles, List<bool> driven, Raser.Obstacles obstacles) {
+            for (int i = 0; i < npc.Count; i++) {
+                var b = npc[i]
+                if (!loose[i] || Raser.Physics.Resting(b)) { continue }
+                b.bridge = 0
+                Raser.Physics.Walls(b, obstacles)
+                var near = Raser.Physics.Candidates(b, npc, undefined, 2.0)
+                foreach (v in vehicles) { if (v.bridge == 0) { near.Add(v) } }
+                Raser.Physics.Bump(b, near, obstacles)
+            }
+            for (int k = 0; k < vehicles.Count; k++) {
+                var v = vehicles[k]
+                if (driven[k] || v.bridge != 0 || Raser.Physics.Resting(v)) { continue }
+                var near = Raser.Physics.Candidates(v, npc, undefined, 2.0)
+                Raser.Physics.Bump(v, near, obstacles)
             }
         }
 
@@ -210,7 +281,7 @@ namespace Raser {
             return Math.Sqrt((car.east - walker.east) * (car.east - walker.east) + (car.north - walker.north) * (car.north - walker.north))
         }
 
-        // Übernimmt den Zustand eines Fahrzeugs (Lage, Tempo, Lenkung, Stoß, Schräglage, Zustand, Tank) und, wenn kind anders ist, die Klasse
+        // Übernimmt den Zustand eines Fahrzeugs (Lage, Tempo, Lenkung, Stoß, Drehen, Schräglage, Zustand, Tank) und, wenn kind anders ist, die Klasse
         // mit ihren Maßen.
         static undefined CopyState(Raser.Vehicle src, Raser.Vehicle dst) {
             if (dst.kind != src.kind) {
@@ -238,6 +309,7 @@ namespace Raser {
             dst.pushN = src.pushN
             dst.lean = src.lean
             dst.bridge = src.bridge
+            dst.spin = src.spin
         }
 
         static undefined CopyWalker(Raser.Walker src, Raser.Walker dst) {
@@ -248,6 +320,63 @@ namespace Raser {
             dst.stride = src.stride
             dst.load = src.load
             dst.bridge = src.bridge
+        }
+    }
+
+    // Die Breitphase: die Fahrzeuge nach Zellen (Size m) ihrer Mitte - wer nahe an einen Punkt kommen kann, steht in den Zellen ringsum. Einmal
+    // je Takt gebaut (SimWorld); bis zum Ende des Takts bewegen sie sich höchstens um Margin m (bis 120 km/h).
+    class BodyGrid {
+        static readonly defined float Size = 8.0
+        static readonly defined float Margin = 4.0
+        Dictionary<int, List<int>> cells
+        List<Raser.Vehicle> source
+        List<int> used                  // die Zellen, die gerade etwas enthalten
+
+        construct() {
+            this.cells = new Dictionary<int, List<int>>(Owns.Values)
+            this.source = undefined
+            this.used = new List<int>()
+        }
+
+        // Die Fahrzeuge (Verweise; die Liste muss bis zum nächsten Build gleich bleiben) nach Zellen.
+        undefined Build(List<Raser.Vehicle> all) {
+            foreach (c in this.used) { this.cells[c].Clear() }
+            this.used.Clear()
+            // nach langen Fahrten nicht unbegrenzt leere Zellen behalten
+            if (this.cells.Count > 4 * all.Count + 256) { this.cells.Clear() }
+            this.source = all
+            for (int i = 0; i < all.Count; i++) {
+                int cell = Raser.BodyGrid.CellOf(Math.Floor(all[i].east / Raser.BodyGrid.Size)!int, Math.Floor(all[i].north / Raser.BodyGrid.Size)!int)
+                if (!this.cells.ContainsKey(cell)) {
+                    var fresh = new List<int>()
+                    this.cells[cell] = fresh
+                    fresh.TakeTo(this.cells)
+                }
+                var list = this.cells[cell]
+                if (list.Count == 0) { this.used.Add(cell) }
+                list.Add(i)
+            }
+        }
+
+        static defined int CellOf(defined int ce, defined int cn) { return ce * 73856093 + cn * 19349663 }
+
+        // Die Fahrzeuge, deren Mitte höchstens etwa radius m von (e, n) liegt, nach out (in der Folge der Liste: auf beiden Seiten gleich).
+        undefined Near(defined float e, defined float n, defined float radius, List<Raser.Vehicle> out) {
+            if (this.source == undefined) { return }
+            int c0 = Math.Floor((e - radius) / Raser.BodyGrid.Size)!int
+            int c1 = Math.Floor((e + radius) / Raser.BodyGrid.Size)!int
+            int r0 = Math.Floor((n - radius) / Raser.BodyGrid.Size)!int
+            int r1 = Math.Floor((n + radius) / Raser.BodyGrid.Size)!int
+            var picked = new List<int>()
+            for (int r = r0; r <= r1; r++) {
+                for (int c = c0; c <= c1; c++) {
+                    int cell = Raser.BodyGrid.CellOf(c, r)
+                    if (!this.cells.ContainsKey(cell)) { continue }
+                    foreach (i in this.cells[cell]) { picked.Add(i) }
+                }
+            }
+            picked.Sort()
+            foreach (i in picked) { if (i < this.source.Count) { out.Add(this.source[i]) } }
         }
     }
 }

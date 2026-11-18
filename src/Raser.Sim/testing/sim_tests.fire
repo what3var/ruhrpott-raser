@@ -144,6 +144,9 @@ class RailTests {
         var none = new List<Raser.Box2>()
         o.boxes["0_0"] = none
         none.TakeTo(o.boxes)
+        var grid = Raser.Obstacles.Grid(none)
+        o.grids["0_0"] = grid
+        grid.TakeTo(o.grids)
         o.tiles["0_0"] = take tile
         var all = new List<Raser.Vehicle>()
         var car = Raser.Vehicle.Of("auto")
@@ -163,5 +166,118 @@ class RailTests {
         car.speed = 15.0
         for (int i = 0; i < 120; i++) { Raser.Physics.Advance(car, all, o, 1.0 / 30.0, 0.5, 0.0, 0.0, false, 0.0) }
         Testing.Assert.IsTrue(car.north < 106.25)
+class CrashWorld {
+    // Kachel 0_0 ohne Gelände und Straßen, darin ein Haus von x = 109 bis 130 (y = 80 .. 120): seine Westwand steht quer zur Fahrt nach Osten.
+    static Raser.Obstacles Make() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var b = new Raser.Building()
+        b.id = 1
+        b.footprint = [109.0, 80.0, 130.0, 80.0, 130.0, 120.0, 109.0, 120.0]
+        tile.data.buildings.Add(take b)
+        var o = new Raser.Obstacles("")
+        o.Install(new Raser.TileKey(0, 0), "0_0", take tile)
+        return o
+    }
+
+    // A fährt mit 15 m/s nach Osten auf B (quer, nach Norden versetzt: A trifft es hinten), B steht vor C, C vor der Wand. Gibt je Fahrzeug
+    // Ost, Nord, Richtung, Drehen nach steps Takten; dazu in seen: das größte Drehen von B, der weiteste Weg von C nach Osten.
+    static List<float> Run(defined int steps, List<float> seen) {
+        var world = new Raser.SimWorld(CrashWorld.Make())
+        var a = world.Add(1, "auto", 98.0, 100.0, -90.0)
+        a.body.speed = 15.0
+        world.Add(2, "auto", 102.0, 100.9, 0.0)
+        world.Add(3, "auto", 106.0, 100.0, 0.0)
+        float spinB = 0.0
+        float farC = 0.0
+        float deepest = 0.0
+        for (int i = 0; i < steps; i++) {
+            world.Coast()
+            spinB = Math.Max(spinB, Math.Abs(world.Find(2).body.spin))
+            farC = Math.Max(farC, world.Find(3).body.east - 106.0)
+            // kein Kreis steckt in der Wand (x = 109; der Radius 1 m)
+            foreach (v in world.vehicles) {
+                var body = v.body
+                float h = body.heading * Math.PI / 180.0
+                foreach (k in [1.0, -1.0]) { deepest = Math.Max(deepest, body.east - Math.Sin(h) * body.spread * k + body.radius - 109.0) }
+            }
+        }
+        seen.Add(spinB)
+        seen.Add(farC)
+        seen.Add(deepest)
+        var out = new List<float>()
+        foreach (v in world.vehicles) {
+            foreach (x in [v.body.east, v.body.north, v.body.heading, v.body.spin, v.body.speed, v.body.pushE, v.body.pushN]) { out.Add(x) }
+        }
+        return out
+    }
+}
+
+class CrashTests {
+    [Test "Kette: das angestoßene Fahrzeug dreht sich, stößt ein drittes an, das prallt an der Wand ab; zweimal gerechnet dasselbe"]
+    undefined Chain() {
+        var seen = new List<float>()
+        var end = CrashWorld.Run(150, seen)
+        // B dreht sich (A traf es hinten, außerhalb der Mitte)
+        Testing.Assert.IsTrue(seen[0] > 10.0, "B dreht höchstens " + seen[0])
+        // C ist angestoßen worden (vorher ging das Tempo eines angestoßenen verloren) und kam bis an die Wand
+        Testing.Assert.IsTrue(seen[1] > 0.5, "C kam " + seen[1] + " m weit")
+        // niemand steckt in der Wand (höchstens, was ein Teilschritt hineinreicht)
+        Testing.Assert.IsTrue(seen[2] < 0.3, "in der Wand: " + seen[2])
+        // nach 5 s ruht alles
+        for (int k = 0; k < 3; k++) {
+            Testing.Assert.IsTrue(Math.Abs(end[k * 7 + 3]) < 0.001 && Math.Abs(end[k * 7 + 4]) < 0.001 && Math.Abs(end[k * 7 + 5]) < 0.001 && Math.Abs(end[k * 7 + 6]) < 0.001, "Fahrzeug " + k + " ruht nicht")
+        }
+        // B wurde nach Osten geschoben und hat sich gedreht
+        Testing.Assert.IsTrue(end[7] > 102.5 && Math.Abs(end[9]) > 3.0, "B bei " + end[7] + ", Richtung " + end[9])
+        // dasselbe noch einmal: bitgenau gleich
+        var again = CrashWorld.Run(150, new List<float>())
+        for (int i = 0; i < end.Count; i++) { Testing.Assert.IsTrue(end[i] == again[i], "Wert " + i + ": " + end[i] + " / " + again[i]) }
+    }
+
+    [Test "Unfallwagen des Verkehrs: stoßen abgestellte Fahrzeuge und andere Autos an und prallen an Wänden ab"]
+    undefined Wrecks() {
+        var o = CrashWorld.Make()
+        // ein Unfallwagen rutscht mit 8 m/s nach Osten, vor ihm ein fahrendes Auto des Verkehrs (steht still), daneben ein abgestellter Wagen
+        var wreck = Raser.Vehicle.Of("auto")
+        wreck.east = 100.0
+        wreck.north = 100.0
+        wreck.heading = -90.0
+        wreck.pushE = 8.0
+        var npc = Raser.Vehicle.Of("auto")
+        npc.east = 103.9
+        npc.north = 100.0
+        npc.heading = -90.0
+        var parked = Raser.Vehicle.Of("auto")
+        parked.east = 100.0
+        parked.north = 101.7
+        parked.heading = -90.0
+        var bodies = new List<Raser.Vehicle>()
+        bodies.Add(wreck)
+        bodies.Add(npc)
+        var loose = new List<bool>()
+        loose.Add(true)
+        loose.Add(false)
+        var vehicles = new List<Raser.Vehicle>()
+        vehicles.Add(parked)
+        var driven = new List<bool>()
+        driven.Add(false)
+        for (int i = 0; i < 90; i++) {
+            wreck.Step(1.0 / 30.0, 0.0, 1.0, 0.0, false, 0.0)
+            if (!Raser.Physics.Resting(parked)) { parked.Step(1.0 / 30.0, 0.0, 1.0, 0.0, false, 0.0) }
+            Raser.Physics.Wrecks(bodies, loose, vehicles, driven, o)
+            if (i == 0) {
+                // der abgestellte steckte im Unfallwagen: er wurde hinausgeschoben
+                Testing.Assert.IsTrue(parked.north > 101.75, "abgestellt bei " + parked.north)
+            }
+            // das Auto des Verkehrs wird nach dem Stoß selbst ein Unfallwagen (wie Raser.Traffic)
+            if (!loose[1] && !Raser.Physics.Resting(npc)) {
+                loose[1] = true
+                Testing.Assert.IsTrue(npc.speed > 2.0, "angestoßen mit " + npc.speed)
+            }
+            if (loose[1]) { npc.Step(1.0 / 30.0, 0.0, 1.0, 0.0, false, 0.0) }
+        }
+        Testing.Assert.IsTrue(loose[1])
+        // es rutschte gegen die Wand (x = 109) und blieb davor
+        Testing.Assert.IsTrue(npc.east > 104.5 && npc.east + npc.spread + npc.radius < 109.3, "Auto bei " + npc.east)
     }
 }

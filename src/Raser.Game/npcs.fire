@@ -20,6 +20,7 @@
 #import "raser.mesh"
 #import "raser.client"
 #import "raser.traffic"
+#import "raser.sim"
 
 // Ein Fußgänger in der Szene: Beine, Rumpf, Kopf, Haare, Arme (die stehende Haltung von PersonModel), auf seine Größe skaliert; Beine und Arme
 // schwingen mit dem gelaufenen Weg. Umgefallen liegt er der Länge nach auf dem Boden (die Quader gekippt: hoch wird vorn).
@@ -158,6 +159,10 @@ class TrafficView {
     defined int steps
     defined int worstTicks      // das längste Update (Ticks: Graph holen, Simulation, Modelle)
     defined int worstFeed       // das längste Holen des Graphen (Ticks; Poll und Übernahme)
+    List<Raser.Vehicle> wreckBodies     // für Raser.Physics.Wrecks (Verweise, je Schritt neu)
+    List<bool> wreckLoose
+    List<bool> wreckDriven
+    defined float placeDt               // s seit dem letzten Setzen (für die Federn der nahen Autos)
 
     construct(Scene scene, Options options) {
         this.scene = scene
@@ -182,6 +187,9 @@ class TrafficView {
         this.worker = undefined
         this.centre = ""
         this.message = ""
+        this.wreckBodies = new List<Raser.Vehicle>()
+        this.wreckLoose = new List<bool>()
+        this.wreckDriven = new List<bool>()
     }
 
     // Zeichnet die Welt Brücken? Ja (Raser.BridgeMesher): NPCs auf einer Brücke stehen auf ihrem Deck (NpcState.z, aus Raser.Bridges).
@@ -237,6 +245,7 @@ class TrafficView {
         this.traffic.States(this.states, e, n, 320.0)
         this.Contact(car, walker, onFoot)
         int t1 = DateTime.Now.Ticks
+        this.placeDt = dt
         this.Place(terrain, view, e, n)
         this.stepTicks = this.stepTicks + (t1 - t0)
         this.syncTicks = this.syncTicks + (DateTime.Now.Ticks - t1)
@@ -252,6 +261,7 @@ class TrafficView {
         this.states.Clear()
         foreach (st in states) { this.states.Add(st) }
         // (abprallen und aufhalten rechnet der Server)
+        this.placeDt = dt
         if (onFoot) { this.Place(terrain, view, walker.east, walker.north) } else { this.Place(terrain, view, car.east, car.north) }
         if (this.messageTime > 0.0) { this.messageTime = this.messageTime - dt }
     }
@@ -278,20 +288,13 @@ class TrafficView {
         }
         this.traffic.wetness = wetness
         this.traffic.Step(dt, this.players)
-        // Unfallwagen gegen die Wände
-        foreach (c in this.traffic.cars) {
-            if (c.state == 0) { continue }
-            var b = c.body
-            if (Math.Abs(b.speed) + Math.Abs(b.pushE) + Math.Abs(b.pushN) < 0.05) { continue }
-            float h = b.heading * Math.PI / 180.0
-            for (int k = 0; k < 2; k++) {
-                float offset = b.spread - 2.0 * b.spread * k
-                if (obstacles.Push(b.east - Math.Sin(h) * offset, b.north + Math.Cos(h) * offset, b.radius)) { b.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) }
-            }
-            c.east = b.east
-            c.north = b.north
-            c.heading = b.heading
-        }
+        // Unfallwagen gegen die Wände, gegeneinander und gegen die Fahrzeuge des Spiels, abgestellte Fahrzeuge gegen die Autos des Verkehrs
+        // (Raser.Physics.Wrecks - wie auf dem Server)
+        this.traffic.Bodies(this.wreckBodies, this.wreckLoose)
+        this.wreckDriven.Clear()
+        foreach (v in vehicles) { this.wreckDriven.Add(v == car && !onFoot) }
+        Raser.Physics.Wrecks(this.wreckBodies, this.wreckLoose, vehicles, this.wreckDriven, obstacles)
+        this.traffic.Follow()
     }
 
     undefined Say(string text, defined float seconds) {
@@ -384,16 +387,24 @@ class TrafficView {
             if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
             float y = this.Height(this.carGround, slot, terrain, view, st.east, st.north)
             if (TrafficView.BridgesDrawn && st.z != 0.0) { y = st.z - view.originZ }
-            // unverändert (steht): nichts zu tun
+            // unverändert (steht, die Federn ruhen): nichts zu tun
             int pi = slot * 4
-            if (Math.Abs(this.carPlaced[pi] - st.east) < 0.001 && Math.Abs(this.carPlaced[pi + 1] - st.north) < 0.001 && Math.Abs(this.carPlaced[pi + 2] - st.heading) < 0.01 && this.carPlaced[pi + 3] == (near ? 1.0 : 0.0)) { continue }
+            var stc = m.stance
+            bool swinging = near && Math.Abs(stc.pitchRate) + Math.Abs(stc.rollRate) + Math.Abs(stc.heightRate) * 10.0 > 0.05
+            if (!swinging && Math.Abs(this.carPlaced[pi] - st.east) < 0.001 && Math.Abs(this.carPlaced[pi + 1] - st.north) < 0.001 && Math.Abs(this.carPlaced[pi + 2] - st.heading) < 0.01 && this.carPlaced[pi + 3] == (near ? 1.0 : 0.0)) { continue }
             this.carPlaced[pi] = st.east
             this.carPlaced[pi + 1] = st.north
             this.carPlaced[pi + 2] = st.heading
             this.carPlaced[pi + 3] = near ? 1.0 : 0.0
-            int count = m.parts.Count
-            if (!near) { count = this.BodyParts(this.carKinds[slot]) }
-            TrafficView.PlaceParts(m, st.east - view.originE, y, -(st.north - view.originN), st.heading, count)
+            // nah: auf seinen Rädern (geneigt am Hang, auf dem Bordstein, gefedert - CarModel.Stand), fern flach
+            if (near) {
+                int level = 0
+                if (TrafficView.BridgesDrawn && st.z != 0.0) { level = -1 }
+                m.Stand(terrain, view, st.east, st.north, st.heading, 0.0, level, this.placeDt)
+                continue
+            }
+            m.stance.settled = false
+            TrafficView.PlaceParts(m, st.east - view.originE, y, -(st.north - view.originN), st.heading, this.BodyParts(this.carKinds[slot]))
         }
         for (int i = 0; i < this.cars.Count; i++) {
             if (this.carOwner[i] >= 0 && this.carStamp[i] != this.frame) {

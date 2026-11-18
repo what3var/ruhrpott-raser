@@ -49,7 +49,7 @@ class Avatar {
     }
 
     // In die Szene an (e, n), Richtung h (Grad), Schräglage lean; rider: ein Fahrer sitzt darauf (Zweirad).
-    undefined Show(defined float e, defined float n, defined float h, defined float lean, defined bool rider, Ground terrain, WorldView view, defined bool lamps, defined int bridge = 0) {
+    undefined Show(defined float e, defined float n, defined float h, defined float lean, defined bool rider, Ground terrain, WorldView view, defined bool lamps, defined int bridge = 0, defined float dt = 0.0) {
         if (!this.fresh) { this.stride = this.stride + Math.Sqrt((e - this.lastE) * (e - this.lastE) + (n - this.lastN) * (n - this.lastN)) }
         this.fresh = false
         this.lastE = e
@@ -64,13 +64,15 @@ class Avatar {
             this.person.Show(true)
             return
         }
-        this.car.Place(x, y, z, h, lean)
+        // auf seinen Rädern (wie im Spiel offline: Gelände, Bordsteine, Deck, Federn)
+        this.car.Stand(terrain, view, e, n, h, lean, bridge, dt)
         this.car.beam.Enabled = lamps && rider
         if (rider && (this.kind == 3 || this.kind == 4)) {
             float r = h * Math.PI / 180.0
             float seat = 0.94
             if (this.kind == 4) { seat = 1.0 }
-            this.person.Sit(x + Math.Sin(r) * 0.3, y, z + Math.Cos(r) * 0.3, h, seat, lean)
+            var st = this.car.stance
+            this.person.Sit(x + Math.Sin(r) * 0.3, st.height - view.originZ, z + Math.Cos(r) * 0.3, h, seat, lean, st.pitch, 0.3)
             this.person.Show(true)
         } else { this.person.Show(false) }
     }
@@ -277,14 +279,14 @@ class Online {
             var a = this.AvatarOf(scene, r.id, r.type, r.variant)
             int onBridge = 0
             if ((r.bits & Raser.EntityType.OnBridge) != 0) { onBridge = -1 }
-            a.Show(ip.east, ip.north, ip.heading, ip.lean, r.a != 0, terrain, view, weather.lampsOn, onBridge)
+            a.Show(ip.east, ip.north, ip.heading, ip.lean, r.a != 0, terrain, view, weather.lampsOn, onBridge, dt)
         }
         // das eigene Fahrzeug: an der vorhergesagten Lage
         if (own != 0 && s.pred.Car() != undefined) {
             var mine = s.pred.Car()
             var a = this.AvatarOf(scene, own, Raser.EntityType.Vehicle, Raser.Protocol.KindOf(mine.kind, false))
             // (sitzt der Spieler auf dem Zweirad, zeigt ihn das Spiel selbst)
-            a.Show(car.east, car.north, car.heading, car.lean, false, terrain, view, false, car.bridge)
+            a.Show(car.east, car.north, car.heading, car.lean, false, terrain, view, false, car.bridge, dt)
         }
         this.Weather(dt, weather, atmosphere)
     }

@@ -144,10 +144,46 @@ class Ground {
         return this.At(e, n)
     }
 
+    // Der Boden unter einem Rad (Raser.Stance): wie AtLevel, auf dem Gelände dazu der Gehweg hinter dem Bordstein (Raser.StreetField: 15 cm
+    // höher, wie gezeichnet). undefined: keine Kachel.
+    Dictionary<int, Raser.StreetField> curbs     // je Zelle (32 m) die Straßen nahe daran (für den Gehweg)
+    any Surface(defined float e, defined float n, defined int bridge) {
+        if (bridge != 0 && this.bridges != undefined) {
+            any z = this.bridges.DeckHeight(e, n, bridge)
+            if (z != undefined) { return z }
+        }
+        any g = this.At(e, n)
+        if (g == undefined) { return undefined }
+        return g + this.Curb(e, n)
+    }
+
+    // Wie hoch der Boden an (e, n) über dem Gelände liegt: auf dem Gehweg der Bordstein (Raser.StreetField.Curb), sonst 0.
+    defined float Curb(defined float e, defined float n) {
+        if (this.bridges == undefined) { return 0.0 }
+        if (this.curbs == undefined) { this.curbs = new Dictionary<int, Raser.StreetField>(Owns.Values) }
+        int ce = Math.Floor(e / 32.0)!int
+        int cn = Math.Floor(n / 32.0)!int
+        int cell = Raser.Obstacles.Cell(ce, cn)
+        var key = Raser.TileKey.Of(e, n)
+        if (!this.curbs.ContainsKey(cell)) {
+            var field = new Raser.StreetField()
+            var tile = this.bridges.TileAt(e, n)
+            if (tile != undefined) { field.Collect(tile.data.roads, ce * 32.0 - key.East, cn * 32.0 - key.North, ce * 32.0 + 32.0 - key.East, cn * 32.0 + 32.0 - key.North) }
+            this.curbs[cell] = field
+            field.TakeTo(this.curbs)
+        }
+        var f = this.curbs[cell]
+        if (f.roads.Count == 0) { return 0.0 }
+        f.At(e - key.East, n - key.North)
+        if (f.d >= 0.0 && f.d < f.walk) { return Raser.StreetField.Curb }
+        return 0.0
+    }
+
     // Lange Fahrten: die Höhenraster der Kacheln weg, die mehr als eine Kachel von (e, n) entfernt sind. Gibt zurück, wie viele.
     defined int Trim(defined float e, defined float n) {
         var gone = Obstacles.FarTiles(this.rasters.Keys, e, n)
         foreach (name in gone) { this.rasters.Remove(name) }
+        if (gone.Count > 0 && this.curbs != undefined) { this.curbs.Clear() }
         return gone.Count
     }
 }

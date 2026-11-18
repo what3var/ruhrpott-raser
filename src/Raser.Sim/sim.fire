@@ -137,6 +137,7 @@ namespace Raser {
         List<Raser.Pawn> pawns          // die Spieler (Verweise; auf dem Server alle, in der Vorhersage die anderen): zu Fuß weicht man sich aus
         List<float> discs               // Fußgänger des Verkehrs: je Ost, Nord (Radius Raser.SimWorld.PersonRadius)
         defined float wetness
+        Raser.BodyGrid grid             // die Fahrzeuge nach Zellen (Breitphase), vor jedem Schritt neu
 
         construct(Raser.Obstacles obstacles) {
             this.obstacles = try take obstacles
@@ -145,6 +146,7 @@ namespace Raser {
             this.pawns = new List<Raser.Pawn>()
             this.discs = new List<float>()
             this.wetness = 0.0
+            this.grid = new Raser.BodyGrid()
         }
 
         Raser.SimVehicle Find(defined int id) {
@@ -228,7 +230,8 @@ namespace Raser {
             if (car != undefined) {
                 float brake = c.brake / 100.0
                 if (c.IsHandbrake) { brake = 1.0 }
-                Raser.Physics.Advance(car.body, this.bodies, this.obstacles, dt, c.throttle / 100.0, brake, c.steer / 100.0, c.IsReverse, this.wetness)
+                this.grid.Build(this.bodies)
+                Raser.Physics.Advance(car.body, this.bodies, this.obstacles, dt, c.throttle / 100.0, brake, c.steer / 100.0, c.IsReverse, this.wetness, this.grid)
                 // der Spieler sitzt im Fahrzeug
                 p.walker.east = car.body.east
                 p.walker.north = car.body.north
@@ -252,13 +255,15 @@ namespace Raser {
             for (int i = 0; i + 1 < this.discs.Count; i = i + 2) { w.Avoid(this.discs[i], this.discs[i + 1], Raser.SimWorld.PersonRadius * 2.0 - 0.35) }
         }
 
-        // Die Fahrzeuge ohne Fahrer rollen und rutschen aus (ein Takt).
+        // Die Fahrzeuge ohne Fahrer rollen, rutschen und drehen aus (ein Takt) - und stoßen dabei an Wände und andere Fahrzeuge (in der Folge der
+        // Liste; ein eben angestoßenes, das später in der Liste steht, rollt im selben Takt schon los).
         undefined Coast() {
+            this.grid.Build(this.bodies)
             foreach (v in this.vehicles) {
                 if (v.driver != 0) { continue }
                 var b = v.body
-                if (b.speed == 0.0 && b.pushE == 0.0 && b.pushN == 0.0) { continue }
-                Raser.Physics.Advance(b, this.bodies, this.obstacles, Raser.SimWorld.Tick, 0.0, 1.0, 0.0, false, this.wetness)
+                if (Raser.Physics.Resting(b)) { continue }
+                Raser.Physics.Advance(b, this.bodies, this.obstacles, Raser.SimWorld.Tick, 0.0, 1.0, 0.0, false, this.wetness, this.grid)
             }
         }
 
