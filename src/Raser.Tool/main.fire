@@ -159,6 +159,7 @@ class Tool {
         var generator = new Raser.TileGenerator(store, overrides, seed)
         Tool.Log(overrides.Count + " Overrides, Seed " + seed + ", Generator " + Raser.Voxelizer.Version)
         var keys = Tool.Chosen(args, store)
+        Tool.Log("Voxelisieren: " + keys.Count + " Kacheln (je Kachel etwa eine halbe bis einige Minuten; eine Zeile, sobald eine anfängt und fertig ist)")
         int start = DateTime.Now.Ticks
         int done = 0
         int built = 0
@@ -168,6 +169,7 @@ class Tool {
                 Tool.Log("Kachel " + k + ": aktuell " + Tool.Progress(done, keys.Count, start))
                 continue
             }
+            Tool.Log("Kachel " + k + ": voxelisieren ... (" + done + "/" + keys.Count + ")")
             var manifest = generator.Generate(k)
             built++
             Tool.Log("Kachel " + k + ": " + manifest.chunks + " Chunks, " + manifest.filled + " Voxel " + Tool.Progress(done, keys.Count, start))
@@ -193,6 +195,7 @@ class Tool {
         var store = Tool.Store(args)
         var builder = new Raser.NearBuilder(args.Get("world", "world"), 0.0, 0.0, 0.0, false)
         var keys = Tool.Chosen(args, store)
+        Tool.Log("Netz-Cache: " + keys.Count + " Kacheln (je Kachel etwa ein bis zwei Minuten)")
         int start = DateTime.Now.Ticks
         int done = 0
         foreach (k in keys) {
@@ -205,6 +208,7 @@ class Tool {
                 string folder = IO.Path.Combine(args.Get("world", "world"), "meshes", k.ToString())
                 if (IO.Directory.Exists(folder)) { IO.Directory.Delete(folder, true) }
             }
+            Tool.Log("Kachel " + k + ": Netze bauen ... (" + done + "/" + keys.Count + ")")
             int built = 0
             int quads = 0
             for (int j = 0; j < 5; j++) {
