@@ -642,7 +642,7 @@ class GameMenu {
         this.serverCard = server
         this.ui.Add(server)
 
-        var foot = new UI.Label("↑ ↓  wählen     ← →  ändern     Enter  bestätigen     Esc  zurück", left + 4, lh - 40)
+        var foot = new UI.Label("Pfeile hoch / runter  wählen      links / rechts  ändern      Enter  bestätigen      Esc  zurück", left + 4, lh - 40)
         foot.FontSize = 16
         foot.Color = look.dim
         this.ui.Add(foot)
@@ -866,10 +866,12 @@ class GameMenu {
     // ---- ohne Fenster ----
 
     // --menu-shot bild.png: das offene Menü über dem Bild des Spiels in ein PNG (--menu-keys: Tasten vorher, mit Komma: down, up, left, right,
-    // enter, esc, tab oder ein Buchstabe). --menu-bench n: misst, was das geschlossene Menü je Bild kostet.
+    // enter, esc, tab oder ein Buchstabe; --menu-save 1 speichert danach). --menu-bench n: misst, was das geschlossene Menü je Bild kostet.
     static undefined Shot(Options options, Framebuffer fb, GameSettings settings, WorldView view, Atmosphere atmosphere, Scene scene, Chase chase) {
         string file = options.Get("menu-shot", "")
         if (file == "") { return }
+        // gespeichert wird nur mit --menu-save 1 (sonst ändert ein Bild die Einstellungen des Spielers)
+        if (options.Get("menu-save", "") == "") { settings.file = undefined }
         var win = new Window(fb, "Ruhrpott-Raser")
         var menu = new GameMenu(fb, win, settings, options)
         menu.Attach(view, atmosphere, scene, chase, undefined)

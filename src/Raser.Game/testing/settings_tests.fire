@@ -2,6 +2,8 @@
 // Kommandozeile geht vor, Belegen tauscht, Translate übersetzt zurück auf die Standardtasten.
 #import "testing"
 #import "filesystem"
+#import "raser.client"
+#import "windows"
 
 class SettingsTests {
     [Test "Belegen tauscht, Translate übersetzt auf die Standardtaste"]
