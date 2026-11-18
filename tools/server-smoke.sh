@@ -13,14 +13,14 @@ mkdir -p "$WORK/release/bin"
 rm -rf "$WORK/data"
 echo "spiel" > "$WORK/release/bin/game"
 printf '0.2.0\nProbe.\n' > "$WORK/release/version.txt"
-# andere Ports: HTTP_PORT=17480 GAME_PORT=17481 tools/server-smoke.sh ...
+# andere Ports: HTTP_PORT=17480 GAME_PORT=17481 tools/server-smoke.sh ...; weitere Optionen des Servers: SERVER_ARGS="--traffic 0 --people 0"
 HP=${HTTP_PORT:-7480}
 GP=${GAME_PORT:-7481}
 API=http://127.0.0.1:$HP
 WORLDARG=()
 [ -n "$WORLD" ] && WORLDARG=(--world "$WORLD")
 
-"$SERVER" --data "$WORK/data" --release "$WORK/release" --time 14:00 --http "$HP" --game "$GP" "${WORLDARG[@]}" > "$WORK/server.log" 2>&1 &
+"$SERVER" --data "$WORK/data" --release "$WORK/release" --time 14:00 --http "$HP" --game "$GP" "${WORLDARG[@]}" ${SERVER_ARGS:-} > "$WORK/server.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null' EXIT
 for i in $(seq 1 50); do curl -s "$API/api/status" > /dev/null && break; sleep 0.2; done
