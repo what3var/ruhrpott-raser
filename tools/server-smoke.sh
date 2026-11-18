@@ -36,7 +36,7 @@ echo "version: $(curl -s "$API/api/version")"
 [ -n "$A" ] && [ -n "$B" ] && [ -n "$C" ] || { echo "kein Token"; cat "$WORK/server.log"; exit 1; }
 
 # Runde 1: Chat und Befehle; beide fahren im Kreis (Eingaben je Takt, der Server rechnet). Bernd versucht Admin-Befehle (abgelehnt), Anna darf sie.
-"$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 12 --at 376120,5705010 --say "Hallo Anna!;/time 22:00;/help" > "$WORK/bernd.log" 2>&1 &
+"$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 12 --at 376300,5705000 --say "Hallo Anna!;/time 22:00;/help" > "$WORK/bernd.log" 2>&1 &
 BP=$!
 "$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 12 --at 376100,5705000 "${WORLDARG[@]}" --say "Moin Bernd!;/players;/weather nebel;/time 20:30;/tp Bernd;/say Glueck auf" > "$WORK/anna.log" 2>&1 &
 AP=$!
@@ -53,8 +53,18 @@ CP=$!
 AP=$!
 wait $BP $CP $AP
 
+# Runde 3: Anna fährt Bernd (zu Fuß) um - Bernd verliert Bargeld und Gegenstände, Anna sammelt sie auf; dann meldet Anna sich neu an: ihr Bargeld
+# kommt aus der Datenbank.
+"$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 25 --plan stehen --vehicle fuss --at 376100,5705030 > "$WORK/bernd3.log" 2>&1 &
+BP=$!
+sleep 1
+"$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 24 --plan umfahren --target Bernd --at 376100,5705000 "${WORLDARG[@]}" > "$WORK/anna3.log" 2>&1
+wait $BP
+sleep 1
+"$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 3 --plan stehen --vehicle fuss --at 376100,5705000 > "$WORK/anna4.log" 2>&1
+
 echo "status: $(curl -s "$API/api/status")"
-for f in anna bernd falsch anna2 bernd2 carla; do echo "=== $f"; grep -v "sieht:" "$WORK/$f.log"; done
+for f in anna bernd falsch anna2 bernd2 carla anna3 bernd3 anna4; do echo "=== $f"; grep -v "sieht:" "$WORK/$f.log"; done
 echo "=== Server"; cat "$WORK/server.log"
 
 ok=1
@@ -68,13 +78,18 @@ check "$WORK/bernd.log" "Anna stellt das Wetter auf nebel" "Admin-Befehl von Ann
 check "$WORK/bernd.log" "Wetter nebel" "Bernd hat das Wetter des Servers"
 check "$WORK/anna.log" "Teleport nach" "Anna springt zu Bernd (der Server setzt die Lage)"
 check "$WORK/falsch.log" "abgelehnt" "falsches Token abgelehnt"
-# die Lage folgt den Eingaben: der Server hat den Wagen bewegt (im Kreis: 5 bis 40 m vom Start)
+# die Lage folgt den Eingaben: der Server hat den Wagen bewegt (im Kreis: 5 bis 40 m vom Startpunkt, den der Server gewählt hat)
 check "$WORK/bernd.log" "Server-Lage .*, \([5-9]\|[1-3][0-9]\) m vom Start" "Bernds Wagen fährt auf dem Server"
 check "$WORK/anna2.log" "Rucksack abgesetzt" "Anna setzt den Rucksack ab"
 check "$WORK/bernd2.log" "Inhalt:.*Flasche Wasser x2" "Bernd hebt Annas Rucksack auf und sieht den Inhalt"
 check "$WORK/carla.log" "hinausgeworfen: Protokoll v1" "eine Lage vom Client wirft hinaus"
 # doppelt so viele Eingaben: der Server rechnet trotzdem nur 30 je s (Vollgas aus dem Stand in 4 s: höchstens ~45 m)
 if grep -q "Server-Strecke \([0-9]\|[1-3][0-9]\|4[0-5]\)\(\.[0-9]\)\? m" "$WORK/carla.log"; then echo "ok: Schummeln bringt nichts"; else echo "FEHLT: Schummeln bringt nichts"; ok=0; fi
+check "$WORK/bernd3.log" "umgehauen von Anna: Bargeld" "Bernd wird umgefahren und verliert"
+check "$WORK/anna3.log" "aufgesammelt: [1-9]" "Anna sammelt Bernds Sachen auf"
+check "$WORK/anna3.log" "sieht die Taschenlampe von Bernd" "Bernd schaltet die Lampe ein (Use), Anna sieht sie im Snapshot"
+CASH=$(sed -n 's/.*Bargeld jetzt \([0-9]*\) Cent.*/\1/p' "$WORK/anna3.log")
+if [ -n "$CASH" ] && grep -q "Bargeld $CASH Cent" "$WORK/anna4.log"; then echo "ok: Annas Bargeld ($CASH Cent) bleibt in der Datenbank"; else echo "FEHLT: Annas Bargeld bleibt in der Datenbank"; ok=0; fi
 echo "Vorhersage:"; grep -h "Vorhersage:" "$WORK"/anna*.log "$WORK"/bernd*.log
 echo "Bandbreite:"; grep -h "Bandbreite:" "$WORK"/anna*.log "$WORK"/bernd*.log
 [ $ok = 1 ] && echo "ALLES OK" || exit 1

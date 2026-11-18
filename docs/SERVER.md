@@ -81,16 +81,16 @@ Protokoll 1 bekommt beim Hello ein Reject ("Protokoll 1 passt nicht, der Server 
 | 4 Command | C → S | Befehlszeile (`/kick name`) |
 | 5 Bye | C → S | - |
 | 6 Input | C → S | Folgenummer der ersten Eingabe, Anzahl (1 bis 8), je Eingabe: Gas 0..100, Bremse 0..100 (je 1 Byte), Lenkung, Gehen, Drehen (-100..100, ZigZag), Flags (Rückwärtsgang, Handbremse, Rennen, E = ein-/aussteigen) |
-| 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Öffnen eines Rucksacks am Boden, 6 Schließen; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden) |
+| 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Use, 6 Öffnen eines Rucksacks am Boden, 7 Schließen; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden), davor die letzte Eingabe des Clients (der Server rechnet die Operation erst nach ihr) |
 | 10 Welcome | S → C | Spieler-ID (global, `Raser.IdAllocator`), Region, Serverzeit (ms), Admin ja/nein, Name, Takte je s (30), Takt des Servers |
 | 11 Reject | S → C | Grund (danach schließt der Server) |
-| 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe; der eigene Spieler (bitgenau, `Float64`): Fahrzeug-ID, Lage, Richtung, Tempo, Schrittweg, Last; im Fahrzeug dessen ganzer Zustand (Art, Lage, Richtung, Tempo, Lenkeinschlag, Stoß, Schräglage, Zustand, Tank, Grip, rutscht); dann die **Entitäten** (neu oder geändert) und die IDs der **verschwundenen** |
+| 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe, das eigene Bargeld (Cent); der eigene Spieler (bitgenau, `Float64`): Fahrzeug-ID, Lage, Richtung, Tempo, Schrittweg, Last; im Fahrzeug dessen ganzer Zustand (Art, Lage, Richtung, Tempo, Lenkeinschlag, Stoß, Schräglage, Zustand, Tank, Grip, rutscht); dann die **Entitäten** (neu oder geändert) und die IDs der **verschwundenen** |
 | 13 Join | S → C | ID und Name eines Spielers (beim Eintritt an alle, beim Welcome die schon Anwesenden) |
 | 14 Leave | S → C | ID |
 | 15 Chat | S → C | Absender, Text, Art (0 Spieler, 1 System, 2 Antwort nur an diesen Client, 3 Fehler) |
 | 16 Weather | S → C | Jahr, Tag, Uhrzeit (Minuten am Tag × 60, also Sekunden), Wetter (Name), Zeitraffer |
 | 18 Kick | S → C | Grund (danach schließt der Server) |
-| 20 InvSet | S → C | die zuletzt geprüfte Operation (Folgenummer) und ob sie angenommen ist; die IDs der eigenen Behälter (Taschen, Hände, Rücken, Handy, Maus), des geöffneten Rucksacks am Boden und seines Gegenstands; alle Behälter, an die der Spieler kommt (`Container.Write`) |
+| 20 InvSet | S → C | die zuletzt geprüfte Operation (Folgenummer) und ob sie angenommen ist, Taschenlampe an, Bargeld (Cent); die IDs der eigenen Behälter (Taschen, Hände, Rücken, Handy, Maus), des geöffneten Rucksacks am Boden und seines Gegenstands; alle Behälter, an die der Spieler kommt (`Container.Write`) |
 | 22 Event | S → C | Art (1: Spieler umgehauen), um wen, Verursacher, Lage |
 
 **Entitäten** (`Raser.Entity`, je Eintrag): ID, Art, Variante, Zustandsbits, Lage, Richtung, Tempo und zwei Zahlen `a`, `b` je nach Art -
@@ -98,7 +98,7 @@ von Anfang an allgemein, damit der Verkehr später ohne neue Nachricht hineinpas
 
 | Art | Variante | Bits | a | b |
 |---|---|---|---|---|
-| 1 Spieler | - | 1 im Fahrzeug, 4 liegt (umgehauen) | Fahrzeug-ID | - |
+| 1 Spieler | - | 1 im Fahrzeug, 4 liegt (umgehauen), 16 Taschenlampe leuchtet | Fahrzeug-ID | - |
 | 2 Fahrzeug (der Spieler, auch geparkt) | Fahrzeugart | 2 rutscht | Fahrer (Spieler-ID, 0 frei) | Schräglage in 1/10 Grad |
 | 3 NPC-Auto | Art/Farbe (Verkehr) | Zustand, 8 steht | frei | frei |
 | 4 Fußgänger | Aussehen (Verkehr) | 4 liegt, 8 steht | frei | frei |
@@ -237,7 +237,7 @@ die Folge, in der Kacheln kommen, ändert nichts.
 
 ## Persistenz
 
-Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created) und `sessions` (Hash des Tokens,
+Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created, cash) und `sessions` (Hash des Tokens,
 Konto, Ablauf). Spielerlagen werden noch nicht gespeichert. Später: Konten und Inventar in einer gemeinsamen Datenbank der globalen Dienste,
 Deltas der Welt im Key-Value-Store (Konzept, Abschnitt 8).
 
@@ -252,9 +252,18 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
   zu Fuß (und nicht, solange er liegt), höchstens 20 Operationen je s. Er antwortet immer mit `InvSet` (angenommen oder nicht, dazu der echte Stand
   aller Behälter, an die der Spieler kommt). Der Client übernimmt den Stand und wendet die noch offenen Operationen noch einmal an (wie bei der
   Bewegung).
+- **Benutzen** (Art 5, `Inventory.Use`): essen und trinken (der Körper `Raser.Body` des Spielers auf dem Server), rauchen, Taschenlampe an/aus
+  (leuchtet sie, trägt die Entität des Spielers Bit 16), Kanister und Schraubenschlüssel am nächsten Fahrzeug der Region (tanken, reparieren -
+  das Fahrzeug des Servers, es geht mit dem nächsten Snapshot an alle).
+- **Bargeld** (`Inventory.cash`, Cent): Geld am Boden wird beim Aufheben Bargeld. Der Server schickt es mit jedem InvSet und Snapshot und
+  speichert es im Konto (Spalte `cash` der Tabelle `accounts`, sobald es sich ändert und beim Gehen); wer neu ist (-1), bekommt das Startgeld. (Die Behälter selbst
+  werden noch nicht gespeichert: nach dem Neuanmelden gibt es die Anfangsausstattung.)
+- **Umgehauen** (`Raser.Knockdown.Apply`, Samen vom Server): was der Spieler trägt, fällt zu Boden, ein Teil des Bargelds als Geldhäufchen,
+  manches geht kaputt; die Gegenstände kommen als Entitäten in die Snapshots, der Betroffene bekommt sein Inventar neu (InvSet).
 - Gegenstände am Boden sind Entitäten im Snapshot (Art 5). Den Inhalt eines Rucksacks am Boden bekommt nur, wer ihn öffnet (Operation 5) oder
   aufhebt; wer ihn offen hat, bekommt jede Änderung. Gegenstände erzeugt nur der Server.
-- Probe (Bots): Anna setzt ihren Rucksack mit Inhalt ab, Bernd setzt seinen ab, geht hin, hebt Annas auf und sieht den Inhalt (2 Wasser,
+- Probe (Bots): Anna fährt Bernd um, er verliert Bargeld und alles, was er trägt, Anna sammelt es auf; ihr Bargeld ist nach dem
+  Neuanmelden noch da. Anna setzt ihren Rucksack mit Inhalt ab, Bernd setzt seinen ab, geht hin, hebt Annas auf und sieht den Inhalt (2 Wasser,
   Schraubenschlüssel).
 
 ## Jetzt gebaut - und später

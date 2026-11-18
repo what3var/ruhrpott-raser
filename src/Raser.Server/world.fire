@@ -188,6 +188,9 @@ class RegionServer {
         var inv = new Raser.Inventory(this.store, this.drops, 5, 4)
         p.inv = take inv
         RegionServer.Starter(p.inv)
+        p.inv.body = p.body
+        // das Bargeld aus der Datenbank (wer schon einmal da war); neu: das Startgeld
+        if (p.storedCash >= 0) { p.inv.cash = p.storedCash } else { p.storedCash = p.inv.cash }
         p.placed = true
         this.Follow(p)
         this.Park(p)
@@ -421,6 +424,7 @@ class RegionServer {
                 e.a = q.pawn.vehicle
             }
             if (this.tick < q.lyingUntil) { e.bits = e.bits | Raser.EntityType.Lying }
+            if (q.inv != undefined && q.inv.LampShining()) { e.bits = e.bits | Raser.EntityType.Lamp }
             list.Add(take e)
         }
         foreach (v in this.sim.vehicles) {
@@ -449,6 +453,7 @@ class RegionServer {
         s.tick = this.tick
         s.region = this.region.id
         s.ack = p.pawn.seq
+        s.cash = p.inv.cash
         var car = this.sim.Find(p.pawn.vehicle)
         Raser.Vehicle body = undefined
         if (car != undefined) { body = car.body }
@@ -525,6 +530,11 @@ class RegionServer {
                 if (d != undefined) { touched = d.data }
             }
             ok = onFoot && p.inv.Apply(op)
+        } else if (op.kind == Raser.InvOp.Use) {
+            // benutzen (essen, Lampe, tanken, reparieren): das Fahrzeug ist das nächste der Region
+            p.inv.vehicle = this.NearestBody(p.east, p.north)
+            ok = this.tick >= p.lyingUntil && p.inv.Apply(op)
+            if (p.inv.message != "") { Gateway.Log(p.name + ": " + p.inv.message) }
         } else {
             ok = p.inv.Apply(op)
         }
@@ -541,6 +551,20 @@ class RegionServer {
         }
     }
 
+    // Das Fahrzeug, dessen Mitte (e, n) am nächsten ist (undefined: keins).
+    Raser.Vehicle NearestBody(defined float e, defined float n) {
+        Raser.Vehicle best = undefined
+        float d2 = 1.0e30
+        foreach (v in this.sim.vehicles) {
+            float d = (v.body.east - e) * (v.body.east - e) + (v.body.north - n) * (v.body.north - n)
+            if (d < d2) {
+                d2 = d
+                best = v.body
+            }
+        }
+        return best
+    }
+
     // Der echte Stand des Inventars an p: die IDs, alle Behälter, an die er kommt (die eigenen, der Rucksack auf dem Rücken, der geöffnete).
     undefined SendInventory(Player p, defined int seq, defined bool ok) {
         if (p.inv == undefined) { return }
@@ -548,6 +572,8 @@ class RegionServer {
         var s = new Raser.Packet(Raser.Protocol.InvSet)
         s.seq = seq
         s.ok = ok
+        s.cash = inv.cash
+        s.lamp = inv.lampOn
         int ids[] = [inv.pockets, inv.hands, inv.backpackSlot, inv.phoneSlot, inv.cursor, inv.opened, inv.openedDrop]
         for (int i = 0; i < 7; i++) { s.invIds[i] = ids[i] }
         var send = new List<int>()

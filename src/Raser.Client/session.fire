@@ -94,6 +94,9 @@ class NetSession {
     // zählt, was ankam (für den Bot)
     defined int snapshots
     defined int events
+    defined int knocks              // Ereignisse "umgehauen" (das letzte: wer, von wem)
+    defined int knockedId
+    defined int knockedBy
     defined float selfEast          // der eigene Spieler laut letztem Snapshot (Server)
     defined float selfNorth
     defined bool selfKnown
@@ -130,6 +133,9 @@ class NetSession {
         this.weatherPreset = ""
         this.snapshots = 0
         this.events = 0
+        this.knocks = 0
+        this.knockedId = 0
+        this.knockedBy = 0
         this.selfEast = 0.0
         this.selfNorth = 0.0
         this.selfKnown = false
@@ -337,6 +343,9 @@ class NetSession {
         } else if (t == Raser.Protocol.Event) {
             this.events++
             if (p.kind == Raser.Protocol.KnockedDown) {
+                this.knocks++
+                this.knockedId = p.id
+                this.knockedBy = p.other
                 string who = this.NameOf(p.id)
                 if (p.id == this.id) { who = "Du" }
                 string by = ""
@@ -406,6 +415,8 @@ class NetSession {
             this.drops.all.Add(new Raser.ItemDrop(r.id, r.east, r.north, r.variant, r.a, r.b))
         }
         this.drops.changes++
+        // das Bargeld (solange keine Operation offen ist: sonst gilt die Vorhersage bis zum InvSet)
+        if (this.hasInventory && this.pendingOps.Count == 0) { this.inv.cash = p.cash }
         if (p.self != undefined) {
             this.selfKnown = true
             this.selfEast = p.self.walker.east
@@ -441,6 +452,8 @@ class NetSession {
         inv.cursor = p.invIds[4]
         inv.opened = p.invIds[5]
         inv.openedDrop = p.invIds[6]
+        inv.cash = p.cash
+        inv.lampOn = p.lamp
         this.hasInventory = true
         this.invVersion++
         if (!p.ok && p.seq > 0) {
@@ -465,6 +478,21 @@ class NetSession {
         var list = new List<RemoteEntity>()
         foreach (pair in this.entities) { if (pair.Value.type == type) { list.Add(pair.Value) } }
         return list
+    }
+
+    // Alle Stück in allem, was der Spieler trägt (mit dem Rucksack auf dem Rücken).
+    defined int CarriedAll() {
+        int n = 0
+        var ids = new List<int>()
+        foreach (id in [this.inv.pockets, this.inv.hands, this.inv.backpackSlot, this.inv.phoneSlot, this.inv.cursor]) { ids.Add(id) }
+        var bp = this.inv.Backpack()
+        if (bp != undefined) { ids.Add(bp.id) }
+        foreach (id in ids) {
+            var c = this.store.Find(id)
+            if (c == undefined) { continue }
+            for (int i = 0; i < c.Size; i++) { if (!c.Empty(i)) { n = n + c.Amount(i) } }
+        }
+        return n
     }
 
     // Die Zahl der Stück einer Art in allem, was der Spieler trägt (mit dem Rucksack auf dem Rücken).

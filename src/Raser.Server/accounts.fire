@@ -53,6 +53,8 @@ class Accounts {
         this.db.Execute("CREATE TABLE IF NOT EXISTS accounts (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, salt TEXT NOT NULL, hash TEXT NOT NULL, rounds INTEGER NOT NULL, admin INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL)")
         this.db.Execute("CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, account INTEGER NOT NULL, expires INTEGER NOT NULL, created INTEGER NOT NULL)")
         this.db.Execute("CREATE INDEX IF NOT EXISTS sessions_account ON sessions (account)")
+        // das Bargeld des Spielers (Cent; -1: noch nie im Spiel - dann bekommt er das Startgeld)
+        try { this.db.Execute("ALTER TABLE accounts ADD COLUMN cash INTEGER NOT NULL DEFAULT -1") } catch (Exception e) { }
     }
 
     static defined int Now() { return (DateTime.UtcNow.Ticks - TimeSpan.UnixEpoch) / 10000000 }
@@ -126,6 +128,17 @@ class Accounts {
         if (rows.Count == 0) { return undefined }
         var row = rows[0]
         return new Account(row.Int("id"), row.Text("name"), row.Int("admin") != 0)
+    }
+
+    // Das gespeicherte Bargeld (Cent); -1: noch keins.
+    defined int Cash(defined int account) {
+        var rows = this.db.Rows("SELECT cash FROM accounts WHERE id = ?", [account])
+        if (rows.Count == 0) { return -1 }
+        return rows[0].Int("cash")
+    }
+
+    undefined SetCash(defined int account, defined int cents) {
+        this.db.Execute("UPDATE accounts SET cash = ? WHERE id = ?", [cents, account])
     }
 
     // Macht ein Konto zum Admin; false, wenn es das Konto nicht gibt.
