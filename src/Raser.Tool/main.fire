@@ -1,5 +1,7 @@
 // Raser.Tool: das Werkzeug der Weltpipeline (Konzept, Abschnitt 2).
 //
+//   raser setup     [--raw data/raw] [--world world] [--meshes 1]   alles in einem: Rohdaten laden, importieren, voxelisieren (setup.fire)
+//   raser fetch     [--raw data/raw]   nur die Rohdaten laden (DGM1, LoD2, OSM der Testregion)
 //   raser import    --dgm <ordner> --lod2 <ordner> --osm <ordner> [--world world] [--tiles x0_y0:x1_y1]
 //   raser voxelize  [--world world] [--overrides overrides] [--seed n] [--tile x_y | --all] [--force]
 //   raser export png [--world world] [--tile x_y | --all] [--step n] [--out datei.png]
@@ -19,6 +21,7 @@
 #import "raser.import"
 #import "raser.mesh"
 #import "raser.store"
+#import "http"
 
 class Args {
     List<string> positional
@@ -317,12 +320,14 @@ class Tool {
         Tool.started = DateTime.Now.Ticks
         var args = new Args(items)
         if (args.positional.Count == 0) {
-            print("raser import | voxelize | faces | meshes | export png | export obj | info  (siehe src/Raser.Tool/main.fire)")
+            print("raser setup | fetch | import | voxelize | faces | meshes | export png | export obj | info  (siehe src/Raser.Tool/main.fire)")
             return 1
         }
         try {
             string command = args.positional[0]
             switch (command) {
+                case "fetch": Setup.Fetch(args)
+                case "setup": Setup.Run(args)
                 case "import": Tool.Import(args)
                 case "voxelize": Tool.Voxelize(args)
                 case "info": Tool.Info(args)

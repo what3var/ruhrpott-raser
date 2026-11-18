@@ -1,0 +1,146 @@
+// Raser.Tool: die Testregion ohne Shell-Skripte einrichten - dasselbe wie tools/fetch-bochum.sh und tools/build-bochum.sh, aber als fire-Programm
+// (läuft so auch unter Windows).
+//
+//   raser fetch [--raw data/raw]                                   die Rohdaten laden (DGM1, LoD2 von opengeodata.nrw.de, OSM 4 x 4 Ausschnitte)
+//   raser setup [--raw data/raw] [--world world] [--meshes 1]      laden (was fehlt), importieren, voxelisieren, auf Wunsch den Netz-Cache bauen
+//
+// Was schon da ist, wird nicht noch einmal geladen; ein abgebrochener Download geht beim nächsten Mal weiter (Http.Download, Teildatei .part).
+// Voxelisiert werden nur Kacheln, deren Chunks fehlen oder älter als der Generator sind (wie `raser voxelize`).
+#import "filesystem"
+#import "time"
+#import "http"
+
+class Setup {
+    static readonly string Nrw = "https://www.opengeodata.nrw.de/produkte/geobasis"
+    // Die vier 1-km-Kacheln (Ost_Nord in km, ETRS89/UTM32) der Testregion Bochum-Innenstadt
+    static string Tiles() { return "375_5704 375_5705 376_5704 376_5705" }
+    // Der OSM-Ausschnitt (Grad), in 4 x 4 Teile geteilt (die OSM-API gibt je Anfrage höchstens 50 000 Knoten)
+    static readonly defined float Lon0 = 7.197979
+    static readonly defined float Lon1 = 7.230418
+    static readonly defined float Lat0 = 51.472416
+    static readonly defined float Lat1 = 51.492670
+
+    static undefined Fetch(Args args) {
+        string raw = args.Get("raw", IO.Path.Combine("data", "raw"))
+        string dgm = IO.Path.Combine(raw, "dgm1")
+        string lod2 = IO.Path.Combine(raw, "lod2")
+        string osm = IO.Path.Combine(raw, "osm")
+        IO.Directory.CreateDirectory(dgm)
+        IO.Directory.CreateDirectory(lod2)
+        IO.Directory.CreateDirectory(osm)
+        var client = new Http.Client()
+        client.userAgent = "ruhrpott-raser/0.1"
+        client.timeout = 120000
+        client.maxBodyBytes = 67108864
+        // DGM1: der Dateiname trägt das Jahr der Befliegung - aus dem Verzeichnis holen (das jüngste)
+        string dgmIndex = Setup.Nrw + "/hm/dgm1_tiff/dgm1_tiff/"
+        string listing = undefined
+        foreach (t in Setup.Tiles().Split(" ")) {
+            if (Setup.HasPrefix(dgm, "dgm1_32_" + t + "_1_nw_")) {
+                Tool.Log("DGM1 " + t + ": schon da")
+            } else {
+                if (listing == undefined) {
+                    Tool.Log("DGM1: Verzeichnis laden")
+                    var r = client.Get(dgmIndex)
+                    if (r.status != 200) { throw new Raser.DataException("Das DGM1-Verzeichnis antwortet mit " + r.status + ".") }
+                    listing = r.Text()
+                }
+                string name = Setup.Newest(listing, "dgm1_32_" + t + "_1_nw_", ".tif")
+                if (name == undefined) { throw new Raser.DataException("Keine DGM1-Datei für " + t + " im Verzeichnis.") }
+                Setup.Load(dgmIndex + name, IO.Path.Combine(dgm, name))
+            }
+            string gml = "LoD2_32_" + t + "_1_NW.gml"
+            string gmlPath = IO.Path.Combine(lod2, gml)
+            if (IO.File.Exists(gmlPath)) { Tool.Log("LoD2 " + t + ": schon da") } else { Setup.Load(Setup.Nrw + "/3dg/lod2_gml/lod2_gml/" + gml, gmlPath) }
+        }
+        // OSM: 4 x 4 Ausschnitte, mit Pause dazwischen (die API mag keine Serien)
+        for (int i = 0; i < 4; i++) {
+            for (int j = 0; j < 4; j++) {
+                string path = IO.Path.Combine(osm, "map_" + i + "_" + j + ".osm")
+                if (IO.File.Exists(path)) { continue }
+                float a = Setup.Lon0 + (Setup.Lon1 - Setup.Lon0) * i / 4.0
+                float b = Setup.Lat0 + (Setup.Lat1 - Setup.Lat0) * j / 4.0
+                float c = Setup.Lon0 + (Setup.Lon1 - Setup.Lon0) * (i + 1) / 4.0
+                float d = Setup.Lat0 + (Setup.Lat1 - Setup.Lat0) * (j + 1) / 4.0
+                string box = $"{a:F6},{b:F6},{c:F6},{d:F6}"
+                // (die OSM-API antwortet chunked - das kann Http.Download nicht: ganz laden, dann schreiben, über eine Teildatei)
+                Tool.Log("Laden: " + IO.Path.GetFileName(path))
+                var r = client.Get("https://api.openstreetmap.org/api/0.6/map?bbox=" + box)
+                if (r.status != 200) { throw new Raser.DataException("Die OSM-API antwortet für " + box + " mit " + r.status + ".") }
+                IO.File.WriteAllBytes(path + ".part", r.body)
+                IO.File.Move(path + ".part", path)
+                Tool.Log("  fertig (" + (r.body.length / 1000) + " KB)")
+                Sleep(2000ms)
+            }
+        }
+        Tool.Log("Rohdaten vollständig in " + raw)
+    }
+
+    // Eine Datei laden (fortsetzbar); erst wenn sie ganz da ist, trägt sie ihren Namen.
+    static undefined Load(string url, string path) {
+        Tool.Log("Laden: " + IO.Path.GetFileName(path))
+        var d = new Http.Download(url, path)
+        d.userAgent = "ruhrpott-raser/0.1"
+        d.timeout = 120000
+        d.Start()
+        int shown = 0
+        while (d.Step()) {
+            // alle 20 MB eine Zeile
+            if (d.Received - shown >= 20000000) {
+                shown = d.Received
+                string total = ""
+                if (d.Total > 0) { total = " von " + (d.Total / 1000000) + " MB" }
+                Tool.Log("  " + (d.Received / 1000000) + " MB" + total)
+            }
+        }
+        if (d.Error != "") { throw new Raser.DataException("Laden von " + url + " fehlgeschlagen: " + d.Error) }
+        Tool.Log("  fertig (" + (d.Received / 1000) + " KB)")
+    }
+
+    // Liegt im Ordner eine Datei, deren Name mit prefix beginnt?
+    static bool HasPrefix(string folder, string prefix) {
+        if (!IO.Directory.Exists(folder)) { return false }
+        foreach (f in IO.Directory.GetFiles(folder)) {
+            string name = IO.Path.GetFileName(f)
+            if (name.StartsWith(prefix) && !name.EndsWith(".part")) { return true }
+        }
+        return false
+    }
+
+    // Der größte (jüngste) Dateiname prefix…suffix im Text eines Verzeichnisses; undefined: keiner.
+    static string Newest(string text, string prefix, string suffix) {
+        string best = undefined
+        int at = text.IndexOf(prefix)
+        while (at >= 0) {
+            int end = text.IndexOf(suffix, at)
+            if (end < 0) { break }
+            string name = text.Substring(at, end + suffix.Length - at)
+            // nur Ziffern zwischen prefix und suffix (das Jahr)
+            string year = name.Substring(prefix.Length, name.Length - prefix.Length - suffix.Length)
+            bool digits = year.Length > 0
+            for (int k = 0; k < year.Length; k++) {
+                string ch = year.Substring(k, 1)
+                if ("0123456789".IndexOf(ch) < 0) { digits = false }
+            }
+            if (digits && (best == undefined || name > best)) { best = name }
+            at = text.IndexOf(prefix, end)
+        }
+        return best
+    }
+
+    // Alles in einem: laden, importieren, voxelisieren, auf Wunsch den Netz-Cache.
+    static undefined Run(Args args) {
+        string raw = args.Get("raw", IO.Path.Combine("data", "raw"))
+        string world = args.Get("world", "world")
+        Setup.Fetch(args)
+        string imp[] = ["import", "--dgm", IO.Path.Combine(raw, "dgm1"), "--lod2", IO.Path.Combine(raw, "lod2"), "--osm", IO.Path.Combine(raw, "osm"), "--world", world]
+        Tool.Import(new Args(imp))
+        string vox[] = ["voxelize", "--world", world, "--overrides", args.Get("overrides", "overrides")]
+        Tool.Voxelize(new Args(vox))
+        if (args.Has("meshes")) {
+            string mesh[] = ["meshes", "--world", world]
+            Tool.Meshes(new Args(mesh))
+        }
+        Tool.Log("Die Welt liegt in " + world + " - starten: raser-game --world " + world)
+    }
+}

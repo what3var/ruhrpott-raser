@@ -29,6 +29,20 @@ forge build RuhrpottRaser.firesln --engine native -m RELEASE      # src/Raser.To
 tools/fetch-bochum.sh && tools/build-bochum.sh                     # Testregion Bochum-Innenstadt: Rohdaten -> Chunks -> world.png
 ```
 
+### Weltdaten einrichten (auch unter Windows)
+
+Das Spiel braucht fertige Weltdaten in `world/` (nicht im Repository: Kacheln 31 MB, Chunks 450 MB, Netz-Cache 1,9 GB). Ohne Shell-Skripte,
+mit dem Werkzeug selbst (`src/Raser.Tool/setup.fire`):
+
+```bash
+forge build RuhrpottRaser.firesln -p Raser.Tool --engine native -m RELEASE -o raser
+raser setup                 # Rohdaten laden (DGM1/LoD2 von opengeodata.nrw.de, OSM), importieren, voxelisieren - etwa 40 min
+raser setup --meshes 1      # dazu den Netz-Cache (noch etwa 45 min; sonst baut ihn das Spiel beim Fahren nach und nach)
+raser fetch                 # nur die Rohdaten nach data/raw (fortsetzbar, Vorhandenes wird übersprungen)
+```
+
+Unter Windows heißt das Programm `raser.exe`; Optionen: `--raw <ordner>` (Rohdaten, Vorgabe `data/raw`), `--world <ordner>` (Vorgabe `world`).
+
 ## Launcher
 
 `Raser.Launcher` ist das Programm, mit dem Spieler anfangen: Anmeldung oder Registrierung am Spielserver (HTTP/JSON, Port 7480), News, Version mit
