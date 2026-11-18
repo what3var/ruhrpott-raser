@@ -284,7 +284,7 @@ class AuthorityTests {
         int water = 0
         foreach (c in sb.containers) { water = water + c.CountOf(Raser.Items.Wasser) }
         Testing.Assert.AreEqual(2, water)
-        byte bad[] = Raser.Wire.Encode(Raser.Packet.Op(1, new Raser.InvOp(9, 1, 0, 2, 0, 1)))
+        byte bad[] = Raser.Wire.Encode(Raser.Packet.Op(1, new Raser.InvOp(99, 1, 0, 2, 0, 1)))
         Testing.Assert.Throws(() => Raser.Wire.Decode(taking bad))
     }
 

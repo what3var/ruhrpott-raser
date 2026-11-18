@@ -1131,3 +1131,87 @@ class ItemUseTests {
         return s
     }
 }
+
+class ShopTests {
+    [Test "Laden: Sortiment und Preise je Laden fest, kaufen mit Bargeld, nicht genug Geld, kein Platz"]
+    undefined Buy() {
+        // fest: dieselbe ID, dieselben Preise; andere ID, andere Preise (um -10 .. +20 %)
+        var a = Raser.Shops.Offers(Raser.ShopKind.Kiosk, 4711)
+        var b = Raser.Shops.Offers(Raser.ShopKind.Kiosk, 4711)
+        Testing.Assert.AreEqual(4, a.Count)
+        for (int i = 0; i < a.Count; i++) {
+            Testing.Assert.AreEqual(a[i].price, b[i].price)
+            int bp = Raser.Shops.BasePrice(a[i].item)
+            Testing.Assert.IsTrue(a[i].price >= bp * 0.89 && a[i].price <= bp * 1.21)
+        }
+        Testing.Assert.AreEqual(0, Raser.Shops.Offers(Raser.ShopKind.None, 4711).Count)
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops, 5, 4)
+        inv.cash = 1000
+        // zwei Brötchen (Angebot 0)
+        int price = a[0].price
+        Testing.Assert.AreEqual(Raser.Items.Broetchen, a[0].item)
+        Testing.Assert.IsTrue(inv.Apply(new Raser.InvOp(Raser.InvOp.Buy, 4711, 0, Raser.ShopKind.Kiosk, 0, 2)))
+        Testing.Assert.AreEqual(1000 - 2 * price, inv.cash)
+        Testing.Assert.AreEqual(2, inv.Pockets().CountOf(Raser.Items.Broetchen))
+        // zu teuer: nichts geändert
+        int cash = inv.cash
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Buy, 4711, 2, Raser.ShopKind.Kiosk, 0, 5)))
+        Testing.Assert.AreEqual(cash, inv.cash)
+        Testing.Assert.Contains("Geld", inv.message)
+        // Unsinn: kein Angebot, keine Menge, kein Laden
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Buy, 4711, 9, Raser.ShopKind.Kiosk, 0, 1)))
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Buy, 4711, 0, Raser.ShopKind.Kiosk, 0, 0)))
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Buy, 4711, 0, 2, 0, 1)))
+        // voll: Kanister passen nur in die Hände (4 Plätze) - der fünfte nicht
+        inv.cash = 100000
+        var w = Raser.Shops.Offers(Raser.ShopKind.Workshop, 5)
+        Testing.Assert.AreEqual(Raser.Items.Kanister, w[1].item)
+        for (int i = 0; i < 4; i++) { Testing.Assert.IsTrue(inv.Apply(new Raser.InvOp(Raser.InvOp.Buy, 5, 1, Raser.ShopKind.Workshop, 0, 1))) }
+        cash = inv.cash
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Buy, 5, 1, Raser.ShopKind.Workshop, 0, 1)))
+        Testing.Assert.AreEqual(cash, inv.cash)
+        Testing.Assert.Contains("Platz", inv.message)
+    }
+
+    [Test "Tankstelle: tanken und Kanister füllen kosten je Liter, so weit das Geld reicht"]
+    undefined Fuel() {
+        var store = new Raser.ContainerStore()
+        var drops = new Raser.ItemDrops()
+        var inv = new Raser.Inventory(store, drops, 5, 4)
+        var car = new Raser.Vehicle()
+        car.fuel = 0.5
+        inv.vehicle = car
+        inv.cash = 100000
+        int lp = Raser.Shops.LiterPrice(99)
+        Testing.Assert.IsTrue(lp >= 169 && lp <= 199)
+        // 25 l bis voll
+        Testing.Assert.IsTrue(inv.Apply(new Raser.InvOp(Raser.InvOp.Refuel, 0, 0, 99, 0, 1)))
+        Testing.Assert.IsTrue(car.fuel > 0.999)
+        Testing.Assert.AreEqual(100000 - Raser.Shops.Cost(99, 25.0), inv.cash)
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Refuel, 0, 0, 99, 0, 1)))
+        // wenig Geld: nur so viel, wie es zahlt
+        car.fuel = 0.0
+        inv.cash = 1000
+        Testing.Assert.IsTrue(inv.Apply(new Raser.InvOp(Raser.InvOp.Refuel, 0, 0, 99, 0, 1)))
+        Testing.Assert.IsTrue(inv.cash >= 0 && inv.cash < lp / 10 + 1)
+        Testing.Assert.IsTrue(car.fuel > 0.0 && car.fuel < 0.2)
+        // weit weg: nicht
+        car.east = 50.0
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Refuel, 0, 0, 99, 0, 1)))
+        // ein leerer Kanister in den Händen
+        inv.cash = 5000
+        inv.Add(Raser.Items.Kanister, 1, 100)
+        var hands = inv.Hands()
+        int slot = -1
+        for (int i = 0; i < hands.Size; i++) {
+            if (hands.Item(i) == Raser.Items.Kanister) { slot = i }
+        }
+        Testing.Assert.IsTrue(slot >= 0)
+        Testing.Assert.IsTrue(inv.Apply(new Raser.InvOp(Raser.InvOp.Fill, inv.hands, slot, 99, 0, 1)))
+        Testing.Assert.AreEqual(0, hands.Data(slot))
+        Testing.Assert.AreEqual(5000 - Raser.Shops.Cost(99, 10.0), inv.cash)
+        Testing.Assert.IsFalse(inv.Apply(new Raser.InvOp(Raser.InvOp.Fill, inv.hands, slot, 99, 0, 1)))
+    }
+}

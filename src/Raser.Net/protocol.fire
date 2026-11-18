@@ -55,7 +55,7 @@ namespace Raser {
         // Ereignisse (Event)
         static readonly defined int KnockedDown = 1              // id: der Spieler, other: wer ihn umgehauen hat (0: niemand)
 
-        // Operationen am Inventar über Raser.InvOp hinaus (InvOp.kind; 1 bis 5 sind Raser.InvOp: Move, Swap, Drop, PickUp, Use)
+        // Operationen am Inventar über Raser.InvOp hinaus (InvOp.kind; sonst Raser.InvOp: Move, Swap, Drop, PickUp, Use, Buy, Fill, Refuel)
         static readonly defined int OpOpen = 5                   // drop: den Rucksack am Boden öffnen
         static readonly defined int OpClose = 6                  // den geöffneten schließen
 
@@ -455,7 +455,7 @@ namespace Raser {
                     p.seq = r.Varint()
                     p.ack = r.Varint()
                     p.op = Raser.InvOp.Read(r)
-                    if (p.op.kind < 1 || p.op.kind > Raser.InvOp.Use) { throw new Raser.ProtocolException("Unbekannte Operation " + p.op.kind + ".") }
+                    if (p.op.kind < 1 || p.op.kind > Raser.InvOp.Last) { throw new Raser.ProtocolException("Unbekannte Operation " + p.op.kind + ".") }
                 } else if (t == Raser.Protocol.Chat || t == Raser.Protocol.Command || t == Raser.Protocol.Reject || t == Raser.Protocol.Kick) {
                     p.text = Raser.Wire.ReadText(r)
                 } else if (t == Raser.Protocol.Bye) {

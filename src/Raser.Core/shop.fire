@@ -1,0 +1,180 @@
+// Raser.Core: Läden - was es wo zu kaufen gibt und was es kostet (Roadmap M5), ohne Szene: dieselbe Rechnung im Spiel und auf dem Server.
+//
+// Ein Laden ist ein Gebäude (seine ID) und eine Art (Raser.ShopKind - die Nummern wie Raser.BuildingKinds in Raser.World). Sortiment und Preise
+// folgen deterministisch aus beiden: je Art ein festes Sortiment, je Laden die Preise um -10 .. +20 % verschoben (auf 5 Cent gerundet) - so
+// kennt der Server dieselben Preise, ohne dass sie übertragen werden.
+// Kaufen ist eine Operation am Inventar (Raser.InvOp.Buy: source die ID des Ladens, target seine Art, sourceSlot das Angebot, count die Menge);
+// Tanken an der Zapfsäule (Raser.InvOp.Refuel: das Fahrzeug in Reichweite, bis voll oder bis das Geld reicht) und einen Kanister füllen
+// (Raser.InvOp.Fill: source/sourceSlot der Kanister) kosten je Liter. Alles in Cent.
+namespace Raser {
+    class ShopKind {
+        static readonly defined int None = 0
+        static readonly defined int Fuel = 1          // Tankstelle
+        static readonly defined int Market = 3        // Supermarkt
+        static readonly defined int Kiosk = 7         // Trinkhalle
+        static readonly defined int Workshop = 10     // Werkstatt
+
+        static string Name(defined int kind) {
+            if (kind == Raser.ShopKind.Fuel) { return "Tankstelle" }
+            if (kind == Raser.ShopKind.Market) { return "Supermarkt" }
+            if (kind == Raser.ShopKind.Kiosk) { return "Trinkhalle" }
+            if (kind == Raser.ShopKind.Workshop) { return "Werkstatt" }
+            return "Laden"
+        }
+
+        static defined bool IsShop(defined int kind) { return kind == Raser.ShopKind.Fuel || kind == Raser.ShopKind.Market || kind == Raser.ShopKind.Kiosk || kind == Raser.ShopKind.Workshop }
+    }
+
+    // Ein Angebot: was, zu welchem Preis (Cent je Stück).
+    class Offer {
+        defined int item
+        defined int price
+
+        construct(defined int item, defined int price) {
+            this.item = item
+            this.price = price
+        }
+    }
+
+    class Shops {
+        static readonly defined float TankLiters = 50.0      // ein voller Tank (Raser.Vehicle.fuel 1)
+        static readonly defined float CanLiters = 10.0       // ein voller Kanister
+
+        // Der Grundpreis einer Art (Cent).
+        static defined int BasePrice(defined int item) {
+            if (item == Raser.Items.Broetchen) { return 45 }
+            if (item == Raser.Items.Pommes) { return 350 }
+            if (item == Raser.Items.Wasser) { return 99 }
+            if (item == Raser.Items.Zigaretten) { return 800 }
+            if (item == Raser.Items.Kanister) { return 1999 }
+            if (item == Raser.Items.Taschenlampe) { return 999 }
+            if (item == Raser.Items.Werkzeug) { return 1499 }
+            if (item == Raser.Items.Turnbeutel) { return 599 }
+            return 100
+        }
+
+        // Ein Wert in [0, 1) aus der ID des Ladens und einem Salz.
+        static defined float Rand(defined int id, defined int salt) {
+            int h = Raser.Fnv.Mix(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), id), salt))
+            return ((h >> 20) & 65535) / 65536.0
+        }
+
+        // Der Preis von item im Laden id: Grundpreis -10 .. +20 %, auf 5 Cent gerundet (Preise auf 9 bleiben auf 9: 0,99 wird 0,95 .. 1,19 -> x,x9).
+        static defined int Price(defined int id, defined int item) {
+            float f = 0.9 + Raser.Shops.Rand(id, item) * 0.3
+            int p = Math.Round(Raser.Shops.BasePrice(item) * f / 5.0)!int * 5
+            if (Raser.Shops.BasePrice(item) % 10 == 9) { p = p / 10 * 10 + 9 }
+            return Math.Max(p, 5)
+        }
+
+        // Das Sortiment des Ladens (Art kind, ID id).
+        static List<Raser.Offer> Offers(defined int kind, defined int id) {
+            var l = new List<Raser.Offer>()
+            var items = new List<int>()
+            if (kind == Raser.ShopKind.Fuel) { foreach (i in [Raser.Items.Broetchen, Raser.Items.Wasser, Raser.Items.Zigaretten, Raser.Items.Kanister, Raser.Items.Taschenlampe]) { items.Add(i) } }
+            if (kind == Raser.ShopKind.Market) { foreach (i in [Raser.Items.Broetchen, Raser.Items.Wasser, Raser.Items.Pommes, Raser.Items.Taschenlampe, Raser.Items.Turnbeutel]) { items.Add(i) } }
+            if (kind == Raser.ShopKind.Kiosk) { foreach (i in [Raser.Items.Broetchen, Raser.Items.Wasser, Raser.Items.Zigaretten, Raser.Items.Pommes]) { items.Add(i) } }
+            if (kind == Raser.ShopKind.Workshop) { foreach (i in [Raser.Items.Werkzeug, Raser.Items.Kanister, Raser.Items.Taschenlampe]) { items.Add(i) } }
+            foreach (it in items) { l.Add(new Raser.Offer(it, Raser.Shops.Price(id, it))) }
+            return l
+        }
+
+        // Der Literpreis an der Tankstelle id (Cent je Liter, 1,69 .. 1,99 €).
+        static defined int LiterPrice(defined int id) { return 169 + Math.Floor(Raser.Shops.Rand(id, 777) * 31.0)!int }
+
+        // Was n Liter kosten (aufgerundet auf ganze Cent).
+        static defined int Cost(defined int id, defined float liters) { return Math.Ceiling(liters * Raser.Shops.LiterPrice(id) - 0.0001)!int }
+
+        // Wie viele Stück von item noch ins Inventar passen (in Taschen, Rucksack und Hände; gestapelt nur mit data 0).
+        static defined int Room(Raser.Inventory inv, defined int item) {
+            var t = Raser.Items.Get(item)
+            if (t == undefined || t.IsBackpack || t.phone) { return 0 }
+            int room = 0
+            foreach (c in [inv.Pockets(), inv.Backpack(), inv.Hands()]) {
+                if (c == undefined || !Raser.ContainerKind.Accepts(c.kind, item)) { continue }
+                for (int i = 0; i < c.Size; i++) {
+                    if (c.Empty(i)) { room = room + t.maxStack } else if (c.Item(i) == item && c.Data(i) == 0) { room = room + Math.Max(0, t.maxStack - c.Amount(i)) }
+                }
+            }
+            return room
+        }
+
+        // Prüft und führt Buy, Fill und Refuel aus (Inventory.Apply); false: geht nicht (nichts geändert, inv.message sagt warum).
+        static defined bool Apply(Raser.Inventory inv, Raser.InvOp op) {
+            inv.message = ""
+            if (op.kind == Raser.InvOp.Buy) { return Raser.Shops.Buy(inv, op) }
+            if (op.kind == Raser.InvOp.Fill) { return Raser.Shops.Fill(inv, op) }
+            if (op.kind == Raser.InvOp.Refuel) { return Raser.Shops.Refuel(inv, op) }
+            return false
+        }
+
+        static defined bool Buy(Raser.Inventory inv, Raser.InvOp op) {
+            if (!Raser.ShopKind.IsShop(op.target)) { return false }
+            var offers = Raser.Shops.Offers(op.target, op.source)
+            if (op.sourceSlot < 0 || op.sourceSlot >= offers.Count || op.count <= 0 || op.count > 20) { return false }
+            var o = offers[op.sourceSlot]
+            var t = Raser.Items.Get(o.item)
+            int cost = o.price * op.count
+            if (cost > inv.cash) {
+                inv.message = "Nicht genug Geld für " + t.name
+                return false
+            }
+            if (Raser.Shops.Room(inv, o.item) < op.count) {
+                inv.message = "Kein Platz für " + t.name
+                return false
+            }
+            int rest = inv.Add(o.item, op.count, 0)
+            inv.cash = inv.cash - cost
+            inv.message = t.name + " gekauft"
+            return rest == 0
+        }
+
+        // Einen Kanister (op.source, op.sourceSlot) an der Tankstelle op.target füllen: bis voll, so weit das Geld reicht.
+        static defined bool Fill(Raser.Inventory inv, Raser.InvOp op) {
+            if (!inv.Reaches(op.source)) { return false }
+            var c = inv.store.Find(op.source)
+            if (c == undefined || !c.Valid(op.sourceSlot) || c.Item(op.sourceSlot) != Raser.Items.Kanister) { return false }
+            int used = c.Data(op.sourceSlot)
+            if (used <= 0) {
+                inv.message = "Der Kanister ist voll"
+                return false
+            }
+            int price = Raser.Shops.LiterPrice(op.target)
+            // ganze Prozent, so viele das Geld zahlt
+            int pct = used
+            while (pct > 0 && Raser.Shops.Cost(op.target, pct / 100.0 * Raser.Shops.CanLiters) > inv.cash) { pct-- }
+            if (pct <= 0) {
+                inv.message = "Nicht genug Geld zum Tanken"
+                return false
+            }
+            int cost = Raser.Shops.Cost(op.target, pct / 100.0 * Raser.Shops.CanLiters)
+            inv.cash = inv.cash - cost
+            c.Set(op.sourceSlot, Raser.Items.Kanister, 1, used - pct)
+            inv.message = "Kanister gefüllt: " + Math.Round(pct / 100.0 * Raser.Shops.CanLiters * 10.0) / 10.0 + " l (" + price + " ct/l)"
+            return true
+        }
+
+        // Das Fahrzeug in Reichweite an der Tankstelle op.target tanken: bis voll, so weit das Geld reicht (auf 0,1 l genau).
+        static defined bool Refuel(Raser.Inventory inv, Raser.InvOp op) {
+            var v = inv.vehicle
+            if (!inv.NearVehicle(v) || v.tank <= 0.0) {
+                inv.message = "Kein Fahrzeug an der Zapfsäule"
+                return false
+            }
+            float liters = Math.Floor((1.0 - v.fuel) * Raser.Shops.TankLiters * 10.0) / 10.0
+            if (liters < 0.1) {
+                inv.message = v.name + ": Tank ist voll"
+                return false
+            }
+            while (liters >= 0.1 && Raser.Shops.Cost(op.target, liters) > inv.cash) { liters = Math.Floor(liters * 10.0 - 1.0) / 10.0 }
+            if (liters < 0.1) {
+                inv.message = "Nicht genug Geld zum Tanken"
+                return false
+            }
+            inv.cash = inv.cash - Raser.Shops.Cost(op.target, liters)
+            v.fuel = Math.Min(1.0, v.fuel + liters / Raser.Shops.TankLiters)
+            inv.message = v.name + " getankt: " + liters + " l"
+            return true
+        }
+    }
+}
