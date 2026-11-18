@@ -9,6 +9,7 @@
 #import "raser.net"
 #import "raser.sim"
 #import "raser.client"
+#import "raser.traffic"
 
 // Eine Entität in der Szene: ein Spieler zu Fuß (Figur) oder ein Fahrzeug (mit der Figur obenauf, wenn ein Zweirad einen Fahrer hat).
 class Avatar {
@@ -85,6 +86,11 @@ class Online {
     defined int seenInv
     defined int lastOpened
     defined bool hooked
+    List<Raser.NpcState> npcPool    // die NPCs aus den Snapshots als Zustände (für TrafficView.Remote)
+    List<Raser.NpcState> npcs
+    Dictionary<int, float> npcStride    // je Fußgänger der gezählte Weg (m) und die letzte Lage
+    Dictionary<int, float> npcLastE
+    Dictionary<int, float> npcLastN
 
     construct() {
         this.session = undefined
@@ -96,6 +102,52 @@ class Online {
         this.seenInv = -1
         this.lastOpened = 0
         this.hooked = false
+        this.npcPool = new List<Raser.NpcState>(Owns.Values)
+        this.npcs = new List<Raser.NpcState>()
+        this.npcStride = new Dictionary<int, float>()
+        this.npcLastE = new Dictionary<int, float>()
+        this.npcLastN = new Dictionary<int, float>()
+    }
+
+    // Die NPCs des Servers (Entitäten 3 und 4) als Zustände, interpoliert zur Zeit des Bildes wie die anderen Entitäten (Raser.Interpolator);
+    // den Schritt der Fußgänger zählt der Client aus der Bewegung. Die Zustände gehören Online und gelten bis zum nächsten Aufruf.
+    List<Raser.NpcState> NpcStates() {
+        this.npcs.Clear()
+        var s = this.session
+        if (s == undefined) { return this.npcs }
+        float t = s.RenderTime()
+        int used = 0
+        foreach (pair in s.entities) {
+            var r = pair.Value
+            if (r.type != Raser.EntityType.NpcCar && r.type != Raser.EntityType.Pedestrian) { continue }
+            if (!r.path.Sample(t)) { continue }
+            if (used >= this.npcPool.Count) { this.npcPool.Add(new Raser.NpcState()) }
+            var st = this.npcPool[used]
+            used++
+            st.FromEntity(r.id, r.type, r.variant, r.bits, r.a, r.b)
+            st.east = r.path.east
+            st.north = r.path.north
+            st.heading = r.path.heading
+            st.speed = r.path.speed
+            float stride = this.npcStride.Get(r.id, 0.0)
+            if (this.npcLastE.ContainsKey(r.id)) {
+                float de = st.east - this.npcLastE[r.id]
+                float dn = st.north - this.npcLastN[r.id]
+                float d = Math.Sqrt(de * de + dn * dn)
+                if (d < 5.0) { stride = stride + d }
+            }
+            this.npcStride[r.id] = stride
+            this.npcLastE[r.id] = st.east
+            this.npcLastN[r.id] = st.north
+            st.stride = stride
+            this.npcs.Add(st)
+        }
+        if (this.npcStride.Count > this.npcs.Count * 2 + 64) {
+            this.npcStride.Clear()
+            this.npcLastE.Clear()
+            this.npcLastN.Clear()
+        }
+        return this.npcs
     }
 
     // Verbindet, wenn --server gegeben ist (sonst offline wie bisher): mit dem Fahrzeug von --vehicle (oder --on-foot 1) am Startpunkt --at.
@@ -304,6 +356,8 @@ class NetBot {
         int last = began
         int lastPrint = 0
         string seen = ""
+        int npcTick = -1
+        string npcSeen = "Verkehr in Sicht: keiner"
         int snaps = 0
         // für die Pläne
         string phase = "start"
@@ -436,6 +490,20 @@ class NetBot {
             } else {
                 s.Control(dt, gas, brake, left, right, false, false, use)
             }
+            // der Verkehr: alle 60 Takte (2 s) die NPCs, wie sie der letzte Snapshot zeigt (ID, Lage in cm) - zwei Bots am selben Ort sehen
+            // dieselben (tools/server-smoke.sh vergleicht)
+            if (s.serverTick != npcTick && s.serverTick % 60 == 0) {
+                npcTick = s.serverTick
+                int cars = 0
+                int walkers = 0
+                foreach (pair in s.entities) {
+                    var r = pair.Value
+                    if (r.type != Raser.EntityType.NpcCar && r.type != Raser.EntityType.Pedestrian) { continue }
+                    if (r.type == Raser.EntityType.NpcCar) { cars++ } else { walkers++ }
+                    print("[" + user + "] npc " + npcTick + " " + Raser.Ids.Format(r.id) + " " + Math.Round(r.east * 100.0)!int + " " + Math.Round(r.north * 100.0)!int)
+                }
+                npcSeen = "Verkehr in Sicht: " + cars + " Autos, " + walkers + " Fussgaenger (Takt " + npcTick + ")"
+            }
             if (s.pred.snaps > snaps) {
                 snaps = s.pred.snaps
                 print("[" + user + "] Teleport nach " + Math.Round(s.selfEast) + ", " + Math.Round(s.selfNorth))
@@ -463,6 +531,7 @@ class NetBot {
         var p = s.pred
         float span = Math.Max(1.0, (DateTime.UtcNow.Ticks - began) / 10000000.0 - 1.0)
         print("[" + user + "] Server-Lage " + Math.Round(s.selfEast * 10.0) / 10.0 + ", " + Math.Round(s.selfNorth * 10.0) / 10.0 + ", " + Math.Round(Math.Sqrt((s.selfEast - at[0].ToFloat()) * (s.selfEast - at[0].ToFloat()) + (s.selfNorth - at[1].ToFloat()) * (s.selfNorth - at[1].ToFloat()))) + " m vom Start; " + s.OfType(Raser.EntityType.Vehicle).Count + " Fahrzeuge in Sicht")
+        print("[" + user + "] " + npcSeen)
         print("[" + user + "] Vorhersage: " + p.reconciled + " Abgleiche, " + p.corrected + " mit Fehler, max Korrektur " + Math.Round(p.maxCorrection * 1000.0) / 1000.0 + " m, im Mittel " + Math.Round(p.sumCorrection / Math.Max(1, p.reconciled) * 10000.0) / 10000.0 + " m, Spruenge " + p.snaps + ", offen " + p.pending.Count)
         print("[" + user + "] Bandbreite: empfangen " + Math.Round((s.link.receivedBytes - recvBytes0) / span) + " B/s, gesendet " + Math.Round((s.link.sentBytes - sentBytes0) / span) + " B/s")
         print("[" + user + "] Ende: " + s.snapshots + " Snapshots, " + s.status + ", Uhr " + Math.Round(s.Hour() * 100.0) / 100.0 + " h, Wetter " + s.weatherPreset)

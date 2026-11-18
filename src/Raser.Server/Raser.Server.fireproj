@@ -15,6 +15,9 @@
     },
     {
       "project": "../Raser.Sim/Raser.Sim.fireproj"
+    },
+    {
+      "project": "../Raser.Traffic/Raser.Traffic.fireproj"
     }
   ],
   "settings": {

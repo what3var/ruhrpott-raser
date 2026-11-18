@@ -13,14 +13,14 @@ mkdir -p "$WORK/release/bin"
 rm -rf "$WORK/data"
 echo "spiel" > "$WORK/release/bin/game"
 printf '0.2.0\nProbe.\n' > "$WORK/release/version.txt"
-# andere Ports: HTTP_PORT=17480 GAME_PORT=17481 tools/server-smoke.sh ...
+# andere Ports: HTTP_PORT=17480 GAME_PORT=17481 tools/server-smoke.sh ...; weitere Optionen des Servers: SERVER_ARGS="--traffic 0 --people 0"
 HP=${HTTP_PORT:-7480}
 GP=${GAME_PORT:-7481}
 API=http://127.0.0.1:$HP
 WORLDARG=()
 [ -n "$WORLD" ] && WORLDARG=(--world "$WORLD")
 
-"$SERVER" --data "$WORK/data" --release "$WORK/release" --time 14:00 --http "$HP" --game "$GP" "${WORLDARG[@]}" > "$WORK/server.log" 2>&1 &
+"$SERVER" --data "$WORK/data" --release "$WORK/release" --time 14:00 --http "$HP" --game "$GP" "${WORLDARG[@]}" ${SERVER_ARGS:-} > "$WORK/server.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null' EXIT
 for i in $(seq 1 50); do curl -s "$API/api/status" > /dev/null && break; sleep 0.2; done
@@ -53,6 +53,15 @@ CP=$!
 AP=$!
 wait $BP $CP $AP
 
+# Runde 3 (nur mit Welt): der Verkehr rechnet der Server - Anna und Bernd stehen am selben Ort und sehen dieselben NPCs an derselben Stelle.
+if [ -n "$WORLD" ]; then
+  "$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 14 --plan stehen --at 376117,5705005 > "$WORK/bernd3.log" 2>&1 &
+  BP=$!
+  "$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 14 --plan stehen --at 376117,5705005 > "$WORK/anna3.log" 2>&1 &
+  AP=$!
+  wait $BP $AP
+fi
+
 echo "status: $(curl -s "$API/api/status")"
 for f in anna bernd falsch anna2 bernd2 carla; do echo "=== $f"; grep -v "sieht:" "$WORK/$f.log"; done
 echo "=== Server"; cat "$WORK/server.log"
@@ -75,6 +84,14 @@ check "$WORK/bernd2.log" "Inhalt:.*Flasche Wasser x2" "Bernd hebt Annas Rucksack
 check "$WORK/carla.log" "hinausgeworfen: Protokoll v1" "eine Lage vom Client wirft hinaus"
 # doppelt so viele Eingaben: der Server rechnet trotzdem nur 30 je s (Vollgas aus dem Stand in 4 s: höchstens ~45 m)
 if grep -q "Server-Strecke \([0-9]\|[1-3][0-9]\|4[0-5]\)\(\.[0-9]\)\? m" "$WORK/carla.log"; then echo "ok: Schummeln bringt nichts"; else echo "FEHLT: Schummeln bringt nichts"; ok=0; fi
+if [ -n "$WORLD" ]; then
+  npcs() { awk '/\] npc /{print $3" "$4" "$5" "$6}' "$1"; }
+  npcs "$WORK/anna3.log" > "$WORK/npc_anna"
+  npcs "$WORK/bernd3.log" > "$WORK/npc_bernd"
+  read SAME BAD <<< "$(awk 'NR==FNR{a[$1" "$2]=$3" "$4;next} ($1" "$2) in a {n++; if (a[$1" "$2]!=$3" "$4) bad++} END{print n+0, bad+0}' "$WORK/npc_anna" "$WORK/npc_bernd")"
+  echo "Verkehr: $SAME NPC-Lagen in beiden Logs zum selben Takt, $BAD verschieden"; grep -h "Verkehr in Sicht" "$WORK"/anna3.log "$WORK"/bernd3.log
+  if [ "$SAME" -ge 10 ] && [ "$BAD" = 0 ]; then echo "ok: beide sehen dieselben NPCs an derselben Stelle"; else echo "FEHLT: beide sehen dieselben NPCs an derselben Stelle"; ok=0; fi
+fi
 echo "Vorhersage:"; grep -h "Vorhersage:" "$WORK"/anna*.log "$WORK"/bernd*.log
 echo "Bandbreite:"; grep -h "Bandbreite:" "$WORK"/anna*.log "$WORK"/bernd*.log
 [ $ok = 1 ] && echo "ALLES OK" || exit 1

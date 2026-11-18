@@ -33,6 +33,10 @@ class NpcFigure {
     defined bool shown
     defined bool detail         // Arme und Haare sichtbar
     List<float> ground          // Ost, Nord, Höhe des letzten Geländes (TrafficView.Height)
+    defined float placedE       // wie zuletzt gesetzt
+    defined float placedN
+    defined float placedH
+    defined bool placedDetail
 
     construct(Scene scene) {
         this.parts = new List<Object>()
@@ -71,6 +75,7 @@ class NpcFigure {
         for (int i = 0; i < 7; i++) { this.parts[i].Color = colors[i] }
         this.scale = p.height / 1.8
         this.pose = -1
+        this.placedE = 0.0
     }
 
     undefined Show(defined bool visible, defined bool detail) {
@@ -132,6 +137,7 @@ class TrafficView {
     List<int> carOwner          // je Modell: die ID des Autos (-1: frei)
     List<int> carStamp
     List<bool> carDetail
+    List<float> carPlaced       // je Modell: Ost, Nord, Richtung, nah (wie zuletzt gesetzt)
     List<float> carGround       // je Modell: Ost, Nord, Höhe des letzten Geländes (nur neu gelesen nach 1 m)
     Dictionary<int, int> carSlot
     List<NpcFigure> figures
@@ -162,6 +168,7 @@ class TrafficView {
         this.carStamp = new List<int>()
         this.carDetail = new List<bool>()
         this.carGround = new List<float>()
+        this.carPlaced = new List<float>()
         this.carSlot = new Dictionary<int, int>()
         this.figures = new List<NpcFigure>(Owns.Values)
         this.figureSlot = new Dictionary<int, int>()
@@ -249,7 +256,7 @@ class TrafficView {
     undefined Remote(defined float dt, List<Raser.NpcState> states, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, Ground terrain, WorldView view) {
         this.states.Clear()
         foreach (st in states) { this.states.Add(st) }
-        this.Contact(car, walker, onFoot)
+        // (abprallen und aufhalten rechnet der Server)
         if (onFoot) { this.Place(terrain, view, walker.east, walker.north) } else { this.Place(terrain, view, car.east, car.north) }
         if (this.messageTime > 0.0) { this.messageTime = this.messageTime - dt }
     }
@@ -361,6 +368,11 @@ class TrafficView {
                 if (d2 > 80.0 * 80.0 && (this.frame + st.id) % 2 == 1) { continue }
                 if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
                 float fy = this.Height(f.ground, 0, terrain, view, st.east, st.north)
+                if (Math.Abs(f.placedE - st.east) < 0.001 && Math.Abs(f.placedN - st.north) < 0.001 && Math.Abs(f.placedH - st.heading) < 0.01 && f.pose == (st.state == 4 ? 1 : 0) && f.placedDetail == f.detail) { continue }
+                f.placedE = st.east
+                f.placedN = st.north
+                f.placedH = st.heading
+                f.placedDetail = f.detail
                 f.Place(st.east - view.originE, fy, -(st.north - view.originN), st.heading, st.stride, st.state == 4)
                 continue
             }
@@ -375,7 +387,16 @@ class TrafficView {
             if (d2 > 80.0 * 80.0 && (this.frame + st.id) % 2 == 1) { continue }
             if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
             float y = this.Height(this.carGround, slot, terrain, view, st.east, st.north)
-            m.Place(st.east - view.originE, y, -(st.north - view.originN), st.heading, 0.0)
+            // unverändert (steht): nichts zu tun
+            int pi = slot * 4
+            if (Math.Abs(this.carPlaced[pi] - st.east) < 0.001 && Math.Abs(this.carPlaced[pi + 1] - st.north) < 0.001 && Math.Abs(this.carPlaced[pi + 2] - st.heading) < 0.01 && this.carPlaced[pi + 3] == (near ? 1.0 : 0.0)) { continue }
+            this.carPlaced[pi] = st.east
+            this.carPlaced[pi + 1] = st.north
+            this.carPlaced[pi + 2] = st.heading
+            this.carPlaced[pi + 3] = near ? 1.0 : 0.0
+            int count = m.parts.Count
+            if (!near) { count = this.BodyParts(this.carKinds[slot]) }
+            TrafficView.PlaceParts(m, st.east - view.originE, y, -(st.north - view.originN), st.heading, count)
         }
         for (int i = 0; i < this.cars.Count; i++) {
             if (this.carOwner[i] >= 0 && this.carStamp[i] != this.frame) {
@@ -421,6 +442,22 @@ class TrafficView {
         return cache[i + 2] - view.originZ
     }
 
+    // Die ersten count Teile eines CarModel an ihren Platz (wie CarModel.Place ohne Schräglage; fern nur Karosserie und Kabine, ohne Licht).
+    static undefined PlaceParts(CarModel m, defined float x, defined float y, defined float z, defined float heading, defined int count) {
+        float h = heading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float rx = Math.Cos(h)
+        float rz = -Math.Sin(h)
+        for (int i = 0; i < count; i++) {
+            float r = m.offsets[i * 3]
+            float u = m.offsets[i * 3 + 1]
+            float f = m.offsets[i * 3 + 2]
+            m.parts[i].SetPosition((x + rx * r + fx * f) * 1m, (y + u) * 1m, (z + rz * r + fz * f) * 1m)
+            m.parts[i].RotationY = heading * 1deg
+        }
+    }
+
     // Wie viele Teile eines CarModel immer zu sehen sind (Karosserie, Kabine; der Rest: Räder und Lichter).
     defined int BodyParts(string kind) {
         if (kind == "transporter") { return 3 }
@@ -447,6 +484,7 @@ class TrafficView {
             this.carStamp.Add(0)
             this.carDetail.Add(true)
             foreach (v in [0.0, 0.0, 0.0]) { this.carGround.Add(v) }
+            foreach (v in [0.0, 0.0, 0.0, -1.0]) { this.carPlaced.Add(v) }
             slot = this.cars.Count - 1
         }
         var model = this.cars[slot]
@@ -454,6 +492,7 @@ class TrafficView {
         if (c.kind == Raser.NpcState.Van) { model.parts[1].Color = color }
         foreach (p in model.parts) { p.Visible = true }
         this.carDetail[slot] = true
+        this.carPlaced[slot * 4 + 3] = -1.0
         this.carOwner[slot] = c.id
         this.carSlot[c.id] = slot
         return slot
@@ -481,7 +520,7 @@ class TrafficView {
 
     // Die Meldung oben in der Anzeige.
     undefined Draw(Renderer hud, Brush ink, Brush shade, defined int width) {
-        if (!this.enabled || this.messageTime <= 0.0 || this.message == "") { return }
+        if (this.messageTime <= 0.0 || this.message == "") { return }
         hud.FillRect(12, 12, Math.Min(width - 24, this.message.Length * 9 + 24), 30, shade)
         hud.DrawText(22, 19, this.message, ink)
     }
@@ -496,6 +535,36 @@ class TrafficView {
         float z = -(n - view.originN)
         cam.SetPosition((x + Math.Sin(h) * high * 0.4) * 1m, (y + high) * 1m, (z + Math.Cos(h) * high * 0.4) * 1m)
         cam.LookAt((x - Math.Sin(h) * high * 0.5) * 1m, y * 1m, (z - Math.Cos(h) * high * 0.5) * 1m)
+    }
+
+    // Für Bilder: die Kamera hinter den nächsten NPC der Art ("auto": Auto oder Transporter, sonst Fußgänger), Blick in seine Richtung (+ look Grad).
+    undefined Follow(Camera cam, Ground terrain, WorldView view, defined float e, defined float n, string what, defined float look) {
+        Raser.NpcState best = undefined
+        float bestD = 1.0e30
+        foreach (st in this.states) {
+            if (st.IsPerson == (what == "auto")) { continue }
+            float d = (st.east - e) * (st.east - e) + (st.north - n) * (st.north - n)
+            if (d < bestD && d > 9.0) {
+                bestD = d
+                best = st
+            }
+        }
+        if (best == undefined) { return }
+        float back = 9.0
+        float up = 3.5
+        if (best.IsPerson) {
+            back = 4.5
+            up = 2.2
+        }
+        float y = 0.0
+        any g = terrain.At(best.east, best.north)
+        if (g != undefined) { y = g - view.originZ }
+        float h = (best.heading + look) * Math.PI / 180.0
+        float x = best.east - view.originE
+        float z = -(best.north - view.originN)
+        cam.SetPosition((x + Math.Sin(h) * back) * 1m, (y + up) * 1m, (z + Math.Cos(h) * back) * 1m)
+        cam.LookAt((x - Math.Sin(h) * 6.0) * 1m, (y + 0.5) * 1m, (z - Math.Cos(h) * 6.0) * 1m)
+        print("Kamera hinter NPC " + best.id + " bei " + best.east + ", " + best.north + ", Richtung " + best.heading + ", Tempo " + best.speed + ", Zustand " + best.state)
     }
 
     // Eine Zeile für Messungen.
