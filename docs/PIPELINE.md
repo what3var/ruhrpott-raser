@@ -30,7 +30,7 @@ tools/fetch-bochum.sh                 # Rohdaten der Testregion (rund 230 MB)
 FORGE=/pfad/zu/forge tools/build-bochum.sh
 ```
 
-Das Werkzeug läuft in der VM (`forge run RuhrpottRaser.firesln -- info`), für echte Daten aber nativ: `forge build RuhrpottRaser.firesln --engine native -m RELEASE`
+Das Werkzeug läuft in der VM (`forge run RuhrpottRaser.firesln -- info`), für echte Daten aber nativ: `forge build RuhrpottRaser.firesln --engine native -m RELEASE --toolchain gcc`
 baut `src/Raser.Tool/bin/linux-rel/Raser.Tool`. Gemessen an der Testregion (Bochum-Innenstadt, 2 × 2 km, 49 vollständige Kacheln):
 
 | Schritt | Dauer (nativ) |
@@ -123,7 +123,7 @@ Je Chunk-Säule wird einmal ein Plan der 64 × 64 Voxel-Säulen gerechnet (gilt 
 ## Betrachter
 
 ```bash
-forge build RuhrpottRaser.firesln -p Raser.Viewer --engine native -m RELEASE
+forge build RuhrpottRaser.firesln -p Raser.Viewer --engine native -m RELEASE --toolchain gcc
 src/Raser.Viewer/bin/linux-rel/Raser.Viewer --world world --at 376130,5704900 --radius 2 --distance 110 --pitch -40 --shot rathaus.png
 ```
 

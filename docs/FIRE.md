@@ -15,6 +15,13 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 
 | Elemente mit `RemoveAt` aus einer Liste nehmen, die aus `Json.Deserialize` kam, und die Liste danach wieder schreiben: „A value to write to JSON is destroyed“ (gefunden in Raser.Greens mit fire master, nativ). | die Liste mit `TakeAt` umlegen und die behaltenen mit `take` zurück | offen |
 
+## Werkzeuge
+
+- **`forge build -m RELEASE` übersetzt seit 04dd5fe8 mit TinyCC** (der Compiler für „Build“ ist automatisch tcc, gcc nur für `forge publish`). Für
+  Ruhrpott-Raser heißt das: ein Release ohne `--toolchain gcc` ist ein langsames Spiel und ein langsames `raser setup`. Wunsch: `-m RELEASE` bzw.
+  `PERFORMANCE` nimmt den Compiler für „Publish“ (oder warnt), tcc nur für DEBUG. Umweg: `--toolchain gcc` in allen Bauanleitungen (README). Stand
+  fire master 58efe6cb.
+
 ## scene3d
 
 | Was | Warum | Stand |

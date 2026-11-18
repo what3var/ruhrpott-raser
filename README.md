@@ -25,7 +25,7 @@ und `Raser.Tool` (das Werkzeug der Pipeline):
 
 ```bash
 forge test RuhrpottRaser.firesln                                   # alle Tests
-forge build RuhrpottRaser.firesln --engine native -m RELEASE      # src/Raser.Tool/bin/linux-rel/Raser.Tool
+forge build RuhrpottRaser.firesln --engine native -m RELEASE --toolchain gcc      # src/Raser.Tool/bin/linux-rel/Raser.Tool
 tools/fetch-bochum.sh && tools/build-bochum.sh                     # Testregion Bochum-Innenstadt: Rohdaten -> Chunks -> world.png
 ```
 
@@ -35,7 +35,7 @@ Das Spiel braucht fertige Weltdaten in `world/` (nicht im Repository: Kacheln 31
 mit dem Werkzeug selbst (`src/Raser.Tool/setup.fire`):
 
 ```bash
-forge build RuhrpottRaser.firesln -p Raser.Tool --engine native -m RELEASE -o raser
+forge build RuhrpottRaser.firesln -p Raser.Tool --engine native -m RELEASE --toolchain gcc -o raser
 raser setup                 # Rohdaten laden (DGM1/LoD2 von opengeodata.nrw.de, OSM), importieren, voxelisieren - etwa 40 min
 raser setup --meshes 1      # dazu den Netz-Cache (noch etwa 45 min; sonst baut ihn das Spiel beim Fahren nach und nach)
 raser fetch                 # nur die Rohdaten nach data/raw (fortsetzbar, Vorhandenes wird übersprungen)
@@ -54,7 +54,7 @@ raser-game --world world-lichtendorf --at 402300,5702000
 Unter Windows heißt das Programm `raser.exe`; Optionen: `--raw <ordner>` (Rohdaten, Vorgabe `data/raw`), `--world <ordner>` (Vorgabe `world`),
 `--jobs <n>` (Worker-Threads). Voxelisieren und Netz-Cache laufen auf allen Kernen, je Kachel ein Worker (`fire dedicated`); beim Voxelisieren
 braucht ein Worker bis gut 2 GB, darum höchstens so viele, wie in 80 % des freien Speichers passen. Wichtig: das Werkzeug nativ als Release
-bauen (`--engine native -m RELEASE`), in der VM ist es ein Vielfaches langsamer.
+bauen (`--engine native -m RELEASE --toolchain gcc`), in der VM ist es ein Vielfaches langsamer. `--toolchain gcc` (bzw. `clang`, unter Windows `msvc`) ist seit fire 58efe6cb nötig: `forge build` nimmt sonst TinyCC, das schnell übersetzt, aber deutlich langsameren Code erzeugt.
 
 ## Menü im Spiel
 
@@ -83,7 +83,7 @@ Größe, Zeit und SHA-256 der installierten Dateien (so wird beim nächsten Star
 selbst installiert hat und die das Release nicht mehr hat. Netzarbeit läuft in eigenen Threads (`fire dedicated`), das Fenster bleibt bedienbar.
 
 ```bash
-forge build RuhrpottRaser.firesln -p Raser.Launcher --engine native -m RELEASE -o raser-launcher
+forge build RuhrpottRaser.firesln -p Raser.Launcher --engine native -m RELEASE --toolchain gcc -o raser-launcher
 raser-launcher                                                         # das Fenster
 raser-launcher --check --server 127.0.0.1:7480 --user anna --password geheim --install spiel   # ohne Fenster: anmelden, News, Update
 raser-launcher --check ... --register | --no-update | --play           # registrieren / nur vergleichen / danach das Spiel starten
