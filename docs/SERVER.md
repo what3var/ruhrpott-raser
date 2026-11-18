@@ -64,14 +64,14 @@ Feste Schnittstelle für den Launcher. JSON in UTF-8, Fehler als `{"error": "...
 Der Launcher startet das Spiel mit `--server <host>:7481 --token <token> --user <name>`. Die Liste der Dateien (Größe, SHA-256) entsteht beim Start
 des Servers; ein neuer Build heißt: Server neu starten.
 
-## Spielprotokoll (TCP, Port 7481), Version 2
+## Spielprotokoll (TCP, Port 7481), Version 3
 
 **Rahmen:** 2 Byte Länge (Little Endian), dann so viele Bytes Nachricht: 1 Byte Art, dann die Felder (`Raser.ByteWriter`: Varints, ZigZag für
 Vorzeichen, Texte als Länge + UTF-8, `Float64` bitgenau). Lage in cm (UTM 32, Ost/Nord), Richtung in 1/100 Grad, Tempo in cm/s. Ein Client darf
 höchstens 1 KiB je Rahmen schicken, der Server bis 64 KiB.
 
 Der Server ist maßgeblich: der Client schickt keine Lagen mehr, nur seine **Eingaben je Takt** und **Operationen am Inventar**. Ein Client mit
-Protokoll 1 bekommt beim Hello ein Reject ("Protokoll 1 passt nicht, der Server spricht 2: bitte den Launcher aktualisieren."); eine State-Nachricht
+Protokoll 1 oder 2 bekommt beim Hello ein Reject ("Protokoll 2 passt nicht, der Server spricht 3: bitte den Launcher aktualisieren."); eine State-Nachricht
 (Lage wie in v1) wirft hinaus.
 
 | Art | Richtung | Inhalt |
@@ -242,13 +242,21 @@ die Folge, in der Kacheln kommen, ändert nichts.
 7. Probe: `tools/server-smoke.sh` mit Welt lässt in Runde 3 zwei Bots am selben Ort stehen; beide drucken alle 2 s die NPCs (ID, Lage in cm)
    zum selben Takt - das Skript vergleicht sie.
 
-**Brücken:** Straßen mit OSM `layer` > 0 (Tunnel nimmt der Import nicht auf) gehören zum Graphen, auf ihrer Ebene: Knoten nur zwischen
-Straßen derselben Ebene, außer an den Enden einer Straße (Rampen) - eine Brücke über eine Straße ist keine Kreuzung. Ihre Spuren haben eine
-Höhe (zwischen dem Gelände an den Enden der Brücke, mindestens das Gelände darunter); NPCs auf einer Brücke tragen sie (`NpcState.z`,
-Entität `b` in cm) und kümmern sich nur um ihre Ebene (keine Bremsung für Autos und Spieler darunter, keine Stöße mit ihnen). Auf Brücken
-erscheint nichts, es fährt nur darüber. Die Welt zeichnet Brücken noch nicht (eine Straße mit layer > 0 liegt als Belag auf dem Gelände); solange
-stellt das Spiel die NPCs dort auf das Gelände (`TrafficView.BridgesDrawn`). Der Import behält nur `layer`, nicht `bridge=yes`: Brücken ohne
-layer-Tag sind für den Verkehr ebenerdig.
+**Brücken:** Straßen und Bahnen mit OSM `layer` > 0 (Tunnel nimmt der Import nicht auf, Treppen bleiben am Boden) haben ein Deck
+(`Raser.Bridges` in Raser.World - dieselbe Rechnung für Netz, Verkehr und Fahrphysik, auf dem Server wie im Client): je Meter die Höhe der
+Oberkante, das Höchste aus Gelände + 15 cm, der Geraden zwischen den Enden (schließen beide an eine Straße der Ebene 0 an) und je Kreuzung mit
+einer Straße oder Bahn darunter deren Gelände + lichte Höhe (Fahrbahn 4,5 m, Bahn 5,5 m, Fußweg 2,8 m) + 0,8 m Deck, zu den Seiten fallend
+(8 % / 3,5 % / 12 %). Gezeichnet wird es als Netz (`Raser.BridgeMesher`: Belag, Unterseite, Brüstungen bzw. Geländer, Pfeiler alle 15 m wo
+das Deck über 1 m hoch liegt und nicht auf einer Fahrbahn darunter, Widerlager an hohen Enden), nah und fern; das Gelände trägt den Belag der
+Brücke nicht mehr. Der Verkehr: Knoten nur zwischen Straßen derselben Ebene (außer an den Enden), Spuren mit der Höhe des Decks, NPCs darauf
+(`NpcState.z`, Entität `b` in cm) kümmern sich nur um ihre Ebene; erscheinen tut auf Brücken nichts.
+
+**Spieler auf Brücken** (`Raser.Sim`): Fahrzeug und Spieler haben `bridge` (die ID der Brücke, 0: Gelände). Auf ein Deck kommt man nur an
+seinen Enden (wo es höchstens 0,7 m über dem Gelände liegt: `Obstacles.Level`), darauf halten die Brüstungen (`Obstacles.PushBridge`), unten
+fährt man durch; wo ein Deck niedrig ist (unter 2,5 m), ist seine Seite von unten eine Wand, die Pfeiler halten auf. Fahrzeuge stoßen nur
+mit Fahrzeugen derselben Ebene zusammen. Im Protokoll (Version **3**) steht `bridge` im eigenen Zustand (Spieler und Fahrzeug, bitgenau wie der
+Rest); andere Spieler und Fahrzeuge tragen das Bit `OnBridge` (16), der Client nimmt dann die höchste Brücke an ihrer Stelle
+(`Obstacles.DeckUnder`). Die Höhe im Bild: `Ground.AtLevel` (Deck oder Gelände).
 
 ## Persistenz
 

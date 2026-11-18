@@ -26,6 +26,7 @@ namespace Raser {
             this.models = new List<RoofModel>()
             foreach (b in tile.data.buildings) {
                 if (b.footprint == undefined || b.footprint.length < 6 || b.ridge <= b.ground) { continue }
+                if (Raser.Bridges.Replaced(b, tile.data.roads)) { continue }
                 this.models.Add(new Raser.RoofModel(b, seed))
             }
             Raser.HouseStyle.Assign(this.models, tile.data, tile.key.x * 256.0, tile.key.y * 256.0, seed)

@@ -121,6 +121,23 @@ namespace Raser {
 
         static defined bool IsFoot(string kind) { return kind == "highway=footway" || kind == "highway=path" || kind == "highway=pedestrian" || kind == "highway=cycleway" || kind == "highway=bridleway" }
 
+        // Ein Brückenbauwerk aus LoD2 (ALKIS 53001: Brücke, Überführung), über das eine Brücke aus OSM führt? Dann zeichnet das Deck die Brücke
+        // (Raser.BridgeMesher) - das Bauwerk fiele sonst als Block bis auf das Gelände und versperrte die Straße darunter.
+        static defined bool Replaced(Building b, List<Road> roads) {
+            if (b.function == undefined || !b.function.StartsWith("alkis=53001") || b.footprint == undefined) { return false }
+            var box = Raser.Box2.Of(b.footprint)
+            box.Grow(2.0)
+            foreach (r in roads) {
+                if (!Raser.Bridges.IsBridge(r)) { continue }
+                for (int k = 0; k + 1 < r.points.length; k = k + 2) {
+                    if (box.Contains(r.points[k], r.points[k + 1])) { return true }
+                }
+                // auch, wenn die Linie das Bauwerk nur quert
+                if (Raser.Geo.DistanceToLine(r.points, (box.minX + box.maxX) * 0.5, (box.minY + box.maxY) * 0.5) < Math.Max(box.maxX - box.minX, box.maxY - box.minY) * 0.5) { return true }
+            }
+            return false
+        }
+
         // Die lichte Höhe über einer Straße darunter (m).
         static defined float Clearance(Road o) {
             if (o.kind.StartsWith("railway=")) { return 5.5 }
@@ -210,6 +227,8 @@ namespace Raser {
                         float t = Raser.Bridges.Cross(ax, ay, bx, by, o.points[k], o.points[k + 1], o.points[k + 2], o.points[k + 3])
                         if (t < 0.0) { continue }
                         float s = d.acc[i] + t * (d.acc[i + 1] - d.acc[i])
+                        // an den eigenen Enden schließen Straßen an (Rampe, weiterführende Gleise): das ist keine Kreuzung darunter
+                        if (s < 1.0 || s > total - 1.0) { continue }
                         float c = heights.At(ax + (bx - ax) * t, ay + (by - ay) * t) + need
                         for (int q = 0; q < m; q++) {
                             float v = c - slope * Math.Abs(q * Raser.BridgeDeck.Step - s)

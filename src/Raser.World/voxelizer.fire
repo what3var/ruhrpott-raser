@@ -222,7 +222,8 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
-        // 32: Brücken (Straßen und Bahnen mit layer > 0) nicht mehr als Belag auf dem Gelände - sie liegen auf ihrem Deck (Raser.Bridges)
+        // 32: Brücken (Straßen und Bahnen mit layer > 0) nicht mehr als Belag auf dem Gelände - sie liegen auf ihrem Deck (Raser.Bridges);
+        //     Brückenbauwerke aus LoD2 (ALKIS 53001) unter einer Brücke aus OSM entfallen (das Deck ersetzt sie)
         // 31: Ort (Altstadt, Land, Industrie ...) und besondere Gebäude (Raser.BuildingKinds): Dach auf Stützen, Parkhaus mit offenen Geschossen,
         //     Hallen mit Rolltoren und Lichtbändern; Fachwerk mit Ziegeln auf dem Land; Gebiete und OSM-Tags der Gebäude aus dem Import
         // 30: Aussehen je Gebäude (Raser.HouseStyle): Bautyp, Farbfamilie je Viertel, Fassaden-Farben (Palette 128 .. 159, 180 .. 247), Sockel,
@@ -281,6 +282,8 @@ namespace Raser {
             foreach (b in tile.data.buildings) {
                 if (b.footprint == undefined || b.footprint.length < 6) { continue }
                 if (b.ridge <= b.ground) { continue }
+                // ein Brückenbauwerk unter einer Brücke aus OSM: die zeichnet ihr Deck (Raser.BridgeMesher)
+                if (Raser.Bridges.Replaced(b, tile.data.roads)) { continue }
                 this.models.Add(new Raser.RoofModel(b, seed))
             }
             // erst das Aussehen (es kann den Stil der Fassade vorgeben, Raser.BuildingKinds), dann die Fassade
