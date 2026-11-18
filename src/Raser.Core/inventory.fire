@@ -287,15 +287,18 @@ namespace Raser {
     class ContainerStore {
         List<Raser.Container> all
         defined int next
+        Raser.IdAllocator ids           // auf dem Server: globale IDs (Raser.IdKind.Item); undefined: fortlaufend ab 1
 
         construct() {
             this.all = new List<Raser.Container>()
             this.next = 1
+            this.ids = undefined
         }
 
         defined int Create(defined int kind, defined int size) {
             int id = this.next
             this.next++
+            if (this.ids != undefined) { id = this.ids.Next(Raser.IdKind.Item) }
             this.all.Add(new Raser.Container(id, kind, size))
             return id
         }
@@ -355,16 +358,19 @@ namespace Raser {
         List<Raser.ItemDrop> all
         defined int next
         defined int changes             // zählt jede Änderung (die Szene gleicht sich daran ab)
+        Raser.IdAllocator ids           // auf dem Server: globale IDs (Raser.IdKind.Item); undefined: fortlaufend ab 1
 
         construct() {
             this.all = new List<Raser.ItemDrop>()
             this.next = 1
             this.changes = 0
+            this.ids = undefined
         }
 
         defined int Add(defined float east, defined float north, defined int item, defined int count, defined int data) {
             int id = this.next
             this.next++
+            if (this.ids != undefined) { id = this.ids.Next(Raser.IdKind.Item) }
             this.all.Add(new Raser.ItemDrop(id, east, north, item, count, data))
             this.changes++
             return id
@@ -436,13 +442,14 @@ namespace Raser {
     //   PickUp: der Gegenstand drop vom Boden ins Inventar (Rucksack: auf den Rücken, wenn der frei ist; Geld: wird Bargeld)
     //   Use:    den Gegenstand (source, sourceSlot) benutzen - essen, trinken, Lampe an/aus, rauchen, mit dem Kanister tanken, mit dem
     //           Schraubenschlüssel reparieren (Inventory.Use; das Fahrzeug ist Inventory.vehicle, das der Server selbst setzt)
-    // Die Nummern der Arten bleiben fest; neue kommen hinten dazu.
+    // Die Nummern der Arten bleiben fest; neue kommen hinten dazu (5 und 6 vergibt das Protokoll: Raser.Protocol.OpOpen/OpClose).
     class InvOp {
         static readonly defined int Move = 1
         static readonly defined int Swap = 2
         static readonly defined int Drop = 3
         static readonly defined int PickUp = 4
-        static readonly defined int Use = 5
+        // 5 und 6 sind im Protokoll Öffnen/Schließen eines Rucksacks am Boden (Raser.Protocol.OpOpen/OpClose)
+        static readonly defined int Use = 7
 
         defined int kind
         defined int source
@@ -485,9 +492,9 @@ namespace Raser {
         }
 
         string ToString() {
-            string names[] = ["?", "Move", "Swap", "Drop", "PickUp", "Use"]
+            string names[] = ["?", "Move", "Swap", "Drop", "PickUp", "Open", "Close", "Use"]
             string k = "?"
-            if (this.kind >= 1 && this.kind <= 5) { k = names[this.kind] }
+            if (this.kind >= 1 && this.kind <= 7) { k = names[this.kind] }
             return k + " " + this.source + ":" + this.sourceSlot + " -> " + this.target + ":" + this.targetSlot + " x" + this.count + " drop " + this.drop
         }
     }

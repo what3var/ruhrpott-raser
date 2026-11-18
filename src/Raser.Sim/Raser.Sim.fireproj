@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "name": "Raser.Sim",
+  "type": "library",
+  "import": "raser.sim",
+  "references": [
+    { "project": "../Raser.Core/Raser.Core.fireproj" },
+    { "project": "../Raser.World/Raser.World.fireproj" }
+  ],
+  "settings": {
+    "version": "0.1.0",
+    "description": "Ruhrpott-Raser: die Simulation ohne Szene - Hindernisse der Kacheln, Fahrzeuge und Spieler mit Aufprall, Eingaben je Takt; dieselbe Rechnung in Client und Server."
+  }
+}

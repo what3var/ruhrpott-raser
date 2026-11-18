@@ -1,15 +1,17 @@
 // Raser.Server: der Server (docs/SERVER.md) - jetzt ein Prozess mit Koordinator, einem Regionsserver und den globalen Diensten.
 //
 //   raser-server [--data data] [--release release] [--admin name] [--host ""] [--http 7480] [--game 7481] [--time 14:00] [--weather klar]
-//                [--timescale 1] [--rounds 20000]
+//                [--timescale 1] [--rounds 20000] [--world world]
 //
-// Die Launcher-API läuft in einem eigenen Thread (`fire dedicated`: sie wartet im Netz), das Spiel im Hauptthread mit 20 Takten je s
-// (Snapshots 10-mal je s, das Wetter alle 10 s und bei jeder Änderung).
+// Die Launcher-API läuft in einem eigenen Thread (`fire dedicated`: sie wartet im Netz), das Spiel im Hauptthread mit festen 30 Takten je s
+// (Raser.SimWorld: die Physik aller Spieler und Fahrzeuge, mit den Hindernissen der Kacheln aus --world; Snapshots 15-mal je s, das Wetter alle
+// 10 s und bei jeder Änderung).
 #import "time"
 #import "filesystem"
 #import "http"
 #import "raser.core"
 #import "raser.net"
+#import "raser.sim"
 
 // Die Optionen der Kommandozeile (--name wert).
 class ServerOptions {
@@ -53,10 +55,11 @@ class Server {
         var clock = new WorldClock(Raser.Commands.Clock(options.Get("time", "14:00")), options.Get("weather", "klar"), options.Get("timescale", "1").ToFloat())
         // Koordinator und Regionsserver
         var coordinator = new Coordinator()
-        var region = new RegionServer(coordinator.regions[0])
+        string world = options.Get("world", "")
+        var region = new RegionServer(coordinator.regions[0], world)
         ServerStatus.region = region.region.name
         var gateway = new Gateway(host, gamePort, accounts, coordinator, region, clock)
-        Gateway.Log("Spielprotokoll v" + Raser.Protocol.Version + " auf Port " + gamePort + ", Region " + region.region.name + ", " + accounts.Count() + " Konten in " + dbPath)
+        Gateway.Log("Spielprotokoll v" + Raser.Protocol.Version + " auf Port " + gamePort + ", Region " + region.region.name + ", " + accounts.Count() + " Konten in " + dbPath + ", " + Math.Round(Raser.SimWorld.Hz) + " Takte je s, Welt " + (world == "" ? "keine (ohne Hindernisse)" : world))
 
         // die Launcher-API im eigenen Thread
         fire dedicated taking dbPath taking admin taking release taking data taking host taking httpPort taking rounds {
@@ -73,9 +76,10 @@ class Server {
             }
         }
 
-        // das Spiel: 20 Takte je s
-        int tick = 0
+        // das Spiel: feste 30 Takte je s (hinkt der Server hinterher, holt er bis zu 5 Takte auf einmal nach, dann lässt er Zeit fallen)
+        int tickTicks = Math.Round(10000000.0 / Raser.SimWorld.Hz)!int
         int last = DateTime.UtcNow.Ticks
+        int due = last
         int lastWeather = 0
         int changes = clock.changes
         while (true) {
@@ -84,15 +88,20 @@ class Server {
             last = start
             clock.Advance(dt)
             gateway.Tick()
-            tick++
-            if (tick % 2 == 0) { region.SendSnapshots(Gateway.Millis()) }
+            int steps = 0
+            while (start >= due && steps < 5) {
+                region.Step(Gateway.Millis())
+                due = due + tickTicks
+                steps++
+            }
+            if (start - due > tickTicks * 5) { due = start }
             if (clock.changes != changes || start - lastWeather > 100000000) {
                 changes = clock.changes
                 lastWeather = start
                 gateway.Broadcast(clock.Packet(), undefined)
             }
             ServerStatus.players = gateway.Online()
-            int rest = (500000 - (DateTime.UtcNow.Ticks - start)) / 10000
+            int rest = (due - DateTime.UtcNow.Ticks) / 10000
             if (rest > 0) { Sleep(rest * 1ms) }
         }
         return 0

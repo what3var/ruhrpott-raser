@@ -1,0 +1,1075 @@
+// Raser.Traffic: das Netz der Spuren für Verkehr und Fußgänger (Roadmap: die Stadt lebt) - ohne Szene, also testbar und später auf dem Server
+// dieselbe Rechnung.
+//
+// Aus den Straßen der Kacheln (OSM, Raser.Road) entsteht ein Graph aus Spuren. Alle Lagen sind global (Ost, Nord in m, UTM 32).
+// - Knoten: wo sich Straßen einen Punkt teilen (OSM-Knoten an Einmündungen und Kreuzungen) und an den Enden. Straßen über den Kachelrand stehen in
+//   jeder Kachel ganz (mit derselben ID): sie zählen einmal, so ist der Graph über die Ränder hinweg zusammengenäht.
+// - Fahrspuren (Raser.Props.IsCarRoad): je Abschnitt zwischen zwei Knoten eine Spur je Richtung, rechts der Mittellinie (Rechtsverkehr), um ein
+//   Viertel der Breite versetzt (mindestens 1 m); Einbahnstraßen eine Spur in der Mitte. An Kreuzungen enden die Spuren vor der Kreuzung,
+//   Abbiegespuren (Bézier-Kurven) verbinden jede ankommende mit jeder abgehenden (ohne Wenden; nur in Sackgassen wird gewendet).
+// - Gehwege: an Straßen mit Gehweg (Raser.StreetField.WalkWidth, wie im Netz gezeichnet) beidseitig auf der Mitte des Gehwegs, hinter einem
+//   Grünstreifen (Raser.Strips); dazu Fuß- und Wanderwege, Fußgängerzonen. An Knoten enden sie, wo die Fahrbahn beginnt; kurze Stücke verbinden
+//   sie an den Ecken, Überwege führen über die Fahrbahn (Fußgänger warten dort, Autos bremsen).
+// Einbahnstraßen kennt der Zwischenlayer nicht (kein oneway-Tag): lanes=1, Auffahrten (_link), Autobahnen und die Hälften zweibahniger Straßen
+// (eine gleichartige Straße in Gegenrichtung 5 .. 30 m links daneben) gelten als Einbahnstraßen.
+#import "raser.core"
+#import "raser.world"
+#import "raser.mesh"
+
+namespace Raser {
+    // Die Arten von Spuren.
+    class LaneKind {
+        static readonly defined int Road = 0          // Fahrspur eines Abschnitts
+        static readonly defined int Turn = 1          // Fahrspur durch einen Knoten (abbiegen, geradeaus, wenden)
+        static readonly defined int Sidewalk = 2      // Gehweg neben der Fahrbahn
+        static readonly defined int Footway = 3       // Fußweg, Weg, Fußgängerzone
+        static readonly defined int Link = 4          // Fußweg-Verbindung an einem Knoten (um die Ecke)
+        static readonly defined int Crossing = 5      // über die Fahrbahn
+
+        static defined bool IsCar(defined int kind) { return kind <= 1 }
+    }
+
+    // Eine Spur: eine Linie mit Richtung, ihre Nachfolger und ihr Tempo.
+    class Lane {
+        defined int index
+        defined int kind
+        defined int road              // die ID der Straße (Verbindungen: die Straße davor)
+        defined int fromNode
+        defined int toNode
+        defined int rank              // Vorfahrt: höher geht vor (Hauptstraße 4, Wohnstraße 1, Zufahrt 0)
+        defined int reverse           // die Spur derselben Linie in Gegenrichtung (-1: keine)
+        defined int source            // Verbindungen: die Spur davor
+        defined int target            // Verbindungen: die Spur danach
+        defined float width           // die Breite der Fahrbahn (m; Gehwege: des Gehwegs)
+        defined float spread          // so weit (m) dürfen Fußgänger seitlich von der Linie gehen
+        defined float length
+        defined float limit           // das Wunschtempo (m/s)
+        defined float turn            // Verbindungen: der Winkel (Grad, links positiv)
+        defined float density         // Verkehr: Fahrzeuge bzw. Fußgänger je m
+        float pts[]                   // Ost, Nord, ...
+        float acc[]                   // die Länge bis zu jedem Punkt
+        float vmax[]                  // das Kurventempo an jedem Punkt (m/s)
+        List<int> next
+
+        construct() {
+            this.next = new List<int>()
+            this.reverse = -1
+            this.source = -1
+            this.target = -1
+            this.fromNode = -1
+            this.toNode = -1
+        }
+
+        defined bool IsCar { get { return this.kind <= 1 } }
+
+        // Länge, Abstände und Kurventempo aus den Punkten (Querbeschleunigung höchstens 2,5 m/s²).
+        undefined Finish() {
+            int n = this.pts.length / 2
+            this.acc = new float[n]
+            this.vmax = new float[n]
+            float total = 0.0
+            for (int i = 0; i < n; i++) {
+                if (i > 0) {
+                    float dx = this.pts[i * 2] - this.pts[i * 2 - 2]
+                    float dy = this.pts[i * 2 + 1] - this.pts[i * 2 - 1]
+                    total = total + Math.Sqrt(dx * dx + dy * dy)
+                }
+                this.acc[i] = total
+                this.vmax[i] = this.limit
+            }
+            this.length = total
+            for (int i = 1; i + 1 < n; i++) {
+                float ax = this.pts[i * 2] - this.pts[i * 2 - 2]
+                float ay = this.pts[i * 2 + 1] - this.pts[i * 2 - 1]
+                float bx = this.pts[i * 2 + 2] - this.pts[i * 2]
+                float by = this.pts[i * 2 + 3] - this.pts[i * 2 + 1]
+                float la = Math.Sqrt(ax * ax + ay * ay)
+                float lb = Math.Sqrt(bx * bx + by * by)
+                if (la < 0.001 || lb < 0.001) { continue }
+                float angle = Math.Abs(Math.Atan2(ax * by - ay * bx, ax * bx + ay * by))
+                if (angle < 0.01) { continue }
+                float radius = (la + lb) * 0.5 / angle
+                this.vmax[i] = Math.Min(this.limit, Math.Max(1.5, Math.Sqrt(2.5 * radius)))
+            }
+        }
+
+        // Der Punkt bei s (m entlang, geklemmt): Lage, Richtung (Einheitsvektor) und Kurventempo nach out.
+        undefined At(defined float s, LanePoint out) {
+            int n = this.pts.length / 2
+            if (n < 2) {
+                out.e = this.pts[0]
+                out.n = this.pts[1]
+                out.dx = 0.0
+                out.dy = 1.0
+                out.vmax = this.limit
+                return
+            }
+            float t = Math.Clamp(s, 0.0, this.length)
+            // die Stelle suchen (halbiert)
+            int lo = 0
+            int hi = n - 1
+            while (hi - lo > 1) {
+                int mid = (lo + hi) / 2
+                if (this.acc[mid] <= t) { lo = mid } else { hi = mid }
+            }
+            float ax = this.pts[lo * 2]
+            float ay = this.pts[lo * 2 + 1]
+            float ex = this.pts[hi * 2] - ax
+            float ey = this.pts[hi * 2 + 1] - ay
+            float len = this.acc[hi] - this.acc[lo]
+            float f = 0.0
+            if (len > 0.0001) { f = (t - this.acc[lo]) / len }
+            out.e = ax + ex * f
+            out.n = ay + ey * f
+            float l = Math.Sqrt(ex * ex + ey * ey)
+            if (l > 0.0001) {
+                out.dx = ex / l
+                out.dy = ey / l
+            } else {
+                out.dx = 0.0
+                out.dy = 1.0
+            }
+            out.vmax = this.vmax[lo] + (this.vmax[hi] - this.vmax[lo]) * f
+        }
+
+        defined float EndE { get { return this.pts[this.pts.length - 2] } }
+        defined float EndN { get { return this.pts[this.pts.length - 1] } }
+    }
+
+    // Ein Punkt auf einer Spur (Ergebnis von Lane.At).
+    class LanePoint {
+        defined float e
+        defined float n
+        defined float dx
+        defined float dy
+        defined float vmax
+    }
+
+    // Was der Graph von einer Straße behält (die Kacheln können danach gehen).
+    class RoadInfo {
+        defined int id
+        string kind                   // ohne "highway="
+        defined float width
+        defined int lanes
+        defined float walk            // die Breite des Gehwegs (0: keiner)
+        defined bool car
+        defined bool foot
+        defined bool oneway
+        float pts[]                   // global
+        float line[]                  // geglättet (wie Raser.StreetField)
+        List<float> strips            // Grünstreifen: Seite (1 links, -1 rechts), s0, s1, Breite
+        List<string> tiles            // die Kacheln, in denen sie steht
+
+        construct() {
+            this.strips = new List<float>()
+            this.tiles = new List<string>()
+        }
+    }
+
+    // Ein Abschnitt einer Straße zwischen zwei Knoten.
+    class RoadPiece {
+        RoadInfo road
+        defined int start
+        defined int end
+        defined int first             // der Index des ersten Punkts in road.pts
+        defined int last
+        float line[]                  // geglättet
+
+        construct(RoadInfo road) { this.road = road }
+    }
+
+    class RoadGraph {
+        Dictionary<int, RoadInfo> roads
+        List<Lane> lanes
+        List<float> nodes             // Ost, Nord je Knoten
+        Dictionary<string, int> nodeAt
+        List<List<int>> nodeRoads     // je Knoten die Indizes (in sorted) der Fahrstraßen daran
+        List<int> carDegree           // je Knoten: so viele Fahrbahn-Abschnitte enden dort
+        List<float> nodeHalf          // je Knoten: die halbe Breite der breitesten Fahrbahn
+        List<List<float>> nodeSegs    // je Knoten: die Stücke der Mittellinien bis 40 m um ihn (ax, ay, bx, by, halbe Breite)
+        List<RoadInfo> sorted
+        Dictionary<int, List<int>> grid   // Zellen (32 m) mit den Spuren darin
+        Dictionary<int, bool> conflicts
+        defined int version           // zählt jeden Neubau
+        defined bool dirty
+        LanePoint probe
+        StripProbe stripProbe
+        // nach Nearest
+        defined int foundLane
+        defined float foundS
+        defined float foundDist
+
+        construct() {
+            this.roads = new Dictionary<int, RoadInfo>(Owns.Values)
+            this.lanes = new List<Lane>(Owns.Values)
+            this.nodes = new List<float>()
+            this.nodeAt = new Dictionary<string, int>()
+            this.nodeRoads = new List<List<int>>(Owns.Values)
+            this.carDegree = new List<int>()
+            this.nodeHalf = new List<float>()
+            this.nodeSegs = new List<List<float>>(Owns.Values)
+            this.sorted = new List<RoadInfo>()
+            this.grid = new Dictionary<int, List<int>>(Owns.Values)
+            this.conflicts = new Dictionary<int, bool>()
+            this.probe = new Raser.LanePoint()
+            this.stripProbe = new Raser.StripProbe()
+        }
+
+        // Das Wunschtempo (m/s) nach Art: innerorts 50 km/h an Haupt- und Sammelstraßen, 30 in Wohnstraßen, Schritt in Spielstraßen.
+        static defined float LimitOf(string kind) {
+            if (kind == "motorway") { return 100.0 / 3.6 }
+            if (kind == "trunk" || kind == "motorway_link" || kind == "trunk_link") { return 70.0 / 3.6 }
+            if (kind == "primary" || kind == "secondary" || kind == "tertiary" || kind == "unclassified") { return 50.0 / 3.6 }
+            if (kind.EndsWith("_link")) { return 40.0 / 3.6 }
+            if (kind == "living_street") { return 10.0 / 3.6 }
+            if (kind == "service") { return 20.0 / 3.6 }
+            return 30.0 / 3.6
+        }
+
+        // Die Vorfahrt nach Art (höher geht vor).
+        static defined int RankOf(string kind) {
+            string k = kind
+            if (k.EndsWith("_link")) { k = k.Substring(0, k.Length - 5) }
+            if (k == "motorway" || k == "trunk") { return 5 }
+            if (k == "primary") { return 4 }
+            if (k == "secondary") { return 3 }
+            if (k == "tertiary") { return 2 }
+            if (k == "unclassified" || k == "residential") { return 1 }
+            return 0
+        }
+
+        // Fahrzeuge je 100 m Straße (beide Richtungen) nahe dem Spieler.
+        static defined float CarDensityOf(string kind) {
+            string k = kind
+            if (k.EndsWith("_link")) { return 3.0 }
+            if (k == "motorway" || k == "trunk" || k == "primary") { return 8.0 }
+            if (k == "secondary") { return 7.0 }
+            if (k == "tertiary") { return 6.0 }
+            if (k == "unclassified") { return 5.0 }
+            if (k == "residential") { return 4.0 }
+            return 1.0
+        }
+
+        // Fußgänger je 100 m Gehweg (je Seite) bzw. Fußweg.
+        static defined float WalkDensityOf(string kind, defined bool sidewalk) {
+            if (sidewalk) {
+                if (kind == "primary" || kind == "secondary") { return 4.0 }
+                return 2.5
+            }
+            if (kind == "pedestrian") { return 6.0 }
+            if (kind == "footway") { return 2.0 }
+            return 1.0
+        }
+
+        // Die Straßen einer Kachel übernehmen (Straßen über den Rand nur einmal; ihre Grünstreifen aus jeder Kachel). true: etwas ist neu (dann Build).
+        defined bool AddTile(Tile tile) {
+            if (tile == undefined || tile.data == undefined || tile.data.roads == undefined) { return false }
+            string name = tile.key.ToString()
+            float east = tile.key.East
+            float north = tile.key.North
+            bool changed = false
+            foreach (r in tile.data.roads) {
+                if (r.kind == undefined || r.layer != 0 || !r.kind.StartsWith("highway=") || r.points == undefined || r.points.length < 4) { continue }
+                string k = r.kind.Substring(8)
+                bool car = Raser.Props.IsCarRoad(r)
+                bool foot = k == "footway" || k == "path" || k == "pedestrian"
+                if (!car && !foot) { continue }
+                if (!this.roads.ContainsKey(r.id)) {
+                    var info = new Raser.RoadInfo()
+                    info.id = r.id
+                    info.kind = k
+                    info.width = r.width
+                    info.lanes = r.lanes
+                    info.car = car
+                    info.foot = foot
+                    if (car && Raser.StreetField.IsStreet(r)) { info.walk = Raser.StreetField.WalkWidth(r) }
+                    info.pts = new float[r.points.length]
+                    for (int i = 0; i + 1 < r.points.length; i = i + 2) {
+                        info.pts[i] = r.points[i] + east
+                        info.pts[i + 1] = r.points[i + 1] + north
+                    }
+                    info.line = Raser.StreetField.Smooth(info.pts)
+                    try info.line.TakeTo(info)
+                    this.roads[r.id] = info
+                    changed = true
+                }
+                var known = this.roads[r.id]
+                if (!known.tiles.Contains(name)) { known.tiles.Add(name) }
+                // die Grünstreifen dieser Kachel an der Straße (s entlang der Linie: dieselbe in jeder Kachel)
+                if (tile.strips != undefined && known.walk > 0.0) {
+                    foreach (st in tile.strips) {
+                        if (st.road != r.id) { continue }
+                        bool seen = false
+                        for (int q = 0; q + 3 < known.strips.Count; q = q + 4) {
+                            if (known.strips[q] == st.side && Math.Abs(known.strips[q + 1] - st.s0) < 0.01 && Math.Abs(known.strips[q + 2] - st.s1) < 0.01) { seen = true }
+                        }
+                        if (seen) { continue }
+                        known.strips.Add(st.side)
+                        known.strips.Add(st.s0)
+                        known.strips.Add(st.s1)
+                        known.strips.Add(st.width)
+                        changed = true
+                    }
+                }
+            }
+            if (changed) { this.dirty = true }
+            return changed
+        }
+
+        // Die Straßen vergessen, die in keiner der Kacheln keep mehr stehen. true: etwas ging (dann Build).
+        defined bool Keep(List<string> keep) {
+            var gone = new List<int>()
+            foreach (pair in this.roads) {
+                var info = pair.Value
+                for (int i = info.tiles.Count - 1; i >= 0; i--) {
+                    if (!keep.Contains(info.tiles[i])) { info.tiles.RemoveAt(i) }
+                }
+                if (info.tiles.Count == 0) { gone.Add(pair.Key) }
+            }
+            foreach (id in gone) { this.roads.Remove(id) }
+            if (gone.Count > 0) { this.dirty = true }
+            return gone.Count > 0
+        }
+
+        static string Key(defined float e, defined float n) { return Math.Round(e * 20.0)!int + "_" + Math.Round(n * 20.0)!int }
+
+        defined int NodeOf(defined float e, defined float n) {
+            string k = Raser.RoadGraph.Key(e, n)
+            if (this.nodeAt.ContainsKey(k)) { return this.nodeAt[k] }
+            int id = this.nodes.Count / 2
+            this.nodes.Add(e)
+            this.nodes.Add(n)
+            this.nodeAt[k] = id
+            this.nodeRoads.Add(new List<int>())
+            this.carDegree.Add(0)
+            this.nodeHalf.Add(0.0)
+            this.nodeSegs.Add(new List<float>())
+            return id
+        }
+
+        defined float NodeE(defined int node) { return this.nodes[node * 2] }
+        defined float NodeN(defined int node) { return this.nodes[node * 2 + 1] }
+
+        // Den Graphen aus allen bekannten Straßen neu bauen (sortiert nach ID: dieselben Straßen geben denselben Graphen, egal in welcher Folge
+        // die Kacheln kamen).
+        undefined Build() {
+            this.lanes.Clear()
+            this.nodes.Clear()
+            this.nodeAt.Clear()
+            this.nodeRoads.Clear()
+            this.carDegree.Clear()
+            this.nodeHalf.Clear()
+            this.nodeSegs.Clear()
+            this.grid.Clear()
+            this.conflicts.Clear()
+            this.sorted.Clear()
+            foreach (pair in this.roads) { this.sorted.Add(pair.Value) }
+            this.sorted.Sort((a, b) => a.id < b.id ? -1 : (a.id > b.id ? 1 : 0))
+            // Einbahnstraßen
+            foreach (r in this.sorted) {
+                r.oneway = false
+                if (!r.car) { continue }
+                if (r.lanes == 1 || r.kind == "motorway" || r.kind.EndsWith("_link")) { r.oneway = true } else if (r.lanes != 1 && Raser.RoadGraph.RankOf(r.kind) >= 2 && this.Twin(r)) { r.oneway = true }
+            }
+            // wie viele Straßen sich einen Punkt teilen
+            var carUse = new Dictionary<string, int>()
+            var allUse = new Dictionary<string, int>()
+            foreach (r in this.sorted) {
+                for (int i = 0; i + 1 < r.pts.length; i = i + 2) {
+                    string k = Raser.RoadGraph.Key(r.pts[i], r.pts[i + 1])
+                    if (r.car) { carUse[k] = carUse.Get(k, 0) + 1 }
+                    allUse[k] = allUse.Get(k, 0) + 1
+                }
+            }
+            // Abschnitte der Fahrbahnen
+            var carPieces = new List<RoadPiece>(Owns.Values)
+            for (int ri = 0; ri < this.sorted.Count; ri++) {
+                var r = this.sorted[ri]
+                if (!r.car) { continue }
+                this.Split(r, ri, carUse, carPieces, true)
+            }
+            foreach (p in carPieces) {
+                this.carDegree[p.start] = this.carDegree[p.start] + 1
+                this.carDegree[p.end] = this.carDegree[p.end] + 1
+                this.nodeHalf[p.start] = Math.Max(this.nodeHalf[p.start], p.road.width / 2.0)
+                this.nodeHalf[p.end] = Math.Max(this.nodeHalf[p.end], p.road.width / 2.0)
+            }
+            foreach (p in carPieces) { this.CarLanes(p) }
+            // je Knoten die nahen Stücke der Fahrbahnen (für OnCarriageway)
+            for (int node = 0; node < this.nodeRoads.Count; node++) {
+                var segs = this.nodeSegs[node]
+                float ne = this.NodeE(node)
+                float nn = this.NodeN(node)
+                foreach (ri in this.nodeRoads[node]) {
+                    var r = this.sorted[ri]
+                    for (int i = 0; i + 3 < r.line.length; i = i + 2) {
+                        if (Raser.Geo.DistanceToSegment(ne, nn, r.line[i], r.line[i + 1], r.line[i + 2], r.line[i + 3]) > 40.0) { continue }
+                        foreach (v in [r.line[i], r.line[i + 1], r.line[i + 2], r.line[i + 3], r.width / 2.0]) { segs.Add(v) }
+                    }
+                }
+            }
+            // Abbiegespuren an den Knoten
+            int roadLanes = this.lanes.Count
+            var ins = new Dictionary<int, List<int>>(Owns.Values)
+            var outs = new Dictionary<int, List<int>>(Owns.Values)
+            for (int i = 0; i < roadLanes; i++) {
+                var l = this.lanes[i]
+                if (!ins.ContainsKey(l.toNode)) { ins[l.toNode] = new List<int>() }
+                ins[l.toNode].Add(i)
+                if (!outs.ContainsKey(l.fromNode)) { outs[l.fromNode] = new List<int>() }
+                outs[l.fromNode].Add(i)
+            }
+            foreach (pair in ins) {
+                if (!outs.ContainsKey(pair.Key)) { continue }
+                var o = outs[pair.Key]
+                foreach (a in pair.Value) {
+                    int made = 0
+                    foreach (b in o) {
+                        if (b == this.lanes[a].reverse) { continue }
+                        if (this.Connect(a, b, pair.Key, false)) { made++ }
+                    }
+                    // Sackgasse (oder nur Einbahnstraßen hinein): wenden
+                    if (made == 0 && this.lanes[a].reverse >= 0) { this.Connect(a, this.lanes[a].reverse, pair.Key, true) }
+                }
+            }
+            // Gehwege und Fußwege
+            var walkPieces = new List<RoadPiece>(Owns.Values)
+            for (int ri = 0; ri < this.sorted.Count; ri++) {
+                var r = this.sorted[ri]
+                if (!(r.foot || r.walk > 0.0)) { continue }
+                this.Split(r, ri, allUse, walkPieces, false)
+            }
+            int walkStart = this.lanes.Count
+            foreach (p in walkPieces) { this.WalkLanes(p) }
+            int walkEnd = this.lanes.Count
+            var wins = new Dictionary<int, List<int>>(Owns.Values)
+            var wouts = new Dictionary<int, List<int>>(Owns.Values)
+            for (int i = walkStart; i < walkEnd; i++) {
+                var l = this.lanes[i]
+                if (!wins.ContainsKey(l.toNode)) { wins[l.toNode] = new List<int>() }
+                wins[l.toNode].Add(i)
+                if (!wouts.ContainsKey(l.fromNode)) { wouts[l.fromNode] = new List<int>() }
+                wouts[l.fromNode].Add(i)
+            }
+            foreach (pair in wins) {
+                if (!wouts.ContainsKey(pair.Key)) { continue }
+                var o = wouts[pair.Key]
+                foreach (a in pair.Value) {
+                    foreach (b in o) {
+                        if (b == this.lanes[a].reverse) { continue }
+                        this.WalkLink(a, b, pair.Key)
+                    }
+                }
+            }
+            this.Index()
+            this.version++
+            this.dirty = false
+        }
+
+        // Eine Straße an ihren Knoten teilen: Abschnitte von Knoten zu Knoten (Knoten: die Enden und jeder Punkt, den use mindestens zweimal zählt).
+        undefined Split(RoadInfo r, defined int ri, Dictionary<string, int> use, List<RoadPiece> into, defined bool car) {
+            int n = r.pts.length / 2
+            int start = 0
+            int startNode = this.NodeOf(r.pts[0], r.pts[1])
+            if (car) { this.AddRoadAt(startNode, ri) }
+            for (int i = 1; i < n; i++) {
+                string k = Raser.RoadGraph.Key(r.pts[i * 2], r.pts[i * 2 + 1])
+                if (i < n - 1 && use.Get(k, 0) < 2) { continue }
+                int node = this.NodeOf(r.pts[i * 2], r.pts[i * 2 + 1])
+                if (car) { this.AddRoadAt(node, ri) }
+                if (node != startNode || i - start > 1) {
+                    var p = new Raser.RoadPiece(r)
+                    p.start = startNode
+                    p.end = node
+                    p.first = start
+                    p.last = i
+                    float raw[] = new float[(i - start + 1) * 2]
+                    for (int q = start * 2; q <= i * 2 + 1; q++) { raw[q - start * 2] = r.pts[q] }
+                    p.line = Raser.StreetField.Smooth(raw)
+                    try p.line.TakeTo(p)
+                    into.Add(take p)
+                }
+                start = i
+                startNode = node
+            }
+        }
+
+        undefined AddRoadAt(defined int node, defined int ri) {
+            var list = this.nodeRoads[node]
+            if (!list.Contains(ri)) { list.Add(ri) }
+        }
+
+        // Die Hälfte einer zweibahnigen Straße? Eine Straße mindestens gleichen Rangs läuft 5 .. 30 m links daneben in Gegenrichtung (an der
+        // Hälfte der Proben).
+        defined bool Twin(RoadInfo r) {
+            int rank = Raser.RoadGraph.RankOf(r.kind)
+            int samples = 0
+            int hits = 0
+            int n = r.pts.length / 2
+            for (int i = 0; i + 1 < n && samples < 6; i++) {
+                float ax = r.pts[i * 2]
+                float ay = r.pts[i * 2 + 1]
+                float ex = r.pts[i * 2 + 2] - ax
+                float ey = r.pts[i * 2 + 3] - ay
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len < 8.0) { continue }
+                samples++
+                float px = ax + ex * 0.5
+                float py = ay + ey * 0.5
+                float dx = ex / len
+                float dy = ey / len
+                bool found = false
+                foreach (o in this.sorted) {
+                    if (found) { break }
+                    if (o == r || !o.car || Raser.RoadGraph.RankOf(o.kind) < rank - 1) { continue }
+                    int m = o.pts.length / 2
+                    for (int j = 0; j + 1 < m; j++) {
+                        float bx = o.pts[j * 2]
+                        float by = o.pts[j * 2 + 1]
+                        float fx = o.pts[j * 2 + 2] - bx
+                        float fy = o.pts[j * 2 + 3] - by
+                        float l2 = fx * fx + fy * fy
+                        if (l2 < 1.0) { continue }
+                        float t = Math.Clamp(((px - bx) * fx + (py - by) * fy) / l2, 0.0, 1.0)
+                        float qx = bx + fx * t - px
+                        float qy = by + fy * t - py
+                        float d = Math.Sqrt(qx * qx + qy * qy)
+                        if (d < 5.0 || d > 30.0) { continue }
+                        float l = Math.Sqrt(l2)
+                        // Gegenrichtung, und links: (-dy, dx)
+                        if ((fx * dx + fy * dy) / l < -0.85 && qx * -dy + qy * dx > 0.0) {
+                            found = true
+                            break
+                        }
+                    }
+                }
+                if (found) { hits++ }
+            }
+            return samples > 0 && hits * 2 >= samples
+        }
+
+        // Die Fahrspuren eines Abschnitts: rechts der Mitte (Einbahnstraße: in der Mitte), an Kreuzungen gekürzt.
+        undefined CarLanes(RoadPiece p) {
+            var r = p.road
+            float len = Raser.LaneMath.Length(p.line)
+            if (len < 0.5) { return }
+            float t0 = this.TrimAt(p.start)
+            float t1 = this.TrimAt(p.end)
+            if (t0 + t1 > len * 0.7) {
+                float f = len * 0.7 / (t0 + t1)
+                t0 = t0 * f
+                t1 = t1 * f
+            }
+            float off = Math.Max(r.width / 4.0, 1.0)
+            if (r.oneway) { off = 0.0 }
+            int rank = Raser.RoadGraph.RankOf(r.kind)
+            float limit = Raser.RoadGraph.LimitOf(r.kind)
+            float density = Raser.RoadGraph.CarDensityOf(r.kind) / 100.0
+            float shifted[] = Raser.LaneMath.Offset(p.line, off)
+            var fwd = new Raser.Lane()
+            fwd.kind = Raser.LaneKind.Road
+            fwd.road = r.id
+            fwd.fromNode = p.start
+            fwd.toNode = p.end
+            fwd.rank = rank
+            fwd.width = r.width
+            fwd.limit = limit
+            fwd.density = density
+            if (!r.oneway) { fwd.density = density / 2.0 }
+            fwd.pts = Raser.LaneMath.Cut(shifted, t0, Raser.LaneMath.Length(shifted) - t1)
+            try fwd.pts.TakeTo(fwd)
+            fwd.Finish()
+            int fi = this.AddLane(take fwd)
+            if (r.oneway) { return }
+            float back[] = Raser.LaneMath.Reverse(p.line)
+            float bshift[] = Raser.LaneMath.Offset(back, off)
+            var bwd = new Raser.Lane()
+            bwd.kind = Raser.LaneKind.Road
+            bwd.road = r.id
+            bwd.fromNode = p.end
+            bwd.toNode = p.start
+            bwd.rank = rank
+            bwd.width = r.width
+            bwd.limit = limit
+            bwd.density = density / 2.0
+            bwd.pts = Raser.LaneMath.Cut(bshift, t1, Raser.LaneMath.Length(bshift) - t0)
+            try bwd.pts.TakeTo(bwd)
+            bwd.Finish()
+            int bi = this.AddLane(take bwd)
+            this.lanes[fi].reverse = bi
+            this.lanes[bi].reverse = fi
+        }
+
+        // So weit (m) enden die Fahrspuren vor einem Knoten: an Kreuzungen hinter der breitesten Fahrbahn, an Stößen zweier Abschnitte kurz, in Sackgassen nicht.
+        defined float TrimAt(defined int node) {
+            int d = this.carDegree[node]
+            if (d >= 3) { return this.nodeHalf[node] + 1.5 }
+            if (d == 2) { return 1.5 }
+            return 0.0
+        }
+
+        defined int AddLane(Lane lane) {
+            lane.index = this.lanes.Count
+            this.lanes.Add(take lane)
+            return this.lanes.Count - 1
+        }
+
+        // Eine Abbiegespur von a nach b durch den Knoten (kubische Bézier-Kurve an den Tangenten). uturn: wenden (in Sackgassen).
+        defined bool Connect(defined int a, defined int b, defined int node, defined bool uturn) {
+            var la = this.lanes[a]
+            var lb = this.lanes[b]
+            la.At(la.length, this.probe)
+            float ax = this.probe.e
+            float ay = this.probe.n
+            float adx = this.probe.dx
+            float ady = this.probe.dy
+            lb.At(0.0, this.probe)
+            float bx = this.probe.e
+            float by = this.probe.n
+            float bdx = this.probe.dx
+            float bdy = this.probe.dy
+            float turn = Math.Atan2(adx * bdy - ady * bdx, adx * bdx + ady * bdy) * 180.0 / Math.PI
+            if (!uturn && Math.Abs(turn) > 150.0) { return false }
+            float chord = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay))
+            float handle = Math.Max(chord * 0.45, 1.0)
+            if (uturn) { handle = Math.Max(3.5, chord * 1.2) }
+            var c = new Raser.Lane()
+            c.kind = Raser.LaneKind.Turn
+            c.road = la.road
+            c.fromNode = node
+            c.toNode = node
+            c.source = a
+            c.target = b
+            c.rank = la.rank
+            c.width = Math.Min(la.width, lb.width)
+            c.limit = Math.Min(la.limit, lb.limit)
+            c.turn = turn
+            int steps = 8
+            if (chord > 20.0) { steps = 12 }
+            c.pts = Raser.LaneMath.Bezier(ax, ay, ax + adx * handle, ay + ady * handle, bx - bdx * handle, by - bdy * handle, bx, by, steps)
+            try c.pts.TakeTo(c)
+            c.Finish()
+            int ci = this.AddLane(take c)
+            this.lanes[ci].next.Add(b)
+            la.next.Add(ci)
+            return true
+        }
+
+        // Liegt (x, y) auf der Fahrbahn einer Straße am Knoten (mit margin m Rand)?
+        defined bool OnCarriageway(defined int node, defined float x, defined float y, defined float margin) {
+            var segs = this.nodeSegs[node]
+            for (int i = 0; i + 4 < segs.Count; i = i + 5) {
+                if (Raser.Geo.DistanceToSegment(x, y, segs[i], segs[i + 1], segs[i + 2], segs[i + 3]) < segs[i + 4] + margin) { return true }
+            }
+            return false
+        }
+
+        // Ein Gehweg-Ende am Knoten zurücknehmen, bis es neben jeder Fahrbahn liegt. Gibt die Länge (m), die wegfällt.
+        defined float WalkTrim(float line[], defined int node, defined bool atEnd) {
+            if (node < 0 || this.nodeRoads[node].Count == 0) { return 0.0 }
+            float len = Raser.LaneMath.Length(line)
+            for (float t = 0.0; t < len * 0.45; t = t + 0.5) {
+                float s = t
+                if (atEnd) { s = len - t }
+                Raser.LaneMath.PointOn(line, s, this.probe)
+                if (!this.OnCarriageway(node, this.probe.e, this.probe.n, 0.25)) { return t }
+            }
+            return len * 0.45
+        }
+
+        // Die Gehwege eines Abschnitts (beide Seiten, in beiden Richtungen) bzw. die Linie eines Fußwegs.
+        undefined WalkLanes(RoadPiece p) {
+            var r = p.road
+            if (Raser.LaneMath.Length(p.line) < 1.0) { return }
+            if (r.foot) {
+                float t0 = this.WalkTrim(p.line, p.start, false)
+                float t1 = this.WalkTrim(p.line, p.end, true)
+                float spread = 0.25
+                if (r.kind == "pedestrian") { spread = Math.Max(0.3, r.width / 2.0 - 1.0) }
+                this.WalkPair(p.line, t0, t1, p.start, p.end, r, Raser.LaneKind.Footway, Math.Max(1.0, r.width), spread, Raser.RoadGraph.WalkDensityOf(r.kind, false) / 100.0)
+                return
+            }
+            // die Mitte des Gehwegs: Fahrbahnrand + Grünstreifen + halbe Gehwegbreite (je Punkt; s entlang der ungeglätteten Linie)
+            int n = p.line.length / 2
+            foreach (side in [1.0, -1.0]) {
+                float offs[] = new float[n]
+                for (int i = 0; i < n; i++) {
+                    float widen = 0.0
+                    if (r.strips.Count > 0) {
+                        Raser.Strips.Probe(r.pts, p.line[i * 2], p.line[i * 2 + 1], this.stripProbe)
+                        float s = this.stripProbe.s
+                        for (int q = 0; q + 3 < r.strips.Count; q = q + 4) {
+                            // Seite der Streifen: 1 links der Linie; side hier: 1 rechts
+                            if (r.strips[q] * side < 0.0 && s >= r.strips[q + 1] - 1.0 && s <= r.strips[q + 2] + 1.0) { widen = Math.Max(widen, r.strips[q + 3]) }
+                        }
+                    }
+                    offs[i] = side * (r.width / 2.0 + widen + r.walk / 2.0)
+                }
+                float line[] = Raser.LaneMath.OffsetEach(p.line, offs)
+                float t0 = this.WalkTrim(line, p.start, false)
+                float t1 = this.WalkTrim(line, p.end, true)
+                this.WalkPair(line, t0, t1, p.start, p.end, r, Raser.LaneKind.Sidewalk, r.walk, Math.Max(0.1, r.walk / 2.0 - 0.6), Raser.RoadGraph.WalkDensityOf(r.kind, true) / 100.0)
+            }
+        }
+
+        // Zwei Gehspuren (hin und zurück) auf einer Linie, um t0 und t1 gekürzt.
+        undefined WalkPair(float line[], defined float t0, defined float t1, defined int n0, defined int n1, RoadInfo r, defined int kind, defined float width, defined float spread, defined float density) {
+            float len = Raser.LaneMath.Length(line)
+            if (len - t0 - t1 < 0.5) { return }
+            float cut[] = Raser.LaneMath.Cut(line, t0, len - t1)
+            var a = new Raser.Lane()
+            a.kind = kind
+            a.road = r.id
+            a.fromNode = n0
+            a.toNode = n1
+            a.width = width
+            a.spread = spread
+            a.limit = 1.5
+            a.density = density / 2.0
+            a.pts = copy cut
+            a.Finish()
+            int ai = this.AddLane(take a)
+            var b = new Raser.Lane()
+            b.kind = kind
+            b.road = r.id
+            b.fromNode = n1
+            b.toNode = n0
+            b.width = width
+            b.spread = spread
+            b.limit = 1.5
+            b.density = density / 2.0
+            b.pts = Raser.LaneMath.Reverse(cut)
+            try b.pts.TakeTo(b)
+            b.Finish()
+            int bi = this.AddLane(take b)
+            this.lanes[ai].reverse = bi
+            this.lanes[bi].reverse = ai
+        }
+
+        // Eine Fußweg-Verbindung am Knoten: gerade vom Ende von a zum Anfang von b (bis 25 m); über eine Fahrbahn wird sie ein Überweg
+        // (nicht quer durch die Mitte einer Kreuzung).
+        undefined WalkLink(defined int a, defined int b, defined int node) {
+            var la = this.lanes[a]
+            var lb = this.lanes[b]
+            float ax = la.EndE
+            float ay = la.EndN
+            float bx = lb.pts[0]
+            float by = lb.pts[1]
+            float d = Math.Sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay))
+            if (d > 25.0) { return }
+            bool crossing = false
+            int steps = Math.Max(1, Math.Ceiling(d / 0.8)!int)
+            for (int i = 1; i < steps; i++) {
+                float f = i * 1.0 / steps
+                if (this.OnCarriageway(node, ax + (bx - ax) * f, ay + (by - ay) * f, 0.0)) {
+                    crossing = true
+                    break
+                }
+            }
+            if (crossing && this.carDegree[node] >= 3) {
+                float nd = Raser.Geo.DistanceToSegment(this.NodeE(node), this.NodeN(node), ax, ay, bx, by)
+                if (nd < 2.0) { return }
+            }
+            var c = new Raser.Lane()
+            c.kind = Raser.LaneKind.Link
+            if (crossing) { c.kind = Raser.LaneKind.Crossing }
+            c.road = la.road
+            c.fromNode = node
+            c.toNode = node
+            c.source = a
+            c.target = b
+            c.width = 1.0
+            c.spread = 0.2
+            c.limit = 1.5
+            float pts[] = [ax, ay, bx, by]
+            if (d < 0.05) { pts = [ax, ay, ax + 0.01, ay + 0.01] }
+            c.pts = pts
+            try c.pts.TakeTo(c)
+            c.Finish()
+            int ci = this.AddLane(take c)
+            this.lanes[ci].next.Add(b)
+            la.next.Add(ci)
+        }
+
+        static defined int Cell(defined int cx, defined int cy) { return cx * 1000003 + cy }
+
+        // Das Raster der Spuren (Zellen von 32 m) für die Suche nach der nächsten.
+        undefined Index() {
+            for (int li = 0; li < this.lanes.Count; li++) {
+                var l = this.lanes[li]
+                int n = l.pts.length / 2
+                for (int i = 0; i + 1 < n; i++) {
+                    int x0 = Math.Floor(Math.Min(l.pts[i * 2], l.pts[i * 2 + 2]) / 32.0)!int
+                    int x1 = Math.Floor(Math.Max(l.pts[i * 2], l.pts[i * 2 + 2]) / 32.0)!int
+                    int y0 = Math.Floor(Math.Min(l.pts[i * 2 + 1], l.pts[i * 2 + 3]) / 32.0)!int
+                    int y1 = Math.Floor(Math.Max(l.pts[i * 2 + 1], l.pts[i * 2 + 3]) / 32.0)!int
+                    for (int cx = x0; cx <= x1; cx++) {
+                        for (int cy = y0; cy <= y1; cy++) {
+                            int key = Raser.RoadGraph.Cell(cx, cy)
+                            if (!this.grid.ContainsKey(key)) { this.grid[key] = new List<int>() }
+                            var list = this.grid[key]
+                            if (list.Count == 0 || list[list.Count - 1] != li) { list.Add(li) }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Die nächste Spur an (e, n) bis maxDist m: car wählt Fahr- oder Gehspuren; heading (Grad, wie Raser.Vehicle) muss bis 60° passen
+        // (undefined: egal). Setzt foundLane (-1: keine), foundS, foundDist.
+        defined bool Nearest(defined float e, defined float n, defined bool car, any heading, defined float maxDist) {
+            this.foundLane = -1
+            this.foundDist = maxDist
+            float hx = 0.0
+            float hy = 0.0
+            if (heading != undefined) {
+                float h = heading * Math.PI / 180.0
+                hx = -Math.Sin(h)
+                hy = Math.Cos(h)
+            }
+            int cx0 = Math.Floor((e - maxDist) / 32.0)!int
+            int cx1 = Math.Floor((e + maxDist) / 32.0)!int
+            int cy0 = Math.Floor((n - maxDist) / 32.0)!int
+            int cy1 = Math.Floor((n + maxDist) / 32.0)!int
+            for (int cx = cx0; cx <= cx1; cx++) {
+                for (int cy = cy0; cy <= cy1; cy++) {
+                    int key = Raser.RoadGraph.Cell(cx, cy)
+                    if (!this.grid.ContainsKey(key)) { continue }
+                    foreach (li in this.grid[key]) {
+                        var l = this.lanes[li]
+                        if (l.IsCar != car) { continue }
+                        int m = l.pts.length / 2
+                        for (int i = 0; i + 1 < m; i++) {
+                            float ax = l.pts[i * 2]
+                            float ay = l.pts[i * 2 + 1]
+                            float ex = l.pts[i * 2 + 2] - ax
+                            float ey = l.pts[i * 2 + 3] - ay
+                            float l2 = ex * ex + ey * ey
+                            if (l2 < 0.000001) { continue }
+                            float sl = Math.Sqrt(l2)
+                            if (heading != undefined && (ex * hx + ey * hy) / sl < 0.5) { continue }
+                            float t = Math.Clamp(((e - ax) * ex + (n - ay) * ey) / l2, 0.0, 1.0)
+                            float qx = ax + ex * t - e
+                            float qy = ay + ey * t - n
+                            float d = Math.Sqrt(qx * qx + qy * qy)
+                            if (d < this.foundDist) {
+                                this.foundDist = d
+                                this.foundLane = li
+                                this.foundS = l.acc[i] + t * sl
+                            }
+                        }
+                    }
+                }
+            }
+            return this.foundLane >= 0
+        }
+
+        // Kreuzen sich zwei Abbiegespuren (oder führen in dieselbe Spur)? Aus derselben Spur kommend nie (das regelt das Hinterherfahren).
+        defined bool Conflict(defined int a, defined int b) {
+            if (a == b) { return false }
+            var la = this.lanes[a]
+            var lb = this.lanes[b]
+            if (la.source == lb.source) { return false }
+            if (la.target == lb.target) { return true }
+            int key = Math.Min(a, b) * 1000003 + Math.Max(a, b)
+            if (this.conflicts.ContainsKey(key)) { return this.conflicts[key] }
+            bool hit = false
+            for (int i = 0; i + 1 < la.pts.length && !hit; i = i + 2) {
+                for (int j = 0; j + 1 < lb.pts.length; j = j + 2) {
+                    float dx = la.pts[i] - lb.pts[j]
+                    float dy = la.pts[i + 1] - lb.pts[j + 1]
+                    if (dx * dx + dy * dy < 2.4 * 2.4) {
+                        hit = true
+                        break
+                    }
+                }
+            }
+            this.conflicts[key] = hit
+            return hit
+        }
+
+        // Zählt die Spuren einer Art (für Tests und Ausgaben).
+        defined int Count(defined int kind) {
+            int c = 0
+            foreach (l in this.lanes) {
+                if (l.kind == kind) { c++ }
+            }
+            return c
+        }
+
+        defined int NodeCount { get { return this.nodes.Count / 2 } }
+    }
+
+    // Linien aus Punkten (x0, y0, x1, y1, ...).
+    class LaneMath {
+        static defined float Length(float pts[]) {
+            float total = 0.0
+            for (int i = 2; i + 1 < pts.length; i = i + 2) {
+                float dx = pts[i] - pts[i - 2]
+                float dy = pts[i + 1] - pts[i - 1]
+                total = total + Math.Sqrt(dx * dx + dy * dy)
+            }
+            return total
+        }
+
+        static float[] Reverse(float pts[]) {
+            int n = pts.length / 2
+            float out[] = new float[n * 2]
+            for (int i = 0; i < n; i++) {
+                out[i * 2] = pts[(n - 1 - i) * 2]
+                out[i * 2 + 1] = pts[(n - 1 - i) * 2 + 1]
+            }
+            return out
+        }
+
+        // Um off m nach rechts versetzt (rechts von (dx, dy) ist (dy, -dx)), mit Gehrung an den Knicken (höchstens 2 off).
+        static float[] Offset(float pts[], defined float off) {
+            int n = pts.length / 2
+            float offs[] = new float[n]
+            for (int i = 0; i < n; i++) { offs[i] = off }
+            return Raser.LaneMath.OffsetEach(pts, offs)
+        }
+
+        // Je Punkt um offs[i] m nach rechts versetzt.
+        static float[] OffsetEach(float pts[], float offs[]) {
+            int n = pts.length / 2
+            float out[] = new float[n * 2]
+            for (int i = 0; i < n; i++) {
+                // die Normalen der Kanten davor und danach
+                float n1x = 0.0
+                float n1y = 0.0
+                float n2x = 0.0
+                float n2y = 0.0
+                bool has1 = false
+                bool has2 = false
+                if (i > 0) {
+                    float dx = pts[i * 2] - pts[i * 2 - 2]
+                    float dy = pts[i * 2 + 1] - pts[i * 2 - 1]
+                    float l = Math.Sqrt(dx * dx + dy * dy)
+                    if (l > 0.0001) {
+                        n1x = dy / l
+                        n1y = -dx / l
+                        has1 = true
+                    }
+                }
+                if (i + 1 < n) {
+                    float dx = pts[i * 2 + 2] - pts[i * 2]
+                    float dy = pts[i * 2 + 3] - pts[i * 2 + 1]
+                    float l = Math.Sqrt(dx * dx + dy * dy)
+                    if (l > 0.0001) {
+                        n2x = dy / l
+                        n2y = -dx / l
+                        has2 = true
+                    }
+                }
+                if (!has1) {
+                    n1x = n2x
+                    n1y = n2y
+                }
+                if (!has2) {
+                    n2x = n1x
+                    n2y = n1y
+                }
+                float mx = n1x + n2x
+                float my = n1y + n2y
+                float ml = Math.Sqrt(mx * mx + my * my)
+                if (ml < 0.0001) {
+                    mx = n1x
+                    my = n1y
+                    ml = 1.0
+                }
+                mx = mx / ml
+                my = my / ml
+                float scale = 1.0 / Math.Max(0.5, mx * n1x + my * n1y)
+                out[i * 2] = pts[i * 2] + mx * offs[i] * scale
+                out[i * 2 + 1] = pts[i * 2 + 1] + my * offs[i] * scale
+            }
+            return out
+        }
+
+        // Das Stück zwischen s0 und s1 (m entlang).
+        static float[] Cut(float pts[], defined float s0, defined float s1) {
+            var out = new List<float>()
+            int n = pts.length / 2
+            float acc = 0.0
+            float a = Math.Max(0.0, s0)
+            float b = Math.Max(a + 0.01, s1)
+            bool started = false
+            for (int i = 0; i + 1 < n; i++) {
+                float ax = pts[i * 2]
+                float ay = pts[i * 2 + 1]
+                float ex = pts[i * 2 + 2] - ax
+                float ey = pts[i * 2 + 3] - ay
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len <= 0.0) { continue }
+                float next = acc + len
+                if (!started && a <= next) {
+                    float f = (a - acc) / len
+                    out.Add(ax + ex * f)
+                    out.Add(ay + ey * f)
+                    started = true
+                }
+                if (started) {
+                    if (b <= next) {
+                        float f = (b - acc) / len
+                        out.Add(ax + ex * f)
+                        out.Add(ay + ey * f)
+                        break
+                    }
+                    out.Add(pts[i * 2 + 2])
+                    out.Add(pts[i * 2 + 3])
+                }
+                acc = next
+            }
+            if (out.Count < 4) {
+                out.Clear()
+                out.Add(pts[0])
+                out.Add(pts[1])
+                out.Add(pts[pts.length - 2])
+                out.Add(pts[pts.length - 1])
+            }
+            float result[] = new float[out.Count]
+            for (int i = 0; i < out.Count; i++) { result[i] = out[i] }
+            return result
+        }
+
+        // Der Punkt bei s auf einer Linie (nach out.e, out.n).
+        static undefined PointOn(float pts[], defined float s, LanePoint out) {
+            int n = pts.length / 2
+            float acc = 0.0
+            out.e = pts[0]
+            out.n = pts[1]
+            for (int i = 0; i + 1 < n; i++) {
+                float ax = pts[i * 2]
+                float ay = pts[i * 2 + 1]
+                float ex = pts[i * 2 + 2] - ax
+                float ey = pts[i * 2 + 3] - ay
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len <= 0.0) { continue }
+                if (s <= acc + len || i + 2 >= n) {
+                    float f = Math.Clamp((s - acc) / len, 0.0, 1.0)
+                    out.e = ax + ex * f
+                    out.n = ay + ey * f
+                    return
+                }
+                acc = acc + len
+            }
+        }
+
+        // Eine kubische Bézier-Kurve von (ax, ay) nach (bx, by) mit den Stützpunkten c1, c2, in steps Stücken.
+        static float[] Bezier(defined float ax, defined float ay, defined float c1x, defined float c1y, defined float c2x, defined float c2y, defined float bx, defined float by, defined int steps) {
+            float out[] = new float[(steps + 1) * 2]
+            for (int i = 0; i <= steps; i++) {
+                float t = i * 1.0 / steps
+                float u = 1.0 - t
+                float w0 = u * u * u
+                float w1 = 3.0 * u * u * t
+                float w2 = 3.0 * u * t * t
+                float w3 = t * t * t
+                out[i * 2] = w0 * ax + w1 * c1x + w2 * c2x + w3 * bx
+                out[i * 2 + 1] = w0 * ay + w1 * c1y + w2 * c2y + w3 * by
+            }
+            return out
+        }
+    }
+}

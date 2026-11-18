@@ -1,0 +1,507 @@
+// Raser.Game: der Verkehr in der Szene - die Ansicht zur Simulation Raser.Traffic (Autos und Fußgänger).
+//
+// Die Simulation rechnet ohne Szene (im Mehrspieler auf dem Server, offline hier mit demselben Code); hier bekommt sie die Straßen der Kacheln um den Spieler (aus Obstacles, die sie
+// ohnehin lädt), je Bild die Spieler (eigener Wagen oder zu Fuß, die abgestellten Fahrzeuge) und gibt Autos und Fußgänger zurück. Jedes Auto
+// bekommt ein CarModel aus einem Vorrat (Farbe neu gesetzt), jeder Fußgänger eine Figur aus 7 Quadern wie PersonModel (Farben und Größe je
+// Fußgänger). Fern (über 45 m) fehlen Räder und Lichter, Arme und Haare - jedes Objekt kostet den Software-Renderer. Stöße: der Wagen des
+// Spielers prallt an den Autos ab (Raser.Vehicle.Collide, wie an geparkten); den Stoß auf das andere Auto rechnet die Simulation selbst
+// (Traffic.Impacts). Gezeichnet wird nur aus den Zuständen (Raser.NpcState): offline aus Traffic.States, im Mehrspieler aus den Snapshots
+// des Servers (Raser.NpcBuffer, Remote). Unfallwagen rutschen offline an Wänden entlang (Obstacles). Was geschieht (Hupen, Unfall,
+// umgefahren), steht kurz oben in der Anzeige - erkannt am Wechsel der Zustände.
+//
+//   --traffic 24 --people 30     höchstens so viele Autos und Fußgänger (0: keine)
+//   --traffic-seed 1             der Zufall der Simulation
+//   --warm 20                    vor dem Start so viele Sekunden Verkehr rechnen (für Bilder ohne Fenster)
+#import "windows"
+#import "scene3d"
+#import "time"
+#import "raser.core"
+#import "raser.world"
+#import "raser.mesh"
+#import "raser.client"
+#import "raser.traffic"
+
+// Ein Fußgänger in der Szene: Beine, Rumpf, Kopf, Haare, Arme (die stehende Haltung von PersonModel), auf seine Größe skaliert; Beine und Arme
+// schwingen mit dem gelaufenen Weg. Umgefallen liegt er der Länge nach auf dem Boden (die Quader gekippt: hoch wird vorn).
+class NpcFigure {
+    List<Object> parts
+    List<float> dims            // je Teil: rechts, hoch, vorn, Breite, Höhe, Tiefe, Schwung (m, für 1,8 m Größe)
+    defined int owner           // die ID des Fußgängers (-1: frei)
+    defined int stamp
+    defined float scale
+    defined int pose            // 0 steht, 1 liegt, -1: noch nichts
+    defined bool shown
+    defined bool detail         // Arme und Haare sichtbar
+    List<float> ground          // Ost, Nord, Höhe des letzten Geländes (TrafficView.Height)
+
+    construct(Scene scene) {
+        this.parts = new List<Object>()
+        this.dims = new List<float>()
+        this.owner = -1
+        this.pose = -1
+        this.scale = 1.0
+        this.detail = true
+        this.ground = new List<float>()
+        foreach (v in [0.0, 0.0, 0.0]) { this.ground.Add(v) }
+        this.Add(scene, -0.11, 0.42, 0.0, 0.17, 0.84, 0.2, 0.2)
+        this.Add(scene, 0.11, 0.42, 0.0, 0.17, 0.84, 0.2, -0.2)
+        this.Add(scene, 0.0, 1.14, 0.0, 0.44, 0.6, 0.24, 0.0)
+        this.Add(scene, 0.0, 1.6, 0.0, 0.24, 0.26, 0.24, 0.0)
+        this.Add(scene, 0.0, 1.76, -0.01, 0.26, 0.08, 0.26, 0.0)
+        this.Add(scene, -0.29, 1.12, 0.0, 0.12, 0.6, 0.14, -0.14)
+        this.Add(scene, 0.29, 1.12, 0.0, 0.12, 0.6, 0.14, 0.14)
+    }
+
+    undefined Add(Scene scene, defined float right, defined float up, defined float front, defined float w, defined float h, defined float d, defined float swing) {
+        var o = new Object(Template.Box, 0m, 0m, 0m, w * 1m, h * 1m, d * 1m)
+        o.Visible = false
+        o.CastShadows = false
+        this.parts.Add(o)
+        foreach (v in [right, up, front, w, h, d, swing]) { this.dims.Add(v) }
+        scene.Add(take o)
+    }
+
+    // Farben und Größe eines Fußgängers.
+    undefined Dress(Raser.NpcState p) {
+        int legs = TrafficView.Rgb(p.legs)
+        int shirt = TrafficView.Rgb(p.color)
+        int skin = TrafficView.Rgb(p.skin)
+        int hair = TrafficView.Rgb(p.hair)
+        int colors[] = [legs, legs, shirt, skin, hair, shirt, shirt]
+        for (int i = 0; i < 7; i++) { this.parts[i].Color = colors[i] }
+        this.scale = p.height / 1.8
+        this.pose = -1
+    }
+
+    undefined Show(defined bool visible, defined bool detail) {
+        if (visible == this.shown && detail == this.detail) { return }
+        this.shown = visible
+        this.detail = detail
+        for (int i = 0; i < 7; i++) {
+            bool small = i == 4 || i >= 5
+            this.parts[i].Visible = visible && (detail || !small)
+        }
+    }
+
+    // (x, y, z) in der Szene (y: der Boden), heading in Grad, stride: der gelaufene Weg; lying: umgefallen.
+    undefined Place(defined float x, defined float y, defined float z, defined float heading, defined float stride, defined bool lying) {
+        float h = heading * Math.PI / 180.0
+        float fx = -Math.Sin(h)
+        float fz = -Math.Cos(h)
+        float rx = Math.Cos(h)
+        float rz = -Math.Sin(h)
+        float k = this.scale
+        int want = 0
+        if (lying) { want = 1 }
+        if (want != this.pose) {
+            this.pose = want
+            for (int i = 0; i < 7; i++) {
+                float w = this.dims[i * 7 + 3] * k
+                float hh = this.dims[i * 7 + 4] * k
+                float d = this.dims[i * 7 + 5] * k
+                // liegend: die Höhe wird die Länge nach vorn, die Tiefe die Dicke
+                if (lying) { this.parts[i].SetSize(w * 1m, d * 1m, hh * 1m) } else { this.parts[i].SetSize(w * 1m, hh * 1m, d * 1m) }
+            }
+        }
+        float phase = Math.Sin(stride * 2.0 * Math.PI / 1.5)
+        for (int i = 0; i < 7; i++) {
+            if (!this.parts[i].Visible) { continue }
+            float r = this.dims[i * 7] * k
+            float u = this.dims[i * 7 + 1] * k
+            float f = this.dims[i * 7 + 2] * k
+            if (lying) {
+                // der Kopf voraus, die Füße am Punkt; flach auf dem Boden
+                float up = this.dims[i * 7 + 5] * k * 0.5 + 0.02
+                this.parts[i].SetPosition((x + rx * r + fx * u) * 1m, (y + up) * 1m, (z + rz * r + fz * u) * 1m)
+            } else {
+                float ff = f + this.dims[i * 7 + 6] * phase
+                this.parts[i].SetPosition((x + rx * r + fx * ff) * 1m, (y + u) * 1m, (z + rz * r + fz * ff) * 1m)
+            }
+            this.parts[i].RotationY = heading * 1deg
+        }
+    }
+}
+
+// Die Ansicht des Verkehrs: Simulation, Modelle, Stöße, Meldungen.
+class TrafficView {
+    Raser.Traffic traffic
+    Scene scene
+    defined bool enabled
+    List<CarModel> cars
+    List<string> carKinds
+    List<int> carOwner          // je Modell: die ID des Autos (-1: frei)
+    List<int> carStamp
+    List<bool> carDetail
+    List<float> carGround       // je Modell: Ost, Nord, Höhe des letzten Geländes (nur neu gelesen nach 1 m)
+    Dictionary<int, int> carSlot
+    List<NpcFigure> figures
+    Dictionary<int, int> figureSlot
+    List<float> players
+    List<Raser.NpcState> states  // was gezeichnet wird (Verweise: gehören der Simulation bzw. dem Puffer)
+    Dictionary<int, int> seenState   // je NPC sein Zustand im letzten Bild (für die Meldungen)
+    List<string> fed            // die Kacheln, deren Straßen im Graphen sind
+    string centre               // die Kachel des Spielers beim letzten Füttern
+    defined int frame
+    string message
+    defined float messageTime
+    defined int buildTicks      // der letzte Neubau des Graphen (Ticks)
+    defined int builds
+    defined int stepTicks       // Summe der Schritte (Ticks)
+    defined int syncTicks
+    defined int steps
+
+    construct(Scene scene, Options options) {
+        this.scene = scene
+        int maxCars = options.Get("traffic", "24").ToInt()
+        int maxPeople = options.Get("people", "30").ToInt()
+        this.traffic = new Raser.Traffic(maxCars, maxPeople, options.Get("traffic-seed", "1").ToInt())
+        this.enabled = maxCars > 0 || maxPeople > 0
+        this.cars = new List<CarModel>(Owns.Values)
+        this.carKinds = new List<string>()
+        this.carOwner = new List<int>()
+        this.carStamp = new List<int>()
+        this.carDetail = new List<bool>()
+        this.carGround = new List<float>()
+        this.carSlot = new Dictionary<int, int>()
+        this.figures = new List<NpcFigure>(Owns.Values)
+        this.figureSlot = new Dictionary<int, int>()
+        this.players = new List<float>()
+        this.states = new List<Raser.NpcState>()
+        this.seenState = new Dictionary<int, int>()
+        this.fed = new List<string>()
+        this.centre = ""
+        this.message = ""
+    }
+
+    static defined int Rgb(defined int c) { return S3D.Rgb((c / 65536) % 256, (c / 256) % 256, c % 256) }
+
+    // Die Straßen der Kacheln um (e, n) (3 x 3) in den Graphen: am Anfang alle, danach höchstens eine neue Kachel je Aufruf (das Laden kostet).
+    undefined Feed(Obstacles obstacles, defined float e, defined float n, defined bool all) {
+        var key = Raser.TileKey.Of(e, n)
+        string name = key + ""
+        var keep = new List<string>()
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) { keep.Add(new Raser.TileKey(key.x + dx, key.y + dy) + "") }
+        }
+        if (name != this.centre) {
+            this.centre = name
+            for (int i = this.fed.Count - 1; i >= 0; i--) {
+                if (!keep.Contains(this.fed[i])) { this.fed.RemoveAt(i) }
+            }
+            this.traffic.graph.Keep(keep)
+        }
+        int loaded = 0
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                if (!all && loaded > 0) { break }
+                var k = new Raser.TileKey(key.x + dx, key.y + dy)
+                string kn = k + ""
+                if (this.fed.Contains(kn)) { continue }
+                obstacles.Need(k, kn)
+                this.fed.Add(kn)
+                var tile = obstacles.tiles[kn]
+                if (tile != undefined) { this.traffic.graph.AddTile(tile) }
+                loaded++
+            }
+        }
+        // gebaut wird erst, wenn alle neun Kacheln da sind (ein Neubau je Kachelwechsel, nicht drei)
+        if (this.traffic.graph.dirty && this.fed.Count >= 9) {
+            int t0 = DateTime.Now.Ticks
+            this.traffic.graph.Build()
+            this.buildTicks = DateTime.Now.Ticks - t0
+            this.builds++
+        }
+    }
+
+    // Vor dem Start so viele Sekunden Verkehr rechnen (--warm s), der Spieler steht.
+    undefined Warm(defined float seconds, Raser.Vehicle car, Raser.Walker walker, List<Raser.Vehicle> vehicles, Obstacles obstacles, Ground terrain, WorldView view, defined float wetness) {
+        if (!this.enabled) { return }
+        this.Feed(obstacles, car.east, car.north, true)
+        for (float t = 0.0; t < seconds; t = t + 1.0 / 15.0) { this.Simulate(1.0 / 15.0, car, walker, false, vehicles, obstacles, wetness) }
+    }
+
+    // Ein Bild: Straßen nachfüttern, Stöße, ein Schritt der Simulation, Modelle setzen.
+    undefined Update(defined float dt, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, List<Raser.Vehicle> vehicles, Obstacles obstacles, Ground terrain, WorldView view, defined float wetness) {
+        if (!this.enabled) { return }
+        float e = car.east
+        float n = car.north
+        float heading = car.heading
+        if (onFoot) {
+            e = walker.east
+            n = walker.north
+            heading = walker.heading
+        }
+        this.Feed(obstacles, e, n, this.traffic.graph.lanes.Count == 0)
+        int t0 = DateTime.Now.Ticks
+        if (dt > 0.0) { this.Simulate(dt, car, walker, onFoot, vehicles, obstacles, wetness) }
+        this.traffic.States(this.states, e, n, 320.0)
+        this.Contact(car, walker, onFoot)
+        int t1 = DateTime.Now.Ticks
+        this.Place(terrain, view, e, n)
+        this.stepTicks = this.stepTicks + (t1 - t0)
+        this.syncTicks = this.syncTicks + (DateTime.Now.Ticks - t1)
+        this.steps++
+        if (this.messageTime > 0.0) { this.messageTime = this.messageTime - dt }
+    }
+
+    // Im Mehrspieler: die NPCs aus den Snapshots des Servers (states: schon für die Zeit des Bildes aus Raser.NpcBuffer.Sample) - nur
+    // abprallen und zeichnen, nichts simulieren.
+    undefined Remote(defined float dt, List<Raser.NpcState> states, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, Ground terrain, WorldView view) {
+        this.states.Clear()
+        foreach (st in states) { this.states.Add(st) }
+        this.Contact(car, walker, onFoot)
+        if (onFoot) { this.Place(terrain, view, walker.east, walker.north) } else { this.Place(terrain, view, car.east, car.north) }
+        if (this.messageTime > 0.0) { this.messageTime = this.messageTime - dt }
+    }
+
+    undefined Simulate(defined float dt, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, List<Raser.Vehicle> vehicles, Obstacles obstacles, defined float wetness) {
+        float e = car.east
+        float n = car.north
+        if (onFoot) {
+            e = walker.east
+            n = walker.north
+        }
+        // die Spieler für die Simulation: Ost, Nord, Richtung, Tempo, Radius, spread, Art
+        this.players.Clear()
+        if (onFoot) {
+            foreach (v in [walker.east, walker.north, walker.heading, walker.speed, 0.35, 0.0, 0.0]) { this.players.Add(v) }
+        }
+        foreach (v in vehicles) {
+            float de = v.east - e
+            float dn = v.north - n
+            if (de * de + dn * dn > 300.0 * 300.0) { continue }
+            float kind = 2.0
+            if (v == car && !onFoot) { kind = 1.0 }
+            foreach (x in [v.east, v.north, v.heading, v.speed, v.radius, v.spread, kind]) { this.players.Add(x) }
+        }
+        this.traffic.wetness = wetness
+        this.traffic.Step(dt, this.players)
+        // Unfallwagen gegen die Wände
+        foreach (c in this.traffic.cars) {
+            if (c.state == 0) { continue }
+            var b = c.body
+            if (Math.Abs(b.speed) + Math.Abs(b.pushE) + Math.Abs(b.pushN) < 0.05) { continue }
+            float h = b.heading * Math.PI / 180.0
+            for (int k = 0; k < 2; k++) {
+                float offset = b.spread - 2.0 * b.spread * k
+                if (obstacles.Push(b.east - Math.Sin(h) * offset, b.north + Math.Cos(h) * offset, b.radius)) { b.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) }
+            }
+            c.east = b.east
+            c.north = b.north
+            c.heading = b.heading
+        }
+    }
+
+    undefined Say(string text, defined float seconds) {
+        this.message = text
+        this.messageTime = seconds
+    }
+
+    // Der Spieler gegen die Autos (aus den Zuständen, je zwei Kreise wie Raser.Vehicle): sein Wagen prallt ab (wie an geparkten), zu Fuß hält
+    // ein Auto ihn auf. Den Stoß auf das andere Auto rechnet die Simulation (Traffic.Impacts). true: aufgeprallt.
+    defined bool Contact(Raser.Vehicle car, Raser.Walker walker, defined bool onFoot) {
+        bool hit = false
+        float px = car.east
+        float py = car.north
+        if (onFoot) {
+            px = walker.east
+            py = walker.north
+        }
+        float h = car.heading * Math.PI / 180.0
+        foreach (st in this.states) {
+            if (st.IsPerson) { continue }
+            float de = st.east - px
+            float dn = st.north - py
+            if (de * de + dn * dn > 144.0) { continue }
+            // die Maße wie Raser.Vehicle.Of: Auto 4,2 x 1,8 m, Transporter 5,6 x 2,0 m
+            float radius = 1.0
+            float spread = 1.1
+            if (st.kind == Raser.NpcState.Van) {
+                radius = 1.1
+                spread = 1.7
+            }
+            float oh = st.heading * Math.PI / 180.0
+            for (float oc = 1.0; oc > -1.5; oc = oc - 1.0) {
+                float oe = st.east - Math.Sin(oh) * spread * oc
+                float on2 = st.north + Math.Cos(oh) * spread * oc
+                if (onFoot) {
+                    walker.Avoid(oe, on2, radius - 0.05)
+                    continue
+                }
+                if (oc == 0.0) { continue }
+                for (int k = 0; k < 2; k++) {
+                    float offset = car.spread - 2.0 * car.spread * k
+                    float dx = car.east - Math.Sin(h) * offset - oe
+                    float dy = car.north + Math.Cos(h) * offset - on2
+                    float d = Math.Sqrt(dx * dx + dy * dy)
+                    float deep = car.radius + radius - d
+                    if (deep > 0.0 && d > 0.0001) {
+                        if (car.Collide(offset, dx / d, dy / d, deep) > 0.5) { hit = true }
+                    }
+                }
+            }
+        }
+        return hit
+    }
+
+    // Die Modelle: jedes Auto und jeder Fußgänger auf seinen Platz; was nicht mehr da ist, wird versteckt und frei. Fern (über 150 m) nur jedes
+    // zweite Bild neu gesetzt.
+    undefined Place(Ground terrain, WorldView view, defined float e, defined float n) {
+        this.frame++
+        foreach (st in this.states) {
+            float de = st.east - e
+            float dn = st.north - n
+            float d2 = de * de + dn * dn
+            this.Notice(st, d2)
+            if (st.IsPerson) {
+                int fs = this.FigureSlot(st)
+                var f = this.figures[fs]
+                f.stamp = this.frame
+                f.Show(true, d2 < 45.0 * 45.0)
+                if (d2 > 80.0 * 80.0 && (this.frame + st.id) % 2 == 1) { continue }
+                if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
+                float fy = this.Height(f.ground, 0, terrain, view, st.east, st.north)
+                f.Place(st.east - view.originE, fy, -(st.north - view.originN), st.heading, st.stride, st.state == 4)
+                continue
+            }
+            int slot = this.CarSlot(st)
+            this.carStamp[slot] = this.frame
+            var m = this.cars[slot]
+            bool near = d2 < 45.0 * 45.0
+            if (near != this.carDetail[slot]) {
+                this.carDetail[slot] = near
+                for (int i = 0; i < m.parts.Count; i++) { m.parts[i].Visible = near || i < this.BodyParts(this.carKinds[slot]) }
+            }
+            if (d2 > 80.0 * 80.0 && (this.frame + st.id) % 2 == 1) { continue }
+            if (d2 > 160.0 * 160.0 && (this.frame + st.id) % 4 != 0) { continue }
+            float y = this.Height(this.carGround, slot, terrain, view, st.east, st.north)
+            m.Place(st.east - view.originE, y, -(st.north - view.originN), st.heading, 0.0)
+        }
+        for (int i = 0; i < this.cars.Count; i++) {
+            if (this.carOwner[i] >= 0 && this.carStamp[i] != this.frame) {
+                this.carSlot.Remove(this.carOwner[i])
+                this.carOwner[i] = -1
+                foreach (p in this.cars[i].parts) { p.Visible = false }
+            }
+        }
+        foreach (f in this.figures) {
+            if (f.owner >= 0 && f.stamp != this.frame) {
+                this.figureSlot.Remove(f.owner)
+                f.owner = -1
+                f.Show(false, false)
+            }
+        }
+        if (this.seenState.Count > this.states.Count * 2 + 64) { this.seenState.Clear() }
+    }
+
+    // Meldungen aus dem Wechsel der Zustände nahe dem Spieler: umgefahren (liegt, bis 15 m), Unfall (bis 15 m), Hupen (bis 40 m).
+    undefined Notice(Raser.NpcState st, defined float d2) {
+        int before = this.seenState.Get(st.id, -1)
+        this.seenState[st.id] = st.state
+        if (before >= 0 && before != st.state && d2 < 15.0 * 15.0) {
+            if (st.state == 4) { this.Say("Fussgaenger angefahren! Er rappelt sich wieder auf - langsam fahren.", 4.0) }
+            if (st.state == 2 && before < 2) { this.Say("Unfall! Der andere Wagen steht.", 3.0) }
+        }
+        if (st.honk && d2 < 40.0 * 40.0 && this.messageTime <= 0.0) { this.Say("HUUUP!", 1.5) }
+    }
+
+    // Die Höhe des Geländes in der Szene an (e, n), aus dem Merker cache[slot * 3 ..] (Ost, Nord, Höhe), neu gelesen erst nach 1 m.
+    defined float Height(List<float> cache, defined int slot, Ground terrain, WorldView view, defined float e, defined float n) {
+        int i = slot * 3
+        float de = cache[i] - e
+        float dn = cache[i + 1] - n
+        if (de * de + dn * dn > 1.0) {
+            float y = 0.0
+            any g = terrain.At(e, n)
+            if (g != undefined) { y = g }
+            cache[i] = e
+            cache[i + 1] = n
+            cache[i + 2] = y
+        }
+        return cache[i + 2] - view.originZ
+    }
+
+    // Wie viele Teile eines CarModel immer zu sehen sind (Karosserie, Kabine; der Rest: Räder und Lichter).
+    defined int BodyParts(string kind) {
+        if (kind == "transporter") { return 3 }
+        return 2
+    }
+
+    // Das Modell eines Autos: sein bisheriges, sonst ein freies seiner Art (neu gefärbt), sonst ein neues.
+    defined int CarSlot(Raser.NpcState c) {
+        if (this.carSlot.ContainsKey(c.id)) { return this.carSlot[c.id] }
+        int slot = -1
+        for (int i = 0; i < this.cars.Count; i++) {
+            if (this.carOwner[i] < 0 && this.carKinds[i] == c.Model) {
+                slot = i
+                break
+            }
+        }
+        int color = TrafficView.Rgb(c.color)
+        if (slot < 0) {
+            var m = new CarModel(this.scene, c.Model, color)
+            foreach (p in m.parts) { p.CastShadows = false }
+            this.cars.Add(take m)
+            this.carKinds.Add(c.Model)
+            this.carOwner.Add(-1)
+            this.carStamp.Add(0)
+            this.carDetail.Add(true)
+            foreach (v in [0.0, 0.0, 0.0]) { this.carGround.Add(v) }
+            slot = this.cars.Count - 1
+        }
+        var model = this.cars[slot]
+        model.parts[0].Color = color
+        if (c.kind == Raser.NpcState.Van) { model.parts[1].Color = color }
+        foreach (p in model.parts) { p.Visible = true }
+        this.carDetail[slot] = true
+        this.carOwner[slot] = c.id
+        this.carSlot[c.id] = slot
+        return slot
+    }
+
+    defined int FigureSlot(Raser.NpcState p) {
+        if (this.figureSlot.ContainsKey(p.id)) { return this.figureSlot[p.id] }
+        int slot = -1
+        for (int i = 0; i < this.figures.Count; i++) {
+            if (this.figures[i].owner < 0) {
+                slot = i
+                break
+            }
+        }
+        if (slot < 0) {
+            this.figures.Add(new NpcFigure(this.scene))
+            slot = this.figures.Count - 1
+        }
+        var f = this.figures[slot]
+        f.Dress(p)
+        f.owner = p.id
+        this.figureSlot[p.id] = slot
+        return slot
+    }
+
+    // Die Meldung oben in der Anzeige.
+    undefined Draw(Renderer hud, Brush ink, Brush shade, defined int width) {
+        if (!this.enabled || this.messageTime <= 0.0 || this.message == "") { return }
+        hud.FillRect(12, 12, Math.Min(width - 24, this.message.Length * 9 + 24), 30, shade)
+        hud.DrawText(22, 19, this.message, ink)
+    }
+
+    // Für Bilder: die Kamera high m über (e, n), etwas zurück, Blick schräg hinab in Richtung heading.
+    undefined Overview(Camera cam, Ground terrain, WorldView view, defined float e, defined float n, defined float heading, defined float high) {
+        float y = 0.0
+        any g = terrain.At(e, n)
+        if (g != undefined) { y = g - view.originZ }
+        float h = heading * Math.PI / 180.0
+        float x = e - view.originE
+        float z = -(n - view.originN)
+        cam.SetPosition((x + Math.Sin(h) * high * 0.4) * 1m, (y + high) * 1m, (z + Math.Cos(h) * high * 0.4) * 1m)
+        cam.LookAt((x - Math.Sin(h) * high * 0.5) * 1m, y * 1m, (z - Math.Cos(h) * high * 0.5) * 1m)
+    }
+
+    // Eine Zeile für Messungen.
+    string Report() {
+        if (!this.enabled) { return "Verkehr aus" }
+        int n = Math.Max(1, this.steps)
+        return "Verkehr: " + this.traffic.cars.Count + " Autos, " + this.traffic.people.Count + " Fussgaenger (Modelle " + this.cars.Count + " + " + this.figures.Count + "), Graph " + this.traffic.graph.lanes.Count + " Spuren / " + this.traffic.graph.NodeCount + " Knoten, gebaut " + this.builds + "x (zuletzt " + (this.buildTicks / 10000) + " ms); je Bild Simulation " + (this.stepTicks / n / 10000.0) + " ms, Modelle " + (this.syncTicks / n / 10000.0) + " ms; Unfaelle " + this.traffic.crashes + ", umgefahren " + this.traffic.knocked + "; Probe: " + this.traffic.Check()
+    }
+}

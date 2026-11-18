@@ -1,0 +1,280 @@
+// Raser.Sim: Hindernisse der Welt ohne Szene - die Grundrisse der Gebäude (mit Durchfahrten) und die Pfosten (Bäume, Laternen, Ampeln) je Kachel,
+// aus den Daten der Kacheln (Raser.World). Client (Fahren, Kamera, Karte) und Server (autoritative Physik) rechnen damit dasselbe.
+#import "filesystem"
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    // Wo man im Fahrmodus nicht hin kann: die Grundrisse der Gebäude (je Kachel geladen, mit ihren Rechtecken). Frei bleiben Überdachungen
+    // (nur ein Dach) und Durchfahrten (Raser.Voxelizer.Passages: ein Weg quer durch das Haus).
+    class Obstacles {
+        Raser.FileTileStore store
+        Dictionary<string, Raser.Tile> tiles
+        Dictionary<string, List<Raser.Box2>> boxes
+        Dictionary<int, List<float>> passages         // je Gebäude (ID) seine Durchfahrten, bei Bedarf
+        Dictionary<int, List<float>> posts            // je Zelle (8 m) die Pfosten darin: Ost, Nord, Radius (Baumstämme, Laternen, Ampeln)
+
+        // world "": ohne Welt (keine Hindernisse - Bots und Tests ohne Daten).
+        construct(string world) {
+            this.store = undefined
+            if (world != undefined && world != "") { this.store = new Raser.FileTileStore(world) }
+            this.tiles = new Dictionary<string, Raser.Tile>()
+            this.boxes = new Dictionary<string, List<Raser.Box2>>()
+            this.passages = new Dictionary<int, List<float>>()
+            this.posts = new Dictionary<int, List<float>>()
+        }
+
+        // Die Kachel zu einem Schlüssel mit den Rechtecken ihrer Gebäude (um 2 m gewachsen), bei Bedarf geladen.
+        undefined Need(Raser.TileKey key, string name) {
+            if (this.tiles.ContainsKey(name)) { return }
+            Raser.Tile loaded = undefined
+            if (this.store != undefined) { loaded = this.store.Load(key) }
+            var list = new List<Raser.Box2>()
+            if (loaded != undefined) {
+                foreach (b in loaded.data.buildings) {
+                    var box = Raser.Box2.Of(b.footprint)
+                    box.Grow(2.0)
+                    list.Add(take box)
+                }
+                // die Pfosten: Baumstämme, Laternen, Ampeln (Beete, Büsche, Bänke, Schilder halten nicht auf)
+                if (loaded.data.props != undefined) {
+                    foreach (p in loaded.data.props) {
+                        float r = 0.0
+                        if (p.kind == "tree") { r = 0.3 }
+                        if (p.kind == "lamp" || p.kind == "signal") { r = 0.12 }
+                        if (r <= 0.0) { continue }
+                        float pe = key.East + p.x
+                        float pn = key.North + p.y
+                        int cell = Raser.Obstacles.Cell(Math.Floor(pe / 8.0)!int, Math.Floor(pn / 8.0)!int)
+                        if (!this.posts.ContainsKey(cell)) {
+                            var fresh = new List<float>()
+                            this.posts[cell] = fresh
+                            fresh.TakeTo(this.posts)
+                        }
+                        var into = this.posts[cell]
+                        into.Add(pe)
+                        into.Add(pn)
+                        into.Add(r)
+                    }
+                }
+            }
+            this.tiles[name] = loaded
+            if (loaded != undefined) { loaded.TakeTo(this.tiles) }
+            this.boxes[name] = list
+            list.TakeTo(this.boxes)
+        }
+
+        // Die Kachel unter (e, n) (geladen, wenn nötig); undefined: keine.
+        Raser.Tile TileAt(defined float e, defined float n) {
+            var key = Raser.TileKey.Of(e, n)
+            string name = key + ""
+            this.Need(key, name)
+            return this.tiles[name]
+        }
+
+        // Ein Kreis (Radius bis 1,9 m) um (e, n) gegen die Gebäude: true, wenn er in einer Wand steckt - dann zeigt (pushX, pushY) aus der Wand
+        // heraus und depth sagt, wie weit er hinaus muss (die tiefste Berührung). Durchfahrten sind frei.
+        defined float pushX
+        defined float pushY
+        defined float depth
+        defined bool Push(defined float e, defined float n, defined float radius) {
+            var key = Raser.TileKey.Of(e, n)
+            string name = key + ""
+            this.Need(key, name)
+            this.depth = 0.0
+            var tile = this.tiles[name]
+            if (tile == undefined) { return false }
+            // die Pfosten in den Zellen ringsum
+            int ce = Math.Floor(e / 8.0)!int
+            int cn = Math.Floor(n / 8.0)!int
+            for (int dn = -1; dn <= 1; dn++) {
+                for (int de = -1; de <= 1; de++) {
+                    int cell = Raser.Obstacles.Cell(ce + de, cn + dn)
+                    if (!this.posts.ContainsKey(cell)) { continue }
+                    var ps = this.posts[cell]
+                    for (int q = 0; q + 2 < ps.Count; q = q + 3) {
+                        float dx = e - ps[q]
+                        float dy = n - ps[q + 1]
+                        float d = Math.Sqrt(dx * dx + dy * dy)
+                        float deep = radius + ps[q + 2] - d
+                        if (deep > this.depth && d > 0.0001) {
+                            this.depth = deep
+                            this.pushX = dx / d
+                            this.pushY = dy / d
+                        }
+                    }
+                }
+            }
+            var bx = this.boxes[name]
+            float x = e - key.East
+            float y = n - key.North
+            for (int k = 0; k < tile.data.buildings.Count; k++) {
+                if (!bx[k].Contains(x, y)) { continue }
+                var b = tile.data.buildings[k]
+                if (b.function != undefined && (b.function.StartsWith("alkis=51009") || b.function.StartsWith("alkis=53001"))) { continue }
+                // der nächste Punkt auf dem Rand
+                int np = b.footprint.length / 2
+                float best = 1000000.0
+                float qx = 0.0
+                float qy = 0.0
+                for (int i = 0; i < np; i++) {
+                    int j = (i + 1) % np
+                    float ax = b.footprint[i * 2]
+                    float ay = b.footprint[i * 2 + 1]
+                    float ex = b.footprint[j * 2] - ax
+                    float ey = b.footprint[j * 2 + 1] - ay
+                    float len2 = ex * ex + ey * ey
+                    float t = 0.0
+                    if (len2 > 0.0) { t = Math.Clamp(((x - ax) * ex + (y - ay) * ey) / len2, 0.0, 1.0) }
+                    float px = ax + ex * t
+                    float py = ay + ey * t
+                    float d2 = (px - x) * (px - x) + (py - y) * (py - y)
+                    if (d2 < best) {
+                        best = d2
+                        qx = px
+                        qy = py
+                    }
+                }
+                float d = Math.Sqrt(best)
+                bool inside = Raser.Geo.Inside(b.footprint, x, y)
+                if (!inside && d >= radius) { continue }
+                if (d < 0.0001) { continue }
+                if (!this.passages.ContainsKey(b.id)) {
+                    var ps = Raser.Voxelizer.Passages(b, tile.data.roads)
+                    this.passages[b.id] = ps
+                    ps.TakeTo(this.passages)
+                }
+                var ways = this.passages[b.id]
+                bool through = false
+                for (int q = 0; q + 6 < ways.Count; q = q + 7) {
+                    if (Raser.Voxelizer.PassageDistance(ways, q, x, y) < ways[q + 4] - radius * 0.5) { through = true }
+                }
+                if (through) { continue }
+                float deep = radius - d
+                float nx = (x - qx) / d
+                float ny = (y - qy) / d
+                if (inside) {
+                    deep = radius + d
+                    nx = -nx
+                    ny = -ny
+                }
+                if (deep > this.depth) {
+                    this.depth = deep
+                    this.pushX = nx
+                    this.pushY = ny
+                }
+            }
+            return this.depth > 0.0
+        }
+
+        static defined int Cell(defined int ce, defined int cn) { return ce * 73856093 + cn * 19349663 }
+
+        // Die Namen der Kacheln ("x_y") unter names, die mehr als eine Kachel von der Kachel bei (e, n) entfernt sind.
+        static List<string> FarTiles(List<string> names, defined float e, defined float n) {
+            var here = Raser.TileKey.Of(e, n)
+            var gone = new List<string>()
+            foreach (name in names) {
+                var key = Raser.TileKey.Parse(name)
+                if (key == undefined) { continue }
+                if (Math.Max(Math.Abs(key.x - here.x), Math.Abs(key.y - here.y)) > 1) { gone.Add(name) }
+            }
+            return gone
+        }
+
+        // Lange Fahrten: alles von Kacheln weg, die mehr als eine Kachel von (e, n) entfernt sind - Grundrisse, Rechtecke, Pfosten und die
+        // Durchfahrten (die werden bei Bedarf neu berechnet). Gibt zurück, wie viele Kacheln.
+        defined int Trim(defined float e, defined float n) {
+            var gone = Raser.Obstacles.FarTiles(this.tiles.Keys, e, n)
+            return this.Forget(gone)
+        }
+
+        // Der Server: alles weg außer den Kacheln in keep ("x_y": die mit Spielern und ihre Nachbarn). Gibt zurück, wie viele Kacheln.
+        defined int Keep(HashSet<string> keep) {
+            var gone = new List<string>()
+            foreach (name in this.tiles.Keys) { if (!keep.Contains(name)) { gone.Add(name) } }
+            return this.Forget(gone)
+        }
+
+        // Vergisst die Kacheln gone (Namen "x_y").
+        defined int Forget(List<string> gone) {
+            if (gone.Count == 0) { return 0 }
+            foreach (name in gone) {
+                this.tiles.Remove(name)
+                this.boxes.Remove(name)
+            }
+            this.passages.Clear()
+            // die Pfosten liegen je Zelle (8 m, nie über eine Kachelgrenze); zu welcher Kachel eine Zelle gehört, sagt ihr erster Pfosten
+            var dropped = new HashSet<string>()
+            foreach (name in gone) { dropped.Add(name) }
+            var cells = new List<int>()
+            foreach (pair in this.posts) {
+                var ps = pair.Value
+                if (ps.Count < 3) { continue }
+                if (dropped.Contains(Raser.TileKey.Of(ps[0], ps[1]) + "")) { cells.Add(pair.Key) }
+            }
+            foreach (c in cells) { this.posts.Remove(c) }
+            // (eine nachgeladene Kachel bringt ihre Pfosten wieder mit)
+            return gone.Count
+        }
+
+        // Der nächste Baum zu (e, n) in dessen Kachel: Ost, Nord; undefined: keiner. (Zum Prüfen.)
+        float[] NearestTree(defined float e, defined float n) {
+            var key = Raser.TileKey.Of(e, n)
+            string name = key + ""
+            this.Need(key, name)
+            var tile = this.tiles[name]
+            if (tile == undefined || tile.data.props == undefined) { return undefined }
+            float best = 1.0e30
+            float result[] = undefined
+            foreach (p in tile.data.props) {
+                if (p.kind != "tree") { continue }
+                float dx = key.East + p.x - e
+                float dy = key.North + p.y - n
+                if (dx * dx + dy * dy < best) {
+                    best = dx * dx + dy * dy
+                    result = [key.East + p.x, key.North + p.y]
+                }
+            }
+            return result
+        }
+
+        // Steht an (e, n) ein Gebäude (mit margin m Abstand zur Wand, bis 1,9 m)?
+        defined bool Blocked(defined float e, defined float n, defined float margin) {
+            var key = Raser.TileKey.Of(e, n)
+            string name = key + ""
+            this.Need(key, name)
+            var tile = this.tiles[name]
+            if (tile == undefined) { return false }
+            var bx = this.boxes[name]
+            float x = e - key.East
+            float y = n - key.North
+            for (int k = 0; k < tile.data.buildings.Count; k++) {
+                if (!bx[k].Contains(x, y)) { continue }
+                var b = tile.data.buildings[k]
+                if (b.function != undefined && (b.function.StartsWith("alkis=51009") || b.function.StartsWith("alkis=53001"))) { continue }
+                // im Grundriss oder näher als margin an einer Kante
+                bool hit = Raser.Geo.Inside(b.footprint, x, y)
+                if (!hit) {
+                    int np = b.footprint.length / 2
+                    for (int i = 0; i < np && !hit; i++) {
+                        int j = (i + 1) % np
+                        hit = Raser.Geo.DistanceToSegment(x, y, b.footprint[i * 2], b.footprint[i * 2 + 1], b.footprint[j * 2], b.footprint[j * 2 + 1]) < margin
+                    }
+                }
+                if (!hit) { continue }
+                if (!this.passages.ContainsKey(b.id)) {
+                    var ps = Raser.Voxelizer.Passages(b, tile.data.roads)
+                    this.passages[b.id] = ps
+                    ps.TakeTo(this.passages)
+                }
+                var ways = this.passages[b.id]
+                bool through = false
+                for (int q = 0; q + 6 < ways.Count; q = q + 7) {
+                    if (Raser.Voxelizer.PassageDistance(ways, q, x, y) < ways[q + 4] - margin * 0.5) { through = true }
+                }
+                if (!through) { return true }
+            }
+            return false
+        }
+    }
+}

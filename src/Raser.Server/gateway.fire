@@ -4,6 +4,7 @@
 #import "time"
 #import "raser.core"
 #import "raser.net"
+#import "raser.sim"
 
 // Ein Eimer für Raten: füllt sich mit rate je s bis burst; jede Nachricht nimmt eins.
 class Bucket {
@@ -48,9 +49,25 @@ class Player {
     defined int movedAt             // Ticks der letzten übernommenen Lage
     defined int heardAt             // Ticks der letzten Nachricht
     defined int correctedAt         // Ticks des letzten Teleports zurück
-    defined int windowAt            // Beginn der laufenden Sekunde (Zählung der States)
+    defined int windowAt            // Beginn der laufenden Sekunde (Zählung der Eingaben)
     defined int windowCount
     Bucket talk
+    // Protokoll v2: der Spieler in der Welt des Servers, seine Eingaben, sein Inventar, was sein Client schon weiß
+    Raser.Pawn pawn                 // undefined bis zum Eintritt in die Region
+    List<Raser.Controls> inputs     // angekommen, noch nicht gerechnet
+    defined int lastSeq             // die letzte angekommene Eingabe
+    defined float credit            // so viele Eingaben darf der Server jetzt rechnen (je Takt eine dazu, höchstens RegionServer.Burst)
+    defined int dropped             // verworfene Eingaben (zu viele auf einmal)
+    defined int wantKind            // aus dem Hello: Fahrzeugart (0 zu Fuß) und Startpunkt
+    defined float wantEast
+    defined float wantNorth
+    Raser.Inventory inv             // undefined bis zum Eintritt; die Behälter stehen im Speicher der Region
+    Bucket ops
+    List<Raser.Packet> waitingOps   // Operationen, deren Eingabe davor noch nicht gerechnet ist
+    defined int opSeq               // die zuletzt geprüfte Operation am Inventar
+    Dictionary<int, int> known      // je Entität, die sein Client hat: ihr Fingerabdruck
+    Dictionary<int, int> knownAt    // ... und der Takt, zu dem sie zuletzt ging
+    defined int lyingUntil          // umgehauen: liegt bis zu diesem Takt
 
     construct(Raser.Link link) {
         this.link = try take link
@@ -75,6 +92,21 @@ class Player {
         this.windowAt = now
         this.windowCount = 0
         this.talk = new Bucket(1.0, 5.0)
+        this.pawn = undefined
+        this.inputs = new List<Raser.Controls>()
+        this.lastSeq = 0
+        this.credit = 0.0
+        this.dropped = 0
+        this.wantKind = 1
+        this.wantEast = 0.0
+        this.wantNorth = 0.0
+        this.inv = undefined
+        this.ops = new Bucket(20.0, 20.0)
+        this.waitingOps = new List<Raser.Packet>()
+        this.opSeq = 0
+        this.known = new Dictionary<int, int>()
+        this.knownAt = new Dictionary<int, int>()
+        this.lyingUntil = 0
     }
 
     defined bool Welcomed { get { return this.id != 0 } }
@@ -83,9 +115,7 @@ class Player {
 class Gateway {
     static readonly defined int HelloSeconds = 5
     static readonly defined int IdleSeconds = 30
-    static readonly defined float MaxSpeed = 100.0          // m/s
-    static readonly defined int MaxStates = 30              // je s, darüber verworfen
-    static readonly defined int KickStates = 100            // je s, darüber Kick
+    static readonly defined int KickInputs = 150            // Eingaben je s, darüber Kick (erwartet: 30)
 
     Net.TcpListener listener
     Accounts accounts
@@ -102,7 +132,7 @@ class Gateway {
         this.coordinator = coordinator
         this.regionServer = regionServer
         this.clock = clock
-        this.ids = new Raser.IdAllocator(regionServer.region.server)
+        this.ids = regionServer.ids
         this.players = new List<Player>()
         this.startedTicks = DateTime.UtcNow.Ticks
     }
@@ -163,7 +193,11 @@ class Gateway {
                 this.Hello(p, m)
                 continue
             }
-            if (m.type == Raser.Protocol.State) { this.Move(p, m, now) }
+            if (m.type == Raser.Protocol.Input) { this.Input(p, m, now) }
+            else if (m.type == Raser.Protocol.InvOp) {
+                if (!p.ops.Take(now)) { this.regionServer.SendInventory(p, m.seq, false) } else { this.regionServer.QueueOp(p, m) }
+            }
+            else if (m.type == Raser.Protocol.State) { this.Kick(p, "Protokoll v1 (Lagen vom Client) gibt es nicht mehr: bitte den Launcher aktualisieren.", false) }
             else if (m.type == Raser.Protocol.Chat || m.type == Raser.Protocol.Command) { this.Talk(p, m, now) }
             else if (m.type == Raser.Protocol.Bye) { p.link.Fail("Abgemeldet.") }
             else { this.Kick(p, "Unerwartete Nachricht " + m.type + ".", false) }
@@ -200,6 +234,9 @@ class Gateway {
         p.name = account.name
         p.admin = account.admin
         p.id = this.ids.Next(Raser.IdKind.Player)
+        p.wantKind = m.kind
+        p.wantEast = m.east
+        p.wantNorth = m.north
         this.regionServer.Enter(p)
         var welcome = new Raser.Packet(Raser.Protocol.Welcome)
         welcome.id = p.id
@@ -207,8 +244,11 @@ class Gateway {
         welcome.time = Gateway.Millis()
         welcome.admin = p.admin
         welcome.name = p.name
+        welcome.rate = Math.Round(Raser.SimWorld.Hz)!int
+        welcome.tick = this.regionServer.tick
         p.link.Send(welcome)
         p.link.Send(this.clock.Packet())
+        this.regionServer.SendInventory(p, 0, true)
         foreach (other in this.players) {
             if (other == p || !other.Welcomed || !other.link.IsOpen) { continue }
             p.link.Send(Gateway.JoinOf(other))
@@ -229,51 +269,19 @@ class Gateway {
         return j
     }
 
-    // Eine Lage: Rate, Kachel, Tempo und Sprung prüfen.
-    undefined Move(Player p, Raser.Packet m, defined int now) {
+    // Eingaben (v2): Rate prüfen, dann in die Warteschlange des Spielers (der Regionsserver rechnet sie im Takt). Werte außerhalb der Grenzen
+    // hat schon Raser.Wire abgelehnt (Kick).
+    undefined Input(Player p, Raser.Packet m, defined int now) {
         if (now - p.windowAt >= 10000000) {
             p.windowAt = now
             p.windowCount = 0
         }
-        p.windowCount++
-        if (p.windowCount > Gateway.KickStates) {
-            this.Kick(p, "Zu viele Nachrichten.", false)
+        p.windowCount = p.windowCount + m.controls.Count
+        if (p.windowCount > Gateway.KickInputs) {
+            this.Kick(p, "Zu viele Eingaben.", false)
             return
         }
-        if (p.windowCount > Gateway.MaxStates) { return }
-        var tile = Raser.TileKey.Of(m.east, m.north)
-        if (tile.x != m.tileX || tile.y != m.tileY) {
-            this.Kick(p, "Lage und Kachel passen nicht zusammen.", false)
-            return
-        }
-        if (Math.Abs(m.speed) > Gateway.MaxSpeed) { return }
-        if (p.placed) {
-            float dt = (now - p.movedAt) / 10000000.0
-            float de = m.east - p.east
-            float dn = m.north - p.north
-            float reach = Gateway.MaxSpeed * dt + 20.0
-            if (de * de + dn * dn > reach * reach) {
-                // ein Sprung: nicht übernehmen, den Client zurücksetzen (höchstens einmal je s)
-                if (now - p.correctedAt > 10000000) {
-                    p.correctedAt = now
-                    p.link.Send(Gateway.TeleportTo(p.east, p.north, p.heading))
-                }
-                return
-            }
-        }
-        var region = this.coordinator.RegionOf(tile.x, tile.y)
-        if (region == undefined) { return }
-        // (später: eine andere Region übernimmt - Übergabe mit Hysterese; jetzt ist es immer dieselbe)
-        p.placed = true
-        p.east = m.east
-        p.north = m.north
-        p.heading = m.heading
-        p.speed = m.speed
-        p.kind = m.kind
-        p.tileX = tile.x
-        p.tileY = tile.y
-        p.seq = m.seq
-        p.movedAt = now
+        this.regionServer.Queue(p, m)
     }
 
     static Raser.Packet TeleportTo(defined float east, defined float north, defined float heading) {
@@ -414,20 +422,9 @@ class CommandRunner {
                 this.Error(p, q.name + " hat noch keine Lage.")
                 return
             }
-            // 4 m hinter ihn, in seine Richtung (vorwärts ist (-sin, cos))
+            // 4 m hinter ihn, in seine Richtung (vorwärts ist (-sin, cos)); die Lage setzt der Server, der Client springt beim nächsten Snapshot
             float h = q.heading * Math.PI / 180.0
-            float e = q.east + Math.Sin(h) * 4.0
-            float n = q.north - Math.Cos(h) * 4.0
-            var tile = Raser.TileKey.Of(e, n)
-            p.east = e
-            p.north = n
-            p.heading = q.heading
-            p.speed = 0.0
-            p.tileX = tile.x
-            p.tileY = tile.y
-            p.placed = true
-            p.movedAt = DateTime.UtcNow.Ticks
-            p.link.Send(Gateway.TeleportTo(e, n, q.heading))
+            g.regionServer.Place(p, q.east + Math.Sin(h) * 4.0, q.north - Math.Cos(h) * 4.0, q.heading)
             this.Answer(p, "Bei " + q.name + ".")
         } else if (c.name == "admin") {
             if (!g.accounts.Grant(c.args)) {
