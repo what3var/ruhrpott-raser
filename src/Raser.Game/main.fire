@@ -370,6 +370,8 @@ class Game {
         string own = options.Get("vehicle", "auto")
         float sh = start[2] * Math.PI / 180.0
         float row = 0.0
+        // --gap m: so weit hinter dem Start beginnt die Reihe (zum Ausprobieren von Stößen mit Anlauf)
+        float gap = options.Get("gap", "4").ToFloat()
         for (int pass = 0; pass < 2; pass++) {
             for (int k = 0; k < kinds.length; k++) {
                 if ((kinds[k] == own) != (pass == 0)) { continue }
@@ -381,8 +383,8 @@ class Game {
                 } else {
                     // dahinter, 1,6 m nach rechts
                     row = row + v.length / 2.0 + 1.5
-                    v.east = start[0] + Math.Sin(sh) * (row + 4.0) + Math.Cos(sh) * 1.6
-                    v.north = start[1] - Math.Cos(sh) * (row + 4.0) + Math.Sin(sh) * 1.6
+                    v.east = start[0] + Math.Sin(sh) * (row + gap) + Math.Cos(sh) * 1.6
+                    v.north = start[1] - Math.Cos(sh) * (row + gap) + Math.Sin(sh) * 1.6
                     row = row + v.length / 2.0
                 }
                 var m = new CarModel(scene, kinds[k], colors[k])
@@ -570,6 +572,11 @@ class Game {
             float dt = 1.0 / 30.0
             int hits = 0
             float top = 0.0
+            // --heading deg: in diese Richtung (statt der Straße)
+            if (options.Get("heading", "") != "") {
+                car.heading = options.Get("heading", "0").ToFloat()
+                camHeading = car.heading
+            }
             // --brake s: die letzten s Sekunden voll bremsen (der Wagen nickt)
             float brakeAt = auto - options.Get("brake", "0").ToFloat()
             for (float t = 0.0; t < auto; t = t + dt) {
@@ -643,8 +650,9 @@ class Game {
             print(npcs.Report())
             gear.Shot(options, hud, fb, width, height, car, walker, onFoot, vehicles)
             print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Tank " + Math.Round(car.fuel * 1000.0) / 10.0 + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m, " + Math.Round(chase.swing) + "°")
+            print("Haltung: Nicken " + Math.Round(model.stance.pitch * 10.0) / 10.0 + "°, Wanken " + Math.Round(model.stance.roll * 10.0) / 10.0 + "° (Boden: " + Math.Round(model.stance.targetPitch * 10.0) / 10.0 + "°, " + Math.Round(model.stance.targetRoll * 10.0) / 10.0 + "°), Höhe " + Math.Round(model.stance.height * 100.0) / 100.0 + " m")
             for (int i = 1; i < vehicles.Count; i++) {
-                print(vehicles[i].name + " bei " + vehicles[i].east + ", " + vehicles[i].north + ", Zustand " + Math.Round(vehicles[i].health * 100.0) + " %")
+                print(vehicles[i].name + " bei " + vehicles[i].east + ", " + vehicles[i].north + ", Richtung " + Math.Round(vehicles[i].heading) + "°, Zustand " + Math.Round(vehicles[i].health * 100.0) + " %")
             }
             if (shot != "") {
                 IO.File.WriteAllBytes(shot, fb.ToPng())
