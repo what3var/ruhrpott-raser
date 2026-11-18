@@ -1,0 +1,106 @@
+// Raser.Import: Rastplätze und Rastanlagen (OSM highway=rest_area / services, Raser.OsmData.Classify) einrichten - was OSM dort selten
+// einzeln hat: ein WC-Häuschen (4,5 x 3,2 m, flach, weiß), drei Bänke mit Tisch (als Bänke), zwei Mülleimer. Alles kommt an eine freie Stelle
+// nahe der Mitte der Fläche (nicht auf Straßen, Parkplätzen oder Gebäuden), mit stabilen IDs aus der Fläche - dieselben Daten geben dasselbe.
+// Die Markierung der Parkplätze zeichnet das Netz (Raser.MotorwayMesher), Tankstelle und Raststätte kommen aus OSM und LoD2.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class RestAreas {
+        static defined bool IsRestArea(string kind) { return kind == "highway=rest_area" || kind == "highway=services" }
+
+        static undefined Furnish(Tile tile) {
+            if (tile == undefined || tile.data == undefined) { return }
+            var areas = new List<Area>()
+            foreach (a in tile.data.areas) { if (Raser.RestAreas.IsRestArea(a.kind) && a.ring != undefined && a.ring.length >= 6) { areas.Add(a) } }
+            foreach (a in areas) {
+                var box = Raser.Box2.Of(a.ring)
+                float cx = (box.minX + box.maxX) * 0.5
+                float cy = (box.minY + box.maxY) * 0.5
+                // nur die Kachel, in der die Mitte liegt
+                if (cx < 0.0 || cy < 0.0 || cx >= 256.0 || cy >= 256.0) { continue }
+                // eine freie Stelle für das WC: von der Mitte im Kreis nach außen (alle 3 m), alle vier Ecken frei
+                float spot[] = Raser.RestAreas.Free(tile, a, cx, cy, 3.5)
+                if (spot == undefined) { continue }
+                float x = spot[0]
+                float y = spot[1]
+                var b = new Raser.Building()
+                b.source = "rest:" + a.source + "/wc"
+                b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+                b.footprint = [x - 2.25, y - 1.6, x + 2.25, y - 1.6, x + 2.25, y + 1.6, x - 2.25, y + 1.6]
+                float g = 0.0
+                if (tile.heights != undefined) { g = tile.heights.At(x, y) }
+                b.ground = g
+                b.eaves = g + 2.8
+                b.ridge = g + 2.8
+                b.roofType = Raser.RoofType.Flat
+                b.function = "amenity=toilets"
+                b.name = "WC"
+                b.levels = 1
+                b.wall = Raser.Material.Plaster
+                b.wallColor = Raser.Palette.Plaster
+                b.roof = Raser.Material.Concrete
+                b.roofColor = Raser.Palette.Concrete
+                tile.data.buildings.Add(take b)
+                // Bänke (mit Tisch) und Mülleimer daneben
+                string kinds[] = ["bench", "bench", "bench", "bin", "bin"]
+                for (int k = 0; k < kinds.length; k++) {
+                    float angle = k * 72.0 * Math.PI / 180.0
+                    float px = x + Math.Cos(angle) * (6.0 + k)
+                    float py = y + Math.Sin(angle) * (6.0 + k)
+                    if (px < 0.0 || py < 0.0 || px >= 256.0 || py >= 256.0) { continue }
+                    if (!Raser.Geo.Inside(a.ring, px, py) || Raser.RestAreas.Busy(tile, px, py, 1.0)) { continue }
+                    var p = new Raser.Prop()
+                    p.source = "rest:" + a.source + "/" + kinds[k] + k
+                    p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+                    p.kind = kinds[k]
+                    p.x = px
+                    p.y = py
+                    // zum WC hin
+                    p.angle = Math.Atan2(y - py, x - px) * 180.0 / Math.PI
+                    tile.data.props.Add(take p)
+                }
+            }
+        }
+
+        // Eine freie Stelle in der Fläche nahe (cx, cy) für ein Quadrat mit halber Seite half; undefined: keine.
+        static float[] Free(Tile tile, Area a, defined float cx, defined float cy, defined float half) {
+            for (float r = 0.0; r < 60.0; r = r + 3.0) {
+                int steps = Math.Max(1, Math.Round(r * 2.0)!int)
+                for (int k = 0; k < steps; k++) {
+                    float angle = k * 2.0 * Math.PI / steps
+                    float x = cx + Math.Cos(angle) * r
+                    float y = cy + Math.Sin(angle) * r
+                    bool ok = true
+                    foreach (dx in [-half, half]) {
+                        foreach (dy in [-half, half]) {
+                            if (!ok) { continue }
+                            if (!Raser.Geo.Inside(a.ring, x + dx, y + dy) || Raser.RestAreas.Busy(tile, x + dx, y + dy, 1.5)) { ok = false }
+                        }
+                    }
+                    if (ok && !Raser.RestAreas.Busy(tile, x, y, 1.5)) {
+                        float spot[] = [x, y]
+                        return spot
+                    }
+                }
+            }
+            return undefined
+        }
+
+        // Steht dort etwas (Gebäude, Straße mit margin m Abstand, Parkplatz, Tankstelle)?
+        static defined bool Busy(Tile tile, defined float x, defined float y, defined float margin) {
+            foreach (b in tile.data.buildings) {
+                if (b.footprint != undefined && Raser.Geo.Inside(b.footprint, x, y)) { return true }
+            }
+            foreach (r in tile.data.roads) {
+                if (r.points != undefined && Raser.Geo.DistanceToLine(r.points, x, y) < r.width / 2.0 + margin) { return true }
+            }
+            foreach (o in tile.data.areas) {
+                if (o.kind == "amenity=parking" || o.kind == "amenity=fuel") {
+                    if (o.ring != undefined && Raser.Geo.Inside(o.ring, x, y)) { return true }
+                }
+            }
+            return false
+        }
+    }
+}

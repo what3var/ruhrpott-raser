@@ -41,6 +41,16 @@ raser setup --meshes 1      # dazu den Netz-Cache (noch etwa 45 min; sonst baut 
 raser fetch                 # nur die Rohdaten nach data/raw (fortsetzbar, Vorhandenes wird übersprungen)
 ```
 
+Andere Ausschnitte (je Region eigene Ordner): `--region lichtendorf` ist die A1 an der Raststätte Lichtendorf (Schwerte/Dortmund: Autobahn mit
+drei bis vier Fahrstreifen je Richtung, Rastanlage auf beiden Seiten, Anschlussstelle; 3 x 3 km Kacheln, etwa 45 min mit `--jobs 2`),
+`--bbox lon0,lat0,lon1,lat1` ein beliebiger Ausschnitt in Grad (die 1-km-Kacheln von DGM1 und LoD2 ergeben sich aus den Ecken, OSM kommt in
+Teilen):
+
+```bash
+raser setup --region lichtendorf --raw data/raw-lichtendorf --world world-lichtendorf --jobs 2
+raser-game --world world-lichtendorf --at 402300,5702000
+```
+
 Unter Windows heißt das Programm `raser.exe`; Optionen: `--raw <ordner>` (Rohdaten, Vorgabe `data/raw`), `--world <ordner>` (Vorgabe `world`),
 `--jobs <n>` (Worker-Threads). Voxelisieren und Netz-Cache laufen auf allen Kernen, je Kachel ein Worker (`fire dedicated`); beim Voxelisieren
 braucht ein Worker bis gut 2 GB, darum höchstens so viele, wie in 80 % des freien Speichers passen. Wichtig: das Werkzeug nativ als Release

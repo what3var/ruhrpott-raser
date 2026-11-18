@@ -130,3 +130,38 @@ class BridgeTests {
         Testing.Assert.IsTrue(car.bridge == 2 || car.north > 150.0)
     }
 }
+
+class RailTests {
+    [Test "Leitplanke: wer nach rechts von der Autobahn will, bleibt an ihr hängen"]
+    undefined Guardrail() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        tile.heights = new Raser.HeightRaster(0.0, 0.0, 1.0, 257, 257, 50.0)
+        tile.data.roads.Add(BridgeWorld.Road(1, "highway=motorway", [0.0, 100.0, 256.0, 100.0], 10.5, 0))
+        var o = new Raser.Obstacles("")
+        o.decks["0_0"] = Raser.Bridges.Of(tile)
+        o.rails["0_0"] = Raser.Motorways.Rails(tile)
+        Testing.Assert.IsTrue(o.rails["0_0"].Count > 100)
+        var none = new List<Raser.Box2>()
+        o.boxes["0_0"] = none
+        none.TakeTo(o.boxes)
+        o.tiles["0_0"] = take tile
+        var all = new List<Raser.Vehicle>()
+        var car = Raser.Vehicle.Of("auto")
+        car.east = 50.0
+        car.north = 100.0
+        // nach Südosten (rechts der Fahrtrichtung Ost), mit 15 m/s
+        car.heading = -135.0
+        car.speed = 15.0
+        all.Add(car)
+        for (int i = 0; i < 120; i++) { Raser.Physics.Advance(car, all, o, 1.0 / 30.0, 0.5, 0.0, 0.0, false, 0.0) }
+        // die Leitplanke steht 1 m neben dem Rand (y = 100 - 5,25 - 1 = 93,75): der Wagen ist nicht darüber
+        Testing.Assert.IsTrue(car.north > 93.75)
+        // links die Schutzwand (y = 106,25)
+        car.east = 150.0
+        car.north = 100.0
+        car.heading = -45.0
+        car.speed = 15.0
+        for (int i = 0; i < 120; i++) { Raser.Physics.Advance(car, all, o, 1.0 / 30.0, 0.5, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.IsTrue(car.north < 106.25)
+    }
+}

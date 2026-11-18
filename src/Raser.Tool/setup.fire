@@ -1,24 +1,69 @@
 // Raser.Tool: die Testregion ohne Shell-Skripte einrichten - dasselbe wie tools/fetch-bochum.sh und tools/build-bochum.sh, aber als fire-Programm
 // (läuft so auch unter Windows).
 //
-//   raser fetch [--raw data/raw]                                   die Rohdaten laden (DGM1, LoD2 von opengeodata.nrw.de, OSM 4 x 4 Ausschnitte)
-//   raser setup [--raw data/raw] [--world world] [--meshes 1] [--jobs n]   laden (was fehlt), importieren, voxelisieren (auf allen Kernen), auf Wunsch den Netz-Cache
+//   raser fetch [--raw data/raw] [--region bochum | --bbox lon0,lat0,lon1,lat1]   die Rohdaten laden (DGM1, LoD2 von opengeodata.nrw.de, OSM in Teilen)
+//   raser setup [--raw data/raw] [--world world] [--region ... | --bbox ...] [--meshes 1] [--jobs n]   laden (was fehlt), importieren, voxelisieren
+//                                                       (auf allen Kernen), auf Wunsch den Netz-Cache
+//
+// Regionen (--region): bochum (Bochum-Innenstadt, die Vorgabe), lichtendorf (A1 an der Raststätte Lichtendorf bei Schwerte/Dortmund: Autobahn mit
+// Rastanlage auf beiden Seiten, Anschlussstelle). Mit --bbox ein beliebiger Ausschnitt in Grad (WGS84): die 1-km-Kacheln von DGM1 und LoD2
+// (ETRS89/UTM32) ergeben sich aus den vier Ecken (Raser.Utm), OSM kommt in Teilen von höchstens 0,008° x 0,005° (die API gibt je Anfrage
+// höchstens 50 000 Knoten). Jede Region gehört in eigene Ordner (--raw, --world), sonst mischen sich die Daten.
 //
 // Was schon da ist, wird nicht noch einmal geladen; ein abgebrochener Download geht beim nächsten Mal weiter (Http.Download, Teildatei .part).
 // Voxelisiert werden nur Kacheln, deren Chunks fehlen oder älter als der Generator sind (wie `raser voxelize`).
 #import "filesystem"
 #import "time"
 #import "http"
+#import "raser.core"
+#import "raser.import"
 
 class Setup {
     static readonly string Nrw = "https://www.opengeodata.nrw.de/produkte/geobasis"
-    // Die vier 1-km-Kacheln (Ost_Nord in km, ETRS89/UTM32) der Testregion Bochum-Innenstadt
-    static string Tiles() { return "375_5704 375_5705 376_5704 376_5705" }
-    // Der OSM-Ausschnitt (Grad), in 4 x 4 Teile geteilt (die OSM-API gibt je Anfrage höchstens 50 000 Knoten)
-    static readonly defined float Lon0 = 7.197979
-    static readonly defined float Lon1 = 7.230418
-    static readonly defined float Lat0 = 51.472416
-    static readonly defined float Lat1 = 51.492670
+
+    // Der Ausschnitt (Grad: lon0, lat0, lon1, lat1) aus --bbox oder --region (Vorgabe: bochum).
+    static float[] Box(Args args) {
+        if (args.Has("bbox")) {
+            var parts = args.Get("bbox").Split(",")
+            if (parts.length != 4) { throw new Raser.DataException("--bbox braucht lon0,lat0,lon1,lat1.") }
+            float b[] = [parts[0].ToFloat(), parts[1].ToFloat(), parts[2].ToFloat(), parts[3].ToFloat()]
+            if (b[2] <= b[0] || b[3] <= b[1]) { throw new Raser.DataException("--bbox: lon1 > lon0 und lat1 > lat0.") }
+            return b
+        }
+        string region = args.Get("region", "bochum")
+        // Bochum-Innenstadt (wie bisher)
+        if (region == "bochum") { return [7.197979, 51.472416, 7.230418, 51.492670] }
+        // A1 an der Raststätte Lichtendorf (Nord und Süd) mit Anschlussstelle, gut 2 x 2 km
+        if (region == "lichtendorf") { return [7.582, 51.457, 7.612, 51.477] }
+        throw new Raser.DataException("Unbekannte Region '" + region + "' (bekannt: bochum, lichtendorf; sonst --bbox).")
+    }
+
+    // Die 1-km-Kacheln (Ost_Nord in km, ETRS89/UTM32), die der Ausschnitt berührt. Bochum: die vier wie bisher.
+    static List<string> Tiles(Args args) {
+        var list = new List<string>()
+        if (!args.Has("bbox") && args.Get("region", "bochum") == "bochum") {
+            foreach (t in ["375_5704", "375_5705", "376_5704", "376_5705"]) { list.Add(t) }
+            return list
+        }
+        float b[] = Setup.Box(args)
+        float e0 = 1.0e30
+        float e1 = -1.0e30
+        float n0 = 1.0e30
+        float n1 = -1.0e30
+        foreach (lat in [b[1], b[3]]) {
+            foreach (lon in [b[0], b[2]]) {
+                float u[] = Raser.Utm.FromLatLon(lat, lon)
+                e0 = Math.Min(e0, u[0])
+                e1 = Math.Max(e1, u[0])
+                n0 = Math.Min(n0, u[1])
+                n1 = Math.Max(n1, u[1])
+            }
+        }
+        for (int e = Math.Floor(e0 / 1000.0)!int; e <= Math.Floor(e1 / 1000.0)!int; e++) {
+            for (int n = Math.Floor(n0 / 1000.0)!int; n <= Math.Floor(n1 / 1000.0)!int; n++) { list.Add(e + "_" + n) }
+        }
+        return list
+    }
 
     static undefined Fetch(Args args) {
         string raw = args.Get("raw", IO.Path.Combine("data", "raw"))
@@ -35,7 +80,7 @@ class Setup {
         // DGM1: der Dateiname trägt das Jahr der Befliegung - aus dem Verzeichnis holen (das jüngste)
         string dgmIndex = Setup.Nrw + "/hm/dgm1_tiff/dgm1_tiff/"
         string listing = undefined
-        foreach (t in Setup.Tiles().Split(" ")) {
+        foreach (t in Setup.Tiles(args)) {
             if (Setup.HasPrefix(dgm, "dgm1_32_" + t + "_1_nw_")) {
                 Tool.Log("DGM1 " + t + ": schon da")
             } else {
@@ -53,15 +98,18 @@ class Setup {
             string gmlPath = IO.Path.Combine(lod2, gml)
             if (IO.File.Exists(gmlPath)) { Tool.Log("LoD2 " + t + ": schon da") } else { Setup.Load(Setup.Nrw + "/3dg/lod2_gml/lod2_gml/" + gml, gmlPath) }
         }
-        // OSM: 4 x 4 Ausschnitte, mit Pause dazwischen (die API mag keine Serien)
-        for (int i = 0; i < 4; i++) {
-            for (int j = 0; j < 4; j++) {
+        // OSM: in Teilen (Bochum wie bisher 4 x 4), mit Pause dazwischen (die API mag keine Serien)
+        float box[] = Setup.Box(args)
+        int ni = Math.Max(1, Math.Ceiling((box[2] - box[0]) / 0.0082)!int)
+        int nj = Math.Max(1, Math.Ceiling((box[3] - box[1]) / 0.0051)!int)
+        for (int i = 0; i < ni; i++) {
+            for (int j = 0; j < nj; j++) {
                 string path = IO.Path.Combine(osm, "map_" + i + "_" + j + ".osm")
                 if (IO.File.Exists(path)) { continue }
-                float a = Setup.Lon0 + (Setup.Lon1 - Setup.Lon0) * i / 4.0
-                float b = Setup.Lat0 + (Setup.Lat1 - Setup.Lat0) * j / 4.0
-                float c = Setup.Lon0 + (Setup.Lon1 - Setup.Lon0) * (i + 1) / 4.0
-                float d = Setup.Lat0 + (Setup.Lat1 - Setup.Lat0) * (j + 1) / 4.0
+                float a = box[0] + (box[2] - box[0]) * i / ni
+                float b = box[1] + (box[3] - box[1]) * j / nj
+                float c = box[0] + (box[2] - box[0]) * (i + 1) / ni
+                float d = box[1] + (box[3] - box[1]) * (j + 1) / nj
                 string box = $"{a:F6},{b:F6},{c:F6},{d:F6}"
                 // (die OSM-API antwortet chunked - das kann Http.Download nicht: ganz laden, dann schreiben, über eine Teildatei)
                 Tool.Log("Laden: " + IO.Path.GetFileName(path))
