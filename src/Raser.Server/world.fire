@@ -688,6 +688,12 @@ class RegionServer {
             p.inv.vehicle = this.NearestBody(p.east, p.north)
             ok = this.tick >= p.lyingUntil && p.inv.Apply(op)
             if (p.inv.message != "") { Gateway.Log(p.name + ": " + p.inv.message) }
+        } else if (op.kind == Raser.InvOp.Buy || op.kind == Raser.InvOp.Fill || op.kind == Raser.InvOp.Refuel) {
+            // kaufen und tanken (Raser.Shops): Preise und Sortiment folgen aus Laden-ID und Art, das Geld prüft Inventory.Apply; nur zu Fuß,
+            // tanken am nächsten Fahrzeug der Region (dass der Spieler im Laden steht, prüft der Server noch nicht)
+            p.inv.vehicle = this.NearestBody(p.east, p.north)
+            ok = onFoot && p.inv.Apply(op)
+            if (p.inv.message != "") { Gateway.Log(p.name + ": " + p.inv.message) }
         } else {
             ok = p.inv.Apply(op)
         }
