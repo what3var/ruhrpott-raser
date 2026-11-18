@@ -406,16 +406,19 @@ class Minimap {
         this.paint.Color = 0xFF2E2A2A
         r.FillCircle(nx, ny, 9, this.paint)
         this.paint.Color = 0xFFFFFFFF
-        r.DrawText(nx - r.TextWidth("N") / 2, ny - r.TextHeight() / 2, "N", this.paint)
+        var bold = HudStyle.Bold()
+        r.DrawText(nx - r.TextWidth("N", bold, 15) / 2, ny - r.TextHeight(bold, 15) / 2, "N", this.paint, undefined, bold, 15)
         // der Maßstab unten
         string scale = "50 m"
         int bar = Math.Round(50.0 / this.MetersPerPixel)!int
         int by = y0 + s + 8
         this.paint.Color = 0xA0000000
-        r.FillRect(x0 + s - bar - 46, by - 2, bar + 44, r.TextHeight() + 4, this.paint)
+        var font = HudStyle.Medium()
+        int th = r.TextHeight(font, 15)
+        r.FillRect(x0 + s - bar - 46, by - 2, bar + 44, th + 4, this.paint)
         this.paint.Color = 0xFFFFFFFF
-        r.FillRect(x0 + s - bar - 4, by + r.TextHeight() / 2, bar, 2, this.paint)
-        r.DrawText(x0 + s - bar - 42, by, scale, this.paint)
+        r.FillRect(x0 + s - bar - 4, by + th / 2, bar, 2, this.paint)
+        r.DrawText(x0 + s - bar - 42, by, scale, this.paint, undefined, font, 15)
         this.spentTicks = DateTime.Now.Ticks - t0
     }
 }

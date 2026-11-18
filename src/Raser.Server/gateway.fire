@@ -68,6 +68,8 @@ class Player {
     Dictionary<int, int> known      // je Entität, die sein Client hat: ihr Fingerabdruck
     Dictionary<int, int> knownAt    // ... und der Takt, zu dem sie zuletzt ging
     defined int lyingUntil          // umgehauen: liegt bis zu diesem Takt
+    defined int storedCash          // das Bargeld in der Datenbank (-1: neu)
+    Raser.Body body                 // Essen, Trinken (Inventory.Use)
 
     construct(Raser.Link link) {
         this.link = try take link
@@ -107,6 +109,8 @@ class Player {
         this.known = new Dictionary<int, int>()
         this.knownAt = new Dictionary<int, int>()
         this.lyingUntil = 0
+        this.storedCash = -1
+        this.body = new Raser.Body()
     }
 
     defined bool Welcomed { get { return this.id != 0 } }
@@ -160,6 +164,11 @@ class Gateway {
         }
         for (int i = 0; i < this.players.Count; i++) {
             var p = this.players[i]
+            // das Bargeld in die Datenbank, sobald es sich ändert
+            if (p.inv != undefined && p.inv.cash != p.storedCash) {
+                p.storedCash = p.inv.cash
+                this.accounts.SetCash(p.account, p.inv.cash)
+            }
             this.Read(p, now)
             if (!p.link.IsOpen) { continue }
             if (!p.Welcomed && now - p.heardAt > Gateway.HelloSeconds * 10000000) { this.Kick(p, "Keine Anmeldung.", true) }
@@ -234,6 +243,7 @@ class Gateway {
         p.name = account.name
         p.admin = account.admin
         p.id = this.ids.Next(Raser.IdKind.Player)
+        p.storedCash = this.accounts.Cash(account.id)
         p.wantKind = m.kind
         p.wantEast = m.east
         p.wantNorth = m.north
@@ -344,6 +354,7 @@ class Gateway {
     undefined Drop(Player p) {
         if (!p.Welcomed) { return }
         this.regionServer.Leave(p)
+        if (p.inv != undefined) { this.accounts.SetCash(p.account, p.inv.cash) }
         Gateway.Log(p.name + " ist weg (" + p.link.reason + ")")
         var gone = new Raser.Packet(Raser.Protocol.Leave)
         gone.id = p.id

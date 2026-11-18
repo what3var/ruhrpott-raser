@@ -130,12 +130,16 @@ class OsmTests {
         osm.Read(new Resource("data/osm_small.osm").Bytes())
         osm.Read(new Resource("data/osm_small.osm").Bytes())     // doppelt gelesen: zählt einmal
         Testing.Assert.AreEqual(7, osm.NodeCount)
-        Testing.Assert.AreEqual(4, osm.ways.Count)
+        Testing.Assert.AreEqual(6, osm.ways.Count)
         Testing.Assert.AreEqual(1, osm.points.Count)
         Testing.Assert.AreEqual("Tanke & Trinkhalle", osm.points[0].tags["name"])
         var features = osm.Features()
-        // Straße, Park, Fußweg (der Tunnel fehlt).
-        Testing.Assert.AreEqual(3, features.Count)
+        // Straße, Park, Fußweg (der Tunnel fehlt); dazu ein Gebiet und ein Gebäude-Umriss (für das Aussehen der Häuser)
+        Testing.Assert.AreEqual(5, features.Count)
+        Testing.Assert.AreEqual("zone:landuse=residential", features[3].kind)
+        Testing.Assert.AreEqual("Altstadt", features[3].name)
+        Testing.Assert.AreEqual("osm:building", features[4].kind)
+        Testing.Assert.AreEqual("building=retail;start_date=1910", features[4].tags)
         Testing.Assert.AreEqual("highway=residential", features[0].kind)
         Testing.Assert.AreEqual(5.5, features[0].width)
         Testing.Assert.AreEqual("osm:way/10", features[0].source)
@@ -156,6 +160,8 @@ class OsmTests {
         var tile = region.Build(key)
         Testing.Assert.AreEqual(2, tile.data.roads.Count)
         Testing.Assert.AreEqual(1, tile.data.areas.Count)
+        Testing.Assert.AreEqual(1, tile.data.zones.Count)
+        Testing.Assert.AreEqual("landuse=residential", tile.data.zones[0].kind)
         Testing.Assert.AreEqual(1, tile.data.pois.Count)
         Testing.Assert.AreEqual("amenity=fuel", tile.data.pois[0].kind)
         var p = tile.data.pois[0]

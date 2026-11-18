@@ -57,6 +57,9 @@ class Server {
         var coordinator = new Coordinator()
         string world = options.Get("world", "")
         var region = new RegionServer(coordinator.regions[0], world)
+        // der Verkehr (Raser.Traffic): höchstens so viele Autos und Fußgänger um jeden Spieler (0: keine)
+        region.SetTraffic(options.Get("traffic", "24").ToInt(), options.Get("people", "30").ToInt(), options.Get("traffic-seed", "1").ToInt())
+        region.trafficWetness = clock.weather
         ServerStatus.region = region.region.name
         var gateway = new Gateway(host, gamePort, accounts, coordinator, region, clock)
         Gateway.Log("Spielprotokoll v" + Raser.Protocol.Version + " auf Port " + gamePort + ", Region " + region.region.name + ", " + accounts.Count() + " Konten in " + dbPath + ", " + Math.Round(Raser.SimWorld.Hz) + " Takte je s, Welt " + (world == "" ? "keine (ohne Hindernisse)" : world))
@@ -82,6 +85,8 @@ class Server {
         int due = last
         int lastWeather = 0
         int changes = clock.changes
+        int worst = 0               // der längste Takt seit der letzten Meldung (Ticks), gemeldet alle 10 s, wenn über 50 ms
+        int worstAt = last
         while (true) {
             int start = DateTime.UtcNow.Ticks
             float dt = (start - last) / 10000000.0
@@ -90,11 +95,18 @@ class Server {
             gateway.Tick()
             int steps = 0
             while (start >= due && steps < 5) {
+                int t0 = DateTime.UtcNow.Ticks
                 region.Step(Gateway.Millis())
+                worst = Math.Max(worst, DateTime.UtcNow.Ticks - t0)
                 due = due + tickTicks
                 steps++
             }
             if (start - due > tickTicks * 5) { due = start }
+            if (start - worstAt > 100000000) {
+                if (worst > 500000) { Gateway.Log("laengster Takt " + (worst / 10000) + " ms") }
+                worst = 0
+                worstAt = start
+            }
             if (clock.changes != changes || start - lastWeather > 100000000) {
                 changes = clock.changes
                 lastWeather = start

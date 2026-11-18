@@ -7,6 +7,8 @@
 #import "raser.core"
 #import "raser.net"
 #import "raser.sim"
+#import "raser.world"
+#import "raser.traffic"
 
 // Eine Region: ein Rechteck aus ganzen Kacheln (min .. max, einschließlich) und der Server, der für sie zuständig ist.
 class Region {
@@ -127,6 +129,7 @@ class RegionServer {
     static readonly defined int ParkedPerTile = 6       // geparkte Fahrzeuge je Kachel (beim ersten Besuch)
     static readonly defined float KnockSpeed = 5.0      // ab diesem Tempo (m/s) haut ein Fahrzeug einen Spieler um
     static readonly defined int LyingTicks = 90         // so lange (Takte) liegt er
+    static readonly defined int TrafficDelay = 90       // so viele Takte nach der Bestellung wird ein neuer Straßengraph übernommen (3 s; der Worker braucht für 9 neue Kacheln gut 1,5 s)
 
     Region region
     List<Player> players            // (Verweise: die Spieler gehören dem Gateway)
@@ -138,6 +141,18 @@ class RegionServer {
     defined int tick
     defined float defaultEast
     defined float defaultNorth
+    // der Verkehr (Raser.Traffic, docs/SERVER.md): NPC-Autos und Fußgänger um alle Spieler
+    Raser.Traffic traffic           // undefined: kein Verkehr
+    Raser.Weather trafficWetness    // die Nässe für die Physik der Unfallwagen (das Wetter der Uhr)
+    List<float> trafficPlayers
+    List<Raser.NpcState> npcStates
+    Raser.GraphWorker trafficWorker // baut den Straßengraphen in einem eigenen Thread
+    string trafficWant              // die zuletzt bestellten Kacheln
+    defined int trafficDue          // in diesem Takt wird der bestellte Graph übernommen
+    defined int trafficWaitTicks    // so lange (Ticks) hat der Takt insgesamt auf den Worker gewartet
+    string world
+    defined int builds
+    defined int buildTicks
 
     // world: das Verzeichnis der Welt (Kacheln unter world/tiles); "": ohne Hindernisse.
     construct(Region region, string world) {
@@ -153,6 +168,23 @@ class RegionServer {
         this.tick = 0
         this.defaultEast = 376117.0
         this.defaultNorth = 5705005.0
+        this.traffic = undefined
+        this.trafficPlayers = new List<float>()
+        this.npcStates = new List<Raser.NpcState>()
+        this.trafficWorker = undefined
+        this.trafficWant = ""
+        this.world = world
+    }
+
+    // Den Verkehr einschalten (ohne Welt: keiner - es gibt keine Straßen).
+    undefined SetTraffic(defined int cars, defined int people, defined int seed) {
+        if ((cars <= 0 && people <= 0) || this.sim.obstacles.store == undefined) { return }
+        var t = new Raser.Traffic(cars, people, seed)
+        t.idBase = this.ids.Next(Raser.IdKind.Npc)
+        // (die NPCs zählen von idBase hoch: dieselbe Art, derselbe Server, eigene Zahlen über dem Zähler der IDs)
+        t.idBase = t.idBase + 1099511627776 / 2
+        this.traffic = take t
+        this.trafficWorker = new Raser.GraphWorker(this.world)
     }
 
     // Ein Spieler kommt in die Region: an den gewünschten Startpunkt (auf die nächste Straße), mit einem Fahrzeug der gewünschten Art (0: zu
@@ -169,6 +201,12 @@ class RegionServer {
         }
         float start[] = [e, n, 0.0]
         if (this.sim.obstacles.store != undefined) { start = Raser.Physics.StartIn(this.sim.obstacles.TileAt(e, n), e, n) }
+        // steht dort schon ein Fahrzeug (ein anderer kam an denselben Punkt), je 7 m weiter zurück entlang der Straße
+        float sh = start[2] * Math.PI / 180.0
+        for (int k = 0; k < 6 && this.Occupied(start[0], start[1]); k++) {
+            start[0] = start[0] + Math.Sin(sh) * 7.0
+            start[1] = start[1] - Math.Cos(sh) * 7.0
+        }
         var pawn = new Raser.Pawn(p.id)
         pawn.walker.east = start[0]
         pawn.walker.north = start[1]
@@ -188,9 +226,20 @@ class RegionServer {
         var inv = new Raser.Inventory(this.store, this.drops, 5, 4)
         p.inv = take inv
         RegionServer.Starter(p.inv)
+        p.inv.body = p.body
+        // das Bargeld aus der Datenbank (wer schon einmal da war); neu: das Startgeld
+        if (p.storedCash >= 0) { p.inv.cash = p.storedCash } else { p.storedCash = p.inv.cash }
         p.placed = true
         this.Follow(p)
         this.Park(p)
+    }
+
+    // Steht ein Fahrzeug näher als 6 m an (e, n)?
+    defined bool Occupied(defined float e, defined float n) {
+        foreach (v in this.sim.vehicles) {
+            if ((v.body.east - e) * (v.body.east - e) + (v.body.north - n) * (v.body.north - n) < 36.0) { return true }
+        }
+        return false
     }
 
     // Was jeder am Anfang dabeihat (wie offline): Handy, Schlüssel, Kleingeld, Brötchen, Zigaretten, ein Rucksack mit Wasser, Lampe, Werkzeug.
@@ -328,12 +377,137 @@ class RegionServer {
         if (this.tick % Raser.Protocol.SnapshotEvery == 0) { this.SendSnapshots(time) }
     }
 
-    // Haken für den Verkehr (NPC-Autos und Fußgänger, eigene Bibliothek): hier rechnet später Traffic.Step(dt, Spieler ...) seine NPCs, Spieler
-    // gegen NPC entscheidet der Server (Knocks), und NpcEntities gibt sie in die Snapshots.
-    undefined Npcs() { }
+    // Der Verkehr, ein Takt (docs/SERVER.md, "Verkehr und Fußgänger"): die Straßen der Kacheln um alle Spieler in den Graphen (je Takt
+    // höchstens eine neue Kachel, gebaut wird, wenn alle da sind), die Spieler als Liste (zu Fuß, am Steuer, abgestellte Fahrzeuge),
+    // Traffic.Step - der rechnet auch die Stöße der Spieler gegen die NPCs (Unfallwagen, umgefallene Fußgänger). Danach prallen die Fahrzeuge
+    // der Spieler an den NPC-Autos ab, und Spieler zu Fuß werden von ihnen aufgehalten (wie an anderen Fahrzeugen).
+    undefined Npcs() {
+        var t = this.traffic
+        if (t == undefined) { return }
+        this.FeedTraffic()
+        if (t.graph.lanes.Count == 0 && t.cars.Count == 0 && t.people.Count == 0) { return }
+        var list = this.trafficPlayers
+        list.Clear()
+        foreach (p in this.players) {
+            if (p.pawn == undefined) { continue }
+            if (p.pawn.OnFoot) {
+                var w = p.pawn.walker
+                foreach (x in [w.east, w.north, w.heading, w.speed, 0.35, 0.0, 0.0]) { list.Add(x) }
+            }
+        }
+        foreach (v in this.sim.vehicles) {
+            var b = v.body
+            float kind = 2.0
+            if (v.driver != 0) { kind = 1.0 }
+            foreach (x in [b.east, b.north, b.heading, b.speed, b.radius, b.spread, kind]) { list.Add(x) }
+        }
+        if (this.trafficWetness != undefined) { t.wetness = this.trafficWetness.wetness }
+        t.Step(Raser.SimWorld.Tick, list)
+        // Unfallwagen gegen die Wände (dieselben Hindernisse wie für die Spieler, Raser.Obstacles): wie im Spiel offline (TrafficView)
+        var walls = this.sim.obstacles
+        foreach (c in t.cars) {
+            if (c.state == 0) { continue }
+            var wb = c.body
+            if (Math.Abs(wb.speed) + Math.Abs(wb.pushE) + Math.Abs(wb.pushN) < 0.05) { continue }
+            float wh = wb.heading * Math.PI / 180.0
+            for (int k = 0; k < 2; k++) {
+                float offset = wb.spread - 2.0 * wb.spread * k
+                if (walls.Push(wb.east - Math.Sin(wh) * offset, wb.north + Math.Cos(wh) * offset, wb.radius)) { wb.Collide(offset, walls.pushX, walls.pushY, walls.depth) }
+            }
+            c.east = wb.east
+            c.north = wb.north
+            c.heading = wb.heading
+        }
+        foreach (ev in t.events) {
+            if (ev == "unfall" || ev == "umgefahren") { Gateway.Log("Verkehr: " + ev) }
+        }
+        // Spieler gegen NPC-Autos: abprallen (Fahrzeug) bzw. aufgehalten werden (zu Fuß)
+        foreach (c in t.cars) {
+            // (Autos auf einer Brücke sind über den Spielern)
+            if (c.level != 0) { continue }
+            float ch = c.heading * Math.PI / 180.0
+            var cb = c.body
+            foreach (v in this.sim.vehicles) {
+                var b = v.body
+                if ((b.east - c.east) * (b.east - c.east) + (b.north - c.north) * (b.north - c.north) > 144.0) { continue }
+                float h = b.heading * Math.PI / 180.0
+                for (int k = 0; k < 2; k++) {
+                    float offset = b.spread - 2.0 * b.spread * k
+                    for (float q = 1.0; q > -1.5; q = q - 2.0) {
+                        float dx = b.east - Math.Sin(h) * offset - (c.east - Math.Sin(ch) * cb.spread * q)
+                        float dy = b.north + Math.Cos(h) * offset - (c.north + Math.Cos(ch) * cb.spread * q)
+                        float d = Math.Sqrt(dx * dx + dy * dy)
+                        float deep = b.radius + cb.radius - d
+                        if (deep > 0.0 && d > 0.0001) { b.Collide(offset, dx / d, dy / d, deep) }
+                    }
+                }
+            }
+            foreach (p in this.players) {
+                if (p.pawn == undefined || !p.pawn.OnFoot) { continue }
+                var w = p.pawn.walker
+                for (float q = 1.0; q > -1.5; q = q - 1.0) { w.Avoid(c.east - Math.Sin(ch) * cb.spread * q, c.north + Math.Cos(ch) * cb.spread * q, cb.radius - 0.05) }
+            }
+        }
+    }
 
-    // Haken für den Verkehr: die NPCs in der Nähe von p als Entitäten (EntityType.NpcCar, EntityType.Pedestrian).
-    undefined NpcEntities(Player p, List<Raser.Entity> into) { }
+    // Die Straßen der 3 x 3 Kacheln um jeden Spieler: ändert sich die Menge, bestellt der Server beim Worker (Raser.GraphWorker, eigener
+    // Thread: Laden und Bauen halten den Takt nicht an) einen neuen Graphen; übernommen wird er genau TrafficDelay Takte nach der Bestellung -
+    // ist er dann noch nicht fertig, wartet der Takt dort auf ihn. So hängt der Verkehr nie vom Timing des Threads ab (dieselben Eingaben:
+    // derselbe Verkehr), und bis zur Übernahme fährt er auf dem alten Graphen weiter.
+    undefined FeedTraffic() {
+        var t = this.traffic
+        var want = new List<string>()
+        foreach (p in this.players) {
+            if (p.pawn == undefined) { continue }
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    string name = (p.tileX + dx) + "_" + (p.tileY + dy)
+                    if (!want.Contains(name)) { want.Add(name) }
+                }
+            }
+        }
+        want.Sort()
+        string joined = ""
+        foreach (name in want) { joined = joined + name + ";" }
+        // (ohne Spieler bleibt der alte Graph: niemand braucht einen neuen)
+        if (joined != this.trafficWant && want.Count > 0) {
+            this.trafficWant = joined
+            this.trafficWorker.Request(want)
+            this.trafficDue = this.tick + RegionServer.TrafficDelay
+        }
+        if (this.tick < this.trafficDue || !this.trafficWorker.Pending) { return }
+        int t0 = DateTime.Now.Ticks
+        if (!this.trafficWorker.Poll()) {
+            this.trafficWorker.Wait()
+            int waited = DateTime.Now.Ticks - t0
+            this.trafficWaitTicks = this.trafficWaitTicks + waited
+            Gateway.Log("Verkehr: der Takt wartet " + (waited / 10000) + " ms auf den Graphen")
+        }
+        int ticks = this.trafficWorker.Hand(t)
+        if (ticks < 0) { return }
+        this.buildTicks = ticks
+        this.builds++
+        Gateway.Log("Verkehr: Graph übernommen (" + t.graph.lanes.Count + " Spuren, im Worker " + (ticks / 10000) + " ms), " + t.cars.Count + " Autos, " + t.people.Count + " Fussgaenger")
+    }
+
+    // Die NPCs bis 200 m um p als Entitäten (Raser.NpcState: EntityType.NpcCar bzw. Pedestrian, variant, bits, a, b).
+    undefined NpcEntities(Player p, List<Raser.Entity> into) {
+        var t = this.traffic
+        if (t == undefined) { return }
+        t.States(this.npcStates, p.east, p.north, 200.0)
+        foreach (st in this.npcStates) {
+            var e = new Raser.Entity(st.id, st.EntityType)
+            e.variant = st.Variant
+            e.bits = st.Bits
+            e.east = st.east
+            e.north = st.north
+            e.heading = st.heading
+            e.speed = st.speed
+            e.a = st.A
+            e.b = st.B
+            into.Add(take e)
+        }
+    }
 
     // Spieler gegen Fahrzeuge: wer zu Fuß von einem Fahrzeug mit mehr als KnockSpeed erwischt wird, ist umgehauen (der Fahrer ist der
     // Verursacher). Den Stoß aus dem Weg rechnet schon Raser.Physics.Walk.
@@ -356,13 +530,16 @@ class RegionServer {
         }
     }
 
-    // Ereignis "Spieler umgehauen" (victim, Verursacher: Spieler-ID, 0: niemand). Hier entscheidet später der Server, was er verliert
-    // (Inventar zu Boden, Kleingeld, kaputte Teile - die Regeln kommen aus Raser.Core); jetzt: er liegt LyingTicks lang, alle in der Nähe
-    // bekommen das Ereignis.
+    // Ereignis "Spieler umgehauen" (victim, Verursacher: Spieler-ID, 0: niemand; by: das Fahrzeug). Der Server entscheidet, was er verliert
+    // (Raser.Knockdown aus Raser.Core: Inventar zu Boden, ein Teil des Kleingelds, Kaputtes - Zufall aus Takt und ID, also nachrechenbar); er
+    // liegt LyingTicks lang (die Eingaben zählen nicht), alle in der Nähe bekommen das Ereignis, er selbst den neuen Stand seines Inventars.
     undefined KnockedDown(Player victim, defined int causer, Raser.Vehicle by) {
         victim.lyingUntil = this.tick + RegionServer.LyingTicks
         victim.pawn.walker.speed = 0.0
-        Gateway.Log(victim.name + " umgehauen (von " + Raser.Ids.Format(causer) + ", " + Math.Round(Math.Abs(by.speed) * 3.6) + " km/h)")
+        this.Follow(victim)
+        float impact = Math.Abs(by.speed)
+        var result = Raser.Knockdown.Apply(victim.inv, this.tick * 7919 + (victim.id & 1048575), impact)
+        Gateway.Log(victim.name + " umgehauen (von " + Raser.Ids.Format(causer) + ", " + Math.Round(impact * 3.6) + " km/h): " + result.dropped + " Stapel am Boden, " + result.cashLost + " Cent verloren, " + result.broken + " kaputt, " + result.destroyed + " weg")
         var ev = new Raser.Packet(Raser.Protocol.Event)
         ev.kind = Raser.Protocol.KnockedDown
         ev.id = victim.id
@@ -371,6 +548,7 @@ class RegionServer {
         ev.north = victim.north
         byte frame[] = Raser.Wire.Frame(ev)
         foreach (p in this.players) { if (RegionServer.Near(p, victim)) { p.link.SendFrame(frame) } }
+        this.SendInventory(victim, victim.opSeq, true)
     }
 
     // Sieht p den Spieler q? Gleiche Kachel oder eine der 8 Nachbarn.
@@ -398,6 +576,8 @@ class RegionServer {
                 e.a = q.pawn.vehicle
             }
             if (this.tick < q.lyingUntil) { e.bits = e.bits | Raser.EntityType.Lying }
+            if (q.pawn.OnFoot && q.pawn.walker.bridge != 0) { e.bits = e.bits | Raser.EntityType.OnBridge }
+            if (q.inv != undefined && q.inv.LampShining()) { e.bits = e.bits | Raser.EntityType.Lamp }
             list.Add(take e)
         }
         foreach (v in this.sim.vehicles) {
@@ -426,6 +606,7 @@ class RegionServer {
         s.tick = this.tick
         s.region = this.region.id
         s.ack = p.pawn.seq
+        s.cash = p.inv.cash
         var car = this.sim.Find(p.pawn.vehicle)
         Raser.Vehicle body = undefined
         if (car != undefined) { body = car.body }
@@ -502,6 +683,11 @@ class RegionServer {
                 if (d != undefined) { touched = d.data }
             }
             ok = onFoot && p.inv.Apply(op)
+        } else if (op.kind == Raser.InvOp.Use) {
+            // benutzen (essen, Lampe, tanken, reparieren): das Fahrzeug ist das nächste der Region
+            p.inv.vehicle = this.NearestBody(p.east, p.north)
+            ok = this.tick >= p.lyingUntil && p.inv.Apply(op)
+            if (p.inv.message != "") { Gateway.Log(p.name + ": " + p.inv.message) }
         } else {
             ok = p.inv.Apply(op)
         }
@@ -518,6 +704,20 @@ class RegionServer {
         }
     }
 
+    // Das Fahrzeug, dessen Mitte (e, n) am nächsten ist (undefined: keins).
+    Raser.Vehicle NearestBody(defined float e, defined float n) {
+        Raser.Vehicle best = undefined
+        float d2 = 1.0e30
+        foreach (v in this.sim.vehicles) {
+            float d = (v.body.east - e) * (v.body.east - e) + (v.body.north - n) * (v.body.north - n)
+            if (d < d2) {
+                d2 = d
+                best = v.body
+            }
+        }
+        return best
+    }
+
     // Der echte Stand des Inventars an p: die IDs, alle Behälter, an die er kommt (die eigenen, der Rucksack auf dem Rücken, der geöffnete).
     undefined SendInventory(Player p, defined int seq, defined bool ok) {
         if (p.inv == undefined) { return }
@@ -525,6 +725,8 @@ class RegionServer {
         var s = new Raser.Packet(Raser.Protocol.InvSet)
         s.seq = seq
         s.ok = ok
+        s.cash = inv.cash
+        s.lamp = inv.lampOn
         int ids[] = [inv.pockets, inv.hands, inv.backpackSlot, inv.phoneSlot, inv.cursor, inv.opened, inv.openedDrop]
         for (int i = 0; i < 7; i++) { s.invIds[i] = ids[i] }
         var send = new List<int>()

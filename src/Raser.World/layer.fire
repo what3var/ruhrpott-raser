@@ -36,6 +36,7 @@ namespace Raser {
         defined int wallColor
         Material roof
         defined int roofColor
+        string tags               // OSM-Tags des Gebäudes, dessen Umriss die Mitte enthält ("building=retail;building:levels=2;..."; undefined: keins)
 
         construct() {
             this.roofs = new List<RoofFace>()
@@ -47,6 +48,16 @@ namespace Raser {
         }
 
         defined float Height { get { return this.ridge - this.ground } }
+
+        // Ein OSM-Tag des Gebäudes (Raser.Building.tags), undefined ohne.
+        string Tag(string key) {
+            if (this.tags == undefined) { return undefined }
+            foreach (kv in this.tags.Split(";")) {
+                int eq = kv.IndexOf("=")
+                if (eq > 0 && kv.Substring(0, eq) == key) { return kv.Substring(eq + 1) }
+            }
+            return undefined
+        }
     }
 
     // Eine Straße oder ein Weg: Mittellinie mit Breite.
@@ -72,7 +83,8 @@ namespace Raser {
     class Area {
         defined int id
         string source
-        string kind               // "landuse=grass", "natural=water", "amenity=parking" ...
+        string kind
+        string name               // Gebiete (TileData.zones): der Name ("Altstadt" ...)               // "landuse=grass", "natural=water", "amenity=parking" ...
         float ring[]
         Material surface
         defined int color
@@ -121,6 +133,7 @@ namespace Raser {
         List<Area> areas
         List<Poi> pois
         List<Prop> props
+        List<Area> zones          // Gebiete ohne eigenen Belag (Wohngebiet, Hof, Dorf, Altstadt ...): nur für das Aussehen der Häuser (Raser.HouseStyle)
 
         construct() {
             this.format = 1
@@ -132,6 +145,7 @@ namespace Raser {
             this.areas = new List<Area>()
             this.pois = new List<Poi>()
             this.props = new List<Prop>()
+            this.zones = new List<Area>()
         }
     }
 

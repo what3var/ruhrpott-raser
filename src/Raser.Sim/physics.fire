@@ -114,18 +114,24 @@ namespace Raser {
                 float e0 = car.east
                 float n0 = car.north
                 car.Step(dt / parts, throttle, brake, steer, reverse, wetness)
+                // Brücken: auf das Deck nur über eine Rampe, unten fährt man durch (Raser.Obstacles.Level)
+                car.bridge = obstacles.Level(car.east, car.north, car.bridge)
                 // zwei Kreise (vorn, hinten) gegen die Wände
                 for (int c = 0; c < 2; c++) {
                     float offset = car.spread - 2.0 * car.spread * c
                     float h = car.heading * Math.PI / 180.0
                     float ce = car.east - Math.Sin(h) * offset
                     float cn = car.north + Math.Cos(h) * offset
-                    if (obstacles.Push(ce, cn, car.radius)) {
+                    if (obstacles.Push(ce, cn, car.radius, car.bridge == 0)) {
                         if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
                     }
-                    // die anderen Fahrzeuge: angefahren rutschen sie los (Vehicle.Shove)
+                    // auf der Brücke die Brüstungen, darunter die Pfeiler
+                    if (obstacles.PushBridge(ce, cn, car.radius, car.bridge)) {
+                        if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
+                    }
+                    // die anderen Fahrzeuge (auf derselben Ebene): angefahren rutschen sie los (Vehicle.Shove)
                     foreach (other in all) {
-                        if (other == car) { continue }
+                        if (other == car || other.bridge != car.bridge) { continue }
                         float oh = other.heading * Math.PI / 180.0
                         for (int oc = 0; oc < 2; oc++) {
                             float oo = other.spread - 2.0 * other.spread * oc
@@ -179,6 +185,7 @@ namespace Raser {
                 walker.north = n
                 walker.heading = car.heading
                 walker.speed = 0.0
+                walker.bridge = car.bridge
                 return true
             }
             return false
@@ -187,8 +194,11 @@ namespace Raser {
         // Ein Schritt des Spielers: Wände und der Wagen halten ihn auf.
         static undefined Walk(Raser.Walker walker, List<Raser.Vehicle> vehicles, Raser.Obstacles obstacles, defined float dt, defined float forward, defined float turn, defined bool sprint) {
             walker.Step(dt, forward, turn, sprint)
-            if (obstacles.Push(walker.east, walker.north, 0.35)) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
+            walker.bridge = obstacles.Level(walker.east, walker.north, walker.bridge)
+            if (obstacles.Push(walker.east, walker.north, 0.35, walker.bridge == 0)) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
+            if (obstacles.PushBridge(walker.east, walker.north, 0.35, walker.bridge)) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
             foreach (car in vehicles) {
+                if (car.bridge != walker.bridge) { continue }
                 float h = car.heading * Math.PI / 180.0
                 foreach (part in [1.0, 0.0, -1.0]) {
                     walker.Avoid(car.east - Math.Sin(h) * car.spread * part, car.north + Math.Cos(h) * car.spread * part, car.radius - 0.05)
@@ -227,6 +237,7 @@ namespace Raser {
             dst.pushE = src.pushE
             dst.pushN = src.pushN
             dst.lean = src.lean
+            dst.bridge = src.bridge
         }
 
         static undefined CopyWalker(Raser.Walker src, Raser.Walker dst) {
@@ -236,6 +247,7 @@ namespace Raser {
             dst.speed = src.speed
             dst.stride = src.stride
             dst.load = src.load
+            dst.bridge = src.bridge
         }
     }
 }

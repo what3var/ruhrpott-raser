@@ -22,6 +22,7 @@ namespace Raser {
         defined float speed           // m/s
         defined int state             // 0 normal, 1 steht/wartet, 2 Unfall, 3 kaputt, 4 liegt, 5 springt zur Seite
         defined bool honk
+        defined float z               // auf einer Brücke die Höhe (m über NHN), sonst 0: auf dem Gelände
         defined float stride          // Fußgänger: der gelaufene Weg (m; für die Schritte - der Client zählt ihn selbst weiter)
 
         static readonly defined int Car = 0
@@ -46,6 +47,51 @@ namespace Raser {
             this.state = o.state
             this.honk = o.honk
             this.stride = o.stride
+            this.z = o.z
+        }
+
+        // Als Entität im Snapshot des Servers (Raser.Entity in Raser.Net, Protokoll v2): Art 3 NPC-Auto bzw. 4 Fußgänger; variant: Auto
+        // Art + 4 x Farbe, Fußgänger Hemd + Hose x 2^24 + (Größe in cm - 100) x 2^48; bits: 1 hupt, 4 liegt, 8 steht, dazu 16 x Zustand;
+        // a: Fußgänger Haare + Haut x 2^24; b: auf einer Brücke die Höhe (cm über NHN), sonst 0. (Die Zahlen der Arten wie Raser.EntityType - Raser.Traffic kennt Raser.Net nicht.)
+        defined int EntityType { get { if (this.kind == 2) { return 4 } return 3 } }
+
+        defined int Variant {
+            get {
+                if (this.kind == 2) { return (this.color & 16777215) + (this.legs & 16777215) * 16777216 + Math.Clamp(Math.Round(this.height * 100.0)!int - 100, 0, 255) * 281474976710656 }
+                return this.kind + (this.color & 16777215) * 4
+            }
+        }
+
+        defined int Bits {
+            get {
+                int b = this.state * 16
+                if (this.honk) { b = b + 1 }
+                if (this.state == 4) { b = b + 4 }
+                if (this.state == 1) { b = b + 8 }
+                return b
+            }
+        }
+
+        defined int A { get { if (this.kind == 2) { return (this.hair & 16777215) + (this.skin & 16777215) * 16777216 } return 0 } }
+        defined int B { get { return Math.Round(this.z * 100.0)!int } }
+
+        // Aus einer Entität (type 3 oder 4) zurück; die Lage setzt der Aufrufer (interpoliert).
+        undefined FromEntity(defined int id, defined int type, defined int variant, defined int bits, defined int a, defined int b) {
+            this.id = id
+            this.state = (bits / 16) % 16
+            this.honk = (bits & 1) != 0
+            if (type == 4) {
+                this.kind = 2
+                this.color = variant % 16777216
+                this.legs = (variant / 16777216) % 16777216
+                this.height = ((variant / 281474976710656) % 256 + 100) / 100.0
+                this.hair = a % 16777216
+                this.skin = (a / 16777216) % 16777216
+            } else {
+                this.kind = variant % 4
+                this.color = (variant / 4) % 16777216
+            }
+            this.z = b / 100.0
         }
 
         undefined Encode(ByteWriter w) {
@@ -58,6 +104,7 @@ namespace Raser {
             w.Varint(Math.Round(h * 100.0)!int)
             w.SignedVarint(Math.Round(this.speed * 100.0)!int)
             w.Varint(this.color)
+            w.SignedVarint(Math.Round(this.z * 100.0)!int)
             if (this.kind == 2) {
                 w.Varint(this.legs)
                 w.Varint(this.hair)
@@ -78,6 +125,7 @@ namespace Raser {
             s.heading = r.Varint() / 100.0
             s.speed = r.SignedVarint() / 100.0
             s.color = r.Varint()
+            s.z = r.SignedVarint() / 100.0
             if (s.kind == 2) {
                 s.legs = r.Varint()
                 s.hair = r.Varint()

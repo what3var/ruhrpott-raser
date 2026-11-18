@@ -1,0 +1,132 @@
+// Raser.Mesh: Brücken als Netz-Bausteine (wie die eingehängten Fenster und Bögen) - das Deck auf der Höhe aus Raser.Bridges: oben der Belag der
+// Straße (Bahn: Schotter mit zwei Schienen), unten und an den Seiten Beton (0,8 m dick), am Rand Brüstungen (Straße, Bahn: Beton 1 m hoch) bzw.
+// Geländer (Fußweg: 1,1 m, Metall). Darunter Pfeiler (alle 15 m, wo das Deck mehr als 1 m über dem Gelände liegt, nicht auf einer Fahrbahn
+// darunter) und an den Enden Widerlager, wo das Deck über dem Gelände endet. Gebaut für die nahe und die ferne Stufe (dieselben Vierecke; ein
+// Stück gehört dem Block, in dem seine Mitte liegt). Koordinaten wie Raser.FarMesher: kachel-lokal in x, y, absolut in z.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class BridgeMesher {
+        static readonly defined float Parapet = 0.3      // Breite der Brüstung (m)
+
+        // Die Brücken der Kachel im Block (x0, y0, Kantenlänge size) in part.
+        static undefined Add(MeshPart part, List<BridgeDeck> decks, List<Road> roads, defined float x0, defined float y0, defined float size) {
+            foreach (d in decks) { Raser.BridgeMesher.Deck(part, d, roads, x0, y0, size) }
+        }
+
+        static defined bool Inside(defined float x, defined float y, defined float x0, defined float y0, defined float size) {
+            return x >= x0 && y >= y0 && x < x0 + size && y < y0 + size
+        }
+
+        static undefined Deck(MeshPart part, BridgeDeck d, List<Road> roads, defined float x0, defined float y0, defined float size) {
+            int m = d.z.length
+            if (m < 2) { return }
+            int concrete = Raser.Palette.Concrete
+            int cm = Raser.Material.Concrete!int
+            float hw = d.width / 2.0
+            float ow = hw + Raser.BridgeMesher.Parapet
+            float rail = 1.0
+            int railColor = concrete
+            int railMat = cm
+            if (d.foot) {
+                rail = 1.1
+                railColor = Raser.Palette.Metal
+                railMat = Raser.Material.Metal!int
+            }
+            float p[] = new float[4]
+            float q[] = new float[4]
+            for (int i = 0; i + 1 < m; i++) {
+                float s0 = i * Raser.BridgeDeck.Step
+                float s1 = Math.Min((i + 1) * Raser.BridgeDeck.Step, d.length)
+                if (s1 <= s0) { continue }
+                d.PointAt(s0, p)
+                d.PointAt(s1, q)
+                if (!Raser.BridgeMesher.Inside((p[0] + q[0]) * 0.5, (p[1] + q[1]) * 0.5, x0, y0, size)) { continue }
+                // rechts von (dx, dy) ist (dy, -dx); an jedem Punkt seine eigene Richtung (an Knicken ohne Spalt reicht das bei 1 m)
+                float prx = p[3]
+                float pry = -p[2]
+                float qrx = q[3]
+                float qry = -q[2]
+                float za = d.z[i]
+                float zb = d.z[i + 1]
+                float ba = za - Raser.Bridges.Thickness
+                float bb = zb - Raser.Bridges.Thickness
+                float fx = q[0] - p[0]
+                float fy = q[1] - p[1]
+                float fl = Math.Max(0.0001, Math.Sqrt(fx * fx + fy * fy))
+                float nx = fy / fl
+                float ny = -fx / fl
+                // oben der Belag
+                part.Quad(p[0] - prx * hw, p[1] - pry * hw, za, p[0] + prx * hw, p[1] + pry * hw, za, q[0] + qrx * hw, q[1] + qry * hw, zb, q[0] - qrx * hw, q[1] - qry * hw, zb, 0.0, 0.0, 1.0, d.color, d.surface)
+                if (d.rail) {
+                    // zwei Schienen (Spur 1,435 m), 15 cm hoch
+                    foreach (off in [-0.72, 0.72]) {
+                        float a0 = off - 0.04
+                        float a1 = off + 0.04
+                        part.Quad(p[0] + prx * a0, p[1] + pry * a0, za + 0.15, p[0] + prx * a1, p[1] + pry * a1, za + 0.15, q[0] + qrx * a1, q[1] + qry * a1, zb + 0.15, q[0] + qrx * a0, q[1] + qry * a0, zb + 0.15, 0.0, 0.0, 1.0, Raser.Palette.Metal, Raser.Material.Metal!int)
+                    }
+                }
+                // unten
+                part.Quad(p[0] - prx * ow, p[1] - pry * ow, ba, q[0] - qrx * ow, q[1] - qry * ow, bb, q[0] + qrx * ow, q[1] + qry * ow, bb, p[0] + prx * ow, p[1] + pry * ow, ba, 0.0, 0.0, -1.0, concrete, cm)
+                for (int side = -1; side <= 1; side = side + 2) {
+                    float sg = side * 1.0
+                    // außen: vom Boden des Decks bis auf die Brüstung
+                    float oax = p[0] + prx * ow * sg
+                    float oay = p[1] + pry * ow * sg
+                    float obx = q[0] + qrx * ow * sg
+                    float oby = q[1] + qry * ow * sg
+                    part.Quad(oax, oay, ba, obx, oby, bb, obx, oby, zb + rail, oax, oay, za + rail, nx * sg, ny * sg, 0.0, concrete, cm)
+                    // die Brüstung: innen und oben
+                    float iax = p[0] + prx * hw * sg
+                    float iay = p[1] + pry * hw * sg
+                    float ibx = q[0] + qrx * hw * sg
+                    float iby = q[1] + qry * hw * sg
+                    part.Quad(iax, iay, za, ibx, iby, zb, ibx, iby, zb + rail, iax, iay, za + rail, -nx * sg, -ny * sg, 0.0, railColor, railMat)
+                    part.Quad(iax, iay, za + rail, ibx, iby, zb + rail, obx, oby, zb + rail, oax, oay, za + rail, 0.0, 0.0, 1.0, railColor, railMat)
+                }
+            }
+            // Pfeiler (alle 15 m) und Widerlager (an den Enden)
+            foreach (s in d.piers) {
+                d.PointAt(s, p)
+                if (!Raser.BridgeMesher.Inside(p[0], p[1], x0, y0, size)) { continue }
+                float bottom = d.At(s) - Raser.Bridges.Thickness
+                float g = d.GroundAt(s)
+                Raser.BridgeMesher.Block(part, p[0], p[1], p[2], p[3], 0.4, hw * 0.8, g - 0.5, bottom, concrete, cm)
+            }
+            foreach (end in [0.0, 1.0]) {
+                float s = end * d.length
+                d.PointAt(s, p)
+                if (!Raser.BridgeMesher.Inside(p[0], p[1], x0, y0, size)) { continue }
+                float bottom = d.At(s) - Raser.Bridges.Thickness
+                float g = d.GroundAt(s)
+                if (d.At(s) - g < 0.4) { continue }
+                // ein Block 1 m lang unter dem Ende, über die ganze Breite
+                float along = 0.5
+                float cx = p[0] + p[2] * (0.5 - end) * 1.0
+                float cy = p[1] + p[3] * (0.5 - end) * 1.0
+                Raser.BridgeMesher.Block(part, cx, cy, p[2], p[3], along, ow, g - 0.5, Math.Max(bottom, g), concrete, cm)
+            }
+        }
+
+        // Ein Quader um (cx, cy): along m halbe Länge in Richtung (dx, dy), across m halbe Breite quer, von z0 bis z1 (vier Seiten und oben).
+        static undefined Block(MeshPart part, defined float cx, defined float cy, defined float dx, defined float dy, defined float along, defined float across, defined float z0, defined float z1, defined int color, defined int material) {
+            if (z1 <= z0) { return }
+            float rx = dy
+            float ry = -dx
+            float ax = cx - dx * along - rx * across
+            float ay = cy - dy * along - ry * across
+            float bx = cx + dx * along - rx * across
+            float by = cy + dy * along - ry * across
+            float ccx = cx + dx * along + rx * across
+            float ccy = cy + dy * along + ry * across
+            float ex = cx - dx * along + rx * across
+            float ey = cy - dy * along + ry * across
+            part.Quad(ax, ay, z0, bx, by, z0, bx, by, z1, ax, ay, z1, -rx, -ry, 0.0, color, material)
+            part.Quad(bx, by, z0, ccx, ccy, z0, ccx, ccy, z1, bx, by, z1, dx, dy, 0.0, color, material)
+            part.Quad(ccx, ccy, z0, ex, ey, z0, ex, ey, z1, ccx, ccy, z1, rx, ry, 0.0, color, material)
+            part.Quad(ex, ey, z0, ax, ay, z0, ax, ay, z1, ex, ey, z1, -dx, -dy, 0.0, color, material)
+            part.Quad(ax, ay, z1, bx, by, z1, ccx, ccy, z1, ex, ey, z1, 0.0, 0.0, 1.0, color, material)
+        }
+    }
+}

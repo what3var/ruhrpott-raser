@@ -81,16 +81,16 @@ Protokoll 1 bekommt beim Hello ein Reject ("Protokoll 1 passt nicht, der Server 
 | 4 Command | C → S | Befehlszeile (`/kick name`) |
 | 5 Bye | C → S | - |
 | 6 Input | C → S | Folgenummer der ersten Eingabe, Anzahl (1 bis 8), je Eingabe: Gas 0..100, Bremse 0..100 (je 1 Byte), Lenkung, Gehen, Drehen (-100..100, ZigZag), Flags (Rückwärtsgang, Handbremse, Rennen, E = ein-/aussteigen) |
-| 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Öffnen eines Rucksacks am Boden, 6 Schließen; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden) |
+| 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Öffnen eines Rucksacks am Boden, 6 Schließen, 7 Use; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden), davor die letzte Eingabe des Clients (der Server rechnet die Operation erst nach ihr) |
 | 10 Welcome | S → C | Spieler-ID (global, `Raser.IdAllocator`), Region, Serverzeit (ms), Admin ja/nein, Name, Takte je s (30), Takt des Servers |
 | 11 Reject | S → C | Grund (danach schließt der Server) |
-| 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe; der eigene Spieler (bitgenau, `Float64`): Fahrzeug-ID, Lage, Richtung, Tempo, Schrittweg, Last; im Fahrzeug dessen ganzer Zustand (Art, Lage, Richtung, Tempo, Lenkeinschlag, Stoß, Schräglage, Zustand, Tank, Grip, rutscht); dann die **Entitäten** (neu oder geändert) und die IDs der **verschwundenen** |
+| 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe, das eigene Bargeld (Cent); der eigene Spieler (bitgenau, `Float64`): Fahrzeug-ID, Lage, Richtung, Tempo, Schrittweg, Last; im Fahrzeug dessen ganzer Zustand (Art, Lage, Richtung, Tempo, Lenkeinschlag, Stoß, Schräglage, Zustand, Tank, Grip, rutscht); dann die **Entitäten** (neu oder geändert) und die IDs der **verschwundenen** |
 | 13 Join | S → C | ID und Name eines Spielers (beim Eintritt an alle, beim Welcome die schon Anwesenden) |
 | 14 Leave | S → C | ID |
 | 15 Chat | S → C | Absender, Text, Art (0 Spieler, 1 System, 2 Antwort nur an diesen Client, 3 Fehler) |
 | 16 Weather | S → C | Jahr, Tag, Uhrzeit (Minuten am Tag × 60, also Sekunden), Wetter (Name), Zeitraffer |
 | 18 Kick | S → C | Grund (danach schließt der Server) |
-| 20 InvSet | S → C | die zuletzt geprüfte Operation (Folgenummer) und ob sie angenommen ist; die IDs der eigenen Behälter (Taschen, Hände, Rücken, Handy, Maus), des geöffneten Rucksacks am Boden und seines Gegenstands; alle Behälter, an die der Spieler kommt (`Container.Write`) |
+| 20 InvSet | S → C | die zuletzt geprüfte Operation (Folgenummer) und ob sie angenommen ist, Taschenlampe an, Bargeld (Cent); die IDs der eigenen Behälter (Taschen, Hände, Rücken, Handy, Maus), des geöffneten Rucksacks am Boden und seines Gegenstands; alle Behälter, an die der Spieler kommt (`Container.Write`) |
 | 22 Event | S → C | Art (1: Spieler umgehauen), um wen, Verursacher, Lage |
 
 **Entitäten** (`Raser.Entity`, je Eintrag): ID, Art, Variante, Zustandsbits, Lage, Richtung, Tempo und zwei Zahlen `a`, `b` je nach Art -
@@ -98,7 +98,7 @@ von Anfang an allgemein, damit der Verkehr später ohne neue Nachricht hineinpas
 
 | Art | Variante | Bits | a | b |
 |---|---|---|---|---|
-| 1 Spieler | - | 1 im Fahrzeug, 4 liegt (umgehauen) | Fahrzeug-ID | - |
+| 1 Spieler | - | 1 im Fahrzeug, 4 liegt (umgehauen), 16 Taschenlampe leuchtet | Fahrzeug-ID | - |
 | 2 Fahrzeug (der Spieler, auch geparkt) | Fahrzeugart | 2 rutscht | Fahrer (Spieler-ID, 0 frei) | Schräglage in 1/10 Grad |
 | 3 NPC-Auto | Art/Farbe (Verkehr) | Zustand, 8 steht | frei | frei |
 | 4 Fußgänger | Aussehen (Verkehr) | 4 liegt, 8 steht | frei | frei |
@@ -108,10 +108,12 @@ von Anfang an allgemein, damit der Verkehr später ohne neue Nachricht hineinpas
 mit 13 Bytes); der Server schickt jedem Client jeden 2. Takt einen Snapshot (**15 je s**), dazu alle 10 s und bei jeder Änderung das Wetter.
 
 **Interesse und Deltas:** Ein Snapshot enthält, was auf der Kachel des Spielers und den 8 Nachbarn ist: die anderen Spieler, alle Fahrzeuge
-(ohne das eigene - das steht bitgenau im eigenen Zustand), die Gegenstände am Boden und (später) die NPCs. Der Server merkt sich je Client den
+(ohne das eigene - das steht bitgenau im eigenen Zustand), die Gegenstände am Boden und die NPCs des Verkehrs (bis 200 m). Der Server merkt sich je Client den
 Fingerabdruck jeder Entität (quantisiert, wie sie über die Leitung geht): Unverändertes geht nur alle 2 s noch einmal, was aus dem Interesse fällt
 (oder verschwindet), steht in der Liste der verschwundenen. Gemessen (Bots, 2–3 Spieler, ein paar geparkte Fahrzeuge): **etwa 1,4 bis 3,5 KB/s
-je Client vom Server, 0,4 KB/s zum Server**.
+je Client vom Server, 0,4 KB/s zum Server** - ohne Verkehr. Mit Welt und Verkehr (10 bis 14 Autos, gut 30 Fußgänger in Sicht, die sich fast alle
+in jedem Snapshot bewegen) sind es **etwa 21 bis 25 KB/s** je Client; da hilft später ein Delta gegen den letzten bestätigten Stand statt nur
+"geändert ja/nein".
 
 Ablauf: Der Client schickt Hello; der Server prüft Version und Token (Konto aus der Datenbank), setzt den Spieler in die Region und antwortet
 Welcome, Weather, InvSet und die Joins - oder Reject. Ein zweiter Login desselben Kontos wirft den ersten hinaus.
@@ -140,11 +142,11 @@ einer Eingabe, `Coast` = die Fahrzeuge ohne Fahrer rollen aus). Die Kacheln läd
   wer schneller schickt, fährt nicht schneller (die Bots messen das: doppelt so viele Eingaben, dieselbe Strecke). Über 150 Eingaben je s: Kick.
   Werte außerhalb der Grenzen (Gas 101, Flags 16 ...) lehnt schon `Raser.Wire` ab: Kick.
 - **Spieler gegen Fahrzeug:** zu Fuß hält ihn das Fahrzeug auf (`Physics.Walk`); erwischt ihn eines mit mehr als 5 m/s, ist er **umgehauen**
-  (`RegionServer.KnockedDown(Opfer, Verursacher)`: er liegt 3 s, die Eingaben zählen nicht, alle in der Nähe bekommen das Ereignis). Hier
-  entscheidet später der Server, was er verliert (Inventar zu Boden, Kleingeld, kaputte Teile - die Regeln kommen aus Raser.Core).
-- **Haken für den Verkehr:** `RegionServer.Npcs()` wird in jedem Takt nach den Spielern und vor den freien Fahrzeugen aufgerufen (hier läuft
-  später `Traffic.Step(dt, Spieler ...)`, Spieler gegen NPC entscheidet `Knocks`), `RegionServer.NpcEntities(p, list)` gibt die NPCs in der Nähe
-  von p in die Snapshots (Entitäten 3 und 4).
+  (`RegionServer.KnockedDown(Opfer, Verursacher, Fahrzeug)`: er liegt 3 s, die Eingaben zählen nicht, alle in der Nähe bekommen das Ereignis).
+  Was er verliert, entscheidet der Server mit `Raser.Knockdown.Apply` (Raser.Core: Inventar zu Boden, ein Teil des Kleingelds, Kaputtes; der
+  Zufall aus Takt und ID); er bekommt danach den neuen Stand seines Inventars.
+- **Verkehr:** `RegionServer.Npcs()` rechnet in jedem Takt nach den Spielern und vor den freien Fahrzeugen `Traffic.Step` um alle Spieler,
+  `RegionServer.NpcEntities(p, list)` gibt die NPCs in der Nähe von p in die Snapshots (Entitäten 3 und 4) - siehe "Verkehr und Fußgänger".
 
 ## Vorhersage, Abgleich, Interpolation (Client)
 
@@ -190,52 +192,67 @@ Server das nächste Mal schickt.
 Im Mehrspieler simuliert der Server alle NPCs (Autos und Fußgänger), die Clients zeichnen nur, was in den Snapshots kommt. Offline (ohne
 `--server`) rechnet das Spiel selbst mit demselben Code. Die Simulation steckt in der Bibliothek `src/Raser.Traffic` (Import
 `raser.traffic`, Referenzen: Raser.Core, Raser.World, Raser.Mesh - alle ohne scene3d): `Raser.RoadGraph` (Spurgraph aus den Straßen der
-Kacheln) und `Raser.Traffic` (Simulation). Keine Uhr, keine Threads, Zufall nur aus Seeds (`Raser.TrafficRandom`, je Auto und Fußgänger
+Kacheln) und `Raser.Traffic` (Simulation). Die Simulation hat keine Uhr und keine Threads (nur der Bau des Graphen läuft in einem Worker, siehe 2.), Zufall nur aus Seeds (`Raser.TrafficRandom`, je Auto und Fußgänger
 eigener): derselbe Seed, dieselben Kacheln und dieselben Eingaben geben dasselbe Ergebnis. Der Graph wird nach Straßen-ID sortiert gebaut -
 die Folge, in der Kacheln kommen, ändert nichts.
 
-**Einbinden im Regionsserver** (je Region ein `Raser.Traffic`):
+**Im Regionsserver** (`RegionServer` in `src/Raser.Server/world.fire`, eingebaut; `raser-server --traffic 24 --people 30 --traffic-seed 1`,
+`--traffic 0 --people 0` schaltet ab, ohne `--world` gibt es keinen Verkehr):
 
-1. Start: `var traffic = new Raser.Traffic(maxCars, maxPeople, seed)` - `maxCars`/`maxPeople` gelten je Spieler-Umkreis (Erscheinen
-   80 .. 250 m bzw. 40 .. 150 m um *jeden* Spieler, verschwinden über 300 bzw. 190 m von *allen*). Vorschlag: 24 und 30.
-2. Kacheln: der Server lädt für jeden Spieler die 3 x 3 Kacheln um ihn mit `Raser.FileTileStore.Load(key)` (dieselbe Datei wie der Client:
-   `<world>/tiles/<x>_<y>.json`; Load setzt auch die Grünstreifen, die die Lage der Gehwege bestimmen) und gibt sie
-   `traffic.graph.AddTile(tile)`. Kacheln, die kein Spieler mehr braucht: `traffic.graph.Keep(liste der Kachelnamen)`. Ist danach
-   `traffic.graph.dirty`, einmal `traffic.graph.Build()` (9 Kacheln: rund 100 ms - am besten nach allen neuen Kacheln eines Ticks, oder in
-   einem eigenen Thread mit einem zweiten Graphen, der dann getauscht wird). Die Kachel-Objekte braucht der Graph danach nicht mehr.
-3. Je Tick (fest, z. B. 20 Hz): `traffic.wetness = wetter.wetness` und `traffic.Step(dt, spieler)`. `spieler` ist eine `List<float>` mit
-   7 Zahlen je Eintrag: Ost, Nord, Richtung (Grad, vorwärts (-sin, cos)), Tempo (m/s), Radius (m), spread (m, zwei Kreise davor und dahinter
-   wie `Raser.Vehicle`), Art (0 zu Fuß, 1 fährt ein Fahrzeug, 2 abgestelltes Fahrzeug). Für Fahrzeuge Radius und spread aus `Raser.Vehicle.Of(art)`
-   (Auto 1,0 / 1,1 m), zu Fuß 0,35 / 0. Abgestellte Fahrzeuge der Spieler als Art 2 (die Autos fahren um sie herum). Was im Tick geschah,
-   steht in `traffic.events` ("hup", "unfall", "umgefahren").
-4. Stöße rechnet die Simulation selbst: fährt ein Spieler (Art 1) mit mehr als 0,5 m/s in ein Auto, wird es ein Unfallwagen (Physik mit
-   `Raser.Vehicle`, rutscht aus, hupt, fährt nach 6 s weiter), läuft er einen Fußgänger um, fällt der (liegt 9 s). Den Abprall des
-   Spielerfahrzeugs rechnet, wer die Fahrphysik des Spielers rechnet (Client mit Vorhersage bzw. Server), gegen die NPC-Zustände - wie es
-   `TrafficView.Contact` im Spiel zeigt. Wände für Unfallwagen kennt die Simulation nicht: der Server prüft sie wie das Spiel mit den
-   Gebäuden der Kacheln (`TrafficView.Simulate`, "Unfallwagen gegen die Wände") oder lässt es fürs Erste.
-5. Snapshot je Spieler: `traffic.States(liste, ost, nord, 300.0)` füllt `Raser.NpcState` für alle NPCs im Umkreis (die Objekte gehören der
-   Simulation und werden beim nächsten Aufruf überschrieben - gleich kodieren). Je NPC `state.Encode(writer)`:
+1. Start: `RegionServer.SetTraffic(autos, fussgaenger, seed)` legt ein `Raser.Traffic` an. Die IDs der NPCs sind Laufzeit-IDs der Art
+   `IdKind.Npc` dieses Servers (`traffic.idBase`, darüber zählt die Simulation hoch) - sie stoßen nie mit Spielern, Fahrzeugen oder
+   Gegenständen zusammen. Die Höchstzahlen gelten je Spieler-Umkreis: Autos erscheinen 80 .. 250 m, Fußgänger 40 .. 150 m um *jeden*
+   Spieler und verschwinden über 300 bzw. 190 m von *allen*.
+2. Kacheln und Graph (`FeedTraffic`, je Takt): ändert sich die Menge der 3 x 3 Kacheln um alle Spieler, bestellt der Server den Graphen beim
+   Worker (`Raser.GraphWorker`, ein eigener Thread mit `fire dedicated`): der lädt die Kacheln selbst (`FileTileStore.Load`, dieselben Dateien
+   `<world>/tiles/<x>_<y>.json` mit Grünstreifen und Höhen), hält je Kachel ihre Straßen zwischengespeichert, fügt die gewünschten sortiert
+   zusammen und baut (9 Kacheln: 100 .. 400 ms im Worker). Der Takt läuft weiter; der Verkehr fährt auf dem alten Graphen. **Übernommen**
+   (`Traffic.Adopt`, dann findet jeder NPC seine Spur wieder) wird genau `TrafficDelay` = 90 Takte (3 s) nach der Bestellung - ist der Graph
+   dann noch nicht fertig, wartet der Takt dort auf ihn (das Log sagt wie lange). Damit hängt der Verkehr nicht vom Timing des Threads ab:
+   dieselben Eingaben geben denselben Verkehr. Der Graph hängt nur von der Menge der Kacheln ab (nicht von früheren Aufträgen) - derselbe wie
+   synchron (Test `WorkerTests`).
+3. Je Takt (`Npcs`, nach den Eingaben der Spieler und `Knocks`, vor `Coast`): `traffic.wetness` aus dem Wetter der Uhr, dann
+   `traffic.Step(1/30 s, spieler)`. `spieler` ist eine `List<float>` mit 7 Zahlen je Eintrag: Ost, Nord, Richtung (Grad, vorwärts (-sin, cos)),
+   Tempo (m/s), Radius (m), spread (m, zwei Kreise davor und dahinter wie `Raser.Vehicle`), Art (0 zu Fuß, 1 Fahrzeug mit Fahrer, 2 Fahrzeug
+   ohne Fahrer). Eingetragen werden alle Spieler zu Fuß und alle Fahrzeuge der Welt.
+4. Stöße: fährt ein Fahrzeug (Art 1) mit mehr als 0,5 m/s in ein NPC-Auto, rechnet `Traffic.Impacts` den Stoß (unelastisch, Schaden wie
+   `Raser.Vehicle`): das Auto wird ein Unfallwagen (rutscht aus, hupt, fährt nach 6 s weiter; kaputt bleibt es stehen). Fußgänger, die ein
+   Fahrzeug über 1,5 m/s erwischt, fallen um (liegen 9 s). Danach prallt in `Npcs` jedes Fahrzeug an den NPC-Autos ab (`Vehicle.Collide`),
+   Spieler zu Fuß hält ein NPC-Auto auf (`Walker.Avoid`). Die Vorhersage des Clients kennt die NPCs nicht: ein Aufprall wird beim Abgleich
+   korrigiert. Wände für Unfallwagen prüft der Server noch nicht (offline: `TrafficView.Simulate`).
+5. Snapshot je Spieler (`NpcEntities`): `traffic.States(liste, ost, nord, 200.0)` füllt `Raser.NpcState` für die NPCs bis 200 m (die Objekte
+   gehören der Simulation und werden beim nächsten Aufruf überschrieben), daraus die Entitäten:
 
-| Feld | Kodierung | Inhalt |
+| Feld der Entität | NPC-Auto (Art 3) | Fußgänger (Art 4) |
 |---|---|---|
-| id | Varint | eindeutig je Simulation (zählt hoch) |
-| Art + Zustand + Hupe | 1 Byte: Art + 4 x Zustand + 128 x hupt | Art 0 Auto, 1 Transporter, 2 Fußgänger; Zustand 0 normal, 1 steht/wartet, 2 Unfall, 3 kaputt, 4 liegt, 5 springt zur Seite |
-| Ost, Nord | SignedVarint, cm | Lage (UTM 32) |
-| Richtung | Varint, 1/100 Grad (0 .. 36000) | wie `Raser.Vehicle` |
-| Tempo | SignedVarint, cm/s | |
-| Farbe | Varint 0xRRGGBB | Lack bzw. Hemd |
-| nur Fußgänger: Hose, Haare, Haut, Größe | Varint, Varint, Varint, Varint (cm) | Aussehen |
+| variant | Art (0 Auto, 1 Transporter) + 4 x Lack (0xRRGGBB) | Hemd + Hose x 2^24 + (Größe in cm - 100) x 2^48 |
+| bits | 1 hupt, 8 steht, + 16 x Zustand (0 fährt, 1 steht, 2 Unfall, 3 kaputt) | 4 liegt, 8 steht, + 16 x Zustand (0 geht, 1 wartet, 4 liegt, 5 springt zur Seite) |
+| Lage, Richtung, Tempo | wie jede Entität (cm, 1/100 Grad, cm/s) | |
+| a | 0 | Haare + Haut x 2^24 |
+| b | auf einer Brücke die Höhe (cm über NHN), sonst 0 | ebenso |
 
-   Ein Auto braucht etwa 16 Byte, ein Fußgänger etwa 24; 24 Autos und 30 Fußgänger also rund 1,1 KB je Snapshot (vor einem
-   Delta-Verfahren: das Aussehen ändert sich nie und könnte nur beim ersten Mal kommen). Lesen: `Raser.NpcState.Decode(reader)`.
-6. Client: die Snapshots in `Raser.NpcBuffer.Push(serverzeit, liste)`, je Bild `Sample(bildzeit, liste)` mit der Bildzeit etwa 100 ms
-   hinter dem neuesten Snapshot (Lage linear, Richtung auf dem kürzeren Weg, den Schritt der Fußgänger zählt der Client), dann
-   `TrafficView.Remote(dt, liste, wagen, spieler, zuFuss, gelände, ansicht)` statt `Update` - die Ansicht zeichnet nur die Zustände und
-   meldet Unfall, Sturz und Hupen am Wechsel der Zustände. Offline: `TrafficView.Update` (Simulation + `States` + dieselbe Darstellung).
+   Hin und zurück: `NpcState.EntityType`, `Variant`, `Bits`, `A`, `B` und `NpcState.FromEntity` (Raser.Traffic kennt Raser.Net nicht: die Zahlen
+   der Arten stehen dort noch einmal). Ein NPC kostet etwa 25 .. 35 Byte; fahrende ändern sich jeden Snapshot (15 je s): mit 24 Autos und 30
+   Fußgängern im Umkreis gut 20 KB/s je Client (gemessen: siehe Bots). Später: nur Spur und s schicken (die Lage folgt aus dem Graphen, den
+   auch der Client baut) und das Aussehen nur beim ersten Mal.
+6. Client: `Online.NpcStates()` macht aus den Entitäten 3 und 4 Zustände, interpoliert wie die anderen Entitäten (`Raser.Interpolator`, 100 ms
+   in der Vergangenheit), den Schritt der Fußgänger zählt der Client; `TrafficView.Remote` zeichnet sie (main.fire ruft das am Server statt
+   `Update`) und meldet Unfall, Sturz und Hupen am Wechsel der Zustände. Offline: `TrafficView.Update` (eigene Simulation + `States` + dieselbe
+   Darstellung). Für einen anderen Transport gibt es auch `NpcState.Encode/Decode` und `Raser.NpcBuffer` (ungenutzt, mit Tests).
+7. Probe: `tools/server-smoke.sh` mit Welt lässt in Runde 3 zwei Bots am selben Ort stehen; beide drucken alle 2 s die NPCs (ID, Lage in cm)
+   zum selben Takt - das Skript vergleicht sie.
+
+**Brücken:** Straßen mit OSM `layer` > 0 (Tunnel nimmt der Import nicht auf) gehören zum Graphen, auf ihrer Ebene: Knoten nur zwischen
+Straßen derselben Ebene, außer an den Enden einer Straße (Rampen) - eine Brücke über eine Straße ist keine Kreuzung. Ihre Spuren haben eine
+Höhe (zwischen dem Gelände an den Enden der Brücke, mindestens das Gelände darunter); NPCs auf einer Brücke tragen sie (`NpcState.z`,
+Entität `b` in cm) und kümmern sich nur um ihre Ebene (keine Bremsung für Autos und Spieler darunter, keine Stöße mit ihnen). Auf Brücken
+erscheint nichts, es fährt nur darüber. Die Welt zeichnet Brücken noch nicht (eine Straße mit layer > 0 liegt als Belag auf dem Gelände); solange
+stellt das Spiel die NPCs dort auf das Gelände (`TrafficView.BridgesDrawn`). Der Import behält nur `layer`, nicht `bridge=yes`: Brücken ohne
+layer-Tag sind für den Verkehr ebenerdig.
 
 ## Persistenz
 
-Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created) und `sessions` (Hash des Tokens,
+Jetzt: SQLite-Datei `data/raser.db` mit den Tabellen `accounts` (id, name, salt, hash, rounds, admin, created, cash) und `sessions` (Hash des Tokens,
 Konto, Ablauf). Spielerlagen werden noch nicht gespeichert. Später: Konten und Inventar in einer gemeinsamen Datenbank der globalen Dienste,
 Deltas der Welt im Key-Value-Store (Konzept, Abschnitt 8).
 
@@ -250,9 +267,18 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
   zu Fuß (und nicht, solange er liegt), höchstens 20 Operationen je s. Er antwortet immer mit `InvSet` (angenommen oder nicht, dazu der echte Stand
   aller Behälter, an die der Spieler kommt). Der Client übernimmt den Stand und wendet die noch offenen Operationen noch einmal an (wie bei der
   Bewegung).
+- **Benutzen** (Art 7, `Inventory.Use`): essen und trinken (der Körper `Raser.Body` des Spielers auf dem Server), rauchen, Taschenlampe an/aus
+  (leuchtet sie, trägt die Entität des Spielers Bit 16), Kanister und Schraubenschlüssel am nächsten Fahrzeug der Region (tanken, reparieren -
+  das Fahrzeug des Servers, es geht mit dem nächsten Snapshot an alle).
+- **Bargeld** (`Inventory.cash`, Cent): Geld am Boden wird beim Aufheben Bargeld. Der Server schickt es mit jedem InvSet und Snapshot und
+  speichert es im Konto (Spalte `cash` der Tabelle `accounts`, sobald es sich ändert und beim Gehen); wer neu ist (-1), bekommt das Startgeld. (Die Behälter selbst
+  werden noch nicht gespeichert: nach dem Neuanmelden gibt es die Anfangsausstattung.)
+- **Umgehauen** (`Raser.Knockdown.Apply`, Samen vom Server): was der Spieler trägt, fällt zu Boden, ein Teil des Bargelds als Geldhäufchen,
+  manches geht kaputt; die Gegenstände kommen als Entitäten in die Snapshots, der Betroffene bekommt sein Inventar neu (InvSet).
 - Gegenstände am Boden sind Entitäten im Snapshot (Art 5). Den Inhalt eines Rucksacks am Boden bekommt nur, wer ihn öffnet (Operation 5) oder
   aufhebt; wer ihn offen hat, bekommt jede Änderung. Gegenstände erzeugt nur der Server.
-- Probe (Bots): Anna setzt ihren Rucksack mit Inhalt ab, Bernd setzt seinen ab, geht hin, hebt Annas auf und sieht den Inhalt (2 Wasser,
+- Probe (Bots): Anna fährt Bernd um, er verliert Bargeld und alles, was er trägt, Anna sammelt es auf; ihr Bargeld ist nach dem
+  Neuanmelden noch da. Anna setzt ihren Rucksack mit Inhalt ab, Bernd setzt seinen ab, geht hin, hebt Annas auf und sieht den Inhalt (2 Wasser,
   Schraubenschlüssel).
 
 ## Jetzt gebaut - und später
@@ -276,7 +302,7 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
 | `src/Raser.Net` | das Protokoll (`Raser.Packet`, `Raser.Entity`, `Raser.Wire`, `Raser.FrameReader`, `Raser.Link`), Vorhersage und Interpolation (`Raser.Prediction`, `Raser.Interpolator`, `Raser.ServerClock`), Befehle (`Raser.Commands`), Passwörter (`Raser.Passwords`) - mit Tests |
 | `src/Raser.Server` | `raser-server`: Launcher-API, Konten, Gateway, Koordinator, Regionsserver (Simulation, Snapshots, Inventar), Uhr und Wetter |
 | `src/Raser.Client` | `NetSession` (Verbindung, Takt, Vorhersage, Entitäten, Inventar, Chat, Konsole), `ChatOverlay` |
-| `src/Raser.Game` | `online.fire`: die anderen Spieler in der Szene; `--bot`: ein Client ohne Welt und Fenster (für Tests); `npcs.fire`: der Verkehr in der Szene |
+| `src/Raser.Game` | `online.fire`: Steuerung über den Server, die Entitäten in der Szene; `--bot`: ein Client ohne Fenster mit Plänen (für Tests); `npcs.fire`: der Verkehr in der Szene |
 
 Probe von Hand: `tools/server-smoke.sh <raser-server> <raser-game> [arbeitsverzeichnis] [welt]` startet den Server, registriert über HTTP,
 verbindet Bots (`raser-game --bot 12 --plan kreis|ablegen|aufheben|schummeln --say "..."`) und prüft, dass sie sich sehen, den Chat lesen, dass
