@@ -40,6 +40,12 @@ namespace Raser {
         defined int shutterColor    // Fensterläden (0: keine)
         defined int balconyColor    // Brüstung der Balkone (0: keine Balkone)
         defined bool dormers        // Gauben auf dem Steildach (nur im Netz, Raser.FarMesher.Dormers)
+        defined int setting         // der Ort (Raser.HouseStyle.Town, OldTown, Rural, Industrial ...)
+        defined int kind            // besondere Gebäude (Raser.BuildingKinds: Tankstelle, Markt, Parkhaus, Halle ...; 0: keins)
+        defined int facadeStyle     // Stil der Fassade, den die Art vorgibt (-1: nach der Nutzung)
+        defined int bandColor       // Werbeband, Blende des Tankstellendachs, Markise (0: keins)
+        defined bool canopy         // ein Dach auf Stützen (Überdachung, Tankstelle): nur Platte und Stützen in den Voxeln
+        defined bool sheds          // Sheddach auf der flachen Halle (nur im Netz)
         float eaveRing[]        // Steildach: der Grundriss um den Dachüberstand nach außen versetzt (undefined: kein Überstand)
         List<float> passages    // Durchfahrten (Torbögen): je Stück ax, ay, bx, by, halbe Breite, lichte Höhe, Stich des Bogens
         float planes[]          // je Dachfläche: a, b, c (z = a x + b y + c), gültig (1) oder senkrecht (0)
@@ -83,6 +89,7 @@ namespace Raser {
             this.wallMaterial = b.wall!int
             this.frameColor = Raser.Palette.Plaster
             this.doorColor = Raser.Palette.Wood + 64
+            this.facadeStyle = -1
             int nf = b.roofs.Count
             this.planes = new float[nf * 4]
             this.faceBoxes = new float[nf * 4]
@@ -215,6 +222,8 @@ namespace Raser {
         // 4: Dreckstufen je Gebäude (Palette 32 .. 127)
         // 5: Stadtmöbel und Vegetation (Raser.Prop, Modelle aus Raser.Props)
         // 6: Bäume nicht mehr oben abgeschnitten (das Modell ist hoch genug für die Krone)
+        // 31: Ort (Altstadt, Land, Industrie ...) und besondere Gebäude (Raser.BuildingKinds): Dach auf Stützen, Parkhaus mit offenen Geschossen,
+        //     Hallen mit Rolltoren und Lichtbändern; Fachwerk mit Ziegeln auf dem Land; Gebiete und OSM-Tags der Gebäude aus dem Import
         // 30: Aussehen je Gebäude (Raser.HouseStyle): Bautyp, Farbfamilie je Viertel, Fassaden-Farben (Palette 128 .. 159, 180 .. 247), Sockel,
         //     Gesims, Giebel, Fachwerk, Wandmaterial; unter der Traufe und am Fuß schmutziger
         // 29: Durchfahrten 25 cm breiter in den Voxeln (glatte Seitenwände im eingehängten Gewölbe)
@@ -241,7 +250,7 @@ namespace Raser {
         // 9: Eckhöhen in Dritteln mit 0 (Raser.Shape), Dachsäulen je Lage mit eigener Form - Dächer ohne Stufen an den Höhenlinien
         // 8: Bauelemente - schräge Kanten der Gebäude als Diagonalen 1x1 bis 6x1 (Raser.Plan)
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
-        static readonly defined int Version = 30
+        static readonly defined int Version = 31
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -271,11 +280,11 @@ namespace Raser {
             foreach (b in tile.data.buildings) {
                 if (b.footprint == undefined || b.footprint.length < 6) { continue }
                 if (b.ridge <= b.ground) { continue }
-                var model = new Raser.RoofModel(b, seed)
-                Raser.Voxelizer.PlanFacade(model, tile.data.roads)
-                this.models.Add(take model)
+                this.models.Add(new Raser.RoofModel(b, seed))
             }
-            Raser.HouseStyle.Assign(this.models, tile.data.roads, tile.key.x * 256.0, tile.key.y * 256.0, seed)
+            // erst das Aussehen (es kann den Stil der Fassade vorgeben, Raser.BuildingKinds), dann die Fassade
+            Raser.HouseStyle.Assign(this.models, tile.data, tile.key.x * 256.0, tile.key.y * 256.0, seed)
+            foreach (m in this.models) { Raser.Voxelizer.PlanFacade(m, tile.data.roads) }
             this.roadBoxes = new List<Box2>()
             foreach (r in tile.data.roads) {
                 var box = Raser.Box2.Of(r.points)
@@ -702,7 +711,7 @@ namespace Raser {
 
         // Fassade und Durchfahrten eines Gebäudes planen (Voxel und Netze gleich): wo eine Durchfahrt durch die Wand geht, sind keine Fenster und Türen.
         static undefined PlanFacade(RoofModel model, List<Road> roads) {
-            model.facade = Raser.Facade.Plan(model.building, roads)
+            model.facade = Raser.Facade.Plan(model.building, roads, model.facadeStyle)
             model.passages = Raser.Voxelizer.Passages(model.building, roads)
             if (model.passages.Count == 0) { return }
             var f = model.facade
@@ -854,6 +863,9 @@ namespace Raser {
             if (kind == Raser.Facade.Ribbon) { if (inStorey >= 6 && inStorey <= 11) { return 1 } }
             if (kind == Raser.Facade.Tall) { if (rel >= 2 && vz <= top - 3) { return 1 } }
             if (kind == Raser.Facade.Large) { if (inStorey >= 4 && inStorey <= 12) { return 1 } }
+            if (kind == Raser.Facade.Gate) { if (rel >= 0 && rel <= 20 && vz <= top - 6) { return 3 } }
+            if (kind == Raser.Facade.Clerestory) { if (vz >= top - 8 && vz <= top - 5) { return 1 } }
+            if (kind == Raser.Facade.OpenBay) { if (inStorey >= 6) { return 6 } }
             return 0
         }
 
@@ -1205,8 +1217,19 @@ namespace Raser {
                             plan.timberP[c] = Math.Floor(model.facade.gapLeft * 5.0)!int
                             plan.timberW[c] = Math.Floor((model.facade.gapLeft + model.facade.gapRight) * 5.0 + 0.5)!int
                         }
+                        // Dach auf Stützen: Stützen an den Ecken und alle 6 m am Rand, sonst frei unter der Platte; Parkhaus: innen Stützen alle 5 m
+                        plan.canopyKind[c] = 0
+                        if (model.canopy) {
+                            plan.canopyKind[c] = 1
+                            if ((flags & 1) != 0 && model.facade != undefined) {
+                                float gl = model.facade.gapLeft
+                                float gr = model.facade.gapRight
+                                if (gl < 0.3 || gr < 0.3 || (gl + gr > 8.0 && gl % 6.0 < 0.25)) { plan.canopyKind[c] = 2 }
+                            }
+                        }
+                        plan.pillar[c] = model.facadeStyle == Raser.Facade.Parking && (flags & 1) == 0 && (lx0 + x + 1000000) % 25 < 2 && (ly0 + y + 1000000) % 25 < 2
                         plan.thick[c] = model.facade != undefined && model.facade.style != Raser.Facade.None
-                        plan.hall[c] = model.facade != undefined && (model.facade.style == Raser.Facade.Pavilion || model.facade.style == Raser.Facade.Church)
+                        plan.hall[c] = model.facade != undefined && (model.facade.style == Raser.Facade.Pavilion || model.facade.style == Raser.Facade.Church || model.facade.style == Raser.Facade.Hall)
                         plan.planShape[c] = planOf[o]
                         plan.eaveFull[c] = model.eaveRing != undefined
                         if (planOf[o] != 0) {
@@ -1375,6 +1398,8 @@ namespace Raser {
         defined int timberCol[4096]
         defined int timberP[4096]
         defined int timberW[4096]
+        defined int canopyKind[4096]    // Dach auf Stützen: 1 frei unter der Platte, 2 eine Stütze (Raser.RoofModel.canopy)
+        defined bool pillar[4096]       // Parkhaus: eine Stütze innen (alle 5 m)
         defined int storey
         defined int highest
 
@@ -1418,9 +1443,10 @@ namespace Raser {
                         }
                         int fw = q1 - q0
                         if (fw >= 1) {
+                            // je Lage ein Voxel der Strebe (so bleibt sie eine durchgehende Linie, auch in schmalen Feldern)
                             int q = p - q0
                             if (mirror) { q = q1 - p }
-                            beam = s - 5 == Math.Round(q * 6.0 / fw)!int
+                            beam = q == Math.Round((s - 5) * fw / 6.0)!int
                         }
                     }
                 }
@@ -1583,6 +1609,23 @@ namespace Raser {
                         }
                         continue
                     }
+                    int cpk = this.canopyKind[c]
+                    if (cpk != 0 && vz < top - 1) {
+                        // unter dem Dach auf Stützen: frei (am Boden das Gelände als Pflaster), nur die Stützen
+                        if (cpk == 2) {
+                            chunk.materials[i] = concrete
+                            chunk.colors[i] = concreteColor
+                        } else if (vz <= floor) {
+                            chunk.materials[i] = Raser.Material.Paving!int
+                            chunk.colors[i] = Raser.Palette.Sidewalk
+                        }
+                        continue
+                    }
+                    if (this.pillar[c] && vz < top) {
+                        chunk.materials[i] = concrete
+                        chunk.colors[i] = concreteColor
+                        continue
+                    }
                     if (vz == top) {
                         if (Raser.Shape.IsEmpty(this.shape[c])) { continue }          // die Fläche liegt auf der Unterkante: Luft
                         chunk.materials[i] = this.material[c]
@@ -1603,7 +1646,7 @@ namespace Raser {
                     int inStorey = (vz - ground) % this.storey
                     if (wall) {
                         int kind = this.upperKind[c]
-                        if (vz - ground < this.storey) { kind = this.groundKind[c] }
+                        if (vz - ground < this.storey || ((this.groundKind[c] & 127) == Raser.Facade.Gate && vz - ground <= 21)) { kind = this.groundKind[c] }
                         // Öffnungen mit Bogen: die Wand lässt ein Rechteck bis zum Scheitel frei, die Zwickel füllt ein eingehängtes Bogenstück
                         // (Raser.Facade.Arches, vernetzt in Raser.FarMesher.Arches) - Kirchenfenster, Portale, Schallöffnungen ...
                         int ak = this.archKind[c]

@@ -1,0 +1,314 @@
+// Raser.World: besondere Gebäude, die ganz anders aussehen als Wohnhäuser - je Art ein Baustein (IBuildingKind).
+//
+// Eine Art erkennt ihre Gebäude aus den Daten (OSM-Tags am Gebäude und POIs darin, ALKIS-Funktion, Größe, Ort) und gibt ihnen ihr Aussehen:
+// Farben, den Stil der Fassade (Raser.Facade: Rolltore, Lichtbänder, offene Geschosse ...) und die Merkmale für die Voxel (Dach auf Stützen) und
+// das Netz (Raser.KindParts in Raser.Mesh: Zapfsäulen, Preismast, Vordach, Werbeband, Sheddach, Markise). Die erste Art, die passt, gewinnt.
+// Eine neue Art: eine Klasse mit IBuildingKind, eine Nummer unten, ein Eintrag in Raser.BuildingKinds.Make - und, wenn sie eigene Teile im
+// Netz hat, ein Fall in Raser.KindParts.Build.
+// Keine echten Marken: Werbebänder und Blenden in neutralen Farben, ohne Schrift.
+namespace Raser {
+    interface IBuildingKind {
+        defined int Id()
+        string Name()
+        defined bool Matches(RoofModel m, HouseContext c)
+        undefined Apply(RoofModel m, HouseContext c)
+    }
+
+    class BuildingKinds {
+        static readonly defined int None = 0
+        static readonly defined int Fuel = 1           // Tankstelle: der Shop mit Glasfront
+        static readonly defined int FuelCanopy = 2     // Tankstelle: das Dach über den Zapfsäulen
+        static readonly defined int Market = 3         // Supermarkt, Baumarkt
+        static readonly defined int ParkingGarage = 4  // Parkhaus
+        static readonly defined int Hall = 5           // Halle im Industrie- oder Gewerbegebiet
+        static readonly defined int Canopy = 6         // Überdachung, Carport, Bahnsteigdach
+        static readonly defined int Kiosk = 7          // Trinkhalle, Kiosk
+        static readonly defined int School = 8
+        static readonly defined int Garages = 9        // Garagenhof
+        static readonly defined int Workshop = 10      // Werkstatt (Kfz, Handwerk)
+
+        static List<IBuildingKind> Make() {
+            var l = new List<IBuildingKind>()
+            l.Add(new Raser.FuelKind())
+            l.Add(new Raser.FuelCanopyKind())
+            l.Add(new Raser.CanopyKind())
+            l.Add(new Raser.ParkingKind())
+            l.Add(new Raser.MarketKind())
+            l.Add(new Raser.KioskKind())
+            l.Add(new Raser.GaragesKind())
+            l.Add(new Raser.WorkshopKind())
+            l.Add(new Raser.HallKind())
+            l.Add(new Raser.SchoolKind())
+            return l
+        }
+
+        // Gibt dem Gebäude das Aussehen der ersten Art, die passt (sonst bleibt es, wie es ist). Die Bausteine je Aufruf neu (klein): ein
+        // statisches Feld gehörte dem Hauptprogramm, die Worker der fernen Stufe dürften ihm ihre Modelle nicht geben.
+        static undefined Apply(RoofModel m, HouseContext c) {
+            var all = Raser.BuildingKinds.Make()
+            foreach (k in all) {
+                if (k.Matches(m, c)) {
+                    m.kind = k.Id()
+                    k.Apply(m, c)
+                    return
+                }
+            }
+        }
+
+        // Nutzung des Gebäudes (ALKIS oder POI) oder ein OSM-Tag daran.
+        static defined bool Is(Building b, string function, string key, string value) {
+            if (function != undefined && b.function == function) { return true }
+            return key != undefined && b.Tag(key) == value
+        }
+
+        // Liegt ein POI der Art kind (oder ein Gebäude dieser Nutzung) bis dist m von (x, y)?
+        static defined bool Near(HouseContext c, string kind, defined float dist) {
+            if (c.data == undefined) { return false }
+            foreach (p in c.data.pois) {
+                if (p.kind == kind && (p.x - c.cx) * (p.x - c.cx) + (p.y - c.cy) * (p.y - c.cy) < dist * dist) { return true }
+            }
+            foreach (b in c.data.buildings) {
+                if (b.function != kind || b.footprint == undefined) { continue }
+                if (Raser.HouseStyle.RingDistance(b.footprint, c.cx, c.cy) < dist) { return true }
+            }
+            return false
+        }
+
+        // Eine neutrale Farbe für Werbebänder und Blenden (keine Marke).
+        static defined int Band(defined int id, defined int salt) {
+            return Raser.HouseStyle.Of([Raser.Palette.DoorRed, Raser.Palette.DoorBlue, Raser.Palette.DoorGreen, Raser.Palette.PlasterOchre, Raser.Palette.SignWhite, Raser.Palette.SignBlue], id, salt)
+        }
+    }
+
+    // Tankstelle: der Shop (amenity=fuel am Gebäude): weiß oder hell mit Glasfront zur Straße, Blende in der Farbe der Station.
+    class FuelKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.Fuel }
+        string Name() { return "Tankstelle" }
+        defined bool Matches(RoofModel m, HouseContext c) { return Raser.BuildingKinds.Is(m.building, "amenity=fuel", "amenity", "fuel") && !m.pitched }
+        undefined Apply(RoofModel m, HouseContext c) {
+            m.facadeStyle = Raser.Facade.ShopStyle
+            m.wallColor = Raser.HouseStyle.Of([Raser.Palette.PanelWhite, Raser.Palette.Plaster, Raser.Palette.ConcretePanel], c.id, 30)
+            m.plinthColor = 0
+            m.trimColor = 0
+            m.frameColor = Raser.Palette.Metal + 64
+            m.bandColor = Raser.BuildingKinds.Band(c.fam, 31)
+        }
+    }
+
+    // Tankstelle: das Dach über den Zapfsäulen - eine Überdachung (oder ein flaches, niedriges Gebäude ohne Nutzung) bis 40 m von einer Tankstelle:
+    // Platte auf Stützen mit farbiger Blende, darunter Zapfsäulen auf Inseln, an der Straße ein Preismast (Raser.KindParts).
+    class FuelCanopyKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.FuelCanopy }
+        string Name() { return "Tankstellendach" }
+        defined bool Matches(RoofModel m, HouseContext c) {
+            Building b = m.building
+            string f = b.function
+            if (f == undefined) { f = "" }
+            bool roof = f.StartsWith("alkis=51009") || b.Tag("building") == "roof" || (!m.pitched && b.eaves - b.ground < 7.0 && c.area > 60.0 && f == "amenity=fuel")
+            if (!roof || m.pitched || b.eaves - b.ground > 8.0) { return false }
+            return Raser.BuildingKinds.Near(c, "amenity=fuel", 40.0)
+        }
+        undefined Apply(RoofModel m, HouseContext c) {
+            m.canopy = true
+            m.facadeStyle = Raser.Facade.None
+            // die Blende ist die Wand der Platte
+            m.wallColor = Raser.BuildingKinds.Band(c.fam, 31)
+            m.bandColor = m.wallColor
+            m.roofColor = Raser.Palette.RoofFlat
+            m.plinthColor = 0
+            m.trimColor = 0
+            m.gableColor = 0
+            m.timberColor = 0
+        }
+    }
+
+    // Überdachung (ALKIS 51009_161x, OSM building=roof/carport): Platte auf Stützen, darunter frei.
+    class CanopyKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.Canopy }
+        string Name() { return "Überdachung" }
+        defined bool Matches(RoofModel m, HouseContext c) {
+            Building b = m.building
+            string f = b.function
+            if (f == undefined) { f = "" }
+            return f.StartsWith("alkis=51009_161") || b.Tag("building") == "roof" || b.Tag("building") == "carport"
+        }
+        undefined Apply(RoofModel m, HouseContext c) {
+            m.canopy = true
+            m.facadeStyle = Raser.Facade.None
+            m.wallColor = Raser.HouseStyle.Of([Raser.Palette.ConcretePanel, Raser.Palette.Metal, Raser.Palette.Plaster], c.id, 32)
+            m.plinthColor = 0
+            m.trimColor = 0
+            m.gableColor = 0
+            m.timberColor = 0
+            m.dormers = false
+        }
+    }
+
+    // Parkhaus (ALKIS 31001_2461/2462, OSM parking=multi-storey): offene Geschosse mit Brüstungen aus Beton, Stützen innen.
+    class ParkingKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.ParkingGarage }
+        string Name() { return "Parkhaus" }
+        defined bool Matches(RoofModel m, HouseContext c) {
+            Building b = m.building
+            bool tagged = b.function == "alkis=31001_2461" || b.function == "alkis=31001_2462" || b.Tag("parking") == "multi-storey" || b.Tag("building") == "parking"
+            return tagged && b.eaves - b.ground >= 4.0
+        }
+        undefined Apply(RoofModel m, HouseContext c) {
+            m.facadeStyle = Raser.Facade.Parking
+            m.wallColor = Raser.HouseStyle.Of([Raser.Palette.ConcretePanel, Raser.Palette.WashedConcrete, Raser.Palette.Concrete], c.id, 33)
+            m.roofColor = Raser.Palette.RoofFlat
+            m.plinthColor = 0
+            m.trimColor = 0
+            m.groundColor = 0
+            m.balconyColor = 0
+            m.dormers = false
+            m.bandColor = Raser.BuildingKinds.Band(c.id, 34)
+        }
+    }
+
+    // Supermarkt, Baumarkt, Möbelhaus: flache Halle, Glasfront mit Eingang zur Straße, Vordach und Werbeband (Raser.KindParts).
+    class MarketKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.Market }
+        string Name() { return "Markt" }
+        defined bool Matches(RoofModel m, HouseContext c) {
+            Building b = m.building
+            string f = b.function
+            if (f == undefined) { f = "" }
+            if (f == "shop=supermarket" || f == "shop=department_store" || f == "shop=doityourself" || f == "shop=furniture" || f == "shop=mall") { return b.eaves - b.ground < 12.0 }
+            return (b.Tag("building") == "retail" || b.Tag("building") == "supermarket") && c.area > 600.0 && b.eaves - b.ground < 10.0
+        }
+        undefined Apply(RoofModel m, HouseContext c) {
+            m.facadeStyle = Raser.Facade.Market
+            m.wallColor = Raser.HouseStyle.Of([Raser.Palette.PanelWhite, Raser.Palette.ConcretePanel, Raser.Palette.PlasterSilver, Raser.Palette.BrickBrown, Raser.Palette.MetalRibbed], c.id, 35)
+            m.plinthColor = Raser.Palette.Concrete
+            m.plinthVoxels = 2
+            m.trimColor = 0
+            m.frameColor = Raser.Palette.Metal + 64
+            m.bandColor = Raser.BuildingKinds.Band(c.id, 36)
+            m.dormers = false
+        }
+    }
+
+    // Trinkhalle, Kiosk: kleiner Pavillon mit großen Scheiben, Markise und Schild (Raser.KindParts).
+    class KioskKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.Kiosk }
+        string Name() { return "Kiosk" }
+        defined bool Matches(RoofModel m, HouseContext c) { return m.building.function == "shop=kiosk" && c.area < 150.0 }
+        undefined Apply(RoofModel m, HouseContext c) {
+            m.facadeStyle = Raser.Facade.Pavilion
+            m.wallColor = Raser.HouseStyle.Of([Raser.Palette.Plaster, Raser.Palette.PlasterYellow, Raser.Palette.Brick, Raser.Palette.PlasterGreen], c.id, 37)
+            m.frameColor = Raser.Palette.Metal + 64
+            m.bandColor = Raser.BuildingKinds.Band(c.id, 38)
+        }
+    }
+
+    // Garagenhof (ALKIS 31001_2463, OSM building=garages): Reihen von Toren, jedes Tor in seiner Farbe (Raser.KindParts).
+    class GaragesKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.Garages }
+        string Name() { return "Garagen" }
+        defined bool Matches(RoofModel m, HouseContext c) {
+            Building b = m.building
+            return b.function == "alkis=31001_2463" || b.Tag("building") == "garages" || b.Tag("building") == "garage" || (b.function == "alkis=31001_2460" && b.eaves - b.ground < 3.5)
+        }
+        undefined Apply(RoofModel m, HouseContext c) {
+            m.facadeStyle = Raser.Facade.GarageStyle
+            m.wallColor = Raser.HouseStyle.Of([Raser.Palette.PlasterGrey, Raser.Palette.ConcretePanel, Raser.Palette.Brick, Raser.Palette.PlasterSilver, Raser.Palette.BrickYellow], c.fam, 39)
+            m.roofColor = Raser.Palette.RoofFlat
+            m.plinthColor = 0
+            m.trimColor = 0
+        }
+    }
+
+    // Werkstatt (shop=car_repair, craft=*, ALKIS 31001_2140): kleine Halle mit Rolltor.
+    class WorkshopKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.Workshop }
+        string Name() { return "Werkstatt" }
+        defined bool Matches(RoofModel m, HouseContext c) {
+            Building b = m.building
+            string f = b.function
+            if (f == undefined) { f = "" }
+            bool work = f == "shop=car_repair" || f == "shop=tyres" || f == "amenity=car_wash" || f == "alkis=31001_2140" || f == "craft=carpenter" || f == "craft=metal_construction"
+            return work && c.area > 80.0 && b.eaves - b.ground < 9.0
+        }
+        undefined Apply(RoofModel m, HouseContext c) {
+            Raser.HallKind.Look(m, c)
+            m.sheds = false
+        }
+    }
+
+    // Halle: im Industrie- oder Gewerbegebiet, groß und niedrig, oder als Halle getaggt. Trapezblech oder Sandwichpaneele in Grau, Blau, Weiß,
+    // Rot - ältere Industriebauten in Klinker; Rolltore zur Straße, Lichtbänder, kein Zwischenboden, oft ein Sheddach.
+    class HallKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.Hall }
+        string Name() { return "Halle" }
+        defined bool Matches(RoofModel m, HouseContext c) {
+            Building b = m.building
+            float h = b.eaves - b.ground
+            string bt = b.Tag("building")
+            if (bt == "industrial" || bt == "warehouse" || bt == "manufacture" || bt == "hangar") { return h < 25.0 }
+            if (c.type != Raser.HouseStyle.Work) { return false }
+            if (c.setting == Raser.HouseStyle.Industrial || c.setting == Raser.HouseStyle.Commercial) { return h < 16.0 && c.area > 150.0 }
+            return c.area > 1000.0 && h < 14.0
+        }
+        undefined Apply(RoofModel m, HouseContext c) { Raser.HallKind.Look(m, c) }
+
+        static undefined Look(RoofModel m, HouseContext c) {
+            Building b = m.building
+            m.facadeStyle = Raser.Facade.Hall
+            // ältere Industriebauten (Steildach oder jede fünfte): Klinker, sonst Blech und Paneele
+            bool old = m.pitched || Raser.HouseStyle.Rand(c.id, 0, 40) < 0.2
+            if (old) {
+                m.wallColor = Raser.HouseStyle.Of([Raser.Palette.BrickCross, Raser.Palette.Brick, Raser.Palette.BrickLight, Raser.Palette.Brick], c.id, 41)
+                m.plinthColor = Raser.Palette.Clinker
+                m.plinthVoxels = 3
+                m.doorColor = Raser.HouseStyle.Of([Raser.Palette.DoorGreen, Raser.Palette.Metal + 32, Raser.Palette.DoorRed], c.id, 42)
+            } else {
+                m.wallColor = Raser.HouseStyle.Of([Raser.Palette.MetalRibbed, Raser.Palette.MetalBlue, Raser.Palette.PanelWhite, Raser.Palette.PanelRed, Raser.Palette.PanelWhite, Raser.Palette.MetalRibbed], c.id, 41)
+                m.plinthColor = Raser.Palette.Concrete
+                m.plinthVoxels = 4
+                m.doorColor = Raser.HouseStyle.Of([Raser.Palette.Metal + 32, Raser.Palette.DoorBlue, Raser.Palette.SignWhite, Raser.Palette.DoorRed, Raser.Palette.SignYellow], c.id, 42)
+            }
+            m.frameColor = Raser.Palette.Metal + 64
+            m.trimColor = 0
+            m.groundColor = 0
+            m.gableColor = 0
+            m.timberColor = 0
+            m.balconyColor = 0
+            m.dormers = false
+            m.sillColor = 0
+            if (!m.pitched) { m.roofColor = Raser.Palette.RoofFlat }
+            // Sheddach: auf flachen, großen Hallen (eher den alten)
+            float chance = 0.3
+            if (old) { chance = 0.6 }
+            m.sheds = !m.pitched && c.area > 600.0 && Raser.HouseStyle.Rand(c.id, 0, 43) < chance
+        }
+    }
+
+    // Schule (amenity=school/college/kindergarten, ALKIS 31001_3021..3023): Ziegel oder heller Putz mit farbigem Band, große Fenster.
+    class SchoolKind : IBuildingKind {
+        construct() { }
+        defined int Id() { return Raser.BuildingKinds.School }
+        string Name() { return "Schule" }
+        defined bool Matches(RoofModel m, HouseContext c) {
+            string f = m.building.function
+            if (f == undefined) { f = "" }
+            return f == "amenity=school" || f == "amenity=college" || f == "amenity=kindergarten" || f == "alkis=31001_3021" || f == "alkis=31001_3022" || f == "alkis=31001_3023"
+        }
+        undefined Apply(RoofModel m, HouseContext c) {
+            m.wallColor = Raser.HouseStyle.Of([Raser.Palette.Brick, Raser.Palette.BrickYellow, Raser.Palette.Plaster, Raser.Palette.PlasterOchre, Raser.Palette.ConcretePanel], c.id, 44)
+            m.trimColor = Raser.HouseStyle.Of([Raser.Palette.PlasterOchre, Raser.Palette.PlasterGreen, Raser.Palette.PlasterBlue, Raser.Palette.Sandstone], c.id, 45)
+            m.frameColor = Raser.Palette.Plaster
+            m.dormers = false
+            m.timberColor = 0
+        }
+    }
+}

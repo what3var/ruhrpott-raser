@@ -48,6 +48,9 @@ namespace Raser {
         static readonly defined int Portal = 11          // Kirche: Portal mit Rundbogen (Holz)
         static readonly defined int Louvre = 12          // Kirchturm: Schallöffnung mit Spitzbogen (Holzlamellen)
         static readonly defined int Clock = 13           // Kirchturm: Uhr auf der Wand (keine Öffnung)
+        static readonly defined int Gate = 14            // Halle: Rolltor (Metall) 0 .. 4,4 m, 4 m breit
+        static readonly defined int Clerestory = 15      // Halle: Lichtband unter der Traufe (1,6 .. 0,8 m darunter)
+        static readonly defined int OpenBay = 16         // Parkhaus: offen über der Brüstung (1,2 m) bis unter die nächste Decke
         static readonly defined int Frame = 128          // dazu: die Säule ist der Rahmen am Rand des Fensters
 
         // die Stile
@@ -60,6 +63,8 @@ namespace Raser {
         static readonly defined int GarageStyle = 6
         static readonly defined int None = 7
         static readonly defined int Church = 8
+        static readonly defined int Hall = 9            // Halle: Rolltore zur Straße, Lichtbänder, kein Zwischenboden (Raser.BuildingKinds)
+        static readonly defined int Parking = 10        // Parkhaus: offene Geschosse mit Brüstungen
 
         defined int style
         defined bool ccw
@@ -119,7 +124,8 @@ namespace Raser {
         }
 
         // Plant die Fassade eines Gebäudes (Grundriss kachel-lokal in m) an den Straßen der Kachel.
-        static Facade Plan(Building b, List<Road> roads) {
+        // style: der Stil, wenn das Aussehen ihn vorgibt (Raser.BuildingKinds; -1: nach der Nutzung, Raser.Facade.StyleOf).
+        static Facade Plan(Building b, List<Road> roads, defined int style = -1) {
             var f = new Raser.Facade()
             float ring[] = b.footprint
             int n = ring.length / 2
@@ -130,6 +136,7 @@ namespace Raser {
             }
             f.ccw = area2 > 0.0
             f.style = Raser.Facade.StyleOf(b, Math.Abs(area2) / 2.0)
+            if (style >= 0) { f.style = style }
             f.ax = new float[n]
             f.ay = new float[n]
             f.ux = new float[n]
@@ -233,6 +240,22 @@ namespace Raser {
                 }
                 if (st == Raser.Facade.GarageStyle) {
                     if (fr.street) { Raser.Facade.Slots(fr.ground, L, 3.0, 2.4, Raser.Facade.Garage) }
+                    continue
+                }
+                if (st == Raser.Facade.Hall) {
+                    // Lichtband fast über die ganze Länge; zur Straße Rolltore (alle 12 m, höchstens drei) und eine Tür
+                    if (L >= 4.0) { Raser.Facade.One(fr.upper, L / 2.0, L / 2.0 - 0.8, Raser.Facade.Clerestory) }
+                    if (r == main && L >= 6.0) {
+                        int gates = Math.Clamp(Math.Floor(L / 12.0)!int, 1, 3)
+                        for (int g = 0; g < gates; g++) { Raser.Facade.One(fr.ground, (g + 0.5) * L / (gates + 0.5), 2.0, Raser.Facade.Gate) }
+                        Raser.Facade.One(fr.ground, L - 1.2, 0.5, Raser.Facade.GlassDoor)
+                    }
+                    continue
+                }
+                if (st == Raser.Facade.Parking) {
+                    // offene Felder alle 5 m zwischen den Stützen, im Erdgeschoss auch
+                    Raser.Facade.Slots(fr.ground, L, 5.0, 4.4, Raser.Facade.OpenBay)
+                    Raser.Facade.Slots(fr.upper, L, 5.0, 4.4, Raser.Facade.OpenBay)
                     continue
                 }
                 if (st == Raser.Facade.Pavilion) {
@@ -548,11 +571,19 @@ namespace Raser {
                             } else if (kind == Raser.Facade.Large) {
                                 z0 = fl + 0.8
                                 z1 = fl + 2.6
+                            } else if (kind == Raser.Facade.Gate) {
+                                z0 = fl + 0.2
+                                z1 = Math.Min(fl + 4.4, Math.Floor(b.eaves / 0.2) * 0.2 - 1.0)
+                            } else if (kind == Raser.Facade.Clerestory) {
+                                // (einmal, unter der Traufe - nicht je Geschoss)
+                                z1 = Math.Floor(b.eaves / 0.2) * 0.2 - 0.8
+                                z0 = z1 - 0.8
                             } else {
                                 break
                             }
                             // unter dem Dach muss Wand bleiben (wie die Voxel: nichts im obersten Wandvoxel)
-                            if (kind != Raser.Facade.Tall && z1 > b.eaves - 0.2) { break }
+                            if (kind == Raser.Facade.Clerestory && z0 < g + 3.0) { break }
+                            if (kind != Raser.Facade.Tall && kind != Raser.Facade.Clerestory && z1 > b.eaves - 0.2) { break }
                             if (z1 - z0 < 0.4) { break }
                             out.Add(ax)
                             out.Add(ay)
@@ -563,7 +594,7 @@ namespace Raser {
                             out.Add(kind * 1.0)
                             out.Add((r * 4096 + i) * 1.0)
                             out.Add(st * 1.0)
-                            if (kind == Raser.Facade.Tall) { break }
+                            if (kind == Raser.Facade.Tall || kind == Raser.Facade.Clerestory || kind == Raser.Facade.Gate) { break }
                         }
                     }
                 }

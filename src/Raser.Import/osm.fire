@@ -44,6 +44,7 @@ namespace Raser {
         defined int lanes
         defined int layer
         string sidewalk
+        string tags             // Gebäude-Umrisse ("osm:building"): die Tags für Raser.Building.tags
 
         construct() { }
     }
@@ -155,8 +156,35 @@ namespace Raser {
             }
         }
 
+        // Ein Gebiet für das Aussehen der Häuser (Raser.HouseStyle): Nutzung, Ort, Altstadt; undefined: keins.
+        static string ZoneOf(Dictionary<string, string> tags) {
+            string landuse = tags.Get("landuse", "")
+            if (landuse == "residential" || landuse == "industrial" || landuse == "commercial" || landuse == "retail" || landuse == "farmyard" || landuse == "farmland" || landuse == "meadow" || landuse == "allotments" || landuse == "village_green") { return "landuse=" + landuse }
+            string place = tags.Get("place", "")
+            if (place == "city" || place == "town" || place == "village" || place == "hamlet" || place == "suburb" || place == "quarter" || place == "neighbourhood" || place == "isolated_dwelling" || place == "farm") { return "place=" + place }
+            if (tags.Get("historic", "") == "district" || tags.Get("heritage", "") != "" && tags.ContainsKey("boundary")) { return "historic=district" }
+            return undefined
+        }
+
+        // Die Tags eines Gebäude-Umrisses, die für das Aussehen zählen (undefined: kein Gebäude).
+        static string BuildingTags(Dictionary<string, string> tags) {
+            if (!tags.ContainsKey("building") && !tags.ContainsKey("building:part")) { return undefined }
+            string keys[] = ["building", "building:levels", "building:material", "building:colour", "roof:shape", "roof:colour", "roof:material", "start_date", "amenity", "shop", "parking", "industrial", "historic", "heritage"]
+            string out = ""
+            foreach (k in keys) {
+                string v = tags.Get(k, undefined)
+                if (v == undefined) { continue }
+                v = v.Replace(";", ",").Replace("=", "-")
+                if (out.length > 0) { out = out + ";" }
+                out = out + k + "=" + v
+            }
+            return out
+        }
+
         static defined bool IsPoi(Dictionary<string, string> tags) {
             if (tags.ContainsKey("amenity") || tags.ContainsKey("shop") || tags.ContainsKey("tourism") || tags.ContainsKey("leisure") || tags.ContainsKey("craft") || tags.ContainsKey("office")) { return true }
+            string place = tags.Get("place", "")
+            if (place == "city" || place == "town" || place == "village" || place == "hamlet" || place == "suburb" || place == "quarter" || place == "neighbourhood") { return true }
             return Raser.OsmData.PropKind(tags) != undefined
         }
 
@@ -207,6 +235,45 @@ namespace Raser {
                 }
                 if (f.points == undefined) { continue }
                 result.Add(take f)
+            }
+            // Gebiete (nur für das Aussehen der Häuser) und Gebäude-Umrisse (ihre Tags gehen an das LoD2-Gebäude darin)
+            foreach (w in this.ways) {
+                if (!w.Closed) { continue }
+                string zone = Raser.OsmData.ZoneOf(w.tags)
+                string btags = Raser.OsmData.BuildingTags(w.tags)
+                if (zone == undefined && btags == undefined) { continue }
+                var z = new Raser.OsmFeature()
+                z.area = true
+                z.source = "osm:way/" + w.id
+                z.points = this.Ring(w)
+                if (z.points == undefined) { continue }
+                if (zone != undefined) {
+                    z.kind = "zone:" + zone
+                    z.name = w.tags.Get("name", undefined)
+                } else {
+                    z.kind = "osm:building"
+                    z.tags = btags
+                }
+                result.Add(take z)
+            }
+            foreach (r in this.relations) {
+                string zone = Raser.OsmData.ZoneOf(r.tags)
+                if (zone == undefined) { continue }
+                int part = 0
+                foreach (wid in r.nodes) {
+                    int at = this.wayIndex.Get(wid, -1)
+                    if (at < 0 || !this.ways[at].Closed) { continue }
+                    var ring = this.Ring(this.ways[at])
+                    if (ring == undefined) { continue }
+                    var z = new Raser.OsmFeature()
+                    z.area = true
+                    z.kind = "zone:" + zone
+                    z.name = r.tags.Get("name", undefined)
+                    z.source = "osm:relation/" + r.id + "#z" + part
+                    z.points = take ring
+                    result.Add(take z)
+                    part++
+                }
             }
             foreach (r in this.relations) {
                 var f = Raser.OsmData.Classify(r.tags)
