@@ -1,0 +1,84 @@
+// Die Tests der Einstellungen und der Tastenbelegung (forge test src/Raser.Game/Raser.Game.fireproj): Datei lesen und schreiben, die
+// Kommandozeile geht vor, Belegen tauscht, Translate übersetzt zurück auf die Standardtasten.
+#import "testing"
+#import "filesystem"
+
+class SettingsTests {
+    [Test "Belegen tauscht, Translate übersetzt auf die Standardtaste"]
+    undefined Keys() {
+        var s = new GameSettings()
+        Testing.Assert.AreEqual(0, s.remap.Count)
+        // Gas auf I: das Inventar bekommt W
+        string swapped = s.Assign("gas", 105)
+        Testing.Assert.AreEqual("inventar", swapped)
+        Testing.Assert.AreEqual(105, s.KeyOf("gas"))
+        Testing.Assert.AreEqual(119, s.KeyOf("inventar"))
+        any ev = [EventType.KeyDown!int, 105, 12, 0, 0]
+        s.Translate(ev)
+        Testing.Assert.AreEqual(119, ev[1])
+        any back = [EventType.KeyUp!int, 119, 26, 0, 0]
+        s.Translate(back)
+        Testing.Assert.AreEqual(105, back[1])
+        // eine Aktion auf eine freie Taste: ihre Standardtaste wird stumm
+        s.Assign("kamera", 107)
+        any c = [EventType.KeyDown!int, 99, 0, 0, 0]
+        s.Translate(c)
+        Testing.Assert.AreEqual(0, c[1])
+        any k = [EventType.KeyDown!int, 107, 0, 0, 0]
+        s.Translate(k)
+        Testing.Assert.AreEqual(99, k[1])
+        // Text und Maus bleiben
+        any text = [EventType.TextInput!int, "k"]
+        s.Translate(text)
+        Testing.Assert.AreEqual("k", text[1])
+        s.ResetKeys()
+        Testing.Assert.AreEqual(0, s.remap.Count)
+        Testing.Assert.IsTrue(GameSettings.Reserved(27, 0))
+        Testing.Assert.IsTrue(GameSettings.Reserved(50, 0))
+        Testing.Assert.IsTrue(GameSettings.Reserved(107, 29))
+        Testing.Assert.IsFalse(GameSettings.Reserved(107, 14))
+        Testing.Assert.AreEqual("Leertaste", GameSettings.KeyName(32))
+        Testing.Assert.AreEqual("W", GameSettings.KeyName(119))
+        Testing.Assert.AreEqual("F9", GameSettings.KeyName(1073741890))
+    }
+
+    [Test "Datei schreiben und lesen; die Kommandozeile geht vor"]
+    undefined File() {
+        string dir = IO.Path.Combine(IO.Path.GetTempPath(), "raser-settings-test")
+        if (IO.Directory.Exists(dir)) { IO.Directory.Delete(dir, true) }
+        var none = new Options(["--config", dir])
+        var s = GameSettings.Load(none)
+        Testing.Assert.AreEqual("5", none.Get("far", ""))
+        s.far = 8
+        s.near = 2
+        s.sky = false
+        s.gpu = true
+        s.camera = 1.25
+        s.layout = "en"
+        s.Assign("gas", 105)
+        Testing.Assert.AreEqual("", s.Save())
+        var o = new Options(["--config", dir, "--far", "3"])
+        var t = GameSettings.Load(o)
+        Testing.Assert.AreEqual("3", o.Get("far", ""))
+        Testing.Assert.AreEqual(8, t.far)
+        Testing.Assert.IsTrue(t.Overridden("far"))
+        Testing.Assert.IsFalse(t.Overridden("near"))
+        Testing.Assert.AreEqual("2", o.Get("near", ""))
+        Testing.Assert.AreEqual("1", o.Get("no-sky", ""))
+        Testing.Assert.AreEqual("1", o.Get("gpu", ""))
+        Testing.Assert.AreEqual(1.25, t.camera)
+        Testing.Assert.AreEqual("en", t.layout)
+        Testing.Assert.AreEqual(105, t.KeyOf("gas"))
+        Testing.Assert.AreEqual(119, t.KeyOf("inventar"))
+        // Messläufe ohne Fenster lassen die Datei aus
+        var shot = new Options(["--config", dir, "--shot", "x.png"])
+        GameSettings.Load(shot)
+        Testing.Assert.AreEqual("", shot.Get("near", ""))
+        // kaputte Datei: Standard, kein Absturz
+        IO.File.WriteAllText(IO.Path.Combine(dir, "spiel.json"), "{ kaputt")
+        var u = GameSettings.Load(new Options(["--config", dir]))
+        Testing.Assert.AreEqual(5, u.far)
+        Testing.Assert.IsTrue(u.error != "")
+        IO.Directory.Delete(dir, true)
+    }
+}

@@ -12,7 +12,7 @@
 // E: aussteigen (im Stand) und am Wagen wieder einsteigen; zu Fuß: W/S gehen, A/D drehen, Umschalt rennen, C: aus den Augen des Spielers.
 // I/Tab: Inventar, 1-6, Y/X (engl. Z/X), Q: Leiste, U/rechte Maustaste: benutzen, T: wegwerfen, F: aufheben, B: Rucksack absetzen, H: Handy,
 // M: Karte, +/-: Zoom der Karte (items.fire, docs/INVENTAR.md); --inventory-shot bild.png, --minimap 1, --knock 15, --select 3 --use 1.
-// F9/F10: die Uhr vor und zurück, R: das nächste Wetter. Der Wagen startet auf der nächsten Straße am Startpunkt, in ihrer Richtung.
+// Esc: das Menü (menu.fire; Optionen in spiel.json, settings.fire). F9/F10: die Uhr vor und zurück, R: das nächste Wetter. Der Wagen startet auf der nächsten Straße am Startpunkt, in ihrer Richtung.
 // Physik: Raser.Vehicle (Grip aus der Nässe des Wetters); Gebäude halten auf (Obstacles), das Gelände trägt (Ground).
 #import "windows"
 #import "scene3d"
@@ -256,7 +256,13 @@ class PersonModel {
 class Chase {
     defined float distance
     defined float swing             // so weit (Grad) weicht sie seitlich aus
-    construct() { this.distance = 7.0 }
+    defined float zoom              // Faktor auf den Abstand (Menü: Kameraabstand)
+    defined float follow            // so schnell dreht sie dem Wagen nach (je s; Menü: Kamera nachführen)
+    construct() {
+        this.distance = 7.0
+        this.zoom = 1.0
+        this.follow = 4.0
+    }
 }
 
 class Game {
@@ -277,6 +283,9 @@ class Game {
             var mp = options.Get("at", "376117,5705005").Split(",")
             return MinimapProbe.Run(options.Get("world", "world"), mp[0].ToFloat(), mp[1].ToFloat(), options.Get("seconds", "6").ToFloat(), options.Get("speed", "25").ToFloat())
         }
+        // die Einstellungen (settings.fire): die Datei füllt, was die Kommandozeile nicht sagt
+        var settings = GameSettings.Load(options)
+        if (settings.error != "") { print(settings.error) }
         string world = options.Get("world", "world")
         var store = new Raser.FileTileStore(world)
         var at = options.Get("at", "376117,5705005").Split(",")
@@ -524,7 +533,7 @@ class Game {
         // ohne Fenster: eine Probefahrt
         float auto = options.Get("auto", "0").ToFloat()
         string shot = options.Get("shot", "")
-        if (auto > 0.0 || shot != "" || options.Get("inventory-shot", "") != "") {
+        if (auto > 0.0 || shot != "" || options.Get("inventory-shot", "") != "" || options.Get("menu-shot", "") != "") {
             float steer = options.Get("steer", "0").ToFloat()
             // --back 1: im Rückwärtsgang (auf die dahinter geparkten Fahrzeuge zu)
             bool back = options.Get("back", "") != ""
@@ -593,6 +602,7 @@ class Game {
             npcs.Draw(hud, ink, shade, width)
             print(npcs.Report())
             gear.Shot(options, hud, fb, width, height, car, walker, onFoot, vehicles)
+            GameMenu.Shot(options, fb, settings, view, atmosphere, scene, chase)
             print("Probefahrt " + auto + " s: bis " + Math.Round(top * 3.6) + " km/h, jetzt " + Math.Round(car.speed * 3.6) + " km/h bei " + car.east + ", " + car.north + " (Richtung " + Math.Round(car.heading) + "°), " + hits + " Aufpralle, Zustand " + Math.Round(car.health * 100.0) + " %, Tank " + Math.Round(car.fuel * 1000.0) / 10.0 + " %, Grip " + car.grip + ", Kamera " + chase.distance + " m, " + Math.Round(chase.swing) + "°")
             for (int i = 1; i < vehicles.Count; i++) {
                 print(vehicles[i].name + " bei " + vehicles[i].east + ", " + vehicles[i].north + ", Zustand " + Math.Round(vehicles[i].health * 100.0) + " %")
@@ -628,6 +638,9 @@ class Game {
         bool useKey = false
         var win = new Window(fb, "Ruhrpott-Raser")
         win.EnableEvents()
+        // das Menü (Esc, menu.fire)
+        var menu = new GameMenu(fb, win, settings, options)
+        menu.Attach(view, atmosphere, scene, chase, online)
         bool gas = false
         bool brake = false
         bool left = false
@@ -654,8 +667,8 @@ class Game {
             if (profile) { mark = Game.Lap(prof, 0, mark) }
             any ev = win.NextEvent()
             while (ev != undefined) {
-                // Chat und Konsole bekommen die Tasten zuerst (online.fire)
-                if (online.Handle(ev) || gear.Handle(ev, onFoot, walker)) {
+                // das offene Menü bekommt alles, dann Chat und Konsole (online.fire); menu.Handle übersetzt auch umbelegte Tasten
+                if (menu.Handle(ev) || online.Handle(ev) || gear.Handle(ev, onFoot, walker)) {
                     ev = win.NextEvent()
                     continue
                 }
@@ -699,13 +712,23 @@ class Game {
                         presetIndex = (presetIndex + 1) % presets.length
                         weather.Preset(presets[presetIndex])
                         atmosphere.Apply()
-                    }
+                    } else if (pressed && key == 27) { menu.Open() }
                 }
                 ev = win.NextEvent()
             }
             if (profile) { mark = Game.Lap(prof, 0, mark) }
-            // offenes Inventar: das Fahrzeug bzw. der Spieler steht still
-            if (gear.Busy) { gas = false; brake = false; left = false; right = false; sprint = false }
+            // offenes Menü: offline steht das Spiel (nur das Menü zeichnet, wenn sich etwas ändert), online läuft die Welt ohne Eingaben weiter
+            if (menu.IsOpen) {
+                if (menu.Quit) { break }
+                near = menu.near
+                if (menu.Paused) {
+                    menu.Draw()
+                    last = DateTime.Now.Ticks
+                    continue
+                }
+            }
+            // offenes Inventar oder Menü: das Fahrzeug bzw. der Spieler steht still
+            if (gear.Busy || menu.IsOpen) { gas = false; brake = false; left = false; right = false; sprint = false; handbrake = false }
             int now = DateTime.Now.Ticks
             float dt = Math.Min((now - last) / 10000000.0, 0.1)
             last = now
@@ -741,7 +764,7 @@ class Game {
                 if (brake) { forward = -1.0 }
                 if (!authority) { Game.Walk(walker, vehicles, obstacles, dt, forward, steer, gear.Sprint(sprint, forward)) }
                 float diff = walker.heading - camHeading
-                camHeading = camHeading + diff * Math.Min(1.0, dt * 6.0)
+                camHeading = camHeading + diff * Math.Min(1.0, dt * chase.follow * 1.5)
                 Game.PlaceWalker(walker, person, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
                 view.lead = 0.0
                 view.near = near
@@ -754,7 +777,7 @@ class Game {
                 if (profile) { sub = Game.Lap(prof, 10, sub) }
                 // die Kamera dreht dem Wagen weich nach
                 float diff = car.heading - camHeading
-                camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
+                camHeading = camHeading + diff * Math.Min(1.0, dt * chase.follow)
                 Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
                 if (profile) { sub = Game.Lap(prof, 11, sub) }
                 Game.Ride(car, person, terrain, view, hood)
@@ -805,6 +828,7 @@ class Game {
             gear.Draw(hud, width, height, car, walker, onFoot, vehicles)
             if (profile) { mark = Game.Lap(prof, 8, mark) }
             online.Draw(hud, width, height)
+            menu.Draw()
             if (profile) {
                 mark = Game.Lap(prof, 9, mark)
                 profFrames++
@@ -898,6 +922,8 @@ class Game {
             cam.LookAt((x - Math.Sin(ch) * 30.0) * 1m, (y + eye - 0.25) * 1m, (z - Math.Cos(ch) * 30.0) * 1m)
             return
         }
+        reach = reach * chase.zoom
+        up = up * (0.6 + 0.4 * chase.zoom)
         // Steht hinten eine Wand, weicht die Kamera zur Seite aus (bis 60°, weich): gewählt wird die Richtung mit dem weitesten freien Weg (gerade
         // dahinter bevorzugt). Bleibt es eng (unter 2,5 m), rückt sie heran und steigt, bis sie von schräg oben auf das Fahrzeug blickt.
         float nearest = 1.0

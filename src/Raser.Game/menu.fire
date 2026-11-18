@@ -1,0 +1,927 @@
+// Raser.Game: das Menü im Spiel - Esc öffnet und schließt es (Weiter, Optionen, Steuerung, Verbindung, Beenden). Gebaut mit dem UI-Toolkit von fire
+// (#import "ui"): ein UI.Root zeichnet in eine eigene, durchsichtige Ebene (layer) so groß wie das Bild des Spiels; die Ebene wird über das
+// Spielbild gelegt. Die Ereignisse gibt main.fire über Handle herein (das Root holt sie nicht selbst aus dem Fenster).
+//
+// Geschlossen kostet es nichts: kein Root, kein Layout, kein Zeichnen - Handle übersetzt nur umbelegte Tasten (GameSettings.Translate; ohne
+// Umbelegung nichts), Draw kehrt sofort zurück. Das Root entsteht beim ersten Öffnen.
+// Offen und offline hält das Spiel an (main.fire zeichnet die Welt nicht mehr): hinter dem Menü steht das letzte Bild, weichgezeichnet und
+// abgedunkelt (backdrop), und neu zusammengesetzt wird nur, wenn das Root etwas neu gezeichnet hat. Online läuft die Welt weiter (der eigene Wagen
+// bekommt keine Eingaben): dann wird die Ebene jedes Bild über das neue Spielbild gelegt, gezeichnet wird sie trotzdem nur, wenn sich etwas ändert.
+//
+// main.fire braucht: menu.Handle(ev) zuerst in der Ereignisschleife, menu.Open() bei Esc, menu.IsOpen (keine Eingaben), menu.Paused, menu.Draw(),
+// menu.Quit und menu.near (die nahe Sichtweite wirkt sofort). --menu-shot bild.png [--menu-keys down,enter,...] zeichnet das Menü ohne Fenster.
+#import "ui"
+#import "raser.client"
+#import "raser.world"
+#import "scene3d"
+#import "time"
+#import "filesystem"
+
+// Farben und Schrift: wie Tacho und Inventar (dunkles Glas, Rajdhani, weiß), dazu ein Bernstein als Akzent.
+class MenuLook {
+    static MenuLook current = undefined
+
+    SolidBrush card
+    SolidBrush rowLit
+    SolidBrush accent
+    SolidBrush text
+    SolidBrush dim
+    SolidBrush value
+    SolidBrush tag
+    SolidBrush dimScreen
+    Pen hairline
+    Font medium
+    Font bold
+
+    construct() {
+        this.card = new SolidBrush(HudStyle.Color(0xC40E1116))
+        this.rowLit = new SolidBrush(HudStyle.Color(0x26FFFFFF))
+        this.accent = new SolidBrush(HudStyle.Color(0xFFFFB020))
+        this.text = new SolidBrush(HudStyle.Color(0xFFF2F4F8))
+        this.dim = new SolidBrush(HudStyle.Color(0x80E0E8F0))
+        this.value = new SolidBrush(HudStyle.Color(0xFFFFD27A))
+        this.tag = new SolidBrush(HudStyle.Color(0xC0FF9A5A))
+        this.dimScreen = new SolidBrush(HudStyle.Color(0x70000000))
+        this.hairline = new Pen(HudStyle.Color(0x38FFFFFF))
+        this.medium = HudStyle.Medium()
+        this.bold = HudStyle.Bold()
+    }
+
+    static MenuLook Get() {
+        if (MenuLook.current == undefined) { MenuLook.current = new MenuLook() }
+        return MenuLook.current
+    }
+}
+
+// Die Karte aus dunklem Glas, auf der die Einträge stehen (ein StackPanel mit runden Ecken).
+class MenuCard : UI.StackPanel {
+    construct(defined int x, defined int y, defined int width) : base(x, y, width, -1, false, 2, 16) { }
+
+    override undefined Draw(UI.Root root, defined int ax, defined int ay) {
+        if (root.Needs(ax, ay, this.actualWidth, this.actualHeight)) {
+            var look = MenuLook.Get()
+            root.renderer.FillRoundRect(ax, ay, this.actualWidth, this.actualHeight, 12, look.card)
+            root.renderer.DrawRoundRect(ax, ay, this.actualWidth, this.actualHeight, 12, look.hairline)
+        }
+        base.Draw(root, ax, ay)
+    }
+}
+
+// Ein Eintrag: Text links, rechts ein Wert; mit Fokus (Pfeiltasten, Maus darüber) hell mit Akzentstrich. Enter, Leertaste oder ein Klick geben ihn
+// an das Menü (GameMenu.Activate mit `command`). restart: wirkt erst nach einem Neustart (kleine Marke).
+class MenuEntry : UI.Element {
+    string Text
+    string Value
+    string Note                     // die Zeile unten in der Karte, solange er den Fokus hat
+    string command
+    GameMenu menu
+    defined bool restart
+    defined bool info               // nur zum Lesen (nicht wählbar, aber nicht ausgegraut)
+    defined bool selected           // ein Reiter, der gerade gilt
+
+    construct(GameMenu menu, string text, string command) : base(0, 0, -1, 34) {
+        this.menu = menu
+        this.Text = text
+        this.command = command
+        this.Value = ""
+        this.Note = ""
+        this.restart = false
+        this.info = false
+        this.selected = false
+    }
+
+    override bool Focusable() { return this.Enabled && !this.info }
+
+    override undefined MeasureCore(UI.Root root, defined int aw, defined int ah) {
+        this.cw = this.TextWidth(root, this.Text) + 28
+        if (this.Value != "") { this.cw = this.cw + this.TextWidth(root, this.Value) + 40 }
+        this.ch = 34
+    }
+
+    override undefined Hover(UI.Root root, defined int px, defined int py) {
+        if (this.Focusable() && !this.Focused) { root.SetFocus(this) }
+    }
+
+    override undefined MouseDown(UI.Root root, defined int button, defined int px, defined int py) {
+        if (button == 1) { this.Pressed = true }
+    }
+
+    override undefined MouseUp(UI.Root root, defined int button, defined int px, defined int py) {
+        bool was = this.Pressed
+        this.Pressed = false
+        if (was && button == 1 && this.Contains(px, py)) { this.Click(px - this.ax) }
+    }
+
+    override undefined KeyDown(UI.Root root, defined int key, defined int mod) {
+        if (key == UI.Keys.Enter() || key == UI.Keys.Space()) { this.Click(-1) }
+    }
+
+    // x: wo geklickt wurde (vom linken Rand; -1: mit der Tastatur)
+    undefined Click(defined int x) { this.menu.Activate(this) }
+
+    // die Farbe des Werts
+    Brush ValueBrush() { return MenuLook.Get().value }
+
+    override undefined Draw(UI.Root root, defined int ax, defined int ay) {
+        if (!this.NeedsDraw(root, ax, ay)) { return }
+        var look = MenuLook.Get()
+        var r = root.renderer
+        int w = this.actualWidth
+        int h = this.actualHeight
+        if (this.Focused) {
+            r.FillRoundRect(ax, ay, w, h, 6, look.rowLit)
+            r.FillRoundRect(ax, ay + 7, 3, h - 14, 1, look.accent)
+        }
+        Brush ink = look.text
+        if (!this.Enabled) { ink = look.dim }
+        int th = this.TextHeight(root)
+        int ty = ay + (h - th) / 2
+        this.DrawString(root, ax + 14, ty, this.Text, ink)
+        if (this.selected) { r.FillRect(ax + 14, ay + h - 4, this.TextWidth(root, this.Text), 2, look.accent) }
+        int right = ax + w - 12
+        if (this.restart) {
+            string mark = "NEUSTART"
+            int mw = r.TextWidth(mark, look.bold, 11)
+            right = right - mw
+            r.DrawText(right, ay + (h - r.TextHeight(look.bold, 11)) / 2, mark, look.tag, undefined, look.bold, 11)
+            right = right - 12
+        }
+        if (this.Value != "") {
+            Brush vb = this.ValueBrush()
+            if (!this.Enabled) { vb = look.dim }
+            string shown = this.Shown()
+            this.DrawString(root, right - this.TextWidth(root, shown), ty, shown, vb)
+        }
+    }
+
+    // der Wert, wie er rechts steht
+    string Shown() { return this.Value }
+}
+
+// Ein Eintrag mit Auswahl: Links/Rechts (oder ein Klick auf die linke/rechte Hälfte, Enter) blättert durch die Möglichkeiten.
+class MenuChoice : MenuEntry {
+    List<string> labels
+    defined int index
+    string setting
+
+    construct(GameMenu menu, string text, string setting, List<string> labels, defined int index) : base(menu, text, "wahl") {
+        this.setting = setting
+        this.labels = take labels
+        this.index = Math.Clamp(index, 0, Math.Max(0, this.labels.Count - 1))
+        this.Value = this.labels[this.index]
+    }
+
+    override bool WantsKey(defined int key) { return key == UI.Keys.Left() || key == UI.Keys.Right() }
+
+    override undefined KeyDown(UI.Root root, defined int key, defined int mod) {
+        if (key == UI.Keys.Left()) { this.Step(-1) }
+        else if (key == UI.Keys.Right() || key == UI.Keys.Enter() || key == UI.Keys.Space()) { this.Step(1) }
+    }
+
+    override undefined Click(defined int x) {
+        if (x >= 0 && x < this.actualWidth / 2) { this.Step(-1) } else { this.Step(1) }
+    }
+
+    undefined Step(defined int d) {
+        if (this.labels.Count < 2 || !this.Enabled) { return }
+        this.index = (this.index + d + this.labels.Count) % this.labels.Count
+        this.Value = this.labels[this.index]
+        this.menu.Chosen(this)
+    }
+
+    override string Shown() {
+        if (this.labels.Count < 2) { return this.Value }
+        return "‹  " + this.Value + "  ›"
+    }
+}
+
+// Ein Eintrag der Tastenbelegung: Enter wartet auf die nächste Taste (GameMenu.Capture).
+class MenuKey : MenuEntry {
+    string action
+    defined bool waiting
+
+    construct(GameMenu menu, string text, string action) : base(menu, text, "taste") {
+        this.action = action
+        this.waiting = false
+    }
+
+    override Brush ValueBrush() {
+        if (this.waiting) { return MenuLook.Get().accent }
+        return MenuLook.Get().value
+    }
+}
+
+class GameMenu {
+    GameSettings settings
+    Options options
+    Framebuffer screen              // das Bild des Spiels (gehört main.fire)
+    Window win
+    Framebuffer layer               // die Ebene des Menüs (durchsichtig, so groß wie das Bild)
+    Framebuffer backdrop            // offline: das letzte Spielbild, weich und dunkel
+    Renderer out                    // zeichnet in das Bild des Spiels
+    Renderer backdropPen
+    UI.Root ui                      // undefined, bis das Menü zum ersten Mal aufgeht
+    defined bool open
+    defined bool paused
+    defined bool quit
+    defined bool fresh              // das Bild muss neu zusammengesetzt werden
+    defined bool online
+    defined int near                // die nahe Sichtweite (main.fire übernimmt sie: view.near)
+    // worauf die Einstellungen sofort wirken (undefined: nichts)
+    WorldView view
+    Atmosphere atmosphere
+    Scene scene
+    Chase chase
+    Online net
+    // die Seiten
+    MenuCard mainCard
+    MenuCard optionsCard
+    MenuCard serverCard
+    List<UI.StackPanel> bodies      // Grafik, Steuerung, Ton, Spiel
+    List<MenuEntry> tabs
+    List<MenuEntry> firsts          // je Reiter der erste Eintrag (der Fokus beim Öffnen)
+    MenuEntry mainFirst
+    MenuEntry serverBack
+    List<MenuKey> keyRows
+    List<MenuEntry> serverRows
+    UI.ScrollViewer scroller
+    UI.Label title
+    UI.Label subtitle
+    UI.Label hint
+    MenuEntry quitEntry
+    MenuEntry layoutRow
+    MenuEntry hotbarRow
+    string page                     // "haupt", "optionen", "verbindung"
+    defined int tab
+    MenuKey capturing
+    defined bool confirmQuit
+    UI.Element shownFocus           // der Fokus, dessen Hinweis unten steht
+    string message                  // eine Meldung statt des Hinweises (bis der Fokus wechselt)
+    defined bool changed            // Einstellungen geändert (beim Schließen speichern)
+
+    construct(Framebuffer screen, Window win, GameSettings settings, Options options) {
+        this.screen = screen
+        this.win = win
+        this.settings = settings
+        this.options = options
+        this.open = false
+        this.paused = false
+        this.quit = false
+        this.fresh = false
+        this.online = false
+        this.near = settings.near
+        this.page = "haupt"
+        this.tab = 0
+        this.confirmQuit = false
+        this.message = ""
+        this.changed = false
+        this.bodies = new List<UI.StackPanel>()
+        this.tabs = new List<MenuEntry>()
+        this.firsts = new List<MenuEntry>()
+        this.keyRows = new List<MenuKey>()
+        this.serverRows = new List<MenuEntry>()
+    }
+
+    // Worauf die Einstellungen sofort wirken; die Kamera bekommt Abstand und Nachführen aus den Einstellungen.
+    undefined Attach(WorldView view, Atmosphere atmosphere, Scene scene, Chase chase, Online net) {
+        this.view = view
+        this.atmosphere = atmosphere
+        this.scene = scene
+        this.chase = chase
+        this.net = net
+        this.near = view.near
+        chase.zoom = this.settings.camera
+        chase.follow = this.settings.smooth
+    }
+
+    defined bool IsOpen { get { return this.open } }
+    // offen und offline: das Spiel steht
+    defined bool Paused { get { return this.open && this.paused } }
+    defined bool Quit { get { return this.quit } }
+
+    // ---- Öffnen und Schließen ----
+
+    undefined Open() {
+        if (this.open) { return }
+        this.online = this.net != undefined && this.net.Authoritative
+        if (this.ui == undefined) { this.Build() }
+        this.open = true
+        this.paused = !this.online
+        this.confirmQuit = false
+        this.quitEntry.Text = this.QuitText()
+        this.Show("haupt")
+        if (this.paused) { this.TakeBackdrop() }
+        this.ui.Invalidate()
+        this.fresh = true
+    }
+
+    undefined Close() {
+        if (!this.open) { return }
+        this.open = false
+        this.StopCapture()
+        if (this.changed) {
+            this.settings.Save()
+            this.changed = false
+        }
+    }
+
+    string QuitText() {
+        if (this.confirmQuit) { return "Wirklich beenden? Nochmal Enter" }
+        if (this.online) { return "Trennen und zum Launcher" }
+        return "Spiel beenden"
+    }
+
+    // Esc: aus dem Warten auf eine Taste, aus einer Unterseite zurück, sonst zu.
+    undefined Back() {
+        if (this.capturing != undefined) {
+            this.StopCapture()
+            return
+        }
+        if (this.page != "haupt") {
+            this.Show("haupt")
+            return
+        }
+        this.Close()
+    }
+
+    // ---- Ereignisse ----
+
+    // Ein Ereignis des Fensters (vor allen anderen). Geschlossen: nur umbelegte Tasten übersetzen, false. Offen: alles gehört dem Menü (true), außer
+    // dem Schließen des Fensters.
+    defined bool Handle(any ev) {
+        if (!this.open) {
+            this.settings.Translate(ev)
+            return false
+        }
+        any type = ev[0]
+        if (type == EventType.Close || type == EventType.Resize) { return false }
+        if (type == EventType.KeyDown) {
+            int key = ev[1]
+            if (this.capturing != undefined) {
+                this.Captured(key, ev[2])
+                return true
+            }
+            if (key == 27) {
+                this.Back()
+                return true
+            }
+        }
+        this.ui.Dispatch(ev)
+        return true
+    }
+
+    // Ein Eintrag wurde gewählt (Enter oder Klick).
+    undefined Activate(MenuEntry e) {
+        string c = e.command
+        if (c == "weiter") { this.Close() }
+        else if (c == "optionen") { this.Show("optionen") }
+        else if (c == "steuerung") {
+            this.tab = 1
+            this.Show("optionen")
+        }
+        else if (c == "verbindung") { this.Show("verbindung") }
+        else if (c == "zurueck") { this.Show("haupt") }
+        else if (c == "beenden") {
+            if (this.confirmQuit) { this.quit = true } else {
+                this.confirmQuit = true
+                e.Text = this.QuitText()
+            }
+        }
+        else if (c.StartsWith("reiter")) {
+            this.tab = c.Substring(6).ToInt()
+            this.ShowTab()
+        }
+        else if (c == "taste") { this.Capture(e) }
+        else if (c == "standard") {
+            this.settings.ResetKeys()
+            this.changed = true
+            this.RefreshKeys()
+            this.Say("Alle Tasten wieder auf dem Standard")
+        }
+        if (c != "beenden" && this.confirmQuit) {
+            this.confirmQuit = false
+            this.quitEntry.Text = this.QuitText()
+        }
+    }
+
+    undefined Say(string text) {
+        this.message = text
+        if (this.hint != undefined) { this.hint.Text = text }
+    }
+
+    // ---- Tasten belegen ----
+
+    undefined Capture(MenuEntry e) {
+        this.StopCapture()
+        var k = this.KeyRowFor(e)
+        if (k == undefined) { return }
+        this.capturing = k
+        k.waiting = true
+        k.Value = "Taste drücken ..."
+        this.Say("Neue Taste für „" + k.Text + "“ - Esc bricht ab")
+    }
+
+    MenuKey KeyRowFor(MenuEntry e) {
+        foreach (k in this.keyRows) {
+            if (k == e) { return k }
+        }
+        return undefined
+    }
+
+    undefined StopCapture() {
+        var k = this.capturing
+        if (k == undefined) { return }
+        this.capturing = undefined
+        k.waiting = false
+        k.Value = GameSettings.KeyName(this.settings.KeyOf(k.action))
+    }
+
+    undefined Captured(defined int key, defined int scancode) {
+        var k = this.capturing
+        if (GameSettings.Reserved(key, scancode)) {
+            this.Say(GameSettings.KeyName(key) + " ist fest belegt - eine andere Taste")
+            return
+        }
+        string swapped = this.settings.Assign(k.action, key)
+        this.changed = true
+        this.StopCapture()
+        this.RefreshKeys()
+        if (swapped != "") { this.Say("Getauscht: " + this.LabelOf(swapped) + " hat jetzt " + GameSettings.KeyName(this.settings.KeyOf(swapped))) }
+        else { this.Say(k.Text + ": " + GameSettings.KeyName(key)) }
+    }
+
+    string LabelOf(string action) {
+        string ids[] = GameSettings.ActionIds()
+        string labels[] = GameSettings.ActionLabels()
+        for (int i = 0; i < ids.length; i++) {
+            if (ids[i] == action) { return labels[i] }
+        }
+        return action
+    }
+
+    undefined RefreshKeys() {
+        foreach (k in this.keyRows) { k.Value = GameSettings.KeyName(this.settings.KeyOf(k.action)) }
+    }
+
+    // ---- Einstellungen ----
+
+    // Eine Auswahl hat sich geändert: in die Einstellungen, und was sofort geht, sofort.
+    undefined Chosen(MenuChoice c) {
+        var s = this.settings
+        string id = c.setting
+        int i = c.index
+        string v = c.labels[i]
+        if (id == "size") { s.size = GameMenu.SizeOf(v) }
+        else if (id == "gpu") { s.gpu = i == 1 }
+        else if (id == "threads") {
+            s.renderThreads = GameMenu.Threads()[i]
+            if (this.scene != undefined) { this.scene.Threads = s.renderThreads }
+        }
+        else if (id == "near") {
+            s.near = i
+            this.near = i
+        }
+        else if (id == "far") {
+            s.far = i + 2
+            if (this.view != undefined) {
+                this.view.far = s.far
+                this.view.farAhead = s.far
+            }
+        }
+        else if (id == "workers") { s.workers = i + 1 }
+        else if (id == "sky") {
+            s.sky = i == 0
+            if (this.atmosphere != undefined) {
+                this.atmosphere.drawSky = s.sky
+                this.atmosphere.sky.Show(s.sky)
+            }
+        }
+        else if (id == "camera") {
+            s.camera = GameMenu.Cameras()[i]
+            if (this.chase != undefined) { this.chase.zoom = s.camera }
+        }
+        else if (id == "smooth") {
+            s.smooth = GameMenu.Smooths()[i]
+            if (this.chase != undefined) { this.chase.follow = s.smooth }
+        }
+        else if (id == "layout") {
+            if (i == 0) { s.layout = "de" } else { s.layout = "en" }
+            this.hotbarRow.Value = this.HotbarKeys()
+        }
+        else if (id == "volume") { s.volume = i * 10 }
+        this.changed = true
+        // auf dem Bildschirm sofort (offline steht das Bild: es wird erst beim Schließen neu gerendert)
+        if (c.restart) { this.Say("Gespeichert - wirkt nach dem nächsten Start") }
+        else if (this.paused && (id == "near" || id == "far" || id == "sky" || id == "camera" || id == "threads")) { this.Say("Wirkt sofort - zu sehen, sobald das Spiel weiterläuft") }
+        else { this.Say(c.Text + ": " + v) }
+    }
+
+    static string[] Sizes() { return ["800x500", "960x600", "1280x720", "1280x800", "1600x900", "1600x1000", "1920x1080", "2560x1440"] }
+    static int[] Threads() { return [0, 1, 2, 4, 6, 8, 12, 16] }
+    static float[] Cameras() { return [0.75, 1.0, 1.25, 1.5] }
+    static float[] Smooths() { return [10.0, 6.0, 4.0, 2.5, 1.5] }
+
+    // "1280 × 800" -> "1280x800"
+    static string SizeOf(string label) { return label.Replace(" × ", "x") }
+
+    // die Leiste: Y/X auf QWERTZ, Z/X auf QWERTY (es zählen die Scancodes)
+    string HotbarKeys() {
+        if (this.settings.layout == "en") { return "1 - 6, Z / X, Q" }
+        return "1 - 6, Y / X, Q"
+    }
+
+    // ---- Aufbau ----
+
+    // Das Root und alle Seiten (beim ersten Öffnen).
+    undefined Build() {
+        int w = this.screen.Width()
+        int h = this.screen.Height()
+        this.layer = new Framebuffer(w, h)
+        this.backdrop = new Framebuffer(w, h)
+        this.out = new Renderer(this.screen)
+        this.backdropPen = new Renderer(this.backdrop)
+        // (ein Root übernimmt die Skalierung des Systems und vergrößert dabei Framebuffer und Fenster - hier ist beides fest: die Skalierung kommt aus
+        // der Höhe des Bildes)
+        SystemTheme.Current().scale = 1.0
+        this.ui = new UI.Root(this.layer, this.win)
+        // das Root als Ebene: das Fenster gehört dem Spiel (kein onCycle, keine Größe vom Fenster, Touch wie vorher), gezeigt wird nicht vom Root
+        this.win.onCycle = undefined
+        this.win.AutoResize = false
+        this.win.TouchMouse = true
+        this.ui.PartialPresent = false
+        this.ui.WindowBackground = new SolidBrush(UI.Color.Transparent())
+        float scale = Math.Clamp(h / 600.0, 1.0, 3.0)
+        this.ui.scaling = scale
+        this.ui.renderer.scale = scale
+        this.ui.cw = this.ui.renderer.Logical(this.ui.renderer.CellWidth())
+        this.ui.ch = this.ui.renderer.Logical(this.ui.renderer.CellHeight())
+        this.ui.CheckSize()
+        var look = MenuLook.Get()
+        var theme = this.ui.theme
+        theme.font = "rajdhani-medium"
+        theme.fontSize = 20
+        theme.text = new SolidBrush(HudStyle.Color(0xFFF2F4F8))
+        theme.scrollTrack = new SolidBrush(HudStyle.Color(0x18FFFFFF))
+        theme.scrollThumb = new SolidBrush(HudStyle.Color(0x60FFFFFF))
+        theme.scrollThumbHover = new SolidBrush(HudStyle.Color(0x90FFFFFF))
+        theme.transparency = false
+
+        int lw = this.ui.width
+        int lh = this.ui.height
+        int left = 56
+        var title = new UI.Label("RUHRPOTT-RASER", left + 2, 34)
+        title.Font = "rajdhani-bold"
+        title.FontSize = 44
+        this.title = title
+        this.ui.Add(title)
+        var sub = new UI.Label("", left + 4, 84)
+        sub.FontSize = 18
+        sub.Color = look.accent
+        this.subtitle = sub
+        this.ui.Add(sub)
+
+        // die Hauptseite
+        int top = 124
+        var main = new MenuCard(left, top, 380)
+        this.mainFirst = this.Entry(main, "Weiter", "weiter", "Zurück ins Spiel (Esc)")
+        this.Entry(main, "Optionen", "optionen", "Grafik, Steuerung, Ton, Spiel")
+        this.Entry(main, "Steuerung", "steuerung", "Alle Tasten - und umbelegen")
+        var conn = this.Entry(main, "Verbindung", "verbindung", "Server, Spieler, Status")
+        conn.Visible = this.net != undefined && this.net.session != undefined
+        this.quitEntry = this.Entry(main, "Spiel beenden", "beenden", "Online: die Verbindung wird getrennt, der Launcher bleibt offen")
+        this.mainCard = main
+        this.ui.Add(main)
+
+        // die Optionen: Reiter, darunter die Einträge des Reiters (blätterbar)
+        var opt = new MenuCard(left, top, Math.Min(560, lw - left * 2))
+        opt.Visible = false
+        var tabRow = new UI.StackPanel(0, 0, -1, -1, true, 4, 0)
+        string tabNames[] = ["Grafik", "Steuerung", "Ton", "Spiel"]
+        for (int i = 0; i < tabNames.length; i++) {
+            var t = new MenuEntry(this, tabNames[i], "reiter" + i)
+            this.tabs.Add(t)
+            tabRow.Add(t)
+        }
+        opt.Add(tabRow)
+        var gap = new UI.Element(0, 0, -1, 6)
+        opt.Add(gap)
+        var scroller = new UI.ScrollViewer(0, 0, -1, Math.Max(160, lh - top - 190))
+        var pages = new UI.StackPanel(0, 0, -1, -1, false, 0, 0)
+        for (int i = 0; i < 4; i++) {
+            var body = new UI.StackPanel(0, 0, -1, -1, false, 2, 0)
+            body.Visible = false
+            this.bodies.Add(body)
+            pages.Add(body)
+        }
+        this.FillGraphics(this.bodies[0])
+        this.FillControls(this.bodies[1])
+        this.FillSound(this.bodies[2])
+        this.FillGame(this.bodies[3])
+        scroller.SetContent(pages)
+        this.scroller = scroller
+        opt.Add(scroller)
+        this.Entry(opt, "Zurück", "zurueck", "Gespeichert wird beim Schließen des Menüs")
+        var hint = new UI.Label("", 14, 0)
+        hint.FontSize = 16
+        hint.Color = look.dim
+        hint.Margin = new UI.Thickness(14, 6, 14, 0)
+        this.hint = hint
+        opt.Add(hint)
+        this.optionsCard = opt
+        this.ui.Add(opt)
+
+        // die Verbindung (online)
+        var server = new MenuCard(left, top, 460)
+        server.Visible = false
+        foreach (name in ["Server", "Spieler", "Status", "Verbunden", "Mitspieler", "Takt"]) {
+            var row = this.Entry(server, name, "", "")
+            row.info = true
+            this.serverRows.Add(row)
+        }
+        this.serverBack = this.Entry(server, "Zurück", "zurueck", "")
+        this.serverCard = server
+        this.ui.Add(server)
+
+        var foot = new UI.Label("↑ ↓  wählen     ← →  ändern     Enter  bestätigen     Esc  zurück", left + 4, lh - 40)
+        foot.FontSize = 16
+        foot.Color = look.dim
+        this.ui.Add(foot)
+    }
+
+    MenuEntry Entry(UI.Panel panel, string text, string command, string note) {
+        var e = new MenuEntry(this, text, command)
+        e.Note = note
+        panel.Add(e)
+        return e
+    }
+
+    MenuChoice Choice(UI.Panel panel, string text, string setting, List<string> labels, defined int index, defined bool restart, string note) {
+        var c = new MenuChoice(this, text, setting, take labels, index)
+        c.restart = restart
+        c.Note = note
+        panel.Add(c)
+        return c
+    }
+
+    MenuEntry Info(UI.Panel panel, string text, string value) {
+        var e = new MenuEntry(this, text, "")
+        e.Value = value
+        e.info = true
+        panel.Add(e)
+        return e
+    }
+
+    // Steht die Option auf der Kommandozeile, sagt der Hinweis das (sie gilt dann statt der Datei).
+    string Cli(string option, string note) {
+        if (!this.settings.Overridden(option)) { return note }
+        return note + " - jetzt von der Kommandozeile: --" + option + " " + this.settings.fromCli[option]
+    }
+
+    undefined FillGraphics(UI.StackPanel p) {
+        var s = this.settings
+        var sizes = new List<string>()
+        int at = -1
+        foreach (z in GameMenu.Sizes()) {
+            if (z == s.size) { at = sizes.Count }
+            sizes.Add(z.Replace("x", " × "))
+        }
+        if (at < 0) {
+            at = sizes.Count
+            sizes.Add(s.size.Replace("x", " × "))
+        }
+        this.firsts.Add(this.Choice(p, "Fenstergröße", "size", sizes, at, true, this.Cli("size", "Die Größe des Bildes in Pixeln")))
+        var full = this.Info(p, "Vollbild", "nicht verfügbar")
+        full.Enabled = false
+        var gpu = new List<string>()
+        gpu.Add("Software")
+        gpu.Add("Grafikkarte")
+        defined int gi = 0
+        if (s.gpu) { gi = 1 }
+        this.Choice(p, "Renderer", "gpu", gpu, gi, true, this.Cli("gpu", "Software: auf jedem Rechner; Grafikkarte: schneller, wo es sie gibt"))
+        var threads = new List<string>()
+        defined int ti = 0
+        int counts[] = GameMenu.Threads()
+        for (int i = 0; i < counts.length; i++) {
+            if (counts[i] == 0) { threads.Add("automatisch") } else { threads.Add("" + counts[i]) }
+            if (counts[i] == s.renderThreads) { ti = i }
+        }
+        this.Choice(p, "Render-Threads", "threads", threads, ti, false, this.Cli("render-threads", "Threads des Software-Renderers - wirkt sofort"))
+        var nears = new List<string>()
+        foreach (n in ["nur der Block", "1 Block (51 m)", "2 Blöcke (102 m)", "3 Blöcke (154 m)"]) { nears.Add(n) }
+        this.Choice(p, "Sichtweite nah", "near", nears, Math.Clamp(s.near, 0, 3), false, this.Cli("near", "Wie weit alles in voller Auflösung steht - wirkt sofort"))
+        var fars = new List<string>()
+        for (int r = 2; r <= 10; r++) { fars.Add(r + " Blöcke (" + Math.Round(r * 51.2) + " m)") }
+        this.Choice(p, "Sichtweite fern", "far", fars, Math.Clamp(s.far - 2, 0, 8), false, this.Cli("far", "Bis wohin die Stadt grob zu sehen ist - wirkt sofort"))
+        var workers = new List<string>()
+        for (int k = 1; k <= 8; k++) { workers.Add("" + k) }
+        this.Choice(p, "Worker", "workers", workers, Math.Clamp(s.workers - 1, 0, 7), true, this.Cli("workers", "Threads, die die Welt nachladen"))
+        var sky = new List<string>()
+        sky.Add("an")
+        sky.Add("aus")
+        defined int si = 0
+        if (!s.sky) { si = 1 }
+        this.Choice(p, "Himmel", "sky", sky, si, false, this.Cli("no-sky", "Sonne, Mond, Wolken und Sterne - wirkt sofort"))
+    }
+
+    undefined FillControls(UI.StackPanel p) {
+        var layouts = new List<string>()
+        layouts.Add("Deutsch (QWERTZ)")
+        layouts.Add("Englisch (QWERTY)")
+        defined int li = 0
+        if (this.settings.layout == "en") { li = 1 }
+        var lay = this.Choice(p, "Tastatur", "layout", layouts, li, false, "Nur die Beschriftung: die Leiste nimmt die Tasten unten links (Y/X bzw. Z/X)")
+        this.firsts.Add(lay)
+        this.layoutRow = lay
+        string ids[] = GameSettings.ActionIds()
+        string labels[] = GameSettings.ActionLabels()
+        for (int i = 0; i < ids.length; i++) {
+            var k = new MenuKey(this, labels[i], ids[i])
+            k.Value = GameSettings.KeyName(this.settings.KeyOf(ids[i]))
+            k.Note = "Enter: neue Taste - tauscht mit der Aktion, die sie schon hat"
+            p.Add(k)
+            this.keyRows.Add(k)
+        }
+        this.Entry(p, "Alle Tasten auf Standard", "standard", "W A S D, E, C, I, F ... wie am Anfang")
+        this.Info(p, "Fahren und gehen auch", "Pfeiltasten")
+        this.Info(p, "Inventar auch", "Tab")
+        this.hotbarRow = this.Info(p, "Leiste wählen", this.HotbarKeys())
+        this.Info(p, "Benutzen auch", "rechte Maustaste")
+        this.Info(p, "Karte zoomen", "+ / -")
+        this.Info(p, "Chat / Konsole", "Enter / ^")
+        this.Info(p, "Menü", "Esc")
+    }
+
+    undefined FillSound(UI.StackPanel p) {
+        var none = this.Info(p, "Ton", "noch keiner im Spiel")
+        none.Enabled = false
+        var vol = new List<string>()
+        for (int i = 0; i <= 10; i++) { vol.Add((i * 10) + " %") }
+        this.firsts.Add(this.Choice(p, "Lautstärke", "volume", vol, Math.Clamp(this.settings.volume / 10, 0, 10), false, "Platzhalter: wird gemerkt, bis es Ton gibt"))
+    }
+
+    undefined FillGame(UI.StackPanel p) {
+        var cams = new List<string>()
+        defined int ci = 1
+        float c[] = GameMenu.Cameras()
+        string camNames[] = ["nah", "normal", "weit", "sehr weit"]
+        for (int i = 0; i < c.length; i++) {
+            cams.Add(camNames[i])
+            if (Math.Abs(c[i] - this.settings.camera) < 0.01) { ci = i }
+        }
+        this.firsts.Add(this.Choice(p, "Kameraabstand", "camera", cams, ci, false, "Wie weit die Kamera hinter dem Wagen bleibt - wirkt sofort"))
+        var smooths = new List<string>()
+        defined int mi = 2
+        float m[] = GameMenu.Smooths()
+        string smoothNames[] = ["direkt", "straff", "normal", "weich", "sehr weich"]
+        for (int i = 0; i < m.length; i++) {
+            smooths.Add(smoothNames[i])
+            if (Math.Abs(m[i] - this.settings.smooth) < 0.01) { mi = i }
+        }
+        this.Choice(p, "Kamera nachführen", "smooth", smooths, mi, false, "Wie schnell sie in Kurven nachdreht - wirkt sofort")
+        var units = new List<string>()
+        units.Add("km/h")
+        this.Choice(p, "Einheiten", "units", units, 0, false, "Der Tacho zeigt km/h")
+        var langs = new List<string>()
+        langs.Add("Deutsch")
+        this.Choice(p, "Sprache", "language", langs, 0, false, "Vorerst nur Deutsch")
+    }
+
+    // ---- Seiten ----
+
+    undefined Show(string page) {
+        this.StopCapture()
+        this.page = page
+        this.mainCard.Visible = page == "haupt"
+        this.optionsCard.Visible = page == "optionen"
+        this.serverCard.Visible = page == "verbindung"
+        if (this.online) { this.subtitle.Text = "ONLINE  ·  die Welt läuft weiter" } else { this.subtitle.Text = "PAUSE" }
+        if (page == "haupt") { this.ui.SetFocus(this.mainFirst) }
+        else if (page == "optionen") { this.ShowTab() }
+        else if (page == "verbindung") {
+            this.FillServer()
+            this.ui.SetFocus(this.serverBack)
+        }
+        this.message = ""
+        this.shownFocus = undefined
+    }
+
+    undefined ShowTab() {
+        for (int i = 0; i < this.bodies.Count; i++) {
+            this.bodies[i].Visible = i == this.tab
+            this.tabs[i].selected = i == this.tab
+        }
+        this.scroller.vbar.Set(0)
+        this.ui.SetFocus(this.firsts[this.tab])
+    }
+
+    undefined FillServer() {
+        var s = this.net.session
+        string values[] = [this.options.Get("server", "-"), s.user, s.status, "nein", "" + s.names.Count, Math.Round(s.rate) + " je s"]
+        if (s.Online) { values[3] = "ja" }
+        for (int i = 0; i < this.serverRows.Count; i++) { this.serverRows[i].Value = values[i] }
+    }
+
+    // ---- Zeichnen ----
+
+    // Das letzte Spielbild weich und dunkel hinter das Menü (offline, beim Öffnen).
+    undefined TakeBackdrop() {
+        int w = this.screen.Width()
+        int h = this.screen.Height()
+        var r = this.backdropPen
+        r.Blit(this.screen, 0, 0, BlitMode.Copy!int)
+        r.Blur(0, 0, w, h, Math.Max(4, h / 90))
+        r.FillRect(0, 0, w, h, MenuLook.Get().dimScreen)
+    }
+
+    // Je Bild (nach dem HUD). Zu: nichts. Offen: das Root zeichnet, was sich geändert hat, in die Ebene; offline wird das Bild nur dann neu
+    // zusammengesetzt (sonst bleibt es stehen), online jedes Bild über die laufende Welt.
+    undefined Draw() {
+        if (!this.open) { return }
+        this.UpdateHint()
+        bool painted = this.ui.Update()
+        int w = this.screen.Width()
+        int h = this.screen.Height()
+        if (this.paused) {
+            if (!painted && !this.fresh) { return }
+            this.out.Blit(this.backdrop, 0, 0, BlitMode.Copy!int)
+        } else {
+            this.out.FillRect(0, 0, w, h, MenuLook.Get().dimScreen)
+        }
+        this.out.Blit(this.layer, 0, 0, BlitMode.Blend!int)
+        this.fresh = false
+    }
+
+    // Der Hinweis unten in den Optionen: der des Eintrags mit Fokus (eine Meldung bleibt, bis der Fokus wechselt).
+    undefined UpdateHint() {
+        any f = this.ui.focusElement
+        if (f == this.shownFocus) { return }
+        this.shownFocus = f
+        this.message = ""
+        string note = ""
+        if (f is of MenuEntry) { note = f.Note }
+        if (note == "") { note = "NEUSTART: wirkt erst nach dem nächsten Start des Spiels" }
+        this.hint.Text = note
+    }
+
+    // ---- ohne Fenster ----
+
+    // --menu-shot bild.png: das offene Menü über dem Bild des Spiels in ein PNG (--menu-keys: Tasten vorher, mit Komma: down, up, left, right,
+    // enter, esc, tab oder ein Buchstabe). --menu-bench n: misst, was das geschlossene Menü je Bild kostet.
+    static undefined Shot(Options options, Framebuffer fb, GameSettings settings, WorldView view, Atmosphere atmosphere, Scene scene, Chase chase) {
+        string file = options.Get("menu-shot", "")
+        if (file == "") { return }
+        var win = new Window(fb, "Ruhrpott-Raser")
+        var menu = new GameMenu(fb, win, settings, options)
+        menu.Attach(view, atmosphere, scene, chase, undefined)
+        int bench = options.Get("menu-bench", "0").ToInt()
+        if (bench > 0) {
+            any probe = [EventType.KeyDown!int, 119, 26, 0, 0]
+            int t0 = DateTime.Now.Ticks
+            for (int i = 0; i < bench; i++) {
+                menu.Handle(probe)
+                menu.Draw()
+            }
+            int t1 = DateTime.Now.Ticks
+            print("Menü zu: Handle + Draw je Bild " + ((t1 - t0) * 100.0 / bench) + " ns")
+        }
+        int a0 = DateTime.Now.Ticks
+        menu.Open()
+        int a1 = DateTime.Now.Ticks
+        menu.Draw()
+        int a2 = DateTime.Now.Ticks
+        print("Menü öffnen (Aufbau, Hintergrund) " + ((a1 - a0) / 10000.0) + " ms, erstes Bild " + ((a2 - a1) / 10000.0) + " ms")
+        string keys = options.Get("menu-keys", "")
+        if (keys != "") {
+            foreach (name in keys.Split(",")) {
+                int code = GameMenu.CodeOf(name.Trim())
+                menu.Handle([EventType.KeyDown!int, code, 0, 0, 0])
+                menu.Handle([EventType.KeyUp!int, code, 0, 0, 0])
+                int b0 = DateTime.Now.Ticks
+                menu.Draw()
+                int b1 = DateTime.Now.Ticks
+                print("Taste " + name + ": " + ((b1 - b0) / 10000.0) + " ms")
+            }
+        }
+        // ohne Änderung: das Bild bleibt (nichts neu gezeichnet)
+        int c0 = DateTime.Now.Ticks
+        for (int i = 0; i < 100; i++) { menu.Draw() }
+        int c1 = DateTime.Now.Ticks
+        print("Menü offen ohne Änderung: je Bild " + ((c1 - c0) / 100 / 10.0) + " µs")
+        IO.File.WriteAllBytes(file, fb.ToPng())
+        print(file)
+        menu.Close()
+    }
+
+    static defined int CodeOf(string name) {
+        if (name == "down") { return UI.Keys.Down() }
+        if (name == "up") { return UI.Keys.Up() }
+        if (name == "left") { return UI.Keys.Left() }
+        if (name == "right") { return UI.Keys.Right() }
+        if (name == "enter") { return 13 }
+        if (name == "esc") { return 27 }
+        if (name == "tab") { return 9 }
+        if (name == "space") { return 32 }
+        if (name.Length == 1) { return name[0].ToInt() }
+        return 0
+    }
+}
