@@ -108,10 +108,14 @@ class Gear {
     defined int frames
 
     defined float knockAt           // --knock v: im ersten Bild zu Fuß den Spieler mit v m/s umhauen (0: nicht)
+    defined int selectArg           // --select 3: im ersten Bild diesen Platz der Leiste wählen (1 Tasche, 2 Handy, 3-6 Hände, 7-11 Taschen)
+    defined bool useArg             // --use 1: ... und ihn benutzen
     defined float hitPassant        // --hit-passant v: im ersten Bild den Passanten mit v m/s umfahren (wie angefahren, Samen 11)
 
     construct(Scene scene, Obstacles obstacles, Raser.Vehicle car, Options options) {
         this.knockAt = options.Get("knock", "0").ToFloat()
+        this.selectArg = options.Get("select", "0").ToInt()
+        this.useArg = options.Get("use", "") != ""
         this.hitPassant = options.Get("hit-passant", "0").ToFloat()
         this.scene = scene
         this.store = new Raser.ContainerStore()
@@ -291,6 +295,14 @@ class Gear {
             print("Umgehauen mit " + this.knockAt + " m/s: " + r.ToString() + ", Bargeld jetzt " + HudStyle.Money(this.inv.cash))
             this.knockAt = 0.0
         }
+        if (this.selectArg > 0) {
+            this.screen.Select(this.selectArg - 1)
+            if (this.useArg) {
+                this.screen.UseSelected()
+                print("Benutzt: " + this.inv.message)
+            }
+            this.selectArg = 0
+        }
         walker.load = this.inv.SpeedFactor()
         this.screen.clockMinutes = Math.Floor(weather.hour * 60.0)!int
         // der Passant
@@ -459,7 +471,7 @@ class Gear {
         if (!onFoot && !this.screen.open) { this.tacho.Draw(hud, width, height, car) }
         if (this.hint != "") {
             int w = this.screen.Width(hud, this.hint, 18, false) + 20
-            int y = height - InventoryScreen.Size - 116
+            int y = height - InventoryScreen.Size - 142
             this.screen.paint.Color = HudStyle.Color(0xA0101418)
             hud.FillRoundRect((width - w) / 2, y, w, this.screen.Height(hud, 18) + 10, 6, this.screen.paint)
             this.screen.Text(hud, (width - w) / 2 + 10, y + 5, this.hint, 0xFFFFFFFF, 18, false)
@@ -540,14 +552,7 @@ class Gear {
     undefined Shot(Options options, Renderer hud, Framebuffer fb, defined int width, defined int height, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, List<Raser.Vehicle> vehicles) {
         string path = options.Get("inventory-shot", "")
         if (options.Get("minimap", "") == "" && path == "") { return }
-        // --select 3: diesen Platz der Leiste wählen (1 Tasche, 2 Handy, 3-6 Hände, 7-11 Hosentaschen); --use 1: ihn benutzen
-        if (options.Get("select", "") != "") {
-            this.screen.Select(options.Get("select", "1").ToInt() - 1)
-            if (options.Get("use", "") != "") {
-                this.screen.UseSelected()
-                print("Benutzt: " + this.inv.message)
-            }
-        }
+
         // --minimap north: genordet; --map-zoom 0|1|2
         if (options.Get("minimap", "") == "north") { this.map.mode = 1 }
         this.map.zoom = Math.Clamp(options.Get("map-zoom", "1").ToInt(), 0, 2)

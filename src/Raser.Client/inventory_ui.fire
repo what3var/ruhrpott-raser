@@ -392,7 +392,7 @@ class InventoryScreen {
         if (this.phoneOpen) { this.DrawPhone(r, width, height) }
         if (this.note != "" && DateTime.UtcNow.Ticks < this.noteUntil) {
             int w = this.Width(r, this.note, 18, false) + 20
-            int y = height - InventoryScreen.Size - 84
+            int y = height - InventoryScreen.Size - 106
             if (this.open) { y = this.panelY + this.panelH + 8 }
             this.paint.Color = HudStyle.Color(0xB0101418)
             r.FillRoundRect((width - w) / 2, y, w, this.Height(r, 18) + 10, 6, this.paint)
@@ -437,7 +437,7 @@ class InventoryScreen {
         int held = this.inv.store.Find(this.ContainerAt(this.selected)).Item(this.SlotAt(this.selected))
         if (held != 0 && DateTime.UtcNow.Ticks - this.selectedAt < 25000000) {
             string name = Raser.Items.Get(held).name
-            this.Shadowed(r, (width - this.Width(r, name, 18, false)) / 2, y - 34, name, 0xFFFFFFFF, 18, false)
+            this.Shadowed(r, (width - this.Width(r, name, 18, false)) / 2, y - 60, name, 0xFFFFFFFF, 18, false)
         }
         // links darüber: Puste, Essen, Trinken
         int ly = y - 18
