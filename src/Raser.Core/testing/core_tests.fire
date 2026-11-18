@@ -565,7 +565,7 @@ class VehicleTests {
         slant.heading = -45.0
         slant.speed = 10.0
         slant.Collide(1.2, -1.0, 0.0, 0.05)
-        Testing.Assert.IsTrue(slant.spin > 60.0 && slant.spin < 240.0, "spin " + slant.spin)
+        Testing.Assert.IsTrue(slant.spin > 60.0 && slant.spin <= 200.0, "spin " + slant.spin)
         // mit dem Heck (hinterer Kreis) rückwärts gegen dieselbe Wand: andersherum
         var back = new Raser.Vehicle()
         back.heading = 135.0

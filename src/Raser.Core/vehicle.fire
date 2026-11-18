@@ -59,8 +59,8 @@ namespace Raser {
         defined float Inertia() { return this.mass * (this.length * this.length + this.width * this.width) / 12.0 }
 
         // So schnell bremsen die Reifen das Drehen (Grad/s²) bei Grip g: Reibung mal Gewicht an einem Hebel von einem Viertel der Länge, durch das
-        // Trägheitsmoment - zur Hälfte (rollende Reifen schieben weniger als blockierte). Auto etwa 140 °/s², Transporter 110, Motorrad 300.
-        defined float SpinBrake(defined float g) { return 0.45 * 9.0 * g * 3.0 * this.length / (this.length * this.length + this.width * this.width) * 180.0 / Math.PI }
+        // Trägheitsmoment - zu gut einem Drittel (rollende Reifen schieben weniger als blockierte). Auto etwa 110 °/s², Transporter 85, Motorrad 230.
+        defined float SpinBrake(defined float g) { return 0.35 * 9.0 * g * 3.0 * this.length / (this.length * this.length + this.width * this.width) * 180.0 / Math.PI }
 
         // Wie stark (Grad/s) ein Stoß dreht, der das Tempo der Mitte um dv m/s ändert, mit dem Hebel arm (m, Kreuzprodukt Hebel x Stoßrichtung,
         // positiv: gegen den Uhrzeigersinn): der Drehimpuls arm · m · dv durch das Trägheitsmoment - und weil die Drehung einen Teil des Stoßes
@@ -264,13 +264,13 @@ namespace Raser {
             return into
         }
 
-        // Das Drehen begrenzt (höchstens 240 °/s).
-        defined float Turned(defined float spin) { return Math.Clamp(spin, -240.0, 240.0) }
+        // Das Drehen begrenzt (höchstens 200 °/s).
+        defined float Turned(defined float spin) { return Math.Clamp(spin, -200.0, 200.0) }
 
         // Ein Stoß zwischen zwei Fahrzeugen (Körper mit Masse und Trägheitsmoment): der Kreis von a offA m vor seiner Mitte steckt depth m tief
         // im Kreis von b offB m vor dessen Mitte, (nx, ny) zeigt von b zu a. Beide werden nach ihren Massen auseinandergeschoben; nähern sie sich am
         // Berührpunkt (Tempo, Rutschen und Drehen beider zusammen), bekommen beide einen Stoß an diesem Punkt - fast unelastisch (e = 0,15), mit
-        // Reibung quer (bis 0,35 des Stoßes). Außerhalb der Mitte dreht er (Kreuzprodukt Hebel x Stoß durch das Trägheitsmoment), beide nehmen
+        // Reibung quer (bis 0,2 des Stoßes). Außerhalb der Mitte dreht er (Kreuzprodukt Hebel x Stoß durch das Trägheitsmoment), beide nehmen
         // Schaden (DamageOf). Gibt das Tempo, mit dem sie sich am Berührpunkt näherten (m/s; 0: nicht).
         static defined float Impact(Raser.Vehicle a, defined float offA, Raser.Vehicle b, defined float offB, defined float nx, defined float ny, defined float depth) {
             float ha = a.heading * Math.PI / 180.0
@@ -314,7 +314,7 @@ namespace Raser {
             float vt = (vax - vbx) * tx + (vay - vby) * ty
             float rta = rax * ty - ray * tx
             float rtb = rbx * ty - rby * tx
-            float jt = Math.Clamp(-vt / (wa + wb + rta * rta / ia + rtb * rtb / ib), -0.35 * j, 0.35 * j)
+            float jt = Math.Clamp(-vt / (wa + wb + rta * rta / ia + rtb * rtb / ib), -0.2 * j, 0.2 * j)
             float ix = j * nx + jt * tx
             float iy = j * ny + jt * ty
             a.Kick(ix * wa, iy * wa)
