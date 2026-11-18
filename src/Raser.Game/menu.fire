@@ -80,7 +80,7 @@ class MenuLook {
         int vw = e.TextWidth(root, value)
         e.DrawString(root, right - vw, ty, value, vb)
         if (arrows == 1) {
-            int lx = right - vw - 12
+            int lx = right - vw - 16
             r.FillTriangle(lx + 5, cy - 5, lx + 5, cy + 5, lx - 1, cy, vb)
         }
     }
@@ -432,6 +432,11 @@ class GameMenu {
         }
         if (key == 27) {
             this.Back()
+            return true
+        }
+        // vom ersten Eintrag eines Reiters hinauf: auf diesen Reiter (nicht auf den, der zufällig am nächsten liegt)
+        if (key == UI.Keys.Up() && this.page == "optionen" && this.ui.focusElement == this.firsts[this.tab]) {
+            this.ui.SetFocus(this.tabs[this.tab])
             return true
         }
         return false
