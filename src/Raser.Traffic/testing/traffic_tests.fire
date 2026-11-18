@@ -559,17 +559,22 @@ class BridgeTests {
         var bridge = Net.Road(2, "residential", [100.0, 0.0, 100.0, 100.0, 100.0, 200.0], 5.5)
         bridge.layer = 1
         tile.data.roads.Add(take bridge)
+        // an beiden Enden geht es auf dem Gelände weiter (Rampen)
+        tile.data.roads.Add(Net.Road(3, "residential", [100.0, 200.0, 100.0, 250.0], 5.5))
+        tile.data.roads.Add(Net.Road(4, "residential", [100.0, 0.0, 150.0, 0.0], 5.5))
         var g = new Raser.RoadGraph()
         g.AddTile(tile)
         g.Build()
-        // vier Enden, keine Kreuzung: jede Straße ein Abschnitt, Abbiegespuren nur zum Wenden an den Enden
-        Testing.Assert.AreEqual(4, g.NodeCount)
-        Testing.Assert.AreEqual(4, g.Count(Raser.LaneKind.Road))
+        // keine Kreuzung: jede Straße ein Abschnitt (6 Enden), keine Abbiegespur zwischen der Straße unten (1) und der Brücke (2)
+        Testing.Assert.AreEqual(6, g.NodeCount)
+        Testing.Assert.AreEqual(8, g.Count(Raser.LaneKind.Road))
         foreach (l in g.lanes) {
             if (l.kind != Raser.LaneKind.Turn) { continue }
-            Testing.Assert.AreEqual(g.lanes[l.source].road, g.lanes[l.target].road)
+            int a = g.lanes[l.source].road
+            int b = g.lanes[l.target].road
+            Testing.Assert.IsTrue(!((a == 1 && b == 2) || (a == 2 && b == 1)))
         }
-        // die Höhe auf der Brücke: in der Mitte zwischen 60 und 70 (nicht im Einschnitt), Ebene 1
+        // die Höhe auf der Brücke (Raser.Bridges): in der Mitte zwischen 60 und 70 (nicht im Einschnitt) + 15 cm, Ebene 1
         var p = new Raser.LanePoint()
         int seen = 0
         foreach (l in g.lanes) {
@@ -577,9 +582,9 @@ class BridgeTests {
             l.At(l.length / 2.0, p)
             if (l.road == 2) {
                 Testing.Assert.AreEqual(1, l.level)
-                Testing.Assert.IsTrue(Math.Abs(p.z - 65.0) < 1.0)
+                Testing.Assert.IsTrue(Math.Abs(p.z - 65.15) < 1.0)
                 seen++
-            } else {
+            } else if (l.road == 1) {
                 Testing.Assert.AreEqual(0, l.level)
                 Testing.Assert.IsTrue(p.z == 0.0)
             }

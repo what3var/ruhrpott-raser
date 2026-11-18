@@ -450,6 +450,10 @@ namespace Raser {
         static readonly defined int PickUp = 4
         // 5 und 6 sind im Protokoll Öffnen/Schließen eines Rucksacks am Boden (Raser.Protocol.OpOpen/OpClose)
         static readonly defined int Use = 7
+        static readonly defined int Buy = 8              // kaufen (Raser.Shops): source Laden-ID, target Art, sourceSlot Angebot, count Menge
+        static readonly defined int Fill = 9             // Kanister (source, sourceSlot) an der Tankstelle target füllen
+        static readonly defined int Refuel = 10          // das Fahrzeug in Reichweite an der Tankstelle target tanken
+        static readonly defined int Last = 10            // die höchste Nummer (das Protokoll lehnt höhere ab)
 
         defined int kind
         defined int source
@@ -492,9 +496,9 @@ namespace Raser {
         }
 
         string ToString() {
-            string names[] = ["?", "Move", "Swap", "Drop", "PickUp", "Open", "Close", "Use"]
+            string names[] = ["?", "Move", "Swap", "Drop", "PickUp", "Open", "Close", "Use", "Buy", "Fill", "Refuel"]
             string k = "?"
-            if (this.kind >= 1 && this.kind <= 7) { k = names[this.kind] }
+            if (this.kind >= 1 && this.kind <= Raser.InvOp.Last) { k = names[this.kind] }
             return k + " " + this.source + ":" + this.sourceSlot + " -> " + this.target + ":" + this.targetSlot + " x" + this.count + " drop " + this.drop
         }
     }
@@ -721,6 +725,7 @@ namespace Raser {
         defined bool Apply(Raser.InvOp op) {
             if (op.kind == Raser.InvOp.PickUp) { return this.PickUp(op.drop) }
             if (op.kind == Raser.InvOp.Use) { return this.Use(op) }
+            if (op.kind >= Raser.InvOp.Buy && op.kind <= Raser.InvOp.Refuel) { return Raser.Shops.Apply(this, op) }
             if (!this.Reaches(op.source)) { return false }
             var a = this.store.Find(op.source)
             if (a == undefined || !a.Valid(op.sourceSlot) || a.Empty(op.sourceSlot)) { return false }

@@ -104,6 +104,8 @@ namespace Raser {
         defined bool sliding
         defined float f[]
         defined int mask                // beim Lesen: welche Zahlen kamen (alle: kein Delta)
+        defined int walkerBridge        // die Ebene (Brücke) des Spielers bzw. seines Fahrzeugs (Raser.Sim, 0: Gelände)
+        defined int carBridge
 
         construct() {
             this.present = false
@@ -114,6 +116,8 @@ namespace Raser {
             this.f = new float[17]
             for (int i = 0; i < 17; i++) { this.f[i] = 0.0 }
             this.mask = 0
+            this.walkerBridge = 0
+            this.carBridge = 0
         }
 
         static Raser.SelfState Of(Raser.Pawn pawn, Raser.Vehicle car) {
@@ -129,7 +133,9 @@ namespace Raser {
             s.f[3] = k.speed
             s.f[4] = k.stride
             s.f[5] = k.load
+            s.walkerBridge = k.bridge
             if (car != undefined) {
+                s.carBridge = car.bridge
                 s.kind = Raser.Protocol.KindOf(car.kind, false)
                 s.sliding = car.sliding
                 float x[] = [car.east, car.north, car.heading, car.speed, car.steerAngle, car.pushE, car.pushN, car.lean, car.health, car.fuel, car.grip]
@@ -145,6 +151,8 @@ namespace Raser {
             s.vehicle = this.vehicle
             s.kind = this.kind
             s.sliding = this.sliding
+            s.walkerBridge = this.walkerBridge
+            s.carBridge = this.carBridge
             for (int i = 0; i < 17; i++) { s.f[i] = this.f[i] }
             return s
         }
@@ -164,6 +172,7 @@ namespace Raser {
             var k = pawn.walker
             k.stride = this.f[4]
             k.load = this.f[5]
+            k.bridge = this.walkerBridge
             if (this.kind == 0) {
                 k.east = this.f[0]
                 k.north = this.f[1]
@@ -187,6 +196,7 @@ namespace Raser {
                 v.health = this.f[14]
                 v.fuel = this.f[15]
                 v.grip = this.f[16]
+                v.bridge = this.carBridge
                 p.selfVehicle = take v
             }
             p.self = take pawn
@@ -223,6 +233,9 @@ namespace Raser {
             w.Byte(flags)
             w.Varint(s.vehicle)
             if (s.kind != 0) { w.Byte(s.kind) }
+            // die Ebene immer ganz (klein; Protokoll 4)
+            w.Varint(s.walkerBridge)
+            if (s.kind != 0) { w.Varint(s.carBridge) }
             if (!delta) {
                 for (int i = 0; i < 17; i++) { if (s.Sent(i)) { w.Float64(s.f[i]) } }
                 return
@@ -245,6 +258,8 @@ namespace Raser {
                 s.kind = r.Byte()
                 if (s.kind < 1 || s.kind > 4) { throw new Raser.ProtocolException("Unbekannte Fahrzeugart " + s.kind + ".") }
             }
+            s.walkerBridge = r.Varint()
+            if (s.kind != 0) { s.carBridge = r.Varint() }
             if ((flags & 16) == 0) {
                 for (int i = 0; i < 17; i++) {
                     if (s.Sent(i)) {

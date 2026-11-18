@@ -734,6 +734,7 @@ class RegionServer {
                 e.a = q.pawn.vehicle
             }
             if (this.tick < q.lyingUntil) { e.bits = e.bits | Raser.EntityType.Lying }
+            if (q.pawn.OnFoot && q.pawn.walker.bridge != 0) { e.bits = e.bits | Raser.EntityType.OnBridge }
             if (q.inv != undefined && q.inv.LampShining()) { e.bits = e.bits | Raser.EntityType.Lamp }
             list.Add(take e)
         }
@@ -861,6 +862,12 @@ class RegionServer {
             // benutzen (essen, Lampe, tanken, reparieren): das Fahrzeug ist das nächste der Region
             p.inv.vehicle = this.NearestBody(p.east, p.north)
             ok = this.tick >= p.lyingUntil && p.inv.Apply(op)
+            if (p.inv.message != "") { Gateway.Log(p.name + ": " + p.inv.message) }
+        } else if (op.kind == Raser.InvOp.Buy || op.kind == Raser.InvOp.Fill || op.kind == Raser.InvOp.Refuel) {
+            // kaufen und tanken (Raser.Shops): Preise und Sortiment folgen aus Laden-ID und Art, das Geld prüft Inventory.Apply; nur zu Fuß,
+            // tanken am nächsten Fahrzeug der Region (dass der Spieler im Laden steht, prüft der Server noch nicht)
+            p.inv.vehicle = this.NearestBody(p.east, p.north)
+            ok = onFoot && p.inv.Apply(op)
             if (p.inv.message != "") { Gateway.Log(p.name + ": " + p.inv.message) }
         } else {
             ok = p.inv.Apply(op)

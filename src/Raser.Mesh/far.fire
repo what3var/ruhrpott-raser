@@ -66,6 +66,7 @@ namespace Raser {
             int roadId = 0
             foreach (r in this.roads) {
                 if (!streets && r.layer == 0) { continue }          // Straßen und Wege kommen aus dem StreetField
+                if (r.layer > 0) { continue }                        // Brücken liegen auf ihrem Deck (Raser.BridgeMesher)
                 if (r.width < width || (r.width == width && r.id >= roadId)) { continue }
                 if (Raser.Geo.DistanceToLine(r.points, x, y) <= r.width / 2.0) {
                     width = r.width

@@ -14,7 +14,7 @@
 namespace Raser {
     // Die Nummern des Protokolls.
     class Protocol {
-        static readonly defined int Version = 3
+        static readonly defined int Version = 4       // 3: Delta-Snapshots (debt) bzw. die Brücke im eigenen Zustand (bridges); 4: beides
         static readonly defined int MaxClientFrame = 1024        // Bytes je Rahmen vom Client
         static readonly defined int MaxServerFrame = 65535       // Bytes je Rahmen vom Server
         static readonly defined int MaxText = 200                // Zeichen je Chatzeile oder Befehl
@@ -55,7 +55,7 @@ namespace Raser {
         // Ereignisse (Event)
         static readonly defined int KnockedDown = 1              // id: der Spieler, other: wer ihn umgehauen hat (0: niemand)
 
-        // Operationen am Inventar über Raser.InvOp hinaus (InvOp.kind; 1 bis 5 sind Raser.InvOp: Move, Swap, Drop, PickUp, Use)
+        // Operationen am Inventar über Raser.InvOp hinaus (InvOp.kind; sonst Raser.InvOp: Move, Swap, Drop, PickUp, Use, Buy, Fill, Refuel)
         static readonly defined int OpOpen = 5                   // drop: den Rucksack am Boden öffnen
         static readonly defined int OpClose = 6                  // den geöffneten schließen
 
@@ -93,6 +93,7 @@ namespace Raser {
         static readonly defined int Sliding = 2         // Fahrzeug: rutscht
         static readonly defined int Lying = 4           // Spieler/Fußgänger: liegt (umgehauen)
         static readonly defined int Standing = 8        // NPC: steht (wartet)
+        static readonly defined int OnBridge = 16       // Spieler/Fahrzeug: auf einer Brücke (welche: die höchste dort, Raser.Obstacles.DeckUnder)
         static readonly defined int Lamp = 16           // Spieler: die Taschenlampe leuchtet
     }
 
@@ -128,6 +129,7 @@ namespace Raser {
             var b = v.body
             e.variant = Raser.Protocol.KindOf(b.kind, false)
             if (b.sliding) { e.bits = Raser.EntityType.Sliding }
+            if (b.bridge != 0) { e.bits = e.bits | Raser.EntityType.OnBridge }
             e.east = b.east
             e.north = b.north
             e.heading = b.heading
@@ -469,7 +471,7 @@ namespace Raser {
                     p.seq = r.Varint()
                     p.ack = r.Varint()
                     p.op = Raser.InvOp.Read(r)
-                    if (p.op.kind < 1 || p.op.kind > Raser.InvOp.Use) { throw new Raser.ProtocolException("Unbekannte Operation " + p.op.kind + ".") }
+                    if (p.op.kind < 1 || p.op.kind > Raser.InvOp.Last) { throw new Raser.ProtocolException("Unbekannte Operation " + p.op.kind + ".") }
                 } else if (t == Raser.Protocol.Chat || t == Raser.Protocol.Command || t == Raser.Protocol.Reject || t == Raser.Protocol.Kick) {
                     p.text = Raser.Wire.ReadText(r)
                 } else if (t == Raser.Protocol.Bye) {

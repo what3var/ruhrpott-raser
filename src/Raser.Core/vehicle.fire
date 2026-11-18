@@ -20,6 +20,7 @@ namespace Raser {
         defined float pushE             // angestoßen: so schnell rutscht das Fahrzeug quer zu allem (m/s nach Osten, Norden), bis die Reifen es halten
         defined float pushN
         defined float lean              // Grad, nach links positiv: so weit legt sich ein Zweirad in die Kurve (Autos: 0)
+        defined int bridge              // auf einer Brücke: die ID ihrer Straße (Raser.BridgeDeck.road), 0: auf dem Gelände
         // das Fahrzeug
         defined float wheelbase
         defined float topSpeed          // m/s

@@ -72,3 +72,11 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
   Umweg in Raser: die Worker laufen mit `fire dedicated`.
 - `Send(new float[n])` lehnt der Typprüfer mit TC029 ab („An object goes into a channel only with a word … - or fresh ('new', the result of a
   call)“) - für ein Array zählt `new` nicht als frisch, das Ergebnis eines Aufrufs schon.
+
+## Netz
+
+- **`Http.Download` kann keine Antworten mit `Transfer-Encoding: chunked`** („A chunked download is not supported.“). Die OSM-API
+  (`api.openstreetmap.org/api/0.6/map`) antwortet so; DGM1/LoD2 von opengeodata.nrw.de gehen. Umweg in `raser fetch` (src/Raser.Tool/setup.fire):
+  für OSM `Http.Client.Get` (ganz in den Speicher, dann über eine Teildatei schreiben). Wunsch: chunked in `Http.Download` (fortsetzen geht
+  dann nicht, laden schon). Stand fire master 6db80cbb.
+

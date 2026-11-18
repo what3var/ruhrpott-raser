@@ -167,6 +167,8 @@ namespace Raser {
         defined int level             // OSM layer (0 auf dem Gelände, > 0 Brücke)
         float pts[]                   // global
         float ground[]                // je Punkt die Höhe des Geländes (m über NHN; -1e9: unbekannt) - für Brücken
+        float deck[]                  // Brücken: die Höhe des Decks je Meter entlang der Linie (Raser.Bridges, wie gezeichnet)
+        defined bool deckOwner        // das Deck kommt aus der Kachel mit dem ersten Punkt (sie gilt, wenn mehrere es liefern)
         float line[]                  // geglättet (wie Raser.StreetField)
         List<float> strips            // Grünstreifen: Seite (1 links, -1 rechts), s0, s1, Breite
         List<string> tiles            // die Kacheln, in denen sie steht
@@ -292,6 +294,7 @@ namespace Raser {
             string name = tile.key.ToString()
             float east = tile.key.East
             float north = tile.key.North
+            var decks = Raser.Bridges.Of(tile)
             foreach (r in tile.data.roads) {
                 if (r.kind == undefined || r.layer < 0 || !r.kind.StartsWith("highway=") || r.points == undefined || r.points.length < 4) { continue }
                 string k = r.kind.Substring(8)
@@ -322,6 +325,11 @@ namespace Raser {
                 info.line = Raser.StreetField.Smooth(info.pts)
                 try info.line.TakeTo(info)
                 info.tiles.Add(name)
+                foreach (d in decks) {
+                    if (d.road != r.id) { continue }
+                    info.deck = copy d.z
+                    info.deckOwner = r.points[0] >= 0.0 && r.points[1] >= 0.0 && r.points[0] < 256.0 && r.points[1] < 256.0
+                }
                 // die Grünstreifen dieser Kachel an der Straße (s entlang der Linie: dieselbe in jeder Kachel)
                 if (tile.strips != undefined && info.walk > 0.0) {
                     foreach (st in tile.strips) {
@@ -354,6 +362,11 @@ namespace Raser {
                     }
                     if (seen) { continue }
                     for (int k = 0; k < 4; k++) { known.strips.Add(src.strips[q + k]) }
+                    changed = true
+                }
+                if (src.deck != undefined && (known.deck == undefined || (src.deckOwner && !known.deckOwner))) {
+                    known.deck = copy src.deck
+                    known.deckOwner = src.deckOwner
                     changed = true
                 }
                 if (known.ground != undefined && src.ground != undefined && known.ground.length == src.ground.length) {
@@ -668,7 +681,18 @@ namespace Raser {
         // mindestens das Gelände darunter. Ohne bekanntes Gelände: keine Höhe (die Spur liegt dann auf dem Gelände).
         undefined Heights(Lane l, RoadInfo r) {
             l.level = r.level
-            if (r.level == 0 || r.ground == undefined) { return }
+            if (r.level == 0) { return }
+            // das Deck, wie es gezeichnet wird (Raser.Bridges)
+            if (r.deck != undefined && r.deck.length > 0) {
+                int nd = l.pts.length / 2
+                l.z = new float[nd]
+                for (int i = 0; i < nd; i++) {
+                    Raser.Strips.Probe(r.pts, l.pts[i * 2], l.pts[i * 2 + 1], this.stripProbe)
+                    l.z[i] = Raser.BridgeDeck.Sample(r.deck, this.stripProbe.s)
+                }
+                return
+            }
+            if (r.ground == undefined) { return }
             int m = r.ground.length
             float g0 = r.ground[0]
             float g1 = r.ground[m - 1]

@@ -49,13 +49,13 @@ class Avatar {
     }
 
     // In die Szene an (e, n), Richtung h (Grad), Schräglage lean; rider: ein Fahrer sitzt darauf (Zweirad).
-    undefined Show(defined float e, defined float n, defined float h, defined float lean, defined bool rider, Ground terrain, WorldView view, defined bool lamps) {
+    undefined Show(defined float e, defined float n, defined float h, defined float lean, defined bool rider, Ground terrain, WorldView view, defined bool lamps, defined int bridge = 0) {
         if (!this.fresh) { this.stride = this.stride + Math.Sqrt((e - this.lastE) * (e - this.lastE) + (n - this.lastN) * (n - this.lastN)) }
         this.fresh = false
         this.lastE = e
         this.lastN = n
         float y = 0.0
-        any g = terrain.At(e, n)
+        any g = terrain.AtLevel(e, n, bridge)
         if (g != undefined) { y = g - view.originZ }
         float x = e - view.originE
         float z = -(n - view.originN)
@@ -275,14 +275,16 @@ class Online {
             var ip = r.path
             if ((ip.east - e0) * (ip.east - e0) + (ip.north - n0) * (ip.north - n0) > 600.0 * 600.0) { continue }
             var a = this.AvatarOf(scene, r.id, r.type, r.variant)
-            a.Show(ip.east, ip.north, ip.heading, ip.lean, r.a != 0, terrain, view, weather.lampsOn)
+            int onBridge = 0
+            if ((r.bits & Raser.EntityType.OnBridge) != 0) { onBridge = -1 }
+            a.Show(ip.east, ip.north, ip.heading, ip.lean, r.a != 0, terrain, view, weather.lampsOn, onBridge)
         }
         // das eigene Fahrzeug: an der vorhergesagten Lage
         if (own != 0 && s.pred.Car() != undefined) {
             var mine = s.pred.Car()
             var a = this.AvatarOf(scene, own, Raser.EntityType.Vehicle, Raser.Protocol.KindOf(mine.kind, false))
             // (sitzt der Spieler auf dem Zweirad, zeigt ihn das Spiel selbst)
-            a.Show(car.east, car.north, car.heading, car.lean, false, terrain, view, false)
+            a.Show(car.east, car.north, car.heading, car.lean, false, terrain, view, false, car.bridge)
         }
         this.Weather(dt, weather, atmosphere)
     }

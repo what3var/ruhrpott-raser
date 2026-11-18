@@ -14,6 +14,7 @@ namespace Raser {
         Dictionary<string, List<Raser.Box2>> boxes
         Dictionary<int, List<float>> passages         // je Gebäude (ID) seine Durchfahrten, bei Bedarf
         Dictionary<int, List<float>> posts            // je Zelle (8 m) die Pfosten darin: Ost, Nord, Radius (Baumstämme, Laternen, Ampeln)
+        Dictionary<string, List<Raser.BridgeDeck>> decks  // je Kachel die Decks ihrer Brücken (Raser.Bridges: wie gezeichnet)
 
         // world "": ohne Welt (keine Hindernisse - Bots und Tests ohne Daten).
         construct(string world) {
@@ -24,6 +25,7 @@ namespace Raser {
             this.boxes = new Dictionary<string, List<Raser.Box2>>()
             this.passages = new Dictionary<int, List<float>>()
             this.posts = new Dictionary<int, List<float>>()
+            this.decks = new Dictionary<string, List<Raser.BridgeDeck>>(Owns.Values)
         }
 
         // Die Kachel zu einem Schlüssel mit den Rechtecken ihrer Gebäude (um 2 m gewachsen), bei Bedarf geladen.
@@ -67,6 +69,7 @@ namespace Raser {
                     }
                 }
             }
+            this.decks[name] = Raser.Bridges.Of(loaded)
             this.tiles[name] = loaded
             if (loaded != undefined) { loaded.TakeTo(this.tiles) }
             this.boxes[name] = list
@@ -86,7 +89,8 @@ namespace Raser {
         defined float pushX
         defined float pushY
         defined float depth
-        defined bool Push(defined float e, defined float n, defined float radius) {
+        // posts = false: ohne die Pfosten (auf einer Brücke stehen sie unten).
+        defined bool Push(defined float e, defined float n, defined float radius, defined bool posts = true) {
             var key = Raser.TileKey.Of(e, n)
             string name = key + ""
             this.Need(key, name)
@@ -96,7 +100,7 @@ namespace Raser {
             // die Pfosten in den Zellen ringsum
             int ce = Math.Floor(e / 8.0)!int
             int cn = Math.Floor(n / 8.0)!int
-            for (int dn = -1; dn <= 1; dn++) {
+            for (int dn = -1; dn <= 1 && posts; dn++) {
                 for (int de = -1; de <= 1; de++) {
                     int cell = Raser.Obstacles.Cell(ce + de, cn + dn)
                     if (!this.posts.ContainsKey(cell)) { continue }
@@ -210,6 +214,7 @@ namespace Raser {
             foreach (name in gone) {
                 this.tiles.Remove(name)
                 this.boxes.Remove(name)
+                this.decks.Remove(name)
             }
             this.passages.Clear()
             // die Pfosten liegen je Zelle (8 m, nie über eine Kachelgrenze); zu welcher Kachel eine Zelle gehört, sagt ihr erster Pfosten
@@ -245,6 +250,142 @@ namespace Raser {
                 }
             }
             return result
+        }
+
+        // Brücken (Raser.Bridges). Die Decks der Kachel unter (e, n) (geladen, wenn nötig); undefined: keine Kachel.
+        List<Raser.BridgeDeck> DecksAt(defined float e, defined float n) {
+            var key = Raser.TileKey.Of(e, n)
+            string name = key + ""
+            this.Need(key, name)
+            if (!this.decks.ContainsKey(name)) { return undefined }
+            return this.decks[name]
+        }
+
+        // Die Ebene nach einem Schritt nach (e, n): current ist die Brücke, auf der man war (0: auf dem Gelände). Auf ein Deck kommt man nur, wo es
+        // höchstens 0,7 m über dem Gelände liegt (an seinen Rampen); man bleibt darauf, solange man auf ihm ist (bis 0,3 m über den Rand); verlässt
+        // man es (am Ende, oder über den Rand), ist man wieder auf dem Gelände. Gibt die ID der Brücke oder 0.
+        defined int Level(defined float e, defined float n, defined int current) {
+            var list = this.DecksAt(e, n)
+            if (list == undefined || list.Count == 0) { return 0 }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            if (current != 0) {
+                foreach (d in list) {
+                    if (d.road == current && d.Covers(x, y, 0.3)) { return current }
+                }
+            }
+            foreach (d in list) {
+                if (!d.Covers(x, y, 0.0)) { continue }
+                // nur an den Enden (die Seiten hat die Brüstung)
+                if (d.hitS > 3.0 && d.hitS < d.length - 3.0) { continue }
+                if (Math.Abs(d.At(d.hitS) - d.GroundAt(d.hitS)) <= 0.7) { return d.road }
+            }
+            return 0
+        }
+
+        // Die Höhe der Fahrbahn an (e, n) auf der Brücke bridge (m über NHN); undefined: nicht darauf (dann gilt das Gelände). bridge -1: die
+        // höchste Brücke, die (e, n) überdeckt (für die anderen, von denen der Snapshot nur weiß, dass sie auf einer sind).
+        any DeckHeight(defined float e, defined float n, defined int bridge) {
+            if (bridge == 0) { return undefined }
+            var list = this.DecksAt(e, n)
+            if (list == undefined) { return undefined }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            any best = undefined
+            foreach (d in list) {
+                if (bridge > 0 && d.road != bridge) { continue }
+                if (!d.Covers(x, y, 0.5)) { continue }
+                float z = d.At(d.hitS)
+                if (best == undefined || z > best) { best = z }
+            }
+            return best
+        }
+
+        // Die Brücke, die (e, n) überdeckt (die höchste); 0: keine.
+        defined int DeckUnder(defined float e, defined float n) {
+            var list = this.DecksAt(e, n)
+            if (list == undefined) { return 0 }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            int found = 0
+            float top = -1.0e30
+            foreach (d in list) {
+                if (!d.Covers(x, y, 0.5)) { continue }
+                float z = d.At(d.hitS)
+                if (z > top) {
+                    top = z
+                    found = d.road
+                }
+            }
+            return found
+        }
+
+        // Ein Kreis an (e, n) auf der Brücke bridge gegen ihre Brüstungen (die Fahrbahn ist so breit wie die Straße), auf dem Gelände (0) gegen
+        // die Pfeiler der Brücken darüber (wie Raser.BridgeMesher: alle 15 m, je ein Kreis alle 1,5 m quer). Setzt pushX, pushY, depth wie Push.
+        defined bool PushBridge(defined float e, defined float n, defined float radius, defined int bridge) {
+            var list = this.DecksAt(e, n)
+            if (list == undefined || list.Count == 0) { return false }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            float p[] = new float[4]
+            this.depth = 0.0
+            foreach (d in list) {
+                if (bridge != 0) {
+                    if (d.road != bridge || !d.Covers(x, y, 0.3)) { continue }
+                    float half = d.width / 2.0
+                    float over = Math.Abs(d.hitSide) + radius - half
+                    // die Brüstung geht über die ganze Länge (wie gezeichnet)
+                    if (over <= 0.0) { continue }
+                    d.PointAt(d.hitS, p)
+                    // zurück zur Mitte: links der Linie nach rechts (dy, -dx), rechts nach links
+                    float sg = -1.0
+                    if (d.hitSide > 0.0) { sg = 1.0 }
+                    if (over > this.depth) {
+                        this.depth = over
+                        this.pushX = p[3] * sg
+                        this.pushY = -p[2] * sg
+                    }
+                    continue
+                }
+                // von unten: wo das Deck niedrig ist (unter 2,5 m über dem Gelände), ist seine Seite eine Wand (an den Enden nicht: dort geht
+                // es hinauf)
+                if (d.Covers(x, y, radius + 0.3) && d.hitS > 3.0 && d.hitS < d.length - 3.0 && d.At(d.hitS) - d.GroundAt(d.hitS) < 2.5) {
+                    float out = d.width / 2.0 + 0.3 + radius - Math.Abs(d.hitSide)
+                    if (out > this.depth) {
+                        d.PointAt(d.hitS, p)
+                        float sg = 1.0
+                        if (d.hitSide < 0.0) { sg = -1.0 }
+                        // nach außen: links der Linie nach links (-dy, dx)
+                        this.depth = out
+                        this.pushX = -p[3] * sg
+                        this.pushY = p[2] * sg
+                    }
+                }
+                // die Pfeiler
+                foreach (s in d.piers) {
+                    d.PointAt(s, p)
+                    if (Math.Abs(p[0] - x) > 20.0 || Math.Abs(p[1] - y) > 20.0) { continue }
+                    float across = d.width / 2.0 * 0.8
+                    for (float c = -across; c <= across + 0.01; c = c + 1.5) {
+                        float px = p[0] + p[3] * c
+                        float py = p[1] - p[2] * c
+                        float dx = x - px
+                        float dy = y - py
+                        float dd = Math.Sqrt(dx * dx + dy * dy)
+                        float deep = radius + 0.5 - dd
+                        if (deep > this.depth && dd > 0.0001) {
+                            this.depth = deep
+                            this.pushX = dx / dd
+                            this.pushY = dy / dd
+                        }
+                    }
+                }
+            }
+            return this.depth > 0.0
         }
 
         // Steht an (e, n) ein Gebäude (mit margin m Abstand zur Wand, bis 1,9 m)?

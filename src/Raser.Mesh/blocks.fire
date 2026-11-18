@@ -342,18 +342,20 @@ namespace Raser {
         Raser.FileTileStore store
         ColumnBuilder columns
         Dictionary<string, Raser.FarMesher> farMeshers
+        Dictionary<string, List<Raser.BridgeDeck>> decks     // je Kachel die Decks ihrer Brücken (Raser.Bridges)
         defined float originE
         defined float originN
         defined float originZ
         defined float nearSpacing       // Geländeraster der nahen Stufe
         defined bool opaqueOnly
         defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
-        static readonly defined int CacheVersion = 14     // das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        static readonly defined int CacheVersion = 15     // (15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)
             this.columns = new ColumnBuilder(this.store)
             this.farMeshers = new Dictionary<string, Raser.FarMesher>()
+            this.decks = new Dictionary<string, List<Raser.BridgeDeck>>(Owns.Values)
             this.originE = e
             this.originN = n
             this.originZ = z
@@ -375,6 +377,7 @@ namespace Raser {
         undefined Forget() {
             this.columns.Forget()
             this.farMeshers.Clear()
+            this.decks.Clear()
         }
 
         Raser.FarMesher FarFor(Raser.TileKey key) {
@@ -389,6 +392,13 @@ namespace Raser {
             this.farMeshers[name] = fm
             fm.TakeTo(this.farMeshers)
             return fm
+        }
+
+        // Die Decks der Brücken einer Kachel (zwischengespeichert).
+        List<Raser.BridgeDeck> DecksFor(Raser.TileKey key, Raser.FarMesher fm) {
+            string name = key.ToString()
+            if (!this.decks.ContainsKey(name)) { this.decks[name] = Raser.Bridges.Of(fm.tile) }
+            return this.decks[name]
         }
 
         NearResult Build(defined int bx, defined int by) {
@@ -453,6 +463,8 @@ namespace Raser {
                 var panes = new Raser.MeshPart()
                 fm.Windows(frames, panes, east - tileKey.East, north - tileKey.North, 51.2)
                 fm.Arches(frames, east - tileKey.East, north - tileKey.North, 51.2)
+                // Brücken: das Deck mit Brüstungen, Pfeilern, Widerlagern
+                Raser.BridgeMesher.Add(frames, this.DecksFor(tileKey, fm), fm.tile.data.roads, east - tileKey.East, north - tileKey.North, 51.2)
                 opaque.Add(take frames, tileKey.East - east, tileKey.North - north, 0.0)
                 glass.Add(take panes, tileKey.East - east, tileKey.North - north, 0.0)
             }
@@ -494,6 +506,7 @@ namespace Raser {
             var fm = this.FarFor(tileKey)
             if (fm != undefined) {
                 var part = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, sp, true, undefined, windows)
+                Raser.BridgeMesher.Add(part, this.DecksFor(tileKey, fm), fm.tile.data.roads, east - tileKey.East, north - tileKey.North, 51.2)
                 mesh.Add(take part, tileKey.East - this.originE, tileKey.North - this.originN, -this.originZ)
             }
             mesh.Batches(1.0, result.batches)

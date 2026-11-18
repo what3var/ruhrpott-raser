@@ -130,6 +130,8 @@ namespace Raser {
             b.steerAngle = 0.0
             b.lean = e.b / 10.0
             b.sliding = (e.bits & Raser.EntityType.Sliding) != 0
+            b.bridge = 0
+            if ((e.bits & Raser.EntityType.OnBridge) != 0) { b.bridge = this.world.obstacles.DeckUnder(e.east, e.north) }
             b.pushE = 0.0
             b.pushN = 0.0
             v.driver = e.a
