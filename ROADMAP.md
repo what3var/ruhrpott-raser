@@ -121,6 +121,7 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Spieler und Fußgänger detaillierter: Figur mit Gelenken (Ober-/Unterarm, Knie), Gehen/Rennen/Sitzen als Animation, verschiedene Statur, Kleidung, Frisuren, Hautfarben
 - [ ] Grünstreifen detaillierter: Gräser, Stauden, Blühstreifen, Bodendecker, Rindenmulch, Laub, Baumschutzbügel, Poller; verschiedene Bepflanzung je Straßenart und Stadtteil
 - [ ] Mehr Abwechslung überall: Varianten statt Wiederholung (Bäume nach Art, Fassaden, Fenster, Türen, Straßenmöbel, Werbung, Mülltonnen, Fahrräder an Ständern), zufällig aber deterministisch je Ort
+- [ ] Werbetafeln und Litfaßsäulen - aber nicht zu viele: wenige je Straße, an typischen Stellen (Litfaßsäulen an Kreuzungen und Plätzen, Plakatwände an Hauptstraßen, Bahndämmen, Brandwänden, Bushaltestellen), Plakate mit erfundenen Motiven (keine echten Marken), deterministisch je Ort
 
 ## M4: Multiplayer-Grundgerüst
 - [x] Koordinator + ein Regionsserver auf einem Rechner, Protokoll schon für mehrere Regionen ausgelegt (`raser-server`, docs/SERVER.md: ein Prozess, getrennte Klassen, Nachrichten mit Region und Kachel)
