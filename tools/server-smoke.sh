@@ -130,7 +130,9 @@ if near_spawn "$WORK/bernd.log" && near_spawn "$WORK/dora1.log"; then echo "ok: 
 same_stand() { E1=$(sed -n 's/.*Stand am Ende: //p' "$1"); S2=$(sed -n 's/.*Stand am Anfang: //p' "$2"); [ -n "$E1" ] && [ "$E1" = "$S2" ]; }
 if same_stand "$WORK/dora1.log" "$WORK/dora2.log"; then echo "ok: Inventar und Lage nach dem Neuanmelden gleich"; else echo "FEHLT: Inventar und Lage nach dem Neuanmelden gleich"; ok=0; fi
 if same_stand "$WORK/dora2.log" "$WORK/dora3.log"; then echo "ok: Inventar und Lage nach dem Neustart des Servers gleich"; else echo "FEHLT: Inventar und Lage nach dem Neustart des Servers gleich"; ok=0; fi
-if same_stand "$WORK/bernd3.log" "$WORK/bernd5.log" || [ -z "$WORLD" ]; then echo "ok: Bernds Stand (nach dem Umhauen) über den Neustart"; else echo "FEHLT: Bernds Stand über den Neustart"; ok=0; fi
+# (Bernd: nur Bargeld und Inventar - seine Lage darf der Server um 1 m verschieben, wenn dort schon jemand steht)
+same_inv() { E1=$(sed -n 's/.*Stand am Ende: .*\(Bargeld.*\)/\1/p' "$1"); S2=$(sed -n 's/.*Stand am Anfang: .*\(Bargeld.*\)/\1/p' "$2"); [ -n "$E1" ] && [ "$E1" = "$S2" ]; }
+if same_inv "$WORK/bernd3.log" "$WORK/bernd5.log" || [ -z "$WORLD" ]; then echo "ok: Bernds Inventar (nach dem Umhauen) über den Neustart"; else echo "FEHLT: Bernds Inventar über den Neustart"; ok=0; fi
 # zu Fuß gegen zu Fuß: nie näher als 0,7 m (bis auf die cm der Snapshots)
 least() { sed -n 's/.*kleinster Abstand zu [A-Za-z]*: \([0-9.]*\) m.*/\1/p' "$1"; }
 LD=$(least "$WORK/dora4.log"); LE=$(least "$WORK/erik.log")
