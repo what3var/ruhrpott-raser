@@ -639,7 +639,19 @@ class Game {
         int presetIndex = 0
         int last = DateTime.Now.Ticks
         float tidy = 0.0
+        // --profile 1: je 5 s die mittlere Zeit je Abschnitt der Schleife (ms je Bild) - wo die Bilder bleiben
+        bool profile = options.Get("profile", "") != ""
+        string profNames[] = ["Fenster+Ereignisse", "Steuerung+Ansicht", "Verkehr+Fahrzeuge", "Netz", "Inventar", "Szene.Advance", "Rendern", "HUD", "Inventar zeichnen", "Chat/Konsole", "(Fahren", "Platzieren", "Mitfahrer", "Ansicht", "Atmosphäre)"]
+        int prof[] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        int profFrames = 0
+        int profStart = DateTime.Now.Ticks
+        int mark = DateTime.Now.Ticks
+        // --quit s: nach s Sekunden beenden (Messungen; sonst gehen die Zeilen beim Abbruch verloren)
+        float quitAfter = options.Get("quit", "0").ToFloat()
+        int quitAt = DateTime.Now.Ticks + Math.Round(quitAfter * 10000000.0)!int
         while (win.Tick()) {
+            if (quitAfter > 0.0 && DateTime.Now.Ticks > quitAt) { break }
+            if (profile) { mark = Game.Lap(prof, 0, mark) }
             any ev = win.NextEvent()
             while (ev != undefined) {
                 // Chat und Konsole bekommen die Tasten zuerst (online.fire)
@@ -691,6 +703,7 @@ class Game {
                 }
                 ev = win.NextEvent()
             }
+            if (profile) { mark = Game.Lap(prof, 0, mark) }
             // offenes Inventar: das Fahrzeug bzw. der Spieler steht still
             if (gear.Busy) { gas = false; brake = false; left = false; right = false; sprint = false }
             int now = DateTime.Now.Ticks
@@ -736,19 +749,26 @@ class Game {
                 view.Update(walker.east, walker.north, 12.0)
                 atmosphere.Update(walker.east, walker.north, dt)
             } else {
+                int sub = DateTime.Now.Ticks
                 if (!authority) { Game.Advance(car, vehicles, obstacles, dt, throttle, braking, steer, reverse, weather.wetness) }
+                if (profile) { sub = Game.Lap(prof, 10, sub) }
                 // die Kamera dreht dem Wagen weich nach
                 float diff = car.heading - camHeading
                 camHeading = camHeading + diff * Math.Min(1.0, dt * 4.0)
                 Game.Place(car, model, cam, terrain, view, obstacles, chase, camHeading, hood, dt)
+                if (profile) { sub = Game.Lap(prof, 11, sub) }
                 Game.Ride(car, person, terrain, view, hood)
+                if (profile) { sub = Game.Lap(prof, 12, sub) }
                 view.lead = Math.Abs(car.speed) * 2.5
                 if (Math.Abs(car.speed) > 35.0) { view.near = -1 } else { view.near = near }
                 float h = car.heading * Math.PI / 180.0
                 view.SetMotion(car.east, car.north, car.heading, car.speed)
                 view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
+                if (profile) { sub = Game.Lap(prof, 13, sub) }
                 atmosphere.Update(car.east, car.north, dt)
+                if (profile) { sub = Game.Lap(prof, 14, sub) }
             }
+            if (profile) { mark = Game.Lap(prof, 1, mark) }
             // die abgestellten Fahrzeuge rollen aus
             Raser.Vehicle driven = car
             if (onFoot) { driven = undefined }
@@ -770,18 +790,53 @@ class Game {
                 obstacles.Trim(car.east, car.north)
                 terrain.Trim(car.east, car.north)
             }
+            if (profile) { mark = Game.Lap(prof, 2, mark) }
             online.Drive(dt, car, walker, onFoot, scene, terrain, view, weather, atmosphere)
+            if (profile) { mark = Game.Lap(prof, 3, mark) }
             gear.Update(dt, walker, onFoot, car, person, terrain, view, weather, vehicles)
+            if (profile) { mark = Game.Lap(prof, 4, mark) }
             scene.Advance(dt * 1s)
+            if (profile) { mark = Game.Lap(prof, 5, mark) }
             atmosphere.Render()
+            if (profile) { mark = Game.Lap(prof, 6, mark) }
             Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
             npcs.Draw(hud, ink, shade, width)
+            if (profile) { mark = Game.Lap(prof, 7, mark) }
             gear.Draw(hud, width, height, car, walker, onFoot, vehicles)
+            if (profile) { mark = Game.Lap(prof, 8, mark) }
             online.Draw(hud, width, height)
+            if (profile) {
+                mark = Game.Lap(prof, 9, mark)
+                profFrames++
+                if (mark - profStart >= 50000000) {
+                    float secs = (mark - profStart) / 10000000.0
+                    string line = $"{profFrames / secs:F1} fps:"
+                    for (int i = 0; i < 15; i++) {
+                        line = line + $" {profNames[i]} {prof[i] / 10000.0 / profFrames:F1}"
+                        prof[i] = 0
+                    }
+                    string parts = " | Ansicht:"
+                    for (int i = 0; i < 6; i++) {
+                        parts = parts + $" {view.spent[i] / 10000.0 / profFrames:F1}/{view.spent[i + 6] / 10000.0:F0}"
+                        view.spent[i] = 0
+                        view.spent[i + 6] = 0
+                    }
+                    print(line + " ms, Objekte " + view.objects + ", Dreiecke " + view.triangles + ", " + cam.LastRenderer + parts)
+                    profFrames = 0
+                    profStart = mark
+                }
+            }
         }
         online.Close()
         view.Close()
         return 0
+    }
+
+    // (--profile) die Zeit seit mark dem Abschnitt i zuschlagen; gibt die neue Marke
+    static defined int Lap(int prof[], defined int i, defined int mark) {
+        int now = DateTime.Now.Ticks
+        prof[i] = prof[i] + now - mark
+        return now
     }
 
     // Ein einfacher Autopilot für Messfahrten: fünf Fühler (bis 50° nach links und rechts, 60 m weit) - er lenkt dorthin, wo am meisten frei

@@ -35,6 +35,9 @@ class BridgeWorld {
         var none = new List<Raser.Box2>()
         o.boxes["0_0"] = none
         none.TakeTo(o.boxes)
+        var grid = Raser.Obstacles.Grid(none)
+        o.grids["0_0"] = grid
+        grid.TakeTo(o.grids)
         o.tiles["0_0"] = take tile
         return o
     }

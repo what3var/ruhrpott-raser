@@ -12,6 +12,7 @@ namespace Raser {
         Dictionary<string, Raser.Tile> tiles
         defined bool manual             // nicht selbst laden: die Kacheln kommen über Install (Server, Raser.TileWorker)
         Dictionary<string, List<Raser.Box2>> boxes
+        Dictionary<string, List<int>> grids           // je Kachel ein Raster der Gebäude (16 x 16 Zellen zu 16 m, Obstacles.Grid): welche Rechtecke in welcher Zelle
         Dictionary<int, List<float>> passages         // je Gebäude (ID) seine Durchfahrten, bei Bedarf
         Dictionary<int, List<float>> posts            // je Zelle (8 m) die Pfosten darin: Ost, Nord, Radius (Baumstämme, Laternen, Ampeln)
         Dictionary<string, List<Raser.BridgeDeck>> decks  // je Kachel die Decks ihrer Brücken (Raser.Bridges: wie gezeichnet)
@@ -23,6 +24,7 @@ namespace Raser {
             if (world != undefined && world != "") { this.store = new Raser.FileTileStore(world) }
             this.tiles = new Dictionary<string, Raser.Tile>()
             this.boxes = new Dictionary<string, List<Raser.Box2>>()
+            this.grids = new Dictionary<string, List<int>>()
             this.passages = new Dictionary<int, List<float>>()
             this.posts = new Dictionary<int, List<float>>()
             this.decks = new Dictionary<string, List<Raser.BridgeDeck>>(Owns.Values)
@@ -77,9 +79,58 @@ namespace Raser {
             this.decks[name] = Raser.Bridges.Of(loaded)
             this.tiles[name] = loaded
             if (loaded != undefined) { loaded.TakeTo(this.tiles) }
+            var grid = Raser.Obstacles.Grid(list)
+            this.grids[name] = grid
+            grid.TakeTo(this.grids)
             this.boxes[name] = list
             list.TakeTo(this.boxes)
         }
+
+        // Das Raster der Gebäude einer Kachel: 256 Zellen zu 16 x 16 m. Die ersten 257 Werte sind, wo die Liste einer Zelle beginnt (ab 257 gezählt,
+        // der letzte das Ende), danach die Nummern der Rechtecke je Zelle - ein Rechteck steht in jeder Zelle, die es berührt. So prüft eine
+        // Abfrage an einem Punkt nur die Gebäude seiner Zelle statt aller der Kachel (die Kamera fragt je Bild gut 100 Punkte ab).
+        static List<int> Grid(List<Raser.Box2> boxes) {
+            var counts = new List<int>()
+            for (int c = 0; c < 257; c++) { counts.Add(0) }
+            for (int k = 0; k < boxes.Count; k++) {
+                var b = boxes[k]
+                int x0 = Raser.Obstacles.GridCell(b.minX)
+                int x1 = Raser.Obstacles.GridCell(b.maxX)
+                int y0 = Raser.Obstacles.GridCell(b.minY)
+                int y1 = Raser.Obstacles.GridCell(b.maxY)
+                for (int cy = y0; cy <= y1; cy++) {
+                    for (int cx = x0; cx <= x1; cx++) { counts[cy * 16 + cx] = counts[cy * 16 + cx] + 1 }
+                }
+            }
+            var grid = new List<int>()
+            int at = 257
+            for (int c = 0; c < 256; c++) {
+                grid.Add(at)
+                at = at + counts[c]
+            }
+            grid.Add(at)
+            for (int i = 257; i < at; i++) { grid.Add(0) }
+            // füllen (counts wird zum Schreibzeiger je Zelle)
+            for (int c = 0; c < 256; c++) { counts[c] = grid[c] }
+            for (int k = 0; k < boxes.Count; k++) {
+                var b = boxes[k]
+                int x0 = Raser.Obstacles.GridCell(b.minX)
+                int x1 = Raser.Obstacles.GridCell(b.maxX)
+                int y0 = Raser.Obstacles.GridCell(b.minY)
+                int y1 = Raser.Obstacles.GridCell(b.maxY)
+                for (int cy = y0; cy <= y1; cy++) {
+                    for (int cx = x0; cx <= x1; cx++) {
+                        int c = cy * 16 + cx
+                        grid[counts[c]] = k
+                        counts[c] = counts[c] + 1
+                    }
+                }
+            }
+            return grid
+        }
+
+        // Die Spalte bzw. Zeile (0 bis 15) des Rasters zu einer Koordinate in der Kachel (m).
+        static defined int GridCell(defined float v) { return Math.Clamp(Math.Floor(v / 16.0)!int, 0, 15) }
 
         // Die Kachel unter (e, n) (geladen, wenn nötig); undefined: keine.
         Raser.Tile TileAt(defined float e, defined float n) {
@@ -126,7 +177,11 @@ namespace Raser {
             var bx = this.boxes[name]
             float x = e - key.East
             float y = n - key.North
-            for (int k = 0; k < tile.data.buildings.Count; k++) {
+            // nur die Gebäude der Zelle (Raster)
+            var grid = this.grids[name]
+            int gcell = Raser.Obstacles.GridCell(y) * 16 + Raser.Obstacles.GridCell(x)
+            for (int g = grid[gcell]; g < grid[gcell + 1]; g++) {
+                int k = grid[g]
                 if (!bx[k].Contains(x, y)) { continue }
                 var b = tile.data.buildings[k]
                 if (b.function != undefined && (b.function.StartsWith("alkis=51009") || b.function.StartsWith("alkis=53001"))) { continue }
@@ -219,6 +274,7 @@ namespace Raser {
             foreach (name in gone) {
                 this.tiles.Remove(name)
                 this.boxes.Remove(name)
+                this.grids.Remove(name)
                 this.decks.Remove(name)
             }
             this.passages.Clear()
@@ -403,7 +459,11 @@ namespace Raser {
             var bx = this.boxes[name]
             float x = e - key.East
             float y = n - key.North
-            for (int k = 0; k < tile.data.buildings.Count; k++) {
+            // nur die Gebäude der Zelle (Raster)
+            var grid = this.grids[name]
+            int gcell = Raser.Obstacles.GridCell(y) * 16 + Raser.Obstacles.GridCell(x)
+            for (int g = grid[gcell]; g < grid[gcell + 1]; g++) {
+                int k = grid[g]
                 if (!bx[k].Contains(x, y)) { continue }
                 var b = tile.data.buildings[k]
                 if (b.function != undefined && (b.function.StartsWith("alkis=51009") || b.function.StartsWith("alkis=53001"))) { continue }
