@@ -7,6 +7,7 @@
 // (Raser.SimWorld: die Physik aller Spieler und Fahrzeuge, mit den Hindernissen der Kacheln aus --world; Snapshots 15-mal je s, das Wetter alle
 // 10 s und bei jeder Änderung).
 #import "time"
+#import "net"
 #import "filesystem"
 #import "http"
 #import "raser.core"
@@ -36,12 +37,26 @@ class ServerOptions {
 }
 
 class Server {
+    // Der Host zum Lauschen: leer heißt alle Adressen (IPv6 und IPv4). Geht IPv6 nicht (ein Rechner ohne IPv6: "Address family not supported"),
+    // fällt fire nicht selbst auf IPv4 zurück (docs/FIRE.md) - dann 0.0.0.0.
+    static string ListenHost(string host, defined int port) {
+        if (host != "") { return host }
+        try {
+            var probe = new Net.TcpListener("", port, 1)
+            probe.Close()
+            return ""
+        } catch (Exception e) {
+            print("Lauschen auf allen Adressen geht nicht (" + e.message + "): nur IPv4 (0.0.0.0)")
+        }
+        return "0.0.0.0"
+    }
+
     static defined int Main(string items[]) {
         var options = new ServerOptions(items)
         string data = options.Get("data", "data")
         string release = options.Get("release", "")
         string admin = options.Get("admin", "")
-        string host = options.Get("host", "")
+        string host = Server.ListenHost(options.Get("host", ""), options.Get("game", "7481").ToInt())
         int httpPort = options.Get("http", "7480").ToInt()
         int gamePort = options.Get("game", "7481").ToInt()
         int rounds = options.Get("rounds", "20000").ToInt()

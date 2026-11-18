@@ -137,8 +137,10 @@ Oben rechts, rund (168 Pixel), der Spieler in der Mitte: Straßen für Autos (Ha
 Gebäude als Grundriss, Grün, Wald, Wasser, Parkplätze; Fahrzeuge als blaue Punkte, Gegenstände am Boden als gelbe, der Spieler als Pfeil (im Wagen
 rot, zu Fuß blau), N am Rand, ein Maßstab darunter.
 
-Kosten: jede Kachel wird einmal als Bild (256 × 256, 1 Pixel je m) gezeichnet - mit dem Laden der Kachel (die auch Wände und Bäume braucht) gut
-100 ms, höchstens eine je Bild; die 3 × 3 Kacheln um den Spieler liegen als Mosaik bereit (neu beim Wechsel der Kachel). Je Bild wird der runde
+Kosten: jede Kachel wird einmal als Bild (256 × 256, 1 Pixel je m) gezeichnet - Laden und Zeichnen (gut 100 ms) macht ein eigener Thread
+(`MinimapWorker`, `fire dedicated`), das Bild kommt in die Karte, sobald es fertig ist (bis dahin ist die Kachel leer); Bilder ohne Fenster
+(`--minimap 1 --shot`) zeichnen weiter sofort. `raser --minimap-probe 1 --world world --at e,n` fährt 6 s mit 25 m/s über Kachelgrenzen und druckt
+das längste Prepare. Die 3 × 3 Kacheln um den Spieler liegen als Mosaik bereit (neu beim Wechsel der Kachel oder wenn ein Bild kommt). Je Bild wird der runde
 Ausschnitt abgetastet (gedreht, in Festkomma): gut 3 ms, nur wenn sich Lage oder Richtung geändert haben, beim Fahren jedes zweite Bild.
 
 ## Anzeige: Tacho, Schrift, Modelle
@@ -172,4 +174,3 @@ Tasten und Klicks wie vom Fenster durch (aufnehmen, wegwerfen, F, B, Umschalt+Kl
 - Der umgehauene Spieler selbst liegt offline nicht (nur der Passant); online liegt er 3 s (der Server ruft `Raser.Knockdown.Apply` beim
   Ereignis KnockedDown). Arten im Protokoll: 1-4 wie oben, 5/6 Öffnen/Schließen eines Rucksacks am Boden, 7 Use.
 - Ziehen mit gedrückter Maus über mehrere Plätze (Minecraft: verteilen) und Doppelklick (sammeln).
-- Die Karte zeichnet Kacheln im Hauptthread (gut 100 ms beim Betreten neuer Kacheln); besser in einem Worker.

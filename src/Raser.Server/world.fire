@@ -129,7 +129,7 @@ class RegionServer {
     static readonly defined int ParkedPerTile = 6       // geparkte Fahrzeuge je Kachel (beim ersten Besuch)
     static readonly defined float KnockSpeed = 5.0      // ab diesem Tempo (m/s) haut ein Fahrzeug einen Spieler um
     static readonly defined int LyingTicks = 90         // so lange (Takte) liegt er
-    static readonly defined int TileDelay = 15          // so viele Takte nach der Bestellung werden Kacheln der Hindernisse übernommen (0,5 s)
+    static readonly defined int TileDelay = 60          // so viele Takte nach der Bestellung werden Kacheln der Hindernisse übernommen (2 s; der Worker braucht je Kachel 0,1 bis 0,5 s)
     static readonly defined int TrafficDelay = 90       // so viele Takte nach der Bestellung wird ein neuer Straßengraph übernommen (3 s; der Worker braucht für 9 neue Kacheln gut 1,5 s)
 
     Region region
@@ -272,7 +272,9 @@ class RegionServer {
         while (this.tileOrders.Count > 0 && this.tileOrderDue[0] <= this.tick) {
             int t0 = DateTime.UtcNow.Ticks
             var job = this.tileWorker.Take(this.tileOrders[0])
-            this.tileWaitTicks = Math.Max(this.tileWaitTicks, DateTime.UtcNow.Ticks - t0)
+            int waited = DateTime.UtcNow.Ticks - t0
+            this.tileWaitTicks = Math.Max(this.tileWaitTicks, waited)
+            if (waited > 500000) { Gateway.Log("Kacheln: der Takt wartet " + (waited / 10000) + " ms auf den Worker") }
             if (job != undefined) {
                 foreach (n in job.names) {
                     var key = Raser.TileKey.Parse(n)

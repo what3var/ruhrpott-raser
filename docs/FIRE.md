@@ -75,6 +75,10 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 
 ## Netz
 
+- **Kein Rückfall auf IPv4 bei leerem Host:** `new Net.TcpListener("", port)` und `new Http.Server("", port)` lauschen auf IPv6 (mit IPv4 darin);
+  hat der Rechner kein IPv6 (ein Container nach dem Neustart), werfen beide „socket: Address family not supported by protocol“, statt auf
+  `0.0.0.0` zurückzufallen. Umweg in raser-server (`Server.ListenHost`): erst leer probieren, sonst `0.0.0.0`. Wunsch: der Rückfall in fire.
+
 - **`Http.Download` kann keine Antworten mit `Transfer-Encoding: chunked`** („A chunked download is not supported.“). Die OSM-API
   (`api.openstreetmap.org/api/0.6/map`) antwortet so; DGM1/LoD2 von opengeodata.nrw.de gehen. Umweg in `raser fetch` (src/Raser.Tool/setup.fire):
   für OSM `Http.Client.Get` (ganz in den Speicher, dann über eine Teildatei schreiben). Wunsch: chunked in `Http.Download` (fortsetzen geht

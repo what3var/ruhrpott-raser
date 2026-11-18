@@ -139,7 +139,8 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [x] Autoritativer Regionsserver, 2–8 Spieler: Protokoll v2 (Eingaben je Takt, 30 Hz), dieselbe Physik auf Server und Client (`Raser.Sim`: Fahrzeuge, Gehen, Hindernisse der Kacheln, Stöße), Fahrzeuge der Region mit IDs, Inventar über den Server (docs/SERVER.md)
 - [x] Client-Prediction für Fahrzeuge und zu Fuß: Abgleich mit Nachrechnen, weicher Ausgleich, Sprung bei großen Fehlern; die anderen 100 ms in der Vergangenheit interpoliert
 - [ ] Verkehr (NPC-Autos, Fußgänger) auf dem Server: Haken `RegionServer.Npcs`/`NpcEntities` und Entitäten 3/4 sind da; Ereignis „Spieler umgehauen“ mit Verursacher (die Folgen fehlen noch)
-- [x] Interest-Management pro Kachel (eigene Kachel und die 8 Nachbarn)
+- [x] Interest-Management pro Kachel (eigene Kachel und die 8 Nachbarn); Snapshots als Delta gegen den bestätigten (Protokoll v3/v4), weit weg nur jeder 2.
+- [x] Stand der Spieler in SQLite (Lage, Fahrzeug, Körper, Inventar mit Inhalt), Startpunkt vom Server; Hindernis-Kacheln aus einem Worker (Übernahme zu fester Taktgrenze); zu Fuß gegen zu Fuß (Spieler, Fußgänger)
 - [ ] Serverseitiges Wetter (jetzt: Uhr und Preset maßgeblich vom Server, `/time`, `/weather`; simuliert per Seed, optional echtes DWD-Wetter)
 - [ ] Zerstörungs-/Bau-Deltas (Key-Value-Store), Zerstörung als eigener Delta-Typ mit Ursache
 - [ ] Physik-Ereignisse (Aufprall, Explosion) liefern Energie und Trefferpunkt
