@@ -112,9 +112,12 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Glätte; Laternen und Schilder umfahren
 - [x] Fahrzeuge liegen auf ihren Rädern (`Raser.Stance`): Höhe, Nicken und Wanken aus den vier Aufstandspunkten (Gelände, Brückendeck, Bordstein
   des Gehwegs: `Ground.Surface`), gefedert (über den Bordstein wippt der Wagen), beim Bremsen taucht die Nase ein, in Kurven wankt er nach außen;
-  Fahrer auf dem Zweirad, Scheinwerfer und Haubenkamera neigen sich mit, die Verfolgerkamera folgt der Höhe geglättet; NPC-Autos nah ebenso
+  Fahrer auf dem Zweirad, Scheinwerfer und Haubenkamera neigen sich mit, die Verfolgerkamera folgt der Höhe geglättet; NPC-Autos nah ebenso -
+  `docs/images/spiel-neigung-hang.png` (12° Steigung), `docs/images/spiel-neigung-bordstein.png` (rechts auf dem Bordstein)
 - [x] Stöße drehen (`Vehicle.spin`, `Impact`): ein Stoß außerhalb der Mitte - Wand am Eck, Pfosten, anderes Fahrzeug - gibt Drehimpuls aus Hebel
-  und Trägheitsmoment, die Reifen bremsen das Drehen, die Fahrt behält ihre Richtung (sie wird zum Rutschen)
+  und Trägheitsmoment, die Reifen bremsen das Drehen, die Fahrt behält ihre Richtung (sie wird zum Rutschen) - `docs/images/spiel-stoss-drehung.png`
+  (48 km/h auf den abgestellten Transporter: der schiebt Motorrad und Fahrrad weiter, das Auto dreht sich weg; `raser --at 376562.3,5704723.4
+  --gap 22 --heading 69 --steer 0.04 --auto 4.3 --overview 14 --look -40`)
 - [x] Angestoßene stoßen weiter an: jedes bewegte Fahrzeug (abgestellt, Unfallwagen des Verkehrs) prallt an Wänden ab und stößt andere an,
   paarweise mit Breitphase (`Raser.BodyGrid`, `Physics.Wrecks`)
 - [x] Fahrzeugklassen (`Vehicle.Of`): Auto, Transporter, Motorrad, Fahrrad - eigene Fahrwerte, Modelle, Kamera; die anderen Klassen stehen am Start geparkt, der Spieler steigt ins nächste ein; Fahrzeuge halten einander auf
