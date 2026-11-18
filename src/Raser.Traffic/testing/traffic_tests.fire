@@ -612,3 +612,103 @@ class BridgeTests {
         Testing.Assert.IsTrue(found)
     }
 }
+
+class MotorwayTests {
+    static Raser.RoadGraph Graph(List<Raser.Road> roads) {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        foreach (r in roads) { tile.data.roads.Add(copy r) }
+        var g = new Raser.RoadGraph()
+        g.AddTile(tile)
+        g.Build()
+        return g
+    }
+
+    [Test "Autobahn: drei Fahrstreifen je Richtungsfahrbahn, rechts der Standstreifen, Nachbarn links und rechts"]
+    undefined Lanes() {
+        var roads = new List<Raser.Road>(Owns.Values)
+        roads.Add(Net.Road(1, "motorway", [0.0, 100.0, 1500.0, 100.0], 14.25, 3))
+        var g = MotorwayTests.Graph(roads)
+        Testing.Assert.AreEqual(3, g.Count(Raser.LaneKind.Road))
+        var p = new Raser.LanePoint()
+        float expect[] = [97.25, 101.0, 104.75]
+        foreach (l in g.lanes) {
+            if (l.kind != Raser.LaneKind.Road) { continue }
+            Testing.Assert.AreEqual(3, l.laneCount)
+            l.At(500.0, p)
+            Testing.Assert.IsTrue(Math.Abs(p.n - expect[l.laneIndex]) < 0.01)
+            if (l.laneIndex < 2) { Testing.Assert.AreEqual(l.laneIndex + 1, g.lanes[l.leftLane].laneIndex) } else { Testing.Assert.AreEqual(-1, l.leftLane) }
+            if (l.laneIndex > 0) { Testing.Assert.AreEqual(l.laneIndex - 1, g.lanes[l.rightLane].laneIndex) }
+            Testing.Assert.IsTrue(Math.Abs(l.limit - 130.0 / 3.6) < 0.01)
+        }
+    }
+
+    [Test "Autobahn: überholen links, wieder rechts, keine Überlappung"]
+    undefined Overtake() {
+        var roads = new List<Raser.Road>(Owns.Values)
+        roads.Add(Net.Road(1, "motorway", [0.0, 100.0, 3000.0, 100.0], 14.25, 3))
+        var t = Scene.Of(MotorwayTests.Graph(roads))
+        // ein Lkw rechts mit 80 km/h, dahinter drei Autos
+        var truck = Scene.Car(t, 400.0, 97.25, -90.0, 22.0)
+        truck.cap = 22.0
+        truck.wish = 1.0
+        var cars = new List<Raser.NpcCar>()
+        cars.Add(truck)
+        foreach (x in [150.0, 220.0, 300.0]) {
+            var c = Scene.Car(t, x, 97.25, -90.0, 30.0)
+            c.wish = 1.0
+            c.cap = 1.0e9
+            cars.Add(c)
+        }
+        var players = Scene.Walker(400.0, 130.0)
+        float minGap = 1.0e30
+        bool left = false
+        for (int i = 0; i < 2400; i++) {
+            players[0] = truck.east
+            t.Step(1.0 / 30.0, players)
+            foreach (c in cars) { if (t.graph.lanes[c.lane].laneIndex > 0) { left = true } }
+            for (int a = 0; a < cars.Count; a++) {
+                for (int b = a + 1; b < cars.Count; b++) { minGap = Math.Min(minGap, Scene.Gap(cars[a], cars[b])) }
+            }
+        }
+        Testing.Assert.IsTrue(left)
+        Testing.Assert.IsTrue(minGap > 0.0)
+        int ahead = 0
+        int right = 0
+        for (int k = 1; k < cars.Count; k++) {
+            if (cars[k].east > truck.east + 5.0) { ahead++ }
+            if (t.graph.lanes[cars[k].lane].laneIndex == 0) { right++ }
+        }
+        // alle vorbei, und (rechts fahren) mindestens einer wieder rechts
+        Testing.Assert.AreEqual(3, ahead)
+        Testing.Assert.IsTrue(right >= 1)
+    }
+
+    [Test "Autobahn: von der Auffahrt einfädeln, ohne zu berühren"]
+    undefined Merge() {
+        var roads = new List<Raser.Road>(Owns.Values)
+        roads.Add(Net.Road(1, "motorway", [0.0, 100.0, 500.0, 100.0, 1500.0, 100.0], 10.5, 2))
+        roads.Add(Net.Road(2, "motorway_link", [200.0, 40.0, 400.0, 85.0, 500.0, 100.0], 5.0, 1))
+        var g = MotorwayTests.Graph(roads)
+        // die Auffahrt führt nur auf den rechten Streifen
+        foreach (l in g.lanes) {
+            if (l.kind != Raser.LaneKind.Turn || g.lanes[l.source].road != 2) { continue }
+            Testing.Assert.AreEqual(0, g.lanes[l.target].laneIndex)
+        }
+        var t = Scene.Of(g)
+        var ramp = Scene.Car(t, 300.0, 62.5, -77.0, 15.0)
+        var main = Scene.Car(t, 280.0, 98.5, -90.0, 30.0)
+        foreach (c in [ramp, main]) {
+            c.wish = 1.0
+            c.cap = 1.0e9
+        }
+        var players = Scene.Walker(500.0, 140.0)
+        float minGap = 1.0e30
+        for (int i = 0; i < 1200; i++) {
+            t.Step(1.0 / 30.0, players)
+            minGap = Math.Min(minGap, Scene.Gap(ramp, main))
+        }
+        Testing.Assert.IsTrue(minGap > 0.0)
+        Testing.Assert.AreEqual(1, t.graph.lanes[ramp.lane].road)
+        Testing.Assert.IsTrue(ramp.east > 600.0)
+    }
+}

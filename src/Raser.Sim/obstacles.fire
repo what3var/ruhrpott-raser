@@ -15,6 +15,7 @@ namespace Raser {
         Dictionary<int, List<float>> passages         // je Gebäude (ID) seine Durchfahrten, bei Bedarf
         Dictionary<int, List<float>> posts            // je Zelle (8 m) die Pfosten darin: Ost, Nord, Radius (Baumstämme, Laternen, Ampeln)
         Dictionary<string, List<Raser.BridgeDeck>> decks  // je Kachel die Decks ihrer Brücken (Raser.Bridges: wie gezeichnet)
+        Dictionary<string, List<float>> rails         // je Kachel Leitplanken und Wände der Autobahnen (Raser.Motorways.Rails, wie gezeichnet)
 
         // world "": ohne Welt (keine Hindernisse - Bots und Tests ohne Daten).
         construct(string world) {
@@ -26,6 +27,7 @@ namespace Raser {
             this.passages = new Dictionary<int, List<float>>()
             this.posts = new Dictionary<int, List<float>>()
             this.decks = new Dictionary<string, List<Raser.BridgeDeck>>(Owns.Values)
+            this.rails = new Dictionary<string, List<float>>(Owns.Values)
         }
 
         // Die Kachel zu einem Schlüssel mit den Rechtecken ihrer Gebäude (um 2 m gewachsen), bei Bedarf geladen.
@@ -70,6 +72,7 @@ namespace Raser {
                 }
             }
             this.decks[name] = Raser.Bridges.Of(loaded)
+            this.rails[name] = Raser.Motorways.Rails(loaded)
             this.tiles[name] = loaded
             if (loaded != undefined) { loaded.TakeTo(this.tiles) }
             this.boxes[name] = list
@@ -115,6 +118,33 @@ namespace Raser {
                             this.pushX = dx / d
                             this.pushY = dy / d
                         }
+                    }
+                }
+            }
+            // Leitplanken und Wände (auf dem Gelände: posts)
+            if (posts && this.rails.ContainsKey(name)) {
+                var rl = this.rails[name]
+                float rx = e - key.East
+                float ry = n - key.North
+                for (int q = 0; q + 4 < rl.Count; q = q + 5) {
+                    float ax = rl[q]
+                    float ay = rl[q + 1]
+                    if (Math.Abs(ax - rx) > radius + 4.0 || Math.Abs(ay - ry) > radius + 4.0) { continue }
+                    float ex = rl[q + 2] - ax
+                    float ey = rl[q + 3] - ay
+                    float l2 = ex * ex + ey * ey
+                    if (l2 < 0.0001) { continue }
+                    float t = Math.Clamp(((rx - ax) * ex + (ry - ay) * ey) / l2, 0.0, 1.0)
+                    float dx = rx - (ax + ex * t)
+                    float dy = ry - (ay + ey * t)
+                    float d = Math.Sqrt(dx * dx + dy * dy)
+                    float thick = 0.1
+                    if (rl[q + 4] > 1.5) { thick = 0.25 }
+                    float deep = radius + thick - d
+                    if (deep > this.depth && d > 0.0001) {
+                        this.depth = deep
+                        this.pushX = dx / d
+                        this.pushY = dy / d
                     }
                 }
             }
@@ -215,6 +245,7 @@ namespace Raser {
                 this.tiles.Remove(name)
                 this.boxes.Remove(name)
                 this.decks.Remove(name)
+                this.rails.Remove(name)
             }
             this.passages.Clear()
             // die Pfosten liegen je Zelle (8 m, nie über eine Kachelgrenze); zu welcher Kachel eine Zelle gehört, sagt ihr erster Pfosten

@@ -1,0 +1,184 @@
+// Raser.World: Autobahnen und Kraftfahrstraßen - die Aufteilung der Fahrbahn in Fahrstreifen, Leitplanken, Schutzwände, Lärmschutzwände und
+// Schilderbrücken an den Ausfahrten. Ohne Szene: dieselbe Rechnung für das Netz (Raser.MotorwayMesher zeichnet), die Fahrphysik (Raser.Sim:
+// Leitplanken und Wände halten auf) und den Verkehr (Raser.RoadGraph: die Fahrstreifen).
+//
+// - Fahrstreifen (Layout): je Richtung so viele wie lanes (eine Richtungsfahrbahn ist in OSM ein eigener Weg mit oneway), Autobahnen ohne Angabe
+//   2; rechts ein Standstreifen (2,5 m) und links 0,5 m Rand, wenn die Breite reicht.
+// - Am rechten Rand eine Leitplanke (0,75 m hoch, 1 m neben der Fahrbahn), links (zur Mitte) eine Betonschutzwand (0,9 m); wo Wohnhäuser bis
+//   60 m an den Rand kommen, rechts statt der Leitplanke eine Lärmschutzwand (4 m). Unterbrochen, wo eine andere Straße für Autos näher als
+//   ihre halbe Breite + 2 m kommt (Auf- und Abfahrten, Kreuzungen), und auf Brücken (dort steht die Brüstung).
+// - Schilderbrücken: 150 m vor jeder Ausfahrt (eine Auffahrt _link, die von der Autobahn abgeht) über die Fahrbahn, mit blauen Tafeln.
+#import "raser.core"
+
+namespace Raser {
+    // Die Aufteilung einer Fahrbahn: Fahrstreifen je Richtung, ihre Breite, Standstreifen rechts, Rand links (m).
+    class LaneLayout {
+        defined int per
+        defined float lane
+        defined float shoulder
+        defined float margin
+        defined float span              // die Breite einer Richtung (Einbahnstraße: die ganze Fahrbahn)
+    }
+
+    class Motorways {
+        static readonly defined float RailHeight = 0.75
+        static readonly defined float BarrierHeight = 0.9
+        static readonly defined float NoiseHeight = 4.0
+
+        static defined bool IsMotorway(string kind) { return kind == "highway=motorway" || kind == "highway=trunk" }
+        static defined bool IsLink(string kind) { return kind == "highway=motorway_link" || kind == "highway=trunk_link" }
+
+        // Die Aufteilung (kind ohne "highway="; oneway: eine Richtungsfahrbahn).
+        static LaneLayout Layout(string kind, defined float width, defined int lanes, defined bool oneway) {
+            var l = new Raser.LaneLayout()
+            int n = 1
+            if (oneway) {
+                if (lanes >= 2) { n = lanes }
+                if (lanes <= 0 && (kind == "motorway" || kind == "trunk")) { n = 2 }
+            } else if (lanes >= 4) { n = lanes / 2 }
+            l.per = Math.Clamp(n, 1, 4)
+            l.span = width
+            if (!oneway) { l.span = width / 2.0 }
+            if ((kind == "motorway" || kind == "trunk") && l.span >= l.per * 3.0 + 3.0) {
+                l.shoulder = 2.5
+                l.margin = 0.5
+            }
+            l.lane = (l.span - l.shoulder - l.margin) / l.per
+            return l
+        }
+
+        // Eine Richtungsfahrbahn? Autobahnen und ihre Auffahrten immer, sonst mit lanes = 1 (wie Raser.RoadGraph, ohne die Erkennung der Hälften).
+        static defined bool Oneway(Road r) {
+            string k = r.kind
+            return k == "highway=motorway" || Raser.Motorways.IsLink(k) || r.lanes == 1 || (k == "highway=trunk" && r.lanes >= 2)
+        }
+
+        // Die Leitplanken und Wände einer Kachel: je Stück Ost, Nord der Enden (kachel-lokal) und die Art (1 Leitplanke, 2 Schutzwand, 3
+        // Lärmschutzwand), also 5 Zahlen je Stück. Alle 2 m ein Stück entlang der Kanten der Autobahnen und Kraftfahrstraßen.
+        static List<float> Rails(Tile tile) {
+            var out = new List<float>()
+            if (tile == undefined || tile.data == undefined || tile.data.roads == undefined) { return out }
+            foreach (r in tile.data.roads) {
+                if (!Raser.Motorways.IsMotorway(r.kind) || r.layer != 0 || r.points == undefined || r.points.length < 4) { continue }
+                bool oneway = Raser.Motorways.Oneway(r)
+                foreach (side in [1.0, -1.0]) {
+                    // zweibahnig ohne oneway: nur rechts je Richtung (beide Seiten außen), keine Mitte
+                    int kind = 1
+                    if (side < 0.0) { kind = 2 }
+                    if (!oneway) { kind = 1 }
+                    float off = side * (r.width / 2.0 + 1.0)
+                    Raser.Motorways.Edge(tile, r, off, kind, out)
+                }
+            }
+            return out
+        }
+
+        static undefined Edge(Tile tile, Road r, defined float off, defined int kind, List<float> out) {
+            int n = r.points.length / 2
+            float px = 0.0
+            float py = 0.0
+            bool have = false
+            for (int i = 0; i + 1 < n; i++) {
+                float ax = r.points[i * 2]
+                float ay = r.points[i * 2 + 1]
+                float ex = r.points[i * 2 + 2] - ax
+                float ey = r.points[i * 2 + 3] - ay
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len < 0.1) { continue }
+                // rechts von (dx, dy) ist (dy, -dx)
+                float nx = ey / len
+                float ny = -ex / len
+                int steps = Math.Max(1, Math.Ceiling(len / 2.0)!int)
+                for (int k = 0; k <= steps; k++) {
+                    float t = k * 1.0 / steps
+                    float x = ax + ex * t + nx * off
+                    float y = ay + ey * t + ny * off
+                    bool keep = x > -2.0 && y > -2.0 && x < 258.0 && y < 258.0 && !Raser.Motorways.Near(tile, r, x, y)
+                    if (keep && have) {
+                        int k2 = kind
+                        if (kind == 1 && Raser.Motorways.Homes(tile, x, y)) { k2 = 3 }
+                        foreach (v in [px, py, x, y, k2 * 1.0]) { out.Add(v) }
+                    }
+                    px = x
+                    py = y
+                    have = keep
+                }
+            }
+        }
+
+        // Kommt eine andere Straße für Autos (oder eine Brücke) an (x, y) heran? Dann keine Leitplanke (Auf- und Abfahrten, Anschlüsse).
+        static defined bool Near(Tile tile, Road self, defined float x, defined float y) {
+            foreach (o in tile.data.roads) {
+                if (o == self || o.kind == undefined || o.points == undefined || !o.kind.StartsWith("highway=")) { continue }
+                string k = o.kind.Substring(8)
+                if (k == "footway" || k == "path" || k == "cycleway" || k == "steps" || k == "track" || k == "bridleway") { continue }
+                // die andere Richtungsfahrbahn derselben Autobahn: deren Rand stört nicht
+                if (o.kind == self.kind && o.layer == 0 && Raser.Geo.DistanceToLine(o.points, x, y) > o.width / 2.0 + 0.5) { continue }
+                if (Raser.Geo.DistanceToLine(o.points, x, y) < o.width / 2.0 + 2.0) { return true }
+            }
+            return false
+        }
+
+        // Wohnen bis 60 m: ein Gebäude (nicht Industrie, nicht Bauwerk) in der Nähe?
+        static defined bool Homes(Tile tile, defined float x, defined float y) {
+            foreach (b in tile.data.buildings) {
+                if (b.footprint == undefined || b.footprint.length < 2) { continue }
+                string f = b.function
+                if (f != undefined && (f.StartsWith("alkis=2") || f.StartsWith("alkis=5") || f == "amenity=toilets")) { continue }
+                float dx = b.footprint[0] - x
+                float dy = b.footprint[1] - y
+                if (dx * dx + dy * dy < 60.0 * 60.0) { return true }
+            }
+            return false
+        }
+
+        // Die Schilderbrücken einer Kachel: je Brücke die Mitte (x, y), die Richtung der Fahrbahn (dx, dy) und ihre Breite - 5 Zahlen je Stück.
+        static List<float> Gantries(Tile tile) {
+            var out = new List<float>()
+            if (tile == undefined || tile.data == undefined || tile.data.roads == undefined) { return out }
+            foreach (link in tile.data.roads) {
+                if (!Raser.Motorways.IsLink(link.kind) || link.points == undefined || link.points.length < 4) { continue }
+                float sx = link.points[0]
+                float sy = link.points[1]
+                // die Autobahn, von der sie am Anfang abgeht (ein gemeinsamer Punkt)
+                foreach (m in tile.data.roads) {
+                    if (!Raser.Motorways.IsMotorway(m.kind) || m.points == undefined || m.layer != 0) { continue }
+                    int n = m.points.length / 2
+                    int at = -1
+                    for (int i = 0; i < n; i++) {
+                        float dx = m.points[i * 2] - sx
+                        float dy = m.points[i * 2 + 1] - sy
+                        if (dx * dx + dy * dy < 0.01) { at = i }
+                    }
+                    if (at <= 0) { continue }
+                    // 150 m zurück entlang der Autobahn
+                    float left = 150.0
+                    int i = at
+                    float x = m.points[i * 2]
+                    float y = m.points[i * 2 + 1]
+                    float dx = 0.0
+                    float dy = 1.0
+                    while (i > 0 && left > 0.0) {
+                        float ex = m.points[i * 2] - m.points[i * 2 - 2]
+                        float ey = m.points[i * 2 + 1] - m.points[i * 2 - 1]
+                        float len = Math.Sqrt(ex * ex + ey * ey)
+                        if (len < 0.01) {
+                            i--
+                            continue
+                        }
+                        dx = ex / len
+                        dy = ey / len
+                        float t = Math.Min(left, len)
+                        x = m.points[i * 2] - dx * t
+                        y = m.points[i * 2 + 1] - dy * t
+                        left = left - t
+                        i--
+                    }
+                    if (x < 0.0 || y < 0.0 || x >= 256.0 || y >= 256.0) { continue }
+                    foreach (v in [x, y, dx, dy, m.width]) { out.Add(v) }
+                }
+            }
+            return out
+        }
+    }
+}

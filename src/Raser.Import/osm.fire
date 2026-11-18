@@ -331,6 +331,12 @@ namespace Raser {
                 if (l != undefined) { f.layer = l }
             }
             string highway = tags.Get("highway", undefined)
+            // Rastplatz und Rastanlage: die Fläche (darin Parkplätze, Tankstelle, Gebäude; WC, Bänke und Tische stellt Raser.RestAreas dazu)
+            if (highway == "rest_area" || highway == "services") {
+                f.area = true
+                Raser.OsmData.Area(f, "highway=" + highway, Raser.Material.Grass, Raser.Palette.Grass, 4)
+                return f
+            }
             if (highway != undefined && tags.Get("area", "no") != "yes") {
                 if (tags.Get("tunnel", "no") != "no" || f.layer < 0) { return undefined }
                 if (highway == "proposed" || highway == "construction" || highway == "platform" || highway == "elevator" || highway == "corridor") { return undefined }
@@ -343,6 +349,14 @@ namespace Raser {
                 if (tags.ContainsKey("lanes")) {
                     any n = tags["lanes"].TryToInt()
                     if (n != undefined) { f.lanes = n }
+                }
+                // Autobahn und Kraftfahrstraße ohne width: je Fahrstreifen 3,75 m, dazu Standstreifen (2,5 m) und Rand (0,5 m) - eine
+                // Richtungsfahrbahn (oneway) bzw. beide Richtungen
+                if (!tags.ContainsKey("width") && (highway == "motorway" || highway == "trunk")) {
+                    bool one = highway == "motorway" || tags.Get("oneway", "no") == "yes"
+                    int n = f.lanes
+                    if (n <= 0) { n = 2 }
+                    if (one) { f.width = n * 3.75 + 3.0 } else { f.width = n * 3.75 + 6.0 }
                 }
                 f.surface = Raser.Material.Asphalt
                 f.color = Raser.Palette.Asphalt
