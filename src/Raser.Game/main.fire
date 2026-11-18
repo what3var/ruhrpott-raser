@@ -376,6 +376,8 @@ class Game {
         npcs.Warm(options.Get("warm", "0").ToFloat(), car, walker, vehicles, obstacles, terrain, view, weather.wetness)
         // Inventar, Gegenstände am Boden und Karte (items.fire)
         var gear = new Gear(scene, obstacles, car, options)
+        // Gebäude betreten (interiors.fire)
+        var interiors = new Interiors(store, 1, width, height)
 
         var hud = new Renderer(fb)
         var ink = new SolidBrush(0xFFFFFFFF)
@@ -516,6 +518,11 @@ class Game {
         }
 
         // ohne Fenster: eine Probefahrt
+        if (options.Get("interior", "") != "") {
+            int r = InteriorShot.Run(options, interiors, gear, hud, fb, walker, car, width, height)
+            view.Close()
+            return r
+        }
         float auto = options.Get("auto", "0").ToFloat()
         string shot = options.Get("shot", "")
         if (auto > 0.0 || shot != "" || options.Get("inventory-shot", "") != "") {
@@ -644,6 +651,11 @@ class Game {
                 if (ev[0] == EventType.KeyDown || ev[0] == EventType.KeyUp) {
                     bool pressed = ev[0] == EventType.KeyDown
                     int key = ev[1]
+                    // die Liste eines Ladens bekommt die Tasten zuerst
+                    if (pressed && interiors.Key(key, gear, car, walker)) {
+                        ev = win.NextEvent()
+                        continue
+                    }
                     if (key == 119 || key == 1073741906) { gas = pressed }
                     else if (key == 115 || key == 1073741905) { brake = pressed }
                     else if (key == 97 || key == 1073741904) { left = pressed }
@@ -651,8 +663,10 @@ class Game {
                     else if (key == 32) { handbrake = pressed }
                     else if (key == 1073742049 || key == 1073742053) { sprint = pressed }
                     else if (pressed && key == 101) {
-                        // E: aussteigen (im Stand) bzw. einsteigen (am Wagen); am Server entscheidet der (online.fire)
-                        if (online.Authoritative) { useKey = true }
+                        // E: vor einer Tür betreten, drinnen kaufen oder hinaus, an der Zapfsäule tanken (interiors.fire); sonst aussteigen (im
+                        // Stand) bzw. einsteigen (am Wagen) - am Server entscheidet der (online.fire)
+                        if (interiors.Use(walker, onFoot, gear, car)) { }
+                        else if (online.Authoritative) { useKey = true }
                         else if (onFoot) {
                             int at = Game.Nearest(vehicles, walker)
                             if (at >= 0) {
@@ -710,6 +724,20 @@ class Game {
             if (left) { steer = 1.0 }
             if (right) { steer = -1.0 }
             // am Server: der rechnet, das Spiel sagt nur voraus (online.fire) - Wagen und Spieler stehen danach in car und walker
+            // drinnen: nur der Innenraum (die Welt bleibt stehen, der Spieler draußen an der Tür)
+            if (interiors.Inside) {
+                float inForward = 0.0
+                if (gas) { inForward = 1.0 }
+                if (brake) { inForward = -1.0 }
+                interiors.Update(dt, inForward, steer, sprint)
+                interiors.Render(hud)
+                gear.Draw(hud, width, height, car, walker, true, vehicles)
+                string inHint = interiors.Hint(walker, true)
+                if (inHint != "") { Game.Hud(hud, ink, shade, car, weather, height, true, inHint) }
+                interiors.Draw(hud, width, height, gear)
+                online.Draw(hud, width, height)
+                continue
+            }
             bool authority = online.Authoritative
             if (authority) {
                 onFoot = online.Control(dt, gas, brake, left, right, handbrake, sprint, useKey, car, walker)
@@ -768,9 +796,12 @@ class Game {
             gear.Update(dt, walker, onFoot, car, person, terrain, view, weather, vehicles)
             scene.Advance(dt * 1s)
             atmosphere.Render()
-            Game.Hud(hud, ink, shade, car, weather, height, onFoot, Game.Near(vehicles, walker, onFoot))
+            string hint = interiors.Hint(walker, onFoot)
+            if (hint == "") { hint = Game.Near(vehicles, walker, onFoot) }
+            Game.Hud(hud, ink, shade, car, weather, height, onFoot, hint)
             npcs.Draw(hud, ink, shade, width)
             gear.Draw(hud, width, height, car, walker, onFoot, vehicles)
+            interiors.Draw(hud, width, height, gear)
             online.Draw(hud, width, height)
         }
         online.Close()

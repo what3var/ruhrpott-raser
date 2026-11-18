@@ -155,6 +155,10 @@ Eine Kachelregion (z. B. Bochum-Innenstadt, 2 × 2 km) wird von den Rohdaten üb
 - [ ] Rennen: legal auf abgesperrten Strecken und illegal im Verkehr, Wetten
 - [ ] Jobs als Schicht-Missionen in Gebäuden, Aufstieg bis zur Übernahme
 - [ ] Gebäude mieten, prozedurale Innenräume
+  - [x] Betreten (Raser.InteriorSite, Raser.Game Interiors): zu Fuß vor einer Tür der Fassade „E: betreten“ (E ist sonst Ein- und Aussteigen), kurz abblenden, drinnen eine eigene Szene in Ego-Sicht, an der Tür wieder hinaus - Tankstellen-Shop, Supermarkt, Kiosk, Werkstatt, Treppenhaus der Mehrfamilienhäuser
+  - [x] Prozedurale Innenräume (Raser.InteriorPlan, fest aus der ID): der echte Umriss des Erdgeschosses, Fenster aus der Fassade (Licht von draußen), Deckenlampen als Punktlichter, Böden (Fliesen, Linoleum, Beton, Terrazzo), Ölsockel im Treppenhaus; Bausteine: Regale mit Waren, Kassen, Kühlregale, Theke, Kaffeeautomat, Snacks, Zeitungsständer, Hebebühne, Werkbank, Werkzeugschrank, Reifen, Briefkästen, Treppe - `docs/images/innen-markt.png`, `innen-tankstelle.png`, `innen-kiosk.png`, `innen-werkstatt.png`, `innen-treppenhaus.png` (erfundene Testkachel)
+  - [x] Einkaufen (Raser.Shops): E an Kasse, Theke oder Regal öffnet die Liste mit Preisen, 1-9 kauft; Sortiment und Preise je Laden fest; an der Tankstelle unter dem Dach das Fahrzeug tanken und den Kanister füllen (je Liter) - Operationen InvOp 8 Buy, 9 Fill, 10 Refuel, am Server geprüft - `docs/images/innen-kaufen.png`
+  - [ ] Innenräume weiter: Lager und Nebenräume, obere Geschosse und Wohnungen, Verkäufer als Figur, Mobiliar anfassen; der Server prüft noch nicht, dass der Spieler im Laden steht; Licht nach Tageszeit, nachts im Laden; Kamera beim Umsehen mit der Maus
 - [ ] Baumodus (Grundumfang): Setzen/Entfernen, Form, Material, Pinsel, Objekte, Rückgängig
 - [ ] Materialien: Beton, Holz, Glas, Metall (+ Ziegel/Putz); Material-ID + Farbindex pro Voxel
 - [ ] Material-Tabelle mit physikalischen Werten (Schwelle, Zähigkeit, Dichte), zunächst ungenutzt

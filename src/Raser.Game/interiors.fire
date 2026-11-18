@@ -1,0 +1,717 @@
+// Raser.Game: Gebäude betreten (Roadmap M5) - zu Fuß vor einer Tür (Raser.InteriorSite) zeigt die Anzeige „E: betreten“, E führt hinein:
+// kurz abblenden, dann der Innenraum (Raser.InteriorPlan) als eigene Szene mit eigener Kamera (Ego-Sicht in Augenhöhe, keine Wand im Bild),
+// eigenem Bild und eigenen Lichtern (Deckenlampen als Punktlichter, Licht von draußen durch die Fenster der Fassade). Drinnen gehen W/S/A/D wie
+// draußen; E an Kasse, Theke oder Regal öffnet den Laden (Liste mit Preisen, 1-9 kauft ein Stück, Esc/E schließt), E an der Tür führt hinaus.
+// Unter dem Dach einer Tankstelle: E tankt das Fahrzeug (Raser.InvOp.Refuel) oder füllt den Kanister (Fill).
+// Kaufen und Tanken sind Operationen am Inventar (Raser.Shops) - online prüft sie der Server; Preise und Sortiment folgen aus dem Laden.
+// main.fire ruft Key, Update, Hint, Render und Draw; die Welt bleibt draußen stehen (der Spieler auch, an der Tür).
+#import "scene3d"
+#import "graphics"
+#import "raser.core"
+#import "raser.world"
+#import "raser.client"
+
+// Die Szene eines Innenraums: ein Netz aus farbigen Flächen (Palette als Textur wie ItemModels), Lichter, Kamera und ein eigenes Bild.
+class InteriorScene {
+    Raser.InteriorPlan plan
+    Scene scene
+    Camera cam
+    Framebuffer fb
+    List<int> colors
+    List<float> pos
+    List<float> uv
+    List<int> idx
+    defined float ox                // der Ursprung der Szene (kachel-lokal, m): die Tür
+    defined float oy
+
+    construct(Raser.InteriorPlan plan, defined int width, defined int height) {
+        this.plan = plan
+        try plan.TakeTo(this)
+        this.ox = plan.doorX
+        this.oy = plan.doorY
+        this.colors = new List<int>()
+        this.pos = new List<float>()
+        this.uv = new List<float>()
+        this.idx = new List<int>()
+        this.fb = new Framebuffer(width, height)
+        this.scene = new Scene()
+        this.scene.AmbientIntensity = 0.3
+        this.Build()
+        var cam = new Camera(this.fb)
+        cam.FieldOfView = 72deg
+        cam.Near = 0.05m
+        cam.Far = 120m
+        cam.Background = S3D.Rgb(20, 20, 24)
+        this.cam = cam
+        this.scene.Add(take cam)
+    }
+
+    defined int Ink(defined int rgb) {
+        int at = this.colors.IndexOf(rgb)
+        if (at >= 0) { return at }
+        if (this.colors.Count >= 128) { return 0 }
+        this.colors.Add(rgb)
+        return this.colors.Count - 1
+    }
+
+    // Ein Viereck (vier Ecken in der Szene: x, y, z), gegen den Uhrzeigersinn von vorn.
+    undefined Quad(defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float cx, defined float cy, defined float cz, defined float dx, defined float dy, defined float dz, defined int rgb) {
+        float u = (this.Ink(rgb) + 0.5) / 128.0
+        int first = this.pos.Count / 3
+        float ps[] = [ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz]
+        foreach (v in ps) { this.pos.Add(v) }
+        for (int i = 0; i < 4; i++) {
+            this.uv.Add(u)
+            this.uv.Add(0.5)
+        }
+        this.idx.Add(first)
+        this.idx.Add(first + 1)
+        this.idx.Add(first + 2)
+        this.idx.Add(first)
+        this.idx.Add(first + 2)
+        this.idx.Add(first + 3)
+    }
+
+    // Ein Quader in Plan-Koordinaten: Mitte (x, y), Richtung (ux, uy), Länge w, Tiefe d, von z0 bis z1 über dem Boden.
+    undefined Box(defined float x, defined float y, defined float ux, defined float uy, defined float w, defined float d, defined float z0, defined float z1, defined int rgb) {
+        float vx = -uy
+        float vy = ux
+        defined float cx[4]
+        defined float cy[4]
+        float sa[] = [-1.0, 1.0, 1.0, -1.0]
+        float sb[] = [-1.0, -1.0, 1.0, 1.0]
+        for (int i = 0; i < 4; i++) {
+            cx[i] = x + ux * w / 2.0 * sa[i] + vx * d / 2.0 * sb[i] - this.ox
+            cy[i] = -(y + uy * w / 2.0 * sa[i] + vy * d / 2.0 * sb[i] - this.oy)
+        }
+        // oben, unten und die Seiten (beide Drehsinne: ein Quader wird von allen Seiten gesehen)
+        this.Quad(cx[0], z1, cy[0], cx[1], z1, cy[1], cx[2], z1, cy[2], cx[3], z1, cy[3], rgb)
+        this.Quad(cx[3], z1, cy[3], cx[2], z1, cy[2], cx[1], z1, cy[1], cx[0], z1, cy[0], rgb)
+        int shade = InteriorScene.Darker(rgb, 0.85)
+        for (int i = 0; i < 4; i++) {
+            int j = (i + 1) % 4
+            this.Quad(cx[i], z0, cy[i], cx[j], z0, cy[j], cx[j], z1, cy[j], cx[i], z1, cy[i], shade)
+            this.Quad(cx[j], z0, cy[j], cx[i], z0, cy[i], cx[i], z1, cy[i], cx[j], z1, cy[j], shade)
+        }
+    }
+
+    static defined int Darker(defined int rgb, defined float f) {
+        int r = Math.Round(((rgb >> 16) & 255) * f)!int
+        int g = Math.Round(((rgb >> 8) & 255) * f)!int
+        int b = Math.Round((rgb & 255) * f)!int
+        return (r << 16) | (g << 8) | b
+    }
+
+    // Eine senkrechte Fläche zwischen (ax, ay) und (bx, by) (Plan) von z0 bis z1, beidseitig.
+    undefined Panel(defined float ax, defined float ay, defined float bx, defined float by, defined float z0, defined float z1, defined int rgb) {
+        float x0 = ax - this.ox
+        float y0 = -(ay - this.oy)
+        float x1 = bx - this.ox
+        float y1 = -(by - this.oy)
+        this.Quad(x0, z0, y0, x1, z0, y1, x1, z1, y1, x0, z1, y0, rgb)
+        this.Quad(x1, z0, y1, x0, z0, y0, x0, z1, y0, x1, z1, y1, rgb)
+    }
+
+    undefined Build() {
+        var p = this.plan
+        // Boden in Fliesen (im Wechsel) und Decke über dem Umriss
+        float minX = 1.0e30
+        float minY = 1.0e30
+        float maxX = -1.0e30
+        float maxY = -1.0e30
+        for (int k = 0; k + 1 < p.floor.length; k = k + 2) {
+            minX = Math.Min(minX, p.floor[k])
+            maxX = Math.Max(maxX, p.floor[k])
+            minY = Math.Min(minY, p.floor[k + 1])
+            maxY = Math.Max(maxY, p.floor[k + 1])
+        }
+        float t = Math.Max(p.tile, 0.3)
+        if ((maxX - minX) * (maxY - minY) / (t * t) > 12000.0) { t = Math.Sqrt((maxX - minX) * (maxY - minY) / 12000.0) }
+        int ix = 0
+        for (float x = Math.Floor(minX / t) * t; x < maxX; x = x + t) {
+            int iy = 0
+            for (float y = Math.Floor(minY / t) * t; y < maxY; y = y + t) {
+                float cx = x + t / 2.0
+                float cy = y + t / 2.0
+                iy++
+                if (!Raser.Geo.Inside(p.floor, cx, cy)) { continue }
+                int col = p.floorColor
+                if ((Math.Floor(x / t)!int + Math.Floor(y / t)!int) % 2 != 0) { col = p.floorColor2 }
+                float x0 = x - this.ox
+                float x1 = x + t - this.ox
+                float z0 = -(y - this.oy)
+                float z1 = -(y + t - this.oy)
+                this.Quad(x0, 0.0, z0, x1, 0.0, z0, x1, 0.0, z1, x0, 0.0, z1, col)
+                this.Quad(x0, p.height, z1, x1, p.height, z1, x1, p.height, z0, x0, p.height, z0, 0xF2F2EE)
+            }
+            ix++
+        }
+        // Wände: unten der Sockel (1,2 m), darüber die Wandfarbe; eine Leiste am Boden
+        for (int k = 0; k + 3 < p.walls.Count; k = k + 4) {
+            float ax = p.walls[k]
+            float ay = p.walls[k + 1]
+            float bx = p.walls[k + 2]
+            float by = p.walls[k + 3]
+            this.Panel(ax, ay, bx, by, 0.0, 1.2, p.lowerColor)
+            this.Panel(ax, ay, bx, by, 1.2, p.height, p.wallColor)
+            this.Panel(ax, ay, bx, by, 0.0, 0.08, InteriorScene.Darker(p.lowerColor, 0.6))
+        }
+        // Fenster: hell (draußen ist Tag) mit dunklem Rahmen, 2 cm vor der Wand; davor ein schwaches Licht
+        int lights = 0
+        for (int k = 0; k + 5 < p.windows.Count; k = k + 6) {
+            float ax = p.windows[k]
+            float ay = p.windows[k + 1]
+            float bx = p.windows[k + 2]
+            float by = p.windows[k + 3]
+            float z0 = p.windows[k + 4]
+            float z1 = p.windows[k + 5]
+            // auf die Innenwand rücken (die Scheibe liegt 20 cm in der Laibung, die Innenwand 30 cm hinter der Flucht)
+            float mx = (ax + bx) / 2.0
+            float my = (ay + by) / 2.0
+            float sx = p.startX - mx
+            float sy = p.startY - my
+            float dl = Math.Sqrt(sx * sx + sy * sy)
+            float ex = (bx - ax)
+            float ey = (by - ay)
+            float el = Math.Max(Math.Sqrt(ex * ex + ey * ey), 0.01)
+            float nx = -ey / el
+            float ny = ex / el
+            if (nx * sx + ny * sy < 0.0) {
+                nx = -nx
+                ny = -ny
+            }
+            float o = 0.12
+            this.Panel(ax + nx * o, ay + ny * o, bx + nx * o, by + ny * o, z0, z1, 0xBBD3E6)
+            this.Panel(ax + nx * (o + 0.01), ay + ny * (o + 0.01), bx + nx * (o + 0.01), by + ny * (o + 0.01), z0, z0 + 0.08, 0x404448)
+            this.Panel(ax + nx * (o + 0.01), ay + ny * (o + 0.01), bx + nx * (o + 0.01), by + ny * (o + 0.01), z1 - 0.08, z1, 0x404448)
+            if (lights < 4 && dl < 15.0) {
+                var l = Light.Point((mx + nx * 1.0 - this.ox) * 1m, (z0 + z1) / 2.0 * 1m, -(my + ny * 1.0 - this.oy) * 1m, S3D.Rgb(220, 232, 255), 0.3)
+                l.Range = 4m
+                l.CastShadows = false
+                this.scene.Add(take l)
+                lights++
+            }
+        }
+        // Lampen: Leuchten an der Decke, die bis 12 m von der Tür als Punktlichter (höchstens zehn)
+        int n = p.lamps.Count / 2
+        int lit = 0
+        for (int i = 0; i < n; i++) {
+            float lx = p.lamps[i * 2]
+            float ly = p.lamps[i * 2 + 1]
+            this.Box(lx, ly, 1.0, 0.0, 1.2, 0.25, p.height - 0.06, p.height - 0.01, 0xFFFBEA)
+            float dx = lx - p.startX
+            float dy = ly - p.startY
+            if (lit < 10 && dx * dx + dy * dy < 144.0) {
+                lit++
+                var l = Light.Point((lx - this.ox) * 1m, (p.height - 0.3) * 1m, -(ly - this.oy) * 1m, S3D.Rgb(255, 244, 222), 0.55)
+                l.Range = 4m
+                l.CastShadows = false
+                this.scene.Add(take l)
+            }
+        }
+        foreach (piece in p.pieces) { this.Piece(piece) }
+        var pa = new float[this.pos.Count]
+        for (int i = 0; i < this.pos.Count; i++) { pa[i] = this.pos[i] }
+        var ua = new float[this.uv.Count]
+        for (int i = 0; i < this.uv.Count; i++) { ua[i] = this.uv[i] }
+        var ia = new int[this.idx.Count]
+        for (int i = 0; i < this.idx.Count; i++) { ia[i] = this.idx[i] }
+        var model = Model.FromArrays(pa, ua, ia)
+        var o = new Object(model)
+        o.KeepMeshCoordinates = true
+        byte px[] = new byte[128 * 4]
+        px.Fill(255)
+        for (int i = 0; i < this.colors.Count; i++) {
+            int c = this.colors[i]
+            px[i * 4] = (c >> 16) & 255
+            px[i * 4 + 1] = (c >> 8) & 255
+            px[i * 4 + 2] = c & 255
+            px[i * 4 + 3] = 255
+        }
+        o.Texture = new Texture(128, 1, px)
+        this.scene.Add(take o)
+    }
+
+    // Die Waren in einem Regalfach: bunte Packungen im Wechsel (je Baustein eine Mischung).
+    undefined Goods(Raser.InteriorPiece q, defined float z0, defined float z1, defined float depth) {
+        int palette[] = [0xC83C32, 0xE8C040, 0x3C78C8, 0x48A050, 0xF0F0E8, 0xE07828, 0x8C4CA0, 0x50B4C8]
+        float vx = -q.uy
+        float vy = q.ux
+        int count = Math.Max(1, Math.Floor(q.w / 0.25)!int)
+        for (int side = -1; side <= 1; side = side + 2) {
+            for (int i = 0; i < count; i++) {
+                float a = -q.w / 2.0 + (i + 0.5) * q.w / count
+                int c = palette[(i * 7 + q.variant * 3 + side + 8 + Math.Round(z0 * 10.0)!int) % 8]
+                float x = q.x + q.ux * a + vx * side * q.d / 4.0
+                float y = q.y + q.uy * a + vy * side * q.d / 4.0
+                this.Box(x, y, q.ux, q.uy, q.w / count - 0.04, depth, z0, z1 - 0.02 * (i % 3), c)
+            }
+        }
+    }
+
+    undefined Piece(Raser.InteriorPiece q) {
+        float vx = -q.uy
+        float vy = q.ux
+        int k = q.kind
+        if (k == Raser.InteriorPiece.Shelf) {
+            // Regal: Rückwand, vier Böden, Waren
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, 0.06, 0.0, q.h, 0xB4B8BC)
+            for (int s = 0; s < 4; s++) {
+                float z = 0.1 + s * (q.h - 0.2) / 3.5
+                this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, z, z + 0.03, 0xCDD0D4)
+                this.Goods(q, z + 0.03, z + 0.3, q.d / 2.0 - 0.08)
+            }
+        } else if (k == Raser.InteriorPiece.Counter) {
+            // Theke mit Kasse und Bildschirm
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, q.h - 0.05, 0x8A5A3A)
+            this.Box(q.x, q.y, q.ux, q.uy, q.w + 0.04, q.d + 0.04, q.h - 0.05, q.h, 0x3A3A3E)
+            float rx = q.x + q.ux * q.w * 0.25
+            float ry = q.y + q.uy * q.w * 0.25
+            this.Box(rx, ry, q.ux, q.uy, 0.35, 0.3, q.h, q.h + 0.12, 0x2A2A2E)
+            this.Box(rx, ry, q.ux, q.uy, 0.3, 0.04, q.h + 0.12, q.h + 0.38, 0x1C2A3A)
+            // ein Aufsteller mit Kaugummi und Feuerzeugen
+            this.Box(q.x - q.ux * q.w * 0.3, q.y - q.uy * q.w * 0.3, q.ux, q.uy, 0.4, 0.25, q.h, q.h + 0.25, 0xE8C040)
+        } else if (k == Raser.InteriorPiece.Fridge) {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, q.h, 0xE8EAEC)
+            // die Glastür mit Flaschen dahinter (zur offenen Seite: beide Seiten, eine sieht man)
+            for (int side = -1; side <= 1; side = side + 2) {
+                float fx = q.x + vx * side * (q.d / 2.0 + 0.005)
+                float fy = q.y + vy * side * (q.d / 2.0 + 0.005)
+                this.Panel(fx - q.ux * q.w * 0.45, fy - q.uy * q.w * 0.45, fx + q.ux * q.w * 0.45, fy + q.uy * q.w * 0.45, 0.15, q.h - 0.2, 0x9CC8DC)
+                for (int s = 0; s < 4; s++) {
+                    float z = 0.25 + s * 0.42
+                    int bottles = Math.Max(2, Math.Floor(q.w / 0.12)!int)
+                    for (int b = 0; b < bottles; b++) {
+                        float a = -q.w * 0.42 + (b + 0.5) * q.w * 0.84 / bottles
+                        int cols[] = [0x48A050, 0xC83C32, 0x3C78C8, 0xE8C040]
+                        this.Box(fx + q.ux * a + vx * side * 0.01, fy + q.uy * a + vy * side * 0.01, q.ux, q.uy, 0.06, 0.02, z, z + 0.24, cols[(b + s + q.variant) % 4])
+                    }
+                }
+            }
+        } else if (k == Raser.InteriorPiece.Snacks) {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, 0.4, 0xB0B4B8)
+            this.Goods(q, 0.4, 0.62, q.d / 2.0 - 0.05)
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d * 0.6, 0.65, 0.68, 0xB0B4B8)
+            this.Goods(q, 0.68, 0.9, q.d / 3.0)
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d * 0.3, 0.95, 0.98, 0xB0B4B8)
+            this.Goods(q, 0.98, 1.2, q.d / 6.0)
+        } else if (k == Raser.InteriorPiece.NewsStand) {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, 0.08, 0x404448)
+            this.Box(q.x, q.y, q.ux, q.uy, 0.06, 0.06, 0.0, q.h, 0x404448)
+            for (int s = 0; s < 4; s++) {
+                float z = 0.4 + s * 0.25
+                int cols[] = [0xF0F0E8, 0xD04838, 0xF0F0E8, 0x3C78C8]
+                this.Box(q.x, q.y, q.ux, q.uy, q.w * 0.9, q.d * 0.8, z, z + 0.2, cols[(s + q.variant) % 4])
+            }
+        } else if (k == Raser.InteriorPiece.Coffee) {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, q.h, 0x2E2E32)
+            this.Box(q.x + vx * q.d * 0.5, q.y + vy * q.d * 0.5, q.ux, q.uy, q.w * 0.7, 0.02, 1.0, 1.5, 0xC86428)
+        } else if (k == Raser.InteriorPiece.Lift) {
+            // Hebebühne: zwei Säulen, zwei Arme, gelb-schwarz
+            for (int side = -1; side <= 1; side = side + 2) {
+                float sx = q.x + q.ux * side * (q.w / 2.0 + 0.2)
+                float sy = q.y + q.uy * side * (q.w / 2.0 + 0.2)
+                this.Box(sx, sy, q.ux, q.uy, 0.35, 0.35, 0.0, 3.0, 0xE8C020)
+                this.Box(q.x + q.ux * side * q.w * 0.3, q.y + q.uy * side * q.w * 0.3, vx, vy, q.d, 0.18, 0.6, 0.75, 0x2A2A2C)
+            }
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, 0.02, 0xE8C020)
+        } else if (k == Raser.InteriorPiece.Workbench) {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, q.h - 0.06, q.h, 0x9A6B3F)
+            for (int c = 0; c < 4; c++) {
+                float a = q.w / 2.0 - 0.1
+                float b = q.d / 2.0 - 0.1
+                if (c % 2 == 1) { a = -a }
+                if (c >= 2) { b = -b }
+                this.Box(q.x + q.ux * a + vx * b, q.y + q.uy * a + vy * b, q.ux, q.uy, 0.06, 0.06, 0.0, q.h - 0.06, 0x5A6E8A)
+            }
+            this.Box(q.x, q.y, q.ux, q.uy, 0.5, 0.3, q.h, q.h + 0.25, 0x3C3C40)
+        } else if (k == Raser.InteriorPiece.Cabinet) {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, q.h, 0xC03A2E)
+            for (int s = 0; s < 6; s++) { this.Box(q.x + vx * 0.01, q.y + vy * 0.01, q.ux, q.uy, q.w * 0.9, q.d, 0.15 + s * 0.28, 0.17 + s * 0.28, 0x8A2A22) }
+        } else if (k == Raser.InteriorPiece.Tyres) {
+            for (float z = 0.0; z < q.h - 0.05; z = z + 0.22) { this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, z, z + 0.2, 0x1E1E20) }
+        } else if (k == Raser.InteriorPiece.Mailboxes) {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 1.0, 1.0 + q.h, 0x8C8E90)
+            for (int r = 0; r < 3; r++) {
+                for (int c = 0; c < 4; c++) {
+                    float a = -q.w / 2.0 + (c + 0.5) * q.w / 4.0
+                    this.Box(q.x + q.ux * a, q.y + q.uy * a, q.ux, q.uy, q.w / 4.0 - 0.04, q.d + 0.02, 1.05 + r * q.h / 3.0, 1.0 + (r + 1) * q.h / 3.0 - 0.04, 0xB4B6B8)
+                }
+            }
+        } else if (k == Raser.InteriorPiece.Stairs) {
+            // Stufen (17 cm) bis zur Decke, Geländer
+            int steps = Math.Max(3, Math.Floor(q.h / 0.17)!int)
+            for (int s = 0; s < steps; s++) {
+                float a = -q.w / 2.0 + (s + 0.5) * q.w / steps
+                this.Box(q.x + q.ux * a, q.y + q.uy * a, q.ux, q.uy, q.w / steps, q.d, 0.0, (s + 1) * 0.17, 0xA89C88)
+            }
+            this.Box(q.x + vx * q.d / 2.0, q.y + vy * q.d / 2.0, q.ux, q.uy, q.w, 0.05, 0.9, 1.0, 0x5A3A26)
+        } else if (k == Raser.InteriorPiece.Door) {
+            int col = 0x6A4A30
+            if (q.use == Raser.InteriorPiece.Exit) { col = 0x7090A0 }
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, 0.06, 0.0, q.h, col)
+            this.Box(q.x + vx * 0.05, q.y + vy * 0.05, q.ux, q.uy, 0.12, 0.04, 1.0, 1.06, 0xC0C0C4)
+        } else if (k == Raser.InteriorPiece.Pallet) {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, 0.15, 0xB08A5A)
+            this.Box(q.x, q.y, q.ux, q.uy, q.w * 0.9, q.d * 0.9, 0.15, q.h, 0xA0825A)
+        } else {
+            this.Box(q.x, q.y, q.ux, q.uy, q.w, q.d, 0.0, q.h, 0x909090)
+        }
+    }
+}
+
+// Betreten, drinnen gehen, kaufen, hinaus.
+class Interiors {
+    Raser.FileTileStore store
+    defined int seed
+    Dictionary<string, Raser.InteriorSite> sites
+    InteriorScene room              // der Innenraum, in dem der Spieler ist (undefined: draußen)
+    Raser.Entrance door             // durch die er kam
+    Raser.InteriorSite site
+    defined float x                 // drinnen: Lage (kachel-lokal) und Richtung (Grad)
+    defined float y
+    defined float heading
+    defined float fade              // abblenden (s, 0: nicht)
+    // der Laden (Liste mit Preisen)
+    defined bool shopOpen
+    defined int shopKind
+    defined int shopId
+    List<Raser.Offer> offers
+    defined bool pump               // an der Zapfsäule (draußen)
+    string say                      // die letzte Meldung
+    defined float sayTime
+    defined int width
+    defined int height
+
+    construct(Raser.FileTileStore store, defined int seed, defined int width, defined int height) {
+        this.store = store
+        this.seed = seed
+        this.sites = new Dictionary<string, Raser.InteriorSite>()
+        this.width = width
+        this.height = height
+        this.shopOpen = false
+        this.offers = new List<Raser.Offer>()
+        this.say = ""
+        this.sayTime = 0.0
+        this.fade = 0.0
+    }
+
+    defined bool Inside { get { return this.room != undefined } }
+
+    // Die Eingänge der Kachel um (e, n), einmal geplant.
+    Raser.InteriorSite SiteAt(defined float e, defined float n) {
+        var key = Raser.TileKey.Of(e, n)
+        string name = key.ToString()
+        if (this.sites.ContainsKey(name)) { return this.sites[name] }
+        var tile = this.store.Load(key)
+        if (tile == undefined) { return undefined }
+        var s = new Raser.InteriorSite(take tile, this.seed)
+        this.sites[name] = take s
+        return this.sites[name]
+    }
+
+    // Eine Tür bis 2 m vor dem Spieler (draußen); undefined: keine.
+    Raser.Entrance DoorNear(Raser.Walker w) {
+        var s = this.SiteAt(w.east, w.north)
+        if (s == undefined) { return undefined }
+        var key = Raser.TileKey.Of(w.east, w.north)
+        return s.Near(w.east - key.East, w.north - key.North, 2.0)
+    }
+
+    // Unter dem Dach einer Tankstelle? Gibt die ID der Station (für den Preis), 0: nein.
+    defined int StationAt(Raser.Walker w) {
+        var s = this.SiteAt(w.east, w.north)
+        if (s == undefined) { return 0 }
+        var key = Raser.TileKey.Of(w.east, w.north)
+        float x = w.east - key.East
+        float y = w.north - key.North
+        foreach (m in s.models) {
+            if (m.kind != Raser.BuildingKinds.FuelCanopy || !m.Contains(x, y)) { continue }
+            // die Station ist der Shop daneben (sonst das Dach selbst)
+            foreach (o in s.models) {
+                if (o.kind == Raser.BuildingKinds.Fuel && Raser.HouseStyle.RingDistance(o.building.footprint, x, y) < 40.0) { return o.building.id }
+            }
+            return m.building.id
+        }
+        return 0
+    }
+
+    // Was E gerade täte (für die Anzeige; "": nichts).
+    string Hint(Raser.Walker w, defined bool onFoot) {
+        if (this.Inside) {
+            var q = this.room.plan.Usable(this.x, this.y, 1.1)
+            if (q == undefined) { return "" }
+            if (q.use == Raser.InteriorPiece.Exit) { return "hinausgehen" }
+            if (this.shopOpen) { return "schließen" }
+            return "einkaufen"
+        }
+        if (!onFoot) { return "" }
+        if (this.DoorNear(w) != undefined) { return "betreten" }
+        if (this.StationAt(w) != 0) { return "tanken" }
+        return ""
+    }
+
+    // E zu Fuß bzw. drinnen: betreten, kaufen, hinaus, tanken. true: verbraucht (sonst ist E Ein- und Aussteigen).
+    defined bool Use(Raser.Walker w, defined bool onFoot, Gear gear, Raser.Vehicle car) {
+        if (this.Inside) {
+            if (this.shopOpen) {
+                this.shopOpen = false
+                return true
+            }
+            var q = this.room.plan.Usable(this.x, this.y, 1.1)
+            if (q == undefined) { return true }
+            if (q.use == Raser.InteriorPiece.Exit) {
+                this.Leave(w)
+                return true
+            }
+            this.OpenShop(this.room.plan.shop, this.room.plan.building)
+            return true
+        }
+        if (!onFoot) { return false }
+        var e = this.DoorNear(w)
+        if (e != undefined) {
+            this.Enter(w, e)
+            return true
+        }
+        int station = this.StationAt(w)
+        if (station != 0) {
+            this.pump = true
+            this.OpenShop(Raser.ShopKind.Fuel, station)
+            return true
+        }
+        return false
+    }
+
+    undefined OpenShop(defined int kind, defined int id) {
+        this.shopKind = kind
+        this.shopId = id
+        this.offers.Clear()
+        var l = Raser.Shops.Offers(kind, id)
+        while (l.Count > 0) { this.offers.Add(l.TakeAt(0)) }
+        this.shopOpen = true
+    }
+
+    undefined Enter(Raser.Walker w, Raser.Entrance e) {
+        var site = this.SiteAt(w.east, w.north)
+        var plan = Raser.InteriorPlan.Make(site.models[e.model], e)
+        this.x = plan.startX
+        this.y = plan.startY
+        this.heading = Math.Atan2(-plan.inX, plan.inY) * 180.0 / Math.PI
+        this.room = new InteriorScene(take plan, this.width, this.height)
+        this.door = e
+        this.site = site
+        this.pump = false
+        this.shopOpen = false
+        this.fade = 0.35
+    }
+
+    // Hinaus: der Spieler steht vor der Tür, mit dem Rücken zu ihr.
+    undefined Leave(Raser.Walker w) {
+        var key = Raser.TileKey.Of(w.east, w.north)
+        if (this.door != undefined) {
+            w.east = this.door.x + this.door.nx * 1.0 + key.East
+            w.north = this.door.y + this.door.ny * 1.0 + key.North
+            w.heading = Math.Atan2(-this.door.nx, this.door.ny) * 180.0 / Math.PI
+        }
+        this.room = undefined
+        this.shopOpen = false
+        this.fade = 0.35
+    }
+
+    // Eine Taste (nur bei offener Liste): 1-9 kauft ein Stück, Esc schließt. true: verbraucht.
+    defined bool Key(defined int key, Gear gear, Raser.Vehicle car, Raser.Walker w) {
+        if (!this.shopOpen) { return false }
+        if (key == 27 || key == 113) {
+            this.shopOpen = false
+            return true
+        }
+        int n = key - 49
+        int extra = 0
+        if (this.shopKind == Raser.ShopKind.Fuel) { extra = 2 }
+        if (n < 0 || n >= this.offers.Count + extra) { return n >= 0 && n < 9 }
+        Raser.InvOp op = undefined
+        if (n < this.offers.Count) {
+            op = new Raser.InvOp(Raser.InvOp.Buy, this.shopId, n, this.shopKind, 0, 1)
+        } else if (n == this.offers.Count) {
+            gear.inv.vehicle = car
+            op = new Raser.InvOp(Raser.InvOp.Refuel, 0, 0, this.shopId, 0, 1)
+        } else {
+            // der Kanister in Händen, Taschen oder Rucksack
+            op = this.CanOp(gear.inv)
+            if (op == undefined) {
+                this.Say("Kein Kanister dabei")
+                return true
+            }
+        }
+        if (gear.inv.Apply(op)) { gear.screen.Record(op) }
+        this.Say(gear.inv.message)
+        return true
+    }
+
+    Raser.InvOp CanOp(Raser.Inventory inv) {
+        foreach (c in [inv.Hands(), inv.Pockets(), inv.Backpack()]) {
+            if (c == undefined) { continue }
+            for (int i = 0; i < c.Size; i++) {
+                if (c.Item(i) == Raser.Items.Kanister) { return new Raser.InvOp(Raser.InvOp.Fill, c.id, i, this.shopId, 0, 1) }
+            }
+        }
+        return undefined
+    }
+
+    undefined Say(string text) {
+        this.say = text
+        this.sayTime = 3.0
+    }
+
+    // Drinnen gehen (W/S vor und zurück, A/D drehen, Umschalt rennt) - an Wänden und Einrichtung entlang.
+    undefined Update(defined float dt, defined float forward, defined float turn, defined bool sprint) {
+        this.fade = Math.Max(0.0, this.fade - dt)
+        this.sayTime = Math.Max(0.0, this.sayTime - dt)
+        if (!this.Inside || this.shopOpen) { return }
+        this.heading = this.heading + turn * 110.0 * dt
+        float speed = 1.5
+        if (sprint) { speed = 3.2 }
+        float h = this.heading * Math.PI / 180.0
+        float dx = -Math.Sin(h) * forward * speed * dt
+        float dy = Math.Cos(h) * forward * speed * dt
+        var p = this.room.plan
+        if (p.Free(this.x + dx, this.y + dy, 0.3)) {
+            this.x = this.x + dx
+            this.y = this.y + dy
+        } else if (p.Free(this.x + dx, this.y, 0.3)) {
+            this.x = this.x + dx
+        } else if (p.Free(this.x, this.y + dy, 0.3)) {
+            this.y = this.y + dy
+        }
+    }
+
+    // Das Bild von drinnen (Ego-Sicht, 1,65 m) - in das Bild des Spiels kopiert.
+    undefined Render(Renderer hud, defined float pitch = 0.0) {
+        if (!this.Inside) { return }
+        var c = this.room.cam
+        c.SetPosition((this.x - this.room.ox) * 1m, 1.65m, -(this.y - this.room.oy) * 1m)
+        c.RotationY = this.heading * 1deg
+        c.RotationX = pitch * 1deg
+        c.Render()
+        hud.Blit(this.room.fb, 0, 0, BlitMode.Copy)
+    }
+
+    // Die Liste des Ladens, Meldungen und das Abblenden.
+    undefined Draw(Renderer hud, defined int width, defined int height, Gear gear) {
+        var font = HudStyle.Medium()
+        var bold = HudStyle.Bold()
+        var ink = new SolidBrush(0xFFFFFFFF)
+        var gold = new SolidBrush(HudStyle.Color(0xFFF0C850))
+        var shade = new SolidBrush(0xC0101014)
+        if (this.shopOpen) {
+            int rows = this.offers.Count
+            if (this.shopKind == Raser.ShopKind.Fuel) { rows = rows + 2 }
+            int w = 380
+            int h = 86 + rows * 30
+            int x0 = (width - w) / 2
+            int y0 = (height - h) / 2
+            hud.FillRoundRect(x0, y0, w, h, 10, shade)
+            hud.DrawText(x0 + 20, y0 + 12, Raser.ShopKind.Name(this.shopKind), gold, undefined, bold, 26)
+            hud.DrawText(x0 + w - 20 - hud.TextWidth("Bargeld " + HudStyle.Money(gear.inv.cash), font, 18), y0 + 18, "Bargeld " + HudStyle.Money(gear.inv.cash), ink, undefined, font, 18)
+            for (int i = 0; i < rows; i++) {
+                string name = ""
+                string price = ""
+                if (i < this.offers.Count) {
+                    name = Raser.Items.Get(this.offers[i].item).name
+                    price = HudStyle.Money(this.offers[i].price)
+                } else if (i == this.offers.Count) {
+                    name = "Fahrzeug volltanken"
+                    price = HudStyle.Money(Raser.Shops.LiterPrice(this.shopId)) + "/l"
+                } else {
+                    name = "Kanister füllen (10 l)"
+                    price = HudStyle.Money(Raser.Shops.LiterPrice(this.shopId)) + "/l"
+                }
+                int ry = y0 + 54 + i * 30
+                hud.DrawText(x0 + 20, ry, (i + 1) + "", gold, undefined, bold, 20)
+                hud.DrawText(x0 + 48, ry, name, ink, undefined, font, 20)
+                hud.DrawText(x0 + w - 20 - hud.TextWidth(price, font, 20), ry, price, ink, undefined, font, 20)
+            }
+            hud.DrawText(x0 + 20, y0 + h - 28, "1-" + rows + ": kaufen   Esc/E: schließen", ink, undefined, font, 16)
+        }
+        if (this.sayTime > 0.0 && this.say != "") {
+            int tw = hud.TextWidth(this.say, font, 20) + 24
+            hud.FillRoundRect((width - tw) / 2, height - 96, tw, 32, 6, shade)
+            hud.DrawText((width - tw) / 2 + 12, height - 92, this.say, ink, undefined, font, 20)
+        }
+        if (this.fade > 0.0) {
+            int a = Math.Clamp(Math.Round(this.fade / 0.35 * 255.0)!int, 0, 255)
+            hud.FillRect(0, 0, width, height, new SolidBrush((a << 24) | 0x000000))
+        }
+    }
+}
+
+// Bilder ohne Fenster: --interior markt|tankstelle|kiosk|werkstatt|treppenhaus [--inside-walk m] [--inside-look grad] [--shop 1] --shot bild.png
+class InteriorShot {
+    static defined int Run(Options options, Interiors interiors, Gear gear, Renderer hud, Framebuffer fb, Raser.Walker walker, Raser.Vehicle car, defined int width, defined int height) {
+        // der Spieler steht, wo der Wagen startet
+        walker.east = car.east
+        walker.north = car.north
+        string want = options.Get("interior", "")
+        int kind = -1
+        if (want == "markt") { kind = Raser.ShopKind.Market }
+        if (want == "tankstelle") { kind = Raser.ShopKind.Fuel }
+        if (want == "kiosk") { kind = Raser.ShopKind.Kiosk }
+        if (want == "werkstatt") { kind = Raser.ShopKind.Workshop }
+        if (want == "treppenhaus") { kind = 0 }
+        // die nächste passende Tür in den 3 x 3 Kacheln um den Start
+        Raser.Entrance best = undefined
+        float bd = 1.0e30
+        float be = 0.0
+        float bn = 0.0
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                float e = walker.east + dx * 256.0
+                float n = walker.north + dy * 256.0
+                var s = interiors.SiteAt(e, n)
+                if (s == undefined) { continue }
+                var key = Raser.TileKey.Of(e, n)
+                foreach (en in s.entrances) {
+                    if (en.shop != kind) { continue }
+                    float ex = en.x + key.East
+                    float ey = en.y + key.North
+                    float d = (ex - walker.east) * (ex - walker.east) + (ey - walker.north) * (ey - walker.north)
+                    if (d < bd) {
+                        bd = d
+                        best = en
+                        be = ex
+                        bn = ey
+                    }
+                }
+            }
+        }
+        if (best == undefined) {
+            print("Kein Eingang der Art '" + want + "' in der Nähe")
+            return 1
+        }
+        walker.east = be + best.nx * 1.0
+        walker.north = bn + best.ny * 1.0
+        interiors.Enter(walker, best)
+        // ein paar Schritte hinein und umsehen
+        float walk = options.Get("inside-walk", "1.5").ToFloat()
+        float look = options.Get("inside-look", "0").ToFloat()
+        for (float t = 0.0; t < walk; t = t + 0.05) { interiors.Update(1.0 / 30.0, 1.0, 0.0, false) }
+        interiors.heading = interiors.heading + look
+        interiors.fade = 0.0
+        if (options.Get("shop", "") != "") {
+            var q = interiors.room.plan.Usable(interiors.x, interiors.y, 30.0)
+            int shop = interiors.room.plan.shop
+            if (shop == 0) { shop = Raser.ShopKind.Kiosk }
+            interiors.OpenShop(shop, interiors.room.plan.building)
+            // einmal kaufen (das erste Angebot), damit die Meldung im Bild steht
+            interiors.Key(49, gear, undefined, walker)
+        }
+        interiors.Render(hud, options.Get("inside-pitch", "-8").ToFloat())
+        interiors.Draw(hud, width, height, gear)
+        var p = interiors.room.plan
+        print("Innenraum " + want + " (Gebäude " + p.building + "): " + p.pieces.Count + " Bausteine, " + (p.walls.Count / 4) + " Wände, " + (p.windows.Count / 6) + " Fenster, " + (p.lamps.Count / 2) + " Lampen")
+        string shot = options.Get("shot", "innen.png")
+        IO.File.WriteAllBytes(shot, fb.ToPng())
+        print(shot)
+        return 0
+    }
+}

@@ -26,6 +26,15 @@ Am Start hat der Spieler Handy, Schlüssel, 23,50 €, 3 Brötchen, 7 Zigaretten
 Links neben dem Wagen liegen zum Ausprobieren ein Turnbeutel (mit Pommes, Wasser, Zigaretten), ein leerer Trekkingrucksack, ein voller Kanister,
 12,50 €, Brötchen und Pommes; 22 m voraus steht am rechten Straßenrand ein Passant (orange Jacke) zum Umfahren.
 
+## Kaufen und Tanken
+
+Kaufen ist eine Operation (`InvOp` Buy, Art 8: `source` die ID des Ladens, `target` seine Art - `Raser.ShopKind`, `sourceSlot` das Angebot,
+`count` die Menge). Sortiment und Preise folgen aus Art und ID (`Raser.Shops.Offers`: je Laden -10 .. +20 % auf den Grundpreis, auf 5 Cent), so
+rechnet der Server dieselben Preise. Geprüft wird das Bargeld (`Inventory.cash`) und der Platz (`Raser.Shops.Room`); nichts ändert sich, wenn
+eins fehlt. An der Tankstelle: Fill (Art 9, den Kanister `source`/`sourceSlot` füllen) und Refuel (Art 10, das Fahrzeug in Reichweite tanken),
+je Liter (`Raser.Shops.LiterPrice`: 1,69 .. 1,99 € je Station), so weit das Geld reicht. Im Spiel: E an Kasse, Theke oder Regal bzw. unter dem
+Dach der Tankstelle, dann 1-9.
+
 ## Benutzen und Körper
 
 Benutzen ist eine Operation (`InvOp` Use, Art 7; Art 5 und 6 sind im Protokoll Öffnen/Schließen eines Rucksacks am Boden). `Inventory.Use` prüft und
