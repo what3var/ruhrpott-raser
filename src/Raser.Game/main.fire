@@ -744,9 +744,12 @@ class Game {
             // die abgestellten Fahrzeuge rollen aus
             Raser.Vehicle driven = car
             if (onFoot) { driven = undefined }
-            if (!authority) { 
-              Game.Parked(driven, vehicles, obstacles, dt, weather.wetness) 
-              npcs.Update(dt, car, walker, onFoot, vehicles, obstacles, terrain, view, weather.wetness)
+            if (!authority) {
+                Game.Parked(driven, vehicles, obstacles, dt, weather.wetness)
+                npcs.Update(dt, car, walker, onFoot, vehicles, obstacles, terrain, view, weather.wetness)
+            } else {
+                // am Server: der Verkehr kommt aus den Snapshots (der Server rechnet ihn), hier nur gezeichnet
+                npcs.Remote(dt, online.NpcStates(), car, walker, onFoot, terrain, view)
             }
             for (int i = 0; i < vehicles.Count; i++) {
                 models[i].beam.Enabled = weather.lampsOn && !onFoot && vehicles[i] == car

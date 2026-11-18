@@ -53,6 +53,15 @@ CP=$!
 AP=$!
 wait $BP $CP $AP
 
+# Runde 3 (nur mit Welt): der Verkehr rechnet der Server - Anna und Bernd stehen am selben Ort und sehen dieselben NPCs an derselben Stelle.
+if [ -n "$WORLD" ]; then
+  "$GAME" --server 127.0.0.1:$GP --token "$B" --user Bernd --bot 14 --plan stehen --at 376117,5705005 > "$WORK/bernd3.log" 2>&1 &
+  BP=$!
+  "$GAME" --server 127.0.0.1:$GP --token "$A" --user Anna --bot 14 --plan stehen --at 376117,5705005 > "$WORK/anna3.log" 2>&1 &
+  AP=$!
+  wait $BP $AP
+fi
+
 echo "status: $(curl -s "$API/api/status")"
 for f in anna bernd falsch anna2 bernd2 carla; do echo "=== $f"; grep -v "sieht:" "$WORK/$f.log"; done
 echo "=== Server"; cat "$WORK/server.log"
@@ -75,6 +84,14 @@ check "$WORK/bernd2.log" "Inhalt:.*Flasche Wasser x2" "Bernd hebt Annas Rucksack
 check "$WORK/carla.log" "hinausgeworfen: Protokoll v1" "eine Lage vom Client wirft hinaus"
 # doppelt so viele Eingaben: der Server rechnet trotzdem nur 30 je s (Vollgas aus dem Stand in 4 s: höchstens ~45 m)
 if grep -q "Server-Strecke \([0-9]\|[1-3][0-9]\|4[0-5]\)\(\.[0-9]\)\? m" "$WORK/carla.log"; then echo "ok: Schummeln bringt nichts"; else echo "FEHLT: Schummeln bringt nichts"; ok=0; fi
+if [ -n "$WORLD" ]; then
+  npcs() { awk '/\] npc /{print $3" "$4" "$5" "$6}' "$1"; }
+  npcs "$WORK/anna3.log" > "$WORK/npc_anna"
+  npcs "$WORK/bernd3.log" > "$WORK/npc_bernd"
+  read SAME BAD <<< "$(awk 'NR==FNR{a[$1" "$2]=$3" "$4;next} ($1" "$2) in a {n++; if (a[$1" "$2]!=$3" "$4) bad++} END{print n+0, bad+0}' "$WORK/npc_anna" "$WORK/npc_bernd")"
+  echo "Verkehr: $SAME NPC-Lagen in beiden Logs zum selben Takt, $BAD verschieden"; grep -h "Verkehr in Sicht" "$WORK"/anna3.log "$WORK"/bernd3.log
+  if [ "$SAME" -ge 10 ] && [ "$BAD" = 0 ]; then echo "ok: beide sehen dieselben NPCs an derselben Stelle"; else echo "FEHLT: beide sehen dieselben NPCs an derselben Stelle"; ok=0; fi
+fi
 echo "Vorhersage:"; grep -h "Vorhersage:" "$WORK"/anna*.log "$WORK"/bernd*.log
 echo "Bandbreite:"; grep -h "Bandbreite:" "$WORK"/anna*.log "$WORK"/bernd*.log
 [ $ok = 1 ] && echo "ALLES OK" || exit 1

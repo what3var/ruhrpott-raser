@@ -256,7 +256,7 @@ class TrafficView {
     undefined Remote(defined float dt, List<Raser.NpcState> states, Raser.Vehicle car, Raser.Walker walker, defined bool onFoot, Ground terrain, WorldView view) {
         this.states.Clear()
         foreach (st in states) { this.states.Add(st) }
-        this.Contact(car, walker, onFoot)
+        // (abprallen und aufhalten rechnet der Server)
         if (onFoot) { this.Place(terrain, view, walker.east, walker.north) } else { this.Place(terrain, view, car.east, car.north) }
         if (this.messageTime > 0.0) { this.messageTime = this.messageTime - dt }
     }
@@ -520,7 +520,7 @@ class TrafficView {
 
     // Die Meldung oben in der Anzeige.
     undefined Draw(Renderer hud, Brush ink, Brush shade, defined int width) {
-        if (!this.enabled || this.messageTime <= 0.0 || this.message == "") { return }
+        if (this.messageTime <= 0.0 || this.message == "") { return }
         hud.FillRect(12, 12, Math.Min(width - 24, this.message.Length * 9 + 24), 30, shade)
         hud.DrawText(22, 19, this.message, ink)
     }

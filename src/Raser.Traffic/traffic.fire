@@ -124,6 +124,7 @@ namespace Raser {
         defined int maxPeople
         defined int seed
         defined int made              // so viele wurden erzeugt (für IDs und Seeds)
+        defined int idBase            // die IDs der NPCs sind idBase + made (Server: eine Laufzeit-ID der Art Npc, Raser.IdAllocator; offline 0)
         defined int frame
         defined float time
         defined float wetness         // 0 .. 1 (für die Physik nach einem Unfall)
@@ -446,7 +447,7 @@ namespace Raser {
         // Ein Auto auf Spur li bei s (Art, Farbe und Fahrweise aus dem Zufall).
         NpcCar AddCar(defined int li, defined float s, TrafficRandom rnd) {
             this.made++
-            var c = new Raser.NpcCar(this.made, this.seed * 31 + this.made * 977)
+            var c = new Raser.NpcCar(this.idBase + this.made, this.seed * 31 + this.made * 977)
             c.kind = "auto"
             if (rnd.Next() < 0.12) { c.kind = "transporter" }
             c.color = Raser.Traffic.Colors[Math.Floor(rnd.Next() * Raser.Traffic.Colors.length)!int % Raser.Traffic.Colors.length]
@@ -471,7 +472,7 @@ namespace Raser {
 
         NpcPerson AddPerson(defined int li, defined float s, TrafficRandom rnd) {
             this.made++
-            var p = new Raser.NpcPerson(this.made, this.seed * 37 + this.made * 1031)
+            var p = new Raser.NpcPerson(this.idBase + this.made, this.seed * 37 + this.made * 1031)
             var lane = this.graph.lanes[li]
             p.lane = li
             p.s = s
