@@ -84,6 +84,7 @@ namespace Raser {
             if (tile == undefined || tile.data == undefined || tile.data.props == undefined || tile.data.roads == undefined) { return }
             foreach (p in tile.data.props) {
                 if (p.kind != "tree") { continue }
+                if (p.source != undefined && p.source.StartsWith("green:")) { continue }        // im Grün gepflanzt (Raser.Greens): frei von Wegen
                 float x = p.x
                 float y = p.y
                 for (int round = 0; round < 3; round++) {
@@ -193,7 +194,7 @@ namespace Raser {
             float bloom = 0.18
             if (flowers) {
                 int fl[] = [Raser.Palette.FlowerPink, Raser.Palette.FlowerYellow, Raser.Palette.FlowerWhite, Raser.Palette.SignRed, Raser.Palette.FlowerPink, Raser.Palette.SignBlue]
-                flower = fl[v % 6]
+                flower = fl[((v % 6) + 6) % 6]
                 bloom = 0.5
             }
             int leaves = Raser.Material.Leaves!int
@@ -558,7 +559,7 @@ namespace Raser {
             var m = new Raser.VoxelModel(13, 11, 14)
             int wood = Raser.Material.Wood!int
             int colors[] = [Raser.Palette.Wood, Raser.Palette.DoorGreen, Raser.Palette.Wood + 32, Raser.Palette.DoorRed, Raser.Palette.Wood, Raser.Palette.DoorBlue]
-            int c = colors[v % 6]
+            int c = colors[((v % 6) + 6) % 6]
             for (int z = 0; z < 10; z++) {
                 for (int y = -5; y <= 5; y++) {
                     for (int x = -6; x <= 6; x++) {
@@ -586,7 +587,7 @@ namespace Raser {
             m.ox = 2
             m.oy = 8
             int stones[] = [Raser.Palette.StoneGrey, Raser.Palette.Sandstone, Raser.Palette.Metal + 96, Raser.Palette.StoneGrey]
-            int stone = stones[v % 4]
+            int stone = stones[((v % 4) + 4) % 4]
             for (int z = 0; z < 4; z++) {
                 for (int x = -1; x <= 1; x++) { m.Set(x, 1, z, Raser.Material.Rock!int, stone) }
             }

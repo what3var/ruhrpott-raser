@@ -19,10 +19,16 @@ namespace Raser {
         // Ersetzt die bestreuten Props (Quelle "fill:" vom alten Import, "green:") durch die Bepflanzung der Flächen.
         static undefined Build(Tile tile) {
             if (tile == undefined || tile.data == undefined || tile.data.props == undefined) { return }
-            for (int i = tile.data.props.Count - 1; i >= 0; i--) {
-                string src = tile.data.props[i].source
-                if (src != undefined && (src.StartsWith("fill:") || src.StartsWith("green:"))) { tile.data.props.RemoveAt(i) }
+            // (umgelegt mit TakeAt: so bleibt jedes Prop im Besitz der Liste der Kachel)
+            var keep = new List<Prop>()
+            var props = tile.data.props
+            while (props.Count > 0) {
+                var p = props.TakeAt(0)
+                string src = p.source
+                if (src != undefined && (src.StartsWith("fill:") || src.StartsWith("green:"))) { continue }
+                keep.Add(take p)
             }
+            while (keep.Count > 0) { props.Add(keep.TakeAt(0)) }
             var g = new Raser.Greens()
             g.tile = tile
             g.Prepare()
@@ -119,11 +125,12 @@ namespace Raser {
             var p = new Raser.Prop()
             p.source = "green:" + a.kind + ":" + a.source + "/" + kind + "/" + Math.Round((x + this.e0) * 10.0)!int + "_" + Math.Round((y + this.n0) * 10.0)!int + "/" + salt
             p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
-            p.kind = kind
+            // (Kopien: kind und detail kommen oft aus lokalen Arrays, die mit ihrem Block enden)
+            p.kind = copy kind
             p.x = x
             p.y = y
             p.height = height
-            p.detail = detail
+            if (detail != undefined) { p.detail = copy detail }
             p.angle = angle
             this.tile.data.props.Add(take p)
             this.count++
@@ -361,7 +368,7 @@ namespace Raser {
                 float x = cells[k + 2]
                 float y = cells[k + 3]
                 if (!this.Room(a, x, y, 1.6)) { continue }
-                int pick = (Math.Abs(ix * 7 + iy * 13) + placed) % kinds.length
+                int pick = (((ix * 7 + iy * 13 + placed) % kinds.length) + kinds.length) % kinds.length
                 if (placed == 0) { pick = 0 }
                 float angle = Math.Floor(Raser.Greens.Rand(ix, iy, 162) * 2.0) * 90.0
                 this.Add(a, kinds[pick], x, y, 0.0, undefined, angle, placed)

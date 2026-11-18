@@ -1131,6 +1131,8 @@ class GreensTests {
             Testing.Assert.AreEqual(t.data.props[i].x, u.data.props[i].x)
             Testing.Assert.AreEqual(t.data.props[i].detail, u.data.props[i].detail)
         }
+        // die Props lassen sich schreiben (nichts zerstört: Arten aus lokalen Listen sind kopiert)
+        Testing.Assert.AreEqual(t.DataHash(), u.DataHash())
         // noch einmal bauen ersetzt (verdoppelt nicht)
         int before = t.data.props.Count
         Raser.Greens.Build(t)
