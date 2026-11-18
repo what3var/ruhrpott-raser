@@ -1,0 +1,453 @@
+// Raser.World: Innenräume (Roadmap M5) - wo man ein Gebäude betritt und wie es innen aussieht, deterministisch aus Gebäude, Fassade und ID.
+//
+// Eingänge (Raser.Interiors.Site): die Türen der Fassadenplanung (Raser.Facade: Haustür, Glastür) der Läden (Tankstelle, Markt, Kiosk, Werkstatt
+// - Raser.BuildingKinds) und der Mehrfamilienhäuser (Zeile, Altbau, Hochhaus: das Treppenhaus). Die Kachel plant ihre Gebäude dafür wie der
+// Voxelizer (RoofModel, Raser.HouseStyle, Fassade) - so liegt jede Tür, wo sie in den Voxeln ist.
+// Der Innenraum (Raser.InteriorPlan): der Grundriss des Erdgeschosses (der echte Umriss, 30 cm nach innen: die Wand), im Laden hinten ein Lager
+// hinter einer Wand mit Tür, im Wohnhaus ein Treppenhaus von 3 x 6 m hinter der Haustür. Die Einrichtung sind Bausteine (Raser.InteriorPiece:
+// Regal, Theke, Kasse, Kühlschrank, Zeitungsständer, Werkbank, Hebebühne, Briefkästen, Treppe ...) im Rahmen der Tür: s entlang der Wand,
+// t in die Tiefe. Fenster liegen, wo die Fassade sie hat (ihre Scheiben im Erdgeschoss), Lampen in einem Raster an der Decke.
+// Alles in kachel-lokalen Metern, Höhen über dem Boden des Erdgeschosses. Gebaut wird die Szene im Spiel (Raser.Game: InteriorScene).
+namespace Raser {
+    // Ein Baustein der Einrichtung: Mitte (x, y), Ausdehnung entlang u (w) und quer (d), Höhe; was man dort tun kann.
+    class InteriorPiece {
+        defined int kind
+        defined float x
+        defined float y
+        defined float ux            // die Richtung von w (Einheitsvektor)
+        defined float uy
+        defined float w
+        defined float d
+        defined float h
+        defined int use             // Raser.InteriorPiece.Buy ...
+        defined int variant
+
+        static readonly defined int Shelf = 1          // Regal mit Waren
+        static readonly defined int Counter = 2        // Theke mit Kasse
+        static readonly defined int Fridge = 3         // Kühlschrank (Getränke)
+        static readonly defined int NewsStand = 4      // Zeitungsständer
+        static readonly defined int Workbench = 5
+        static readonly defined int Lift = 6           // Hebebühne
+        static readonly defined int Cabinet = 7        // Werkzeugschrank
+        static readonly defined int Tyres = 8          // Reifenstapel
+        static readonly defined int Mailboxes = 9
+        static readonly defined int Stairs = 10        // Treppe nach oben (bis zur Decke)
+        static readonly defined int Door = 11          // eine Tür (Wohnung, Lager)
+        static readonly defined int Coffee = 12        // Kaffeeautomat
+        static readonly defined int Pallet = 13        // Palette mit Kartons (Lager)
+        static readonly defined int Snacks = 14        // niedriges Regal mit Süßem und Chips
+
+        // was man dort tun kann
+        static readonly defined int None = 0
+        static readonly defined int Buy = 1            // kaufen (der Laden des Gebäudes)
+        static readonly defined int Exit = 2           // hinaus
+
+        construct(defined int kind, defined float x, defined float y, defined float ux, defined float uy, defined float w, defined float d, defined float h, defined int use) {
+            this.kind = kind
+            this.x = x
+            this.y = y
+            this.ux = ux
+            this.uy = uy
+            this.w = w
+            this.d = d
+            this.h = h
+            this.use = use
+            this.variant = 0
+        }
+
+        // Liegt (x, y) im Grundriss des Bausteins (mit margin m Rand)?
+        defined bool Covers(defined float px, defined float py, defined float margin) {
+            float rx = px - this.x
+            float ry = py - this.y
+            float a = rx * this.ux + ry * this.uy
+            float b = -rx * this.uy + ry * this.ux
+            return Math.Abs(a) <= this.w / 2.0 + margin && Math.Abs(b) <= this.d / 2.0 + margin
+        }
+    }
+
+    // Ein Eingang: die Tür auf der Wand (x, y), die Normale nach außen, das Gebäude und was drin ist.
+    class Entrance {
+        defined float x
+        defined float y
+        defined float nx
+        defined float ny
+        defined float half          // die halbe Breite der Tür
+        defined int model           // das Gebäude (Index in Raser.InteriorSite.models)
+        defined int shop            // Raser.ShopKind (0: kein Laden - ein Treppenhaus)
+
+        construct() { }
+    }
+
+    // Die Eingänge einer Kachel und ihre Gebäude (geplant wie im Voxelizer).
+    class InteriorSite {
+        Tile tile
+        List<RoofModel> models
+        List<Entrance> entrances
+
+        construct(Tile tile, defined int seed) {
+            this.tile = tile
+            try tile.TakeTo(this)
+            this.models = new List<RoofModel>()
+            this.entrances = new List<Entrance>()
+            foreach (b in tile.data.buildings) {
+                if (b.footprint == undefined || b.footprint.length < 6 || b.ridge <= b.ground) { continue }
+                this.models.Add(new Raser.RoofModel(b, seed))
+            }
+            Raser.HouseStyle.Assign(this.models, tile.data, tile.key.x * 256.0, tile.key.y * 256.0, seed)
+            var panes = new List<float>()
+            for (int i = 0; i < this.models.Count; i++) {
+                var m = this.models[i]
+                int shop = Raser.Interiors.ShopOf(m)
+                bool stairs = m.houseType == Raser.HouseStyle.Row || m.houseType == Raser.HouseStyle.Old || m.houseType == Raser.HouseStyle.High
+                if (shop == 0 && !stairs) { continue }
+                Raser.Voxelizer.PlanFacade(m, tile.data.roads)
+                panes.Clear()
+                m.facade.Panes(m.building, m.groundVoxel, panes)
+                for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+                    int kind = Math.Round(panes[k + 6])!int
+                    if (kind != Raser.Facade.Door && kind != Raser.Facade.RaisedDoor && kind != Raser.Facade.GlassDoor) { continue }
+                    if (Math.Round(panes[k + 8])!int != 0) { continue }
+                    var e = new Raser.Entrance()
+                    float dx = panes[k + 2] - panes[k]
+                    float dy = panes[k + 3] - panes[k + 1]
+                    float len = Math.Sqrt(dx * dx + dy * dy)
+                    if (len < 0.3) { continue }
+                    e.nx = dy / len
+                    e.ny = -dx / len
+                    if (!m.facade.ccw) {
+                        e.nx = -e.nx
+                        e.ny = -e.ny
+                    }
+                    // die Scheibe sitzt 20 cm in der Laibung: die Tür auf der Wandflucht
+                    e.x = (panes[k] + panes[k + 2]) / 2.0 + e.nx * 0.2
+                    e.y = (panes[k + 1] + panes[k + 3]) / 2.0 + e.ny * 0.2
+                    e.half = len / 2.0
+                    e.model = i
+                    e.shop = shop
+                    this.entrances.Add(take e)
+                }
+            }
+        }
+
+        // Der nächste Eingang bis reach m vor (x, y) (der Spieler steht vor der Tür, nicht drin); undefined: keiner.
+        Entrance Near(defined float x, defined float y, defined float reach) {
+            Entrance best = undefined
+            float bd = reach
+            foreach (e in this.entrances) {
+                float rx = x - e.x
+                float ry = y - e.y
+                float front = rx * e.nx + ry * e.ny
+                float side = Math.Abs(-rx * e.ny + ry * e.nx)
+                if (front < -0.3 || side > e.half + 0.8) { continue }
+                float d = Math.Sqrt(rx * rx + ry * ry)
+                if (d < bd) {
+                    bd = d
+                    best = e
+                }
+            }
+            return best
+        }
+    }
+
+    class Interiors {
+        // Der Laden eines Gebäudes (Raser.ShopKind; 0: keiner).
+        static defined int ShopOf(RoofModel m) {
+            if (m.kind == Raser.BuildingKinds.Fuel) { return Raser.ShopKind.Fuel }
+            if (m.kind == Raser.BuildingKinds.Market) { return Raser.ShopKind.Market }
+            if (m.kind == Raser.BuildingKinds.Kiosk) { return Raser.ShopKind.Kiosk }
+            if (m.kind == Raser.BuildingKinds.Workshop) { return Raser.ShopKind.Workshop }
+            return 0
+        }
+    }
+
+    // Ein Innenraum: Boden (Ringe), Wände (Strecken), Fenster, Lampen, Einrichtung - fest je Gebäude (aus seiner ID).
+    class InteriorPlan {
+        defined int shop                // Raser.ShopKind (0: Treppenhaus)
+        defined int building            // die ID des Gebäudes (der Laden)
+        defined float height            // lichte Höhe (m)
+        float floor[]                   // der Boden: ein Ring (kachel-lokal, m)
+        List<float> walls               // je Wand ax, ay, bx, by (die Innenseite; der Boden liegt links bei einem Ring gegen den Uhrzeigersinn)
+        List<float> windows             // je Fenster ax, ay, bx, by, z0, z1 (über dem Boden)
+        List<float> lamps               // je Lampe x, y
+        List<InteriorPiece> pieces
+        defined float doorX             // die Eingangstür (auf der Innenwand) und die Richtung hinein
+        defined float doorY
+        defined float inX
+        defined float inY
+        defined float startX            // wo der Spieler drin steht
+        defined float startY
+        defined int floorColor          // 0xRRGGBB
+        defined int floorColor2         // Fliesen im Wechsel (gleich: einfarbig)
+        defined int wallColor
+        defined int lowerColor          // der untere Teil der Wand (Ölsockel im Treppenhaus; gleich: einfarbig)
+        defined float tile              // Fliesen (m)
+
+        construct() {
+            this.walls = new List<float>()
+            this.windows = new List<float>()
+            this.lamps = new List<float>()
+            this.pieces = new List<InteriorPiece>()
+        }
+
+        // Ein Wert in [0, 1) aus der ID und einem Salz.
+        defined float Rand(defined int salt) {
+            int h = Raser.Fnv.Mix(Raser.Fnv.AddInt(Raser.Fnv.AddInt(Raser.Fnv.Start(), this.building), salt))
+            return ((h >> 20) & 65535) / 65536.0
+        }
+
+        // Liegt (x, y) im Boden und frei von Einrichtung (Radius r)?
+        defined bool Free(defined float x, defined float y, defined float r) {
+            if (!Raser.Geo.Inside(this.floor, x, y)) { return false }
+            for (int k = 0; k + 3 < this.walls.Count; k = k + 4) {
+                if (Raser.Geo.DistanceToSegment(x, y, this.walls[k], this.walls[k + 1], this.walls[k + 2], this.walls[k + 3]) < r) { return false }
+            }
+            foreach (p in this.pieces) {
+                if (p.kind != Raser.InteriorPiece.Door && p.Covers(x, y, r)) { return false }
+            }
+            return true
+        }
+
+        // Der Baustein bis reach m von (x, y), an dem man etwas tun kann (use != None); undefined: keiner.
+        InteriorPiece Usable(defined float x, defined float y, defined float reach) {
+            InteriorPiece best = undefined
+            float bd = 1.0e30
+            foreach (p in this.pieces) {
+                if (p.use == Raser.InteriorPiece.None || !p.Covers(x, y, reach)) { continue }
+                float d = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y)
+                if (d < bd) {
+                    bd = d
+                    best = p
+                }
+            }
+            return best
+        }
+
+        // Plant den Innenraum hinter dem Eingang e (des Gebäudes m) - fest aus der ID des Gebäudes.
+        static InteriorPlan Make(RoofModel m, Entrance e) {
+            var p = new Raser.InteriorPlan()
+            p.shop = e.shop
+            p.building = m.building.id
+            p.height = 2.6
+            p.doorX = e.x - e.nx * 0.3
+            p.doorY = e.y - e.ny * 0.3
+            p.inX = -e.nx
+            p.inY = -e.ny
+            p.startX = p.doorX + p.inX * 1.0
+            p.startY = p.doorY + p.inY * 1.0
+            // der Rahmen der Tür: s entlang (ux, uy), t hinein
+            float ux = -e.ny
+            float uy = e.nx
+            float inner[] = Raser.Geo.Offset(m.building.footprint, -0.3)
+            if (inner == undefined || Math.Abs(Raser.Geo.Area(inner)) < 4.0) { inner = m.building.footprint }
+            // die Ausdehnung des Grundrisses im Rahmen der Tür
+            float s0 = 1.0e30
+            float s1 = -1.0e30
+            float t1 = 0.0
+            for (int k = 0; k + 1 < inner.length; k = k + 2) {
+                float rx = inner[k] - p.doorX
+                float ry = inner[k + 1] - p.doorY
+                float s = rx * ux + ry * uy
+                float t = rx * p.inX + ry * p.inY
+                if (s < s0) { s0 = s }
+                if (s > s1) { s1 = s }
+                if (t > t1) { t1 = t }
+            }
+            if (p.shop == 0) {
+                // Treppenhaus: 3 m breit um die Tür, bis 6 m tief (oder bis zur Rückwand)
+                float a = Math.Max(s0, -1.5)
+                float b = Math.Min(s1, 1.5)
+                float depth = Math.Min(t1, 6.0)
+                p.floor = Raser.InteriorPlan.Rect(p, ux, uy, a, b, 0.0, depth)
+            } else {
+                p.floor = take inner
+            }
+            int n = p.floor.length / 2
+            for (int k = 0; k < n; k++) {
+                int l = (k + 1) % n
+                p.walls.Add(p.floor[k * 2])
+                p.walls.Add(p.floor[k * 2 + 1])
+                p.walls.Add(p.floor[l * 2])
+                p.walls.Add(p.floor[l * 2 + 1])
+            }
+            Raser.InteriorPlan.Windows(p, m)
+            // Lampen alle 3,5 m (im Treppenhaus zwei)
+            float step = 3.5
+            for (float s = s0 + step / 2.0; s < s1; s = s + step) {
+                for (float t = step / 2.0; t < t1; t = t + step) {
+                    float x = p.doorX + ux * s + p.inX * t
+                    float y = p.doorY + uy * s + p.inY * t
+                    if (Raser.Geo.Inside(p.floor, x, y)) {
+                        p.lamps.Add(x)
+                        p.lamps.Add(y)
+                    }
+                }
+            }
+            if (p.lamps.Count == 0) {
+                p.lamps.Add(p.startX)
+                p.lamps.Add(p.startY)
+            }
+            // die Tür nach draußen (zum Hinausgehen)
+            var door = new Raser.InteriorPiece(Raser.InteriorPiece.Door, p.doorX, p.doorY, ux, uy, e.half * 2.0, 0.1, 2.2, Raser.InteriorPiece.Exit)
+            p.pieces.Add(take door)
+            if (p.shop == Raser.ShopKind.Market) { Raser.InteriorPlan.Market(p, ux, uy, s0, s1, t1) }
+            else if (p.shop == Raser.ShopKind.Fuel) { Raser.InteriorPlan.FuelShop(p, ux, uy, s0, s1, t1) }
+            else if (p.shop == Raser.ShopKind.Kiosk) { Raser.InteriorPlan.Kiosk(p, ux, uy, s0, s1, t1) }
+            else if (p.shop == Raser.ShopKind.Workshop) { Raser.InteriorPlan.Workshop(p, ux, uy, s0, s1, t1) }
+            else { Raser.InteriorPlan.Staircase(p, ux, uy, s0, s1, t1) }
+            return p
+        }
+
+        // Ein Rechteck im Rahmen der Tür (s von a bis b, t von 0 bis depth) als Ring gegen den Uhrzeigersinn.
+        static float[] Rect(InteriorPlan p, defined float ux, defined float uy, defined float a, defined float b, defined float t0, defined float t1) {
+            float r[] = new float[8]
+            float ss[] = [a, b, b, a]
+            float ts[] = [t0, t0, t1, t1]
+            for (int i = 0; i < 4; i++) {
+                r[i * 2] = p.doorX + ux * ss[i] + p.inX * ts[i]
+                r[i * 2 + 1] = p.doorY + uy * ss[i] + p.inY * ts[i]
+            }
+            if (Raser.Geo.Area(r) < 0.0) {
+                float q[] = new float[8]
+                for (int i = 0; i < 4; i++) {
+                    q[i * 2] = r[(3 - i) * 2]
+                    q[i * 2 + 1] = r[(3 - i) * 2 + 1]
+                }
+                return q
+            }
+            return r
+        }
+
+        // Die Fenster des Erdgeschosses aus der Fassade, wo sie an eine Wand des Innenraums stoßen.
+        static undefined Windows(InteriorPlan p, RoofModel m) {
+            var panes = new List<float>()
+            m.facade.Panes(m.building, m.groundVoxel, panes)
+            float g = m.groundVoxel * 0.2
+            for (int k = 0; k + 8 < panes.Count; k = k + 9) {
+                int kind = Math.Round(panes[k + 6])!int
+                if (Math.Round(panes[k + 8])!int != 0) { continue }
+                if (kind != Raser.Facade.Window && kind != Raser.Facade.Shop && kind != Raser.Facade.Tall && kind != Raser.Facade.Large && kind != Raser.Facade.Ribbon && kind != Raser.Facade.GlassDoor) { continue }
+                float mx = (panes[k] + panes[k + 2]) / 2.0
+                float my = (panes[k + 1] + panes[k + 3]) / 2.0
+                bool onWall = false
+                for (int w = 0; w + 3 < p.walls.Count; w = w + 4) {
+                    if (Raser.Geo.DistanceToSegment(mx, my, p.walls[w], p.walls[w + 1], p.walls[w + 2], p.walls[w + 3]) < 0.35) { onWall = true }
+                }
+                if (!onWall) { continue }
+                p.windows.Add(panes[k])
+                p.windows.Add(panes[k + 1])
+                p.windows.Add(panes[k + 2])
+                p.windows.Add(panes[k + 3])
+                p.windows.Add(Math.Max(0.0, panes[k + 4] - g))
+                p.windows.Add(Math.Min(p.height - 0.1, panes[k + 5] - g))
+            }
+        }
+
+        // Einen Baustein in den Raum stellen (s, t im Rahmen der Tür; along: w entlang der Tür-Wand, sonst quer) - nur, wenn er ganz im Boden steht.
+        static defined bool Put(InteriorPlan p, defined float ux, defined float uy, defined int kind, defined float s, defined float t, defined float w, defined float d, defined float h, defined bool along, defined int use) {
+            float x = p.doorX + ux * s + p.inX * t
+            float y = p.doorY + uy * s + p.inY * t
+            float ax = ux
+            float ay = uy
+            if (!along) {
+                ax = p.inX
+                ay = p.inY
+            }
+            var piece = new Raser.InteriorPiece(kind, x, y, ax, ay, w, d, h, use)
+            // die vier Ecken im Boden
+            float bx = -ay
+            float by = ax
+            for (int c = 0; c < 4; c++) {
+                float sa = 1.0
+                float sb = 1.0
+                if (c == 1 || c == 2) { sa = -1.0 }
+                if (c >= 2) { sb = -1.0 }
+                float cx = x + ax * w / 2.0 * sa + bx * d / 2.0 * sb
+                float cy = y + ay * w / 2.0 * sa + by * d / 2.0 * sb
+                if (!Raser.Geo.Inside(p.floor, cx, cy)) { return false }
+            }
+            // nicht vor die Tür (2 m frei)
+            if (piece.Covers(p.doorX + p.inX * 0.9, p.doorY + p.inY * 0.9, 0.9)) { return false }
+            piece.variant = Math.Floor(p.Rand(Math.Round(s * 10.0 + t * 1000.0)!int) * 4.0)!int
+            p.pieces.Add(take piece)
+            return true
+        }
+
+        // Supermarkt: helle Fliesen, Kasse rechts der Tür, Regalreihen quer (alle 2,4 m, 1 m tief, 1,8 m hoch), hinten Kühlregale entlang der Wand.
+        static undefined Market(InteriorPlan p, defined float ux, defined float uy, defined float s0, defined float s1, defined float t1) {
+            p.floorColor = 0xDCDAD2
+            p.floorColor2 = 0xC8C6BE
+            p.tile = 0.6
+            p.wallColor = 0xEEEEEA
+            p.lowerColor = 0xEEEEEA
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Counter, 2.6, 2.4, 2.2, 0.8, 1.0, false, Raser.InteriorPiece.Buy)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Counter, 5.2, 2.4, 2.2, 0.8, 1.0, false, Raser.InteriorPiece.Buy)
+            for (float s = s0 + 1.8; s < s1 - 1.0; s = s + 2.4) {
+                for (float t = 5.0; t + 3.0 < t1 - 2.5; t = t + 6.5) { Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Shelf, s, t + 3.0, 6.0, 1.0, 1.8, false, Raser.InteriorPiece.Buy) }
+            }
+            for (float s = s0 + 1.5; s < s1 - 1.0; s = s + 2.0) { Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Fridge, s, t1 - 0.6, 1.9, 0.8, 2.0, true, Raser.InteriorPiece.Buy) }
+        }
+
+        // Tankstellen-Shop: Theke mit Kasse und Kaffeeautomat gegenüber der Tür, Snackregale davor, Kühlschränke an der Seite.
+        static undefined FuelShop(InteriorPlan p, defined float ux, defined float uy, defined float s0, defined float s1, defined float t1) {
+            p.floorColor = 0xC4C0B6
+            p.floorColor2 = 0xB2AEA4
+            p.tile = 0.5
+            p.wallColor = 0xEAE8E0
+            p.lowerColor = 0xEAE8E0
+            float tc = Math.Max(2.6, t1 - 1.0)
+            if (!Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Counter, 0.0, tc, 3.0, 0.8, 1.05, true, Raser.InteriorPiece.Buy)) { Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Counter, 0.0, 2.4, 2.4, 0.7, 1.05, true, Raser.InteriorPiece.Buy) }
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Coffee, 2.4, tc, 0.7, 0.6, 1.8, true, Raser.InteriorPiece.None)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Snacks, -2.2, tc - 2.0, 1.8, 0.7, 1.3, true, Raser.InteriorPiece.Buy)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Snacks, 2.2, tc - 2.0, 1.8, 0.7, 1.3, true, Raser.InteriorPiece.Buy)
+            for (float t = 1.8; t < t1 - 0.5; t = t + 1.0) { Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Fridge, s0 + 0.45, t, 0.9, 0.7, 2.0, false, Raser.InteriorPiece.Buy) }
+        }
+
+        // Trinkhalle: Linoleum, die Theke quer durch den Raum (der Verkäufer dahinter), Regale an der Rückwand, Kühlschrank, Zeitungsständer an der Tür.
+        static undefined Kiosk(InteriorPlan p, defined float ux, defined float uy, defined float s0, defined float s1, defined float t1) {
+            p.floorColor = 0x8C6E52
+            p.floorColor2 = 0x8C6E52
+            p.tile = 1.0
+            p.wallColor = 0xE6DCC0
+            p.lowerColor = 0xE6DCC0
+            float span = s1 - s0
+            float tc = Math.Max(1.6, t1 * 0.55)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Counter, (s0 + s1) / 2.0, tc, Math.Max(1.2, span - 0.4), 0.6, 1.05, true, Raser.InteriorPiece.Buy)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Shelf, (s0 + s1) / 2.0, t1 - 0.25, Math.Max(1.0, span - 1.4), 0.45, 2.0, true, Raser.InteriorPiece.None)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.NewsStand, s0 + 0.5, 1.0, 0.8, 0.5, 1.4, false, Raser.InteriorPiece.Buy)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Fridge, s1 - 0.45, tc - 0.9, 0.8, 0.7, 1.9, false, Raser.InteriorPiece.Buy)
+        }
+
+        // Werkstatt: Beton mit Ölflecken, Hebebühne in der Mitte, Werkbank und Schrank an der Seite, Reifen in der Ecke, Theke an der Tür.
+        static undefined Workshop(InteriorPlan p, defined float ux, defined float uy, defined float s0, defined float s1, defined float t1) {
+            p.floorColor = 0x8E8C86
+            p.floorColor2 = 0x84827C
+            p.tile = 2.0
+            p.wallColor = 0xD8DAD8
+            p.lowerColor = 0x5A6E8A
+            float mid = (s0 + s1) / 2.0
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Lift, mid, Math.Min(t1 / 2.0 + 0.5, t1 - 3.0), 2.6, 4.6, 0.2, false, Raser.InteriorPiece.None)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Counter, s0 + 1.6, 1.6, 1.8, 0.7, 1.05, true, Raser.InteriorPiece.Buy)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Workbench, s1 - 0.4, t1 / 2.0, 2.4, 0.7, 0.95, false, Raser.InteriorPiece.None)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Cabinet, s1 - 0.35, t1 / 2.0 + 2.0, 1.2, 0.6, 1.9, false, Raser.InteriorPiece.Buy)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Tyres, s0 + 0.6, t1 - 0.6, 0.8, 0.8, 1.2, true, Raser.InteriorPiece.None)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Tyres, s0 + 1.5, t1 - 0.6, 0.8, 0.8, 0.9, true, Raser.InteriorPiece.None)
+        }
+
+        // Treppenhaus: Terrazzo, unten Ölsockel (grün, gelb oder grau) und oben weiß, Briefkästen neben der Tür, hinten die Treppe nach oben und
+        // an der Seite die Wohnungstür.
+        static undefined Staircase(InteriorPlan p, defined float ux, defined float uy, defined float s0, defined float s1, defined float t1) {
+            p.floorColor = 0xB8B0A2
+            p.floorColor2 = 0xA8A092
+            p.tile = 0.4
+            p.wallColor = 0xF0EEE6
+            int lowers[] = [0x7E9A7C, 0xC8B474, 0x9A9C98, 0x8AA0B4]
+            p.lowerColor = lowers[Math.Floor(p.Rand(5) * 4.0)!int]
+            float a = Math.Max(s0, -1.5)
+            float b = Math.Min(s1, 1.5)
+            float depth = Math.Min(t1, 6.0)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Mailboxes, a + 0.2, 1.6, 1.0, 0.3, 0.8, false, Raser.InteriorPiece.None)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Stairs, b - 0.6, depth - 1.6, 3.0, 1.1, p.height, false, Raser.InteriorPiece.None)
+            Raser.InteriorPlan.Put(p, ux, uy, Raser.InteriorPiece.Door, a + 0.06, depth - 1.4, 1.0, 0.1, 2.1, false, Raser.InteriorPiece.None)
+        }
+    }
+}

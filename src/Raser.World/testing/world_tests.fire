@@ -1007,3 +1007,77 @@ class KindTests {
         Testing.Assert.IsTrue(band)
     }
 }
+
+class InteriorTests {
+    static Raser.Tile Street() {
+        var tile = new Raser.Tile(new Raser.TileKey(1473, 22292))
+        var raster = new Raser.HeightRaster(-1.0, -1.0, 1.0, 259, 259, 60.0)
+        tile.heights = take raster
+        var road = new Raser.Road()
+        road.source = "test:strasse"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        road.points = [0.0, 5.0, 200.0, 5.0]
+        road.width = 6.0
+        tile.data.roads.Add(take road)
+        // ein Markt (40 x 25 m), eine Trinkhalle (5 x 4 m), ein Zeilenbau (36 x 11 m, 4 Geschosse)
+        tile.data.buildings.Add(KindTests.Flat("test:markt", [10.0, 12.0, 50.0, 12.0, 50.0, 37.0, 10.0, 37.0], 66.0, "shop=supermarket"))
+        tile.data.buildings.Add(KindTests.Flat("test:kiosk", [60.0, 12.0, 65.0, 12.0, 65.0, 16.0, 60.0, 16.0], 63.0, "shop=kiosk"))
+        var row = KindTests.Flat("test:zeile", [80.0, 12.0, 116.0, 12.0, 116.0, 23.0, 80.0, 23.0], 71.2, "alkis=31001_1000")
+        row.ridge = 74.0
+        row.roofType = Raser.RoofType.Gable
+        tile.data.buildings.Add(take row)
+        return tile
+    }
+
+    [Test "Innenräume: Eingänge an den Türen, Grundriss und Einrichtung fest je Gebäude, alles im Raum"]
+    undefined Plans() {
+        var site = new Raser.InteriorSite(InteriorTests.Street(), 7)
+        int shops = 0
+        int stairs = 0
+        foreach (e in site.entrances) {
+            if (e.shop == 0) { stairs++ } else { shops++ }
+            // die Tür zeigt zur Straße (y = 5)
+            Testing.Assert.IsTrue(e.ny < -0.9)
+        }
+        Testing.Assert.IsTrue(shops >= 2)
+        Testing.Assert.IsTrue(stairs >= 1)
+        // vor der Tür des Markts gefunden, weit weg nicht
+        var me = site.entrances[0]
+        Testing.Assert.IsTrue(site.Near(me.x + me.nx * 1.0, me.y + me.ny * 1.0, 2.0) != undefined)
+        Testing.Assert.IsTrue(site.Near(me.x + me.nx * 9.0, me.y + me.ny * 9.0, 2.0) == undefined)
+        foreach (e in site.entrances) {
+            var a = Raser.InteriorPlan.Make(site.models[e.model], e)
+            var b = Raser.InteriorPlan.Make(site.models[e.model], e)
+            Testing.Assert.AreEqual(a.pieces.Count, b.pieces.Count)
+            for (int i = 0; i < a.pieces.Count; i++) {
+                Testing.Assert.AreEqual(a.pieces[i].x, b.pieces[i].x)
+                Testing.Assert.AreEqual(a.pieces[i].kind, b.pieces[i].kind)
+                Testing.Assert.IsTrue(Raser.Geo.Inside(a.floor, a.pieces[i].x, a.pieces[i].y) || a.pieces[i].kind == Raser.InteriorPiece.Door)
+            }
+            // der Spieler steht frei, die Tür hinaus ist da, es gibt Licht
+            Testing.Assert.IsTrue(a.Free(a.startX, a.startY, 0.3))
+            var exit = a.Usable(a.startX, a.startY, 1.2)
+            Testing.Assert.IsTrue(exit != undefined && exit.use == Raser.InteriorPiece.Exit)
+            Testing.Assert.IsTrue(a.lamps.Count >= 2)
+            if (e.shop == Raser.ShopKind.Market) {
+                int shelves = 0
+                bool till = false
+                foreach (p in a.pieces) {
+                    if (p.kind == Raser.InteriorPiece.Shelf) { shelves++ }
+                    if (p.kind == Raser.InteriorPiece.Counter && p.use == Raser.InteriorPiece.Buy) { till = true }
+                }
+                Testing.Assert.IsTrue(shelves >= 6)
+                Testing.Assert.IsTrue(till)
+                Testing.Assert.IsTrue(a.windows.Count >= 6)
+            }
+            if (e.shop == 0) {
+                bool st = false
+                foreach (p in a.pieces) {
+                    if (p.kind == Raser.InteriorPiece.Stairs) { st = true }
+                }
+                Testing.Assert.IsTrue(st)
+            }
+        }
+    }
+}
