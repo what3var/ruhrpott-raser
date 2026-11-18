@@ -1009,6 +1009,13 @@ namespace Raser {
                     break
                 }
             }
+            // über Autobahnen und Kraftfahrstraßen (und ihre Auf- und Abfahrten) geht niemand
+            if (crossing) {
+                foreach (ri in this.nodeRoads[node]) {
+                    string k = this.sorted[ri].kind
+                    if (k == "motorway" || k == "trunk" || k.EndsWith("_link")) { return }
+                }
+            }
             if (crossing && this.carDegree[node] >= 3) {
                 float nd = Raser.Geo.DistanceToSegment(this.NodeE(node), this.NodeN(node), ax, ay, bx, by)
                 if (nd < 2.0) { return }
