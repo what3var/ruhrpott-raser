@@ -349,7 +349,8 @@ namespace Raser {
         defined float nearSpacing       // Geländeraster der nahen Stufe
         defined bool opaqueOnly
         defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
-        static readonly defined int CacheVersion = 16     // (16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        List<int> stats                 // (raser nearstats) Vierecke je Material der Voxel (0-255), dahinter Gelände, Fenster/Brücken, Glas der Fenster
+        static readonly defined int CacheVersion = 17     // (17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)
@@ -446,6 +447,36 @@ namespace Raser {
                     }
                 }
                 foreach (p in parts) {
+                    if (this.stats != undefined) {
+                        for (int q = 0; q < p.opaque.count; q++) {
+                            int mq = p.opaque.materials[q] & 255
+                            this.stats[mq] = this.stats[mq] + 1
+                            // einzelne Voxelflächen (bis 0,05 m²): je Material ab 259
+                            defined float pp[] = p.opaque.positions
+                            int o = q * 12
+                            float ux = pp[o + 3] - pp[o]
+                            float uy = pp[o + 4] - pp[o + 1]
+                            float uz = pp[o + 5] - pp[o + 2]
+                            float vx = pp[o + 9] - pp[o]
+                            float vy = pp[o + 10] - pp[o + 1]
+                            float vz = pp[o + 11] - pp[o + 2]
+                            float cx = uy * vz - uz * vy
+                            float cy = uz * vx - ux * vz
+                            float cz = ux * vy - uy * vx
+                            if (cx * cx + cy * cy + cz * cz < 0.0025) {
+                                this.stats[259 + mq] = this.stats[259 + mq] + 1
+                                // davon Oberseiten (die Normale zeigt eher nach oben/unten): ab 66051
+                                if (cz * cz > cx * cx + cy * cy) { this.stats[66051 + mq] = this.stats[66051 + mq] + 1 }
+                                // davon schräg (nicht achsenparallel): ab 66307
+                                float big = Math.Max(cx * cx, Math.Max(cy * cy, cz * cz))
+                                if (big < 0.999 * (cx * cx + cy * cy + cz * cz)) { this.stats[66307 + mq] = this.stats[66307 + mq] + 1 }
+                            }
+                            // verschiedene Farben je Material: Bit je Farbe ab 515 (256 x 256)
+                            int col = p.opaque.colors[q] & 255
+                            this.stats[515 + mq * 256 + col] = 1
+                        }
+                        for (int q = 0; q < p.transparent.count; q++) { this.stats[p.transparent.materials[q] & 255] = this.stats[p.transparent.materials[q] & 255] + 1 }
+                    }
                     // blocklokal: x, y ab der Südwest-Ecke des Blocks, z absolut
                     float ox = p.key.VoxelX * 0.2 - east
                     float oy = p.key.VoxelY * 0.2 - north
@@ -457,6 +488,7 @@ namespace Raser {
             // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein, ohne die harten Zellen; die Voxel bringen, was darauf steht
             if (fm != undefined) {
                 var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip, false, fine)
+                if (this.stats != undefined) { this.stats[256] = this.stats[256] + ground.count }
                 opaque.Add(take ground, tileKey.East - east, tileKey.North - north, 0.0)
                 // Fenster, Türen und Tore: eingehängt zwischen die Laibungen
                 var frames = new Raser.MeshPart()
@@ -465,6 +497,10 @@ namespace Raser {
                 fm.Arches(frames, east - tileKey.East, north - tileKey.North, 51.2)
                 // Brücken: das Deck mit Brüstungen, Pfeilern, Widerlagern
                 Raser.BridgeMesher.Add(frames, this.DecksFor(tileKey, fm), fm.tile.data.roads, east - tileKey.East, north - tileKey.North, 51.2)
+                if (this.stats != undefined) {
+                    this.stats[257] = this.stats[257] + frames.count
+                    this.stats[258] = this.stats[258] + panes.count
+                }
                 opaque.Add(take frames, tileKey.East - east, tileKey.North - north, 0.0)
                 glass.Add(take panes, tileKey.East - east, tileKey.North - north, 0.0)
             }

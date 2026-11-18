@@ -617,6 +617,35 @@ class WorldView {
 
     static defined int Key(defined int bx, defined int by) { return bx * 1000003 + by }
 
+    // (--profile) Dreiecke und Objekte der sichtbaren Stufen je Ring um (e, n): "nah n/Dreiecke, Ring r: n/Dreiecke ..."
+    string Stats(defined float e, defined float n) {
+        int fbx = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(e), 256)
+        int fby = Raser.Grid.FloorDiv(Raser.Grid.VoxelOf(n), 256)
+        int nearTris = 0
+        int nearObjs = 0
+        var ringTris = new List<int>()
+        var ringObjs = new List<int>()
+        for (int r = 0; r <= this.far + 1; r++) {
+            ringTris.Add(0)
+            ringObjs.Add(0)
+        }
+        foreach (pair in this.blocks) {
+            var b = pair.Value
+            if (b.nearSet != undefined && b.nearSet.shown) {
+                nearTris = nearTris + b.nearSet.triangles
+                nearObjs = nearObjs + b.nearSet.objects.Count
+            }
+            if (b.farSet != undefined && b.farSet.shown) {
+                int r = Math.Min(Math.Max(Math.Abs(b.bx - fbx), Math.Abs(b.by - fby)), this.far + 1)
+                ringTris[r] = ringTris[r] + b.farSet.triangles
+                ringObjs[r] = ringObjs[r] + b.farSet.objects.Count
+            }
+        }
+        string text = "nah " + nearObjs + "/" + (nearTris / 1000) + "k, fern"
+        for (int r = 0; r < ringTris.Count; r++) { text = text + " r" + r + " " + ringObjs[r] + "/" + (ringTris[r] / 1000) + "k" }
+        return text
+    }
+
     // In Fahrt: das Fahrzeug bei (east, north) mit heading (Grad, vorwärts ist (-sin, cos)) und speed (m/s). Die nahe Stufe gilt dann um das
     // Fahrzeug (Radius near) und entlang seines Wegs bis Tempo x 4 s voraus (höchstens 250 m), und zwar in dieser Reihenfolge bestellt.
     undefined SetMotion(defined float east, defined float north, defined float heading, defined float speed) {

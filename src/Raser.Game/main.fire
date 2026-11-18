@@ -821,6 +821,7 @@ class Game {
                         view.spent[i] = 0
                         view.spent[i + 6] = 0
                     }
+                    print("  " + view.Stats(car.east, car.north))
                     print(line + " ms, Objekte " + view.objects + ", Dreiecke " + view.triangles + ", " + cam.LastRenderer + parts)
                     profFrames = 0
                     profStart = mark
