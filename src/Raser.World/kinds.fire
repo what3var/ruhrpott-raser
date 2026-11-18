@@ -27,8 +27,6 @@ namespace Raser {
         static readonly defined int Garages = 9        // Garagenhof
         static readonly defined int Workshop = 10      // Werkstatt (Kfz, Handwerk)
 
-        static List<IBuildingKind> all = Raser.BuildingKinds.Make()
-
         static List<IBuildingKind> Make() {
             var l = new List<IBuildingKind>()
             l.Add(new Raser.FuelKind())
@@ -44,9 +42,11 @@ namespace Raser {
             return l
         }
 
-        // Gibt dem Gebäude das Aussehen der ersten Art, die passt (sonst bleibt es, wie es ist).
+        // Gibt dem Gebäude das Aussehen der ersten Art, die passt (sonst bleibt es, wie es ist). Die Bausteine je Aufruf neu (klein): ein
+        // statisches Feld gehörte dem Hauptprogramm, die Worker der fernen Stufe dürften ihm ihre Modelle nicht geben.
         static undefined Apply(RoofModel m, HouseContext c) {
-            foreach (k in Raser.BuildingKinds.all) {
+            var all = Raser.BuildingKinds.Make()
+            foreach (k in all) {
                 if (k.Matches(m, c)) {
                     m.kind = k.Id()
                     k.Apply(m, c)
@@ -267,7 +267,7 @@ namespace Raser {
             // ältere Industriebauten (Steildach oder jede fünfte): Klinker, sonst Blech und Paneele
             bool old = m.pitched || Raser.HouseStyle.Rand(c.id, 0, 40) < 0.2
             if (old) {
-                m.wallColor = Raser.HouseStyle.Of([Raser.Palette.BrickCross, Raser.Palette.BrickDark, Raser.Palette.Clinker, Raser.Palette.Brick], c.id, 41)
+                m.wallColor = Raser.HouseStyle.Of([Raser.Palette.BrickCross, Raser.Palette.Brick, Raser.Palette.BrickLight, Raser.Palette.Brick], c.id, 41)
                 m.plinthColor = Raser.Palette.Clinker
                 m.plinthVoxels = 3
                 m.doorColor = Raser.HouseStyle.Of([Raser.Palette.DoorGreen, Raser.Palette.Metal + 32, Raser.Palette.DoorRed], c.id, 42)
