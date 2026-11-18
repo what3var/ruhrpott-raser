@@ -81,7 +81,7 @@ Protokoll 1 bekommt beim Hello ein Reject ("Protokoll 1 passt nicht, der Server 
 | 4 Command | C → S | Befehlszeile (`/kick name`) |
 | 5 Bye | C → S | - |
 | 6 Input | C → S | Folgenummer der ersten Eingabe, Anzahl (1 bis 8), je Eingabe: Gas 0..100, Bremse 0..100 (je 1 Byte), Lenkung, Gehen, Drehen (-100..100, ZigZag), Flags (Rückwärtsgang, Handbremse, Rennen, E = ein-/aussteigen) |
-| 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Use, 6 Öffnen eines Rucksacks am Boden, 7 Schließen; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden), davor die letzte Eingabe des Clients (der Server rechnet die Operation erst nach ihr) |
+| 7 InvOp | C → S | Folgenummer, `Raser.InvOp` (Art 1 Move, 2 Swap, 3 Drop, 4 PickUp, 5 Öffnen eines Rucksacks am Boden, 6 Schließen, 7 Use; Quelle, Platz, Ziel, Platz, Anzahl, Gegenstand am Boden), davor die letzte Eingabe des Clients (der Server rechnet die Operation erst nach ihr) |
 | 10 Welcome | S → C | Spieler-ID (global, `Raser.IdAllocator`), Region, Serverzeit (ms), Admin ja/nein, Name, Takte je s (30), Takt des Servers |
 | 11 Reject | S → C | Grund (danach schließt der Server) |
 | 12 Snapshot | S → C | Takt, Serverzeit, Region, die zuletzt gerechnete Eingabe, das eigene Bargeld (Cent); der eigene Spieler (bitgenau, `Float64`): Fahrzeug-ID, Lage, Richtung, Tempo, Schrittweg, Last; im Fahrzeug dessen ganzer Zustand (Art, Lage, Richtung, Tempo, Lenkeinschlag, Stoß, Schräglage, Zustand, Tank, Grip, rutscht); dann die **Entitäten** (neu oder geändert) und die IDs der **verschwundenen** |
@@ -256,7 +256,7 @@ wie offline). Nach dem Welcome schickt er `InvSet` mit den Behältern des Spiele
   zu Fuß (und nicht, solange er liegt), höchstens 20 Operationen je s. Er antwortet immer mit `InvSet` (angenommen oder nicht, dazu der echte Stand
   aller Behälter, an die der Spieler kommt). Der Client übernimmt den Stand und wendet die noch offenen Operationen noch einmal an (wie bei der
   Bewegung).
-- **Benutzen** (Art 5, `Inventory.Use`): essen und trinken (der Körper `Raser.Body` des Spielers auf dem Server), rauchen, Taschenlampe an/aus
+- **Benutzen** (Art 7, `Inventory.Use`): essen und trinken (der Körper `Raser.Body` des Spielers auf dem Server), rauchen, Taschenlampe an/aus
   (leuchtet sie, trägt die Entität des Spielers Bit 16), Kanister und Schraubenschlüssel am nächsten Fahrzeug der Region (tanken, reparieren -
   das Fahrzeug des Servers, es geht mit dem nächsten Snapshot an alle).
 - **Bargeld** (`Inventory.cash`, Cent): Geld am Boden wird beim Aufheben Bargeld. Der Server schickt es mit jedem InvSet und Snapshot und

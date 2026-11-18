@@ -169,7 +169,7 @@ Tasten und Klicks wie vom Fenster durch (aufnehmen, wegwerfen, F, B, Umschalt+Kl
 
 - Handel, Kauf; Kanister an der Tankstelle füllen.
 - Das Handy ist nur ein Platzhalter.
-- Der umgehauene Spieler selbst liegt nicht (nur der Passant); online muss der Server `Raser.Knockdown.Apply` beim Ereignis KnockedDown aufrufen
-  und die Operation Use (7) im Protokoll zulassen (es prüft heute bis OpClose = 6).
+- Der umgehauene Spieler selbst liegt offline nicht (nur der Passant); online liegt er 3 s (der Server ruft `Raser.Knockdown.Apply` beim
+  Ereignis KnockedDown). Arten im Protokoll: 1-4 wie oben, 5/6 Öffnen/Schließen eines Rucksacks am Boden, 7 Use.
 - Ziehen mit gedrückter Maus über mehrere Plätze (Minecraft: verteilen) und Doppelklick (sammeln).
 - Die Karte zeichnet Kacheln im Hauptthread (gut 100 ms beim Betreten neuer Kacheln); besser in einem Worker.
