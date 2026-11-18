@@ -9,8 +9,10 @@
 // Abbiegespur will, reserviert sie; kreuzt sie eine schon reservierte, wartet er an der Haltelinie. Vorfahrt: die höhere Straßenart geht
 // vor, bei gleicher rechts vor links; links Abbiegende lassen den Gegenverkehr durch. Nach 6 s Warten zählt nur noch die Reservierung.
 // Steht ein Hindernis (geparkt, Unfall, der Spieler) länger als 3 s, fährt das Auto links daran vorbei.
-// Angefahren (Raser.Vehicle.Shove gibt dem Körper pushE/pushN) wird es ein Körper mit Physik (Raser.Vehicle.Step, gebremst): es rutscht aus,
-// hupt nach 2 s und fädelt sich nach 6 s wieder auf die nächste Spur ein (kaputt: bleibt stehen).
+// Angefahren (ein Stoß gibt dem Körper pushE/pushN und spin - vom Spieler hier in Impacts, von Unfallwagen und abgestellten Wagen in
+// Raser.Physics.Wrecks) wird es ein Körper mit Physik (Raser.Vehicle.Step, gebremst): es rutscht und dreht sich aus, stößt dabei selbst an
+// (Wrecks: Wände, andere Autos, Fahrzeuge der Spieler), hupt nach 2 s und fädelt sich nach 6 s wieder auf die nächste Spur ein (kaputt:
+// bleibt stehen).
 //
 // Fußgänger: gehen 1,2 .. 1,6 m/s die Gehwege und Fußwege entlang, an Knoten um die Ecke oder (seltener) über einen Überweg - dort warten sie,
 // bis kein Auto kommt. Sie weichen einander aus (rechts halten), dem Spieler zu Fuß, und springen zur Seite, wenn ein Fahrzeug auf sie
@@ -880,7 +882,7 @@ namespace Raser {
             c.north = b.north
             c.heading = b.heading
             c.speed = Math.Abs(b.speed)
-            bool resting = Math.Abs(b.speed) < 0.1 && Math.Abs(b.pushE) + Math.Abs(b.pushN) < 0.1
+            bool resting = Math.Abs(b.speed) < 0.1 && Math.Abs(b.pushE) + Math.Abs(b.pushN) < 0.1 && Math.Abs(b.spin) < 1.0
             if (c.state == 2) { return }
             if (b.health <= 0.0) {
                 c.state = 2
@@ -902,6 +904,7 @@ namespace Raser {
                     c.reserved = -1
                     b.pushE = 0.0
                     b.pushN = 0.0
+                    b.spin = 0.0
                     // die Anzeige gleitet in 1,5 s vom Körper auf die Spur
                     var lane = this.graph.lanes[c.lane]
                     lane.At(c.s, this.at)
@@ -918,6 +921,18 @@ namespace Raser {
         // 0,5 m/s hinein, bekommt das Auto den Stoß eines unelastischen Stoßes (wie Raser.Vehicle.Shove, der Spieler mit 1300 kg) und wird ein
         // Unfallwagen. Den Abprall des Spielers rechnet sein Client (oder der Server mit seiner Fahrphysik) selbst - gegen die Zustände (States).
         undefined Impacts(List<float> players) {
+            // von außen angestoßen (Raser.Physics.Wrecks: ein Unfallwagen, ein abgestellter Wagen hat sie getroffen): auch ein Unfallwagen
+            foreach (c in this.cars) {
+                if (c.state != 0) { continue }
+                var b = c.body
+                if (Math.Abs(b.pushE) + Math.Abs(b.pushN) > 0.3 || Math.Abs(b.spin) > 5.0) {
+                    this.Hit(c)
+                } else {
+                    b.pushE = 0.0
+                    b.pushN = 0.0
+                    b.spin = 0.0
+                }
+            }
             for (int i = 0; i + 6 < players.Count; i = i + 7) {
                 if (players[i + 6] != 1.0) { continue }
                 float h = players[i + 2] * Math.PI / 180.0
@@ -958,6 +973,10 @@ namespace Raser {
                             }
                             b.pushE = b.pushE + nx * dv
                             b.pushN = b.pushN + ny * dv
+                            // außerhalb der Mitte getroffen, dreht es sich: der Berührpunkt auf dem Rand seines Kreises, zum Spieler hin
+                            float rx = ox * b.spread * q - nx * b.radius
+                            float ry = oy * b.spread * q - ny * b.radius
+                            b.spin = b.Turned(b.spin + b.SpinOf(rx * ny - ry * nx, dv))
                             b.health = Math.Max(0.0, b.health - Raser.Vehicle.DamageOf(into))
                             hit = true
                             break
@@ -1024,6 +1043,28 @@ namespace Raser {
         NpcState NextState(defined int i) {
             while (this.statePool.Count <= i) { this.statePool.Add(new Raser.NpcState()) }
             return this.statePool[i]
+        }
+
+        // Die Körper der Autos auf dem Gelände (Ebene 0; auf Brücken stößt niemand sie an) nach bodies, in loose je, ob es ein Unfallwagen ist
+        // (frei rollt) - für Raser.Physics.Wrecks. Die Körper gehören den Autos; die Listen werden neu gefüllt.
+        undefined Bodies(List<Vehicle> bodies, List<bool> loose) {
+            bodies.Clear()
+            loose.Clear()
+            foreach (c in this.cars) {
+                if (c.level != 0 && c.state == 0) { continue }
+                bodies.Add(c.body)
+                loose.Add(c.state != 0)
+            }
+        }
+
+        // Nach Raser.Physics.Wrecks: die Lage der Unfallwagen aus ihren Körpern.
+        undefined Follow() {
+            foreach (c in this.cars) {
+                if (c.state == 0) { continue }
+                c.east = c.body.east
+                c.north = c.body.north
+                c.heading = c.body.heading
+            }
         }
 
         // Für die Ansicht und das Spiel: hat der Körper einen Stoß bekommen (Raser.Vehicle.Shove), wird das Auto ein Unfallwagen.

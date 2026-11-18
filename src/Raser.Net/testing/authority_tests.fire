@@ -83,6 +83,8 @@ class AuthorityTests {
         pawn.vehicle = 77
         car.driver = 5
         for (int i = 1; i <= 50; i++) { world.Control(pawn, AuthorityTests.Script(i)) }
+        // nach einem Stoß dreht es sich (Protokoll 5)
+        car.body.spin = 87.654321
         var s = new Raser.Packet(Raser.Protocol.Snapshot)
         s.ack = 50
         s.SetSelf(pawn, car.body)
@@ -94,6 +96,7 @@ class AuthorityTests {
         var v = back.selfVehicle
         Testing.Assert.IsTrue(v.east == b.east && v.north == b.north && v.heading == b.heading && v.speed == b.speed, "Lage und Tempo bitgenau")
         Testing.Assert.IsTrue(v.steerAngle == b.steerAngle && v.lean == b.lean && v.fuel == b.fuel && v.health == b.health, "Lenkung, Schräglage, Tank, Zustand bitgenau")
+        Testing.Assert.IsTrue(v.spin == b.spin, "Drehen bitgenau")
         Testing.Assert.IsTrue(back.self.walker.east == pawn.walker.east, "der Spieler sitzt im Fahrzeug")
     }
 
