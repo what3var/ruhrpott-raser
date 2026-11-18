@@ -129,7 +129,7 @@ class RegionServer {
     static readonly defined int ParkedPerTile = 6       // geparkte Fahrzeuge je Kachel (beim ersten Besuch)
     static readonly defined float KnockSpeed = 5.0      // ab diesem Tempo (m/s) haut ein Fahrzeug einen Spieler um
     static readonly defined int LyingTicks = 90         // so lange (Takte) liegt er
-    static readonly defined int TrafficDelay = 30       // so viele Takte nach der Bestellung wird ein neuer Straßengraph übernommen (1 s)
+    static readonly defined int TrafficDelay = 90       // so viele Takte nach der Bestellung wird ein neuer Straßengraph übernommen (3 s; der Worker braucht für 9 neue Kacheln gut 1,5 s)
 
     Region region
     List<Player> players            // (Verweise: die Spieler gehören dem Gateway)
@@ -469,7 +469,8 @@ class RegionServer {
         want.Sort()
         string joined = ""
         foreach (name in want) { joined = joined + name + ";" }
-        if (joined != this.trafficWant) {
+        // (ohne Spieler bleibt der alte Graph: niemand braucht einen neuen)
+        if (joined != this.trafficWant && want.Count > 0) {
             this.trafficWant = joined
             this.trafficWorker.Request(want)
             this.trafficDue = this.tick + RegionServer.TrafficDelay

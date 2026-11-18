@@ -207,7 +207,7 @@ die Folge, in der Kacheln kommen, ändert nichts.
    Worker (`Raser.GraphWorker`, ein eigener Thread mit `fire dedicated`): der lädt die Kacheln selbst (`FileTileStore.Load`, dieselben Dateien
    `<world>/tiles/<x>_<y>.json` mit Grünstreifen und Höhen), hält je Kachel ihre Straßen zwischengespeichert, fügt die gewünschten sortiert
    zusammen und baut (9 Kacheln: 100 .. 400 ms im Worker). Der Takt läuft weiter; der Verkehr fährt auf dem alten Graphen. **Übernommen**
-   (`Traffic.Adopt`, dann findet jeder NPC seine Spur wieder) wird genau `TrafficDelay` = 30 Takte (1 s) nach der Bestellung - ist der Graph
+   (`Traffic.Adopt`, dann findet jeder NPC seine Spur wieder) wird genau `TrafficDelay` = 90 Takte (3 s) nach der Bestellung - ist der Graph
    dann noch nicht fertig, wartet der Takt dort auf ihn (das Log sagt wie lange). Damit hängt der Verkehr nicht vom Timing des Threads ab:
    dieselben Eingaben geben denselben Verkehr. Der Graph hängt nur von der Menge der Kacheln ab (nicht von früheren Aufträgen) - derselbe wie
    synchron (Test `WorkerTests`).

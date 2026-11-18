@@ -85,6 +85,8 @@ class Server {
         int due = last
         int lastWeather = 0
         int changes = clock.changes
+        int worst = 0               // der längste Takt seit der letzten Meldung (Ticks), gemeldet alle 10 s, wenn über 50 ms
+        int worstAt = last
         while (true) {
             int start = DateTime.UtcNow.Ticks
             float dt = (start - last) / 10000000.0
@@ -93,11 +95,18 @@ class Server {
             gateway.Tick()
             int steps = 0
             while (start >= due && steps < 5) {
+                int t0 = DateTime.UtcNow.Ticks
                 region.Step(Gateway.Millis())
+                worst = Math.Max(worst, DateTime.UtcNow.Ticks - t0)
                 due = due + tickTicks
                 steps++
             }
             if (start - due > tickTicks * 5) { due = start }
+            if (start - worstAt > 100000000) {
+                if (worst > 500000) { Gateway.Log("laengster Takt " + (worst / 10000) + " ms") }
+                worst = 0
+                worstAt = start
+            }
             if (clock.changes != changes || start - lastWeather > 100000000) {
                 changes = clock.changes
                 lastWeather = start

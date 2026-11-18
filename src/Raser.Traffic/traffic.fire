@@ -1298,7 +1298,7 @@ namespace Raser {
                 var l = this.graph.lanes[p.lane]
                 if (l.kind == Raser.LaneKind.Crossing || p.state == 3) { continue }
                 foreach (r in this.graph.sorted) {
-                    if (!r.car) { continue }
+                    if (!r.car || r.level != p.level) { continue }
                     if (Raser.Geo.DistanceToLine(r.line, p.east, p.north) < r.width / 2.0) {
                         onRoad++
                         break

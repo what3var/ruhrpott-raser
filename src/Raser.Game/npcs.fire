@@ -156,6 +156,8 @@ class TrafficView {
     defined int stepTicks       // Summe der Schritte (Ticks)
     defined int syncTicks
     defined int steps
+    defined int worstTicks      // das längste Update (Ticks: Graph holen, Simulation, Modelle)
+    defined int worstFeed       // das längste Holen des Graphen (Ticks; Poll und Übernahme)
 
     construct(Scene scene, Options options) {
         this.scene = scene
@@ -229,6 +231,7 @@ class TrafficView {
             n = walker.north
             heading = walker.heading
         }
+        int tf = DateTime.Now.Ticks
         this.Feed(e, n, false)
         int t0 = DateTime.Now.Ticks
         if (dt > 0.0) { this.Simulate(dt, car, walker, onFoot, vehicles, obstacles, wetness) }
@@ -238,6 +241,8 @@ class TrafficView {
         this.Place(terrain, view, e, n)
         this.stepTicks = this.stepTicks + (t1 - t0)
         this.syncTicks = this.syncTicks + (DateTime.Now.Ticks - t1)
+        this.worstTicks = Math.Max(this.worstTicks, DateTime.Now.Ticks - tf)
+        this.worstFeed = Math.Max(this.worstFeed, t0 - tf)
         this.steps++
         if (this.messageTime > 0.0) { this.messageTime = this.messageTime - dt }
     }
@@ -564,6 +569,6 @@ class TrafficView {
     string Report() {
         if (!this.enabled) { return "Verkehr aus" }
         int n = Math.Max(1, this.steps)
-        return "Verkehr: " + this.traffic.cars.Count + " Autos, " + this.traffic.people.Count + " Fussgaenger (Modelle " + this.cars.Count + " + " + this.figures.Count + "), Graph " + this.traffic.graph.lanes.Count + " Spuren / " + this.traffic.graph.NodeCount + " Knoten, gebaut " + this.builds + "x im Worker (zuletzt " + (this.buildTicks / 10000) + " ms); je Bild Simulation " + (this.stepTicks / n / 10000.0) + " ms, Modelle " + (this.syncTicks / n / 10000.0) + " ms; Unfaelle " + this.traffic.crashes + ", umgefahren " + this.traffic.knocked + "; Probe: " + this.traffic.Check()
+        return "Verkehr: " + this.traffic.cars.Count + " Autos, " + this.traffic.people.Count + " Fussgaenger (Modelle " + this.cars.Count + " + " + this.figures.Count + "), Graph " + this.traffic.graph.lanes.Count + " Spuren / " + this.traffic.graph.NodeCount + " Knoten, gebaut " + this.builds + "x im Worker (zuletzt " + (this.buildTicks / 10000) + " ms); je Bild Simulation " + (this.stepTicks / n / 10000.0) + " ms, Modelle " + (this.syncTicks / n / 10000.0) + " ms, laengstes Update " + (this.worstTicks / 10000) + " ms (davon Graph holen " + (this.worstFeed / 10000) + " ms); Unfaelle " + this.traffic.crashes + ", umgefahren " + this.traffic.knocked + "; Probe: " + this.traffic.Check()
     }
 }

@@ -65,8 +65,7 @@ namespace Raser {
             }
         }
 
-        // Die Straßen eines Auftrags zusammenfügen (sortiert nach Namen; jede Kachel aus dem Zwischenspeicher, sonst geladen). Was der Auftrag
-        // nicht braucht, fliegt aus dem Zwischenspeicher.
+        // Die Straßen eines Auftrags zusammenfügen (sortiert nach Namen; jede Kachel aus dem Zwischenspeicher, sonst geladen).
         static RoadGraph Assemble(GraphJob job, FileTileStore store, Dictionary<string, RoadGraph> cache) {
             var names = new List<string>()
             foreach (n in job.names) { if (!names.Contains(n)) { names.Add(n) } }
@@ -94,9 +93,12 @@ namespace Raser {
                 }
                 g.Merge(cache[n])
             }
-            var gone = new List<string>()
-            foreach (pair in cache) { if (!names.Contains(pair.Key)) { gone.Add(pair.Key) } }
-            foreach (n in gone) { cache.Remove(n) }
+            // der Zwischenspeicher: erst über 30 Kacheln fliegt, was dieser Auftrag nicht braucht (wer zurückkommt, lädt nicht neu)
+            if (cache.Count > 30) {
+                var gone = new List<string>()
+                foreach (pair in cache) { if (!names.Contains(pair.Key)) { gone.Add(pair.Key) } }
+                foreach (n in gone) { cache.Remove(n) }
+            }
             return g
         }
 
