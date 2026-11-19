@@ -854,6 +854,58 @@ namespace Raser {
         // Die Fenster, Türen und Tore der Gebäude im Block (nahe Stufe): je Öffnung ein Parallelogramm zwischen den Laibungen (Raser.Facade.Panes) -
         // Glas mit Rahmen (10 cm, weiß bei Lochfenstern, dunkel bei Schaufenstern) nach glass und opaque, Türblätter aus Holz, Tore aus Metall.
         // Ein Element gehört dem Block, in dem seine Mitte liegt.
+        // Ein Viereck (positions ab o; ein Dreieck: die letzten beiden Ecken gleich) auf das Rechteck (ax, ay) .. (bx, by) zugeschnitten (in x und y,
+        // z geht mit - die Fläche ist eben) und als Vierecke (Fächer) in part.
+        static undefined ClipQuad(MeshPart part, float pp[], defined int o, defined float ax, defined float ay, defined float bx, defined float by, defined float nx, defined float ny, defined float nz, defined int color, defined int material) {
+            var poly = new List<float>()
+            for (int e = 0; e < 4; e++) {
+                float x = pp[o + e * 3]
+                float y = pp[o + e * 3 + 1]
+                float z = pp[o + e * 3 + 2]
+                int n = poly.Count
+                // doppelte Ecke (Dreieck) auslassen
+                if (n >= 3 && Math.Abs(poly[n - 3] - x) < 0.00001 && Math.Abs(poly[n - 2] - y) < 0.00001 && Math.Abs(poly[n - 1] - z) < 0.00001) { continue }
+                poly.Add(x)
+                poly.Add(y)
+                poly.Add(z)
+            }
+            for (int side = 0; side < 4 && poly.Count >= 9; side++) {
+                var next = new List<float>()
+                int n = poly.Count / 3
+                for (int i = 0; i < n; i++) {
+                    int j = (i + 1) % n
+                    float pa = Raser.FarMesher.ClipDist(poly, i, side, ax, ay, bx, by)
+                    float pb = Raser.FarMesher.ClipDist(poly, j, side, ax, ay, bx, by)
+                    if (pa >= 0.0) {
+                        next.Add(poly[i * 3])
+                        next.Add(poly[i * 3 + 1])
+                        next.Add(poly[i * 3 + 2])
+                    }
+                    if ((pa >= 0.0) != (pb >= 0.0)) {
+                        float t = pa / (pa - pb)
+                        for (int c = 0; c < 3; c++) { next.Add(poly[i * 3 + c] + (poly[j * 3 + c] - poly[i * 3 + c]) * t) }
+                    }
+                }
+                poly.Clear()
+                foreach (v in next) { poly.Add(v) }
+            }
+            int count = poly.Count / 3
+            if (count < 3) { return }
+            for (int k = 1; k + 1 < count; k = k + 2) {
+                int c = k + 1
+                int d = Math.Min(k + 2, count - 1)
+                part.Quad(poly[0], poly[1], poly[2], poly[k * 3], poly[k * 3 + 1], poly[k * 3 + 2], poly[c * 3], poly[c * 3 + 1], poly[c * 3 + 2], poly[d * 3], poly[d * 3 + 1], poly[d * 3 + 2], nx, ny, nz, color, material)
+            }
+        }
+
+        // (ClipQuad) Wie weit die Ecke i innerhalb der Seite side (0 links, 1 rechts, 2 unten, 3 oben) des Rechtecks liegt (negativ: draußen).
+        static defined float ClipDist(List<float> poly, defined int i, defined int side, defined float ax, defined float ay, defined float bx, defined float by) {
+            if (side == 0) { return poly[i * 3] - ax }
+            if (side == 1) { return bx - poly[i * 3] }
+            if (side == 2) { return poly[i * 3 + 1] - ay }
+            return by - poly[i * 3 + 1]
+        }
+
         // Bekommt das Gebäude in der nahen Stufe ein glattes Dach (aus dem Dachmodell wie fern) statt Ziegel-Voxeln? Steildächer, deren Ziegel ein
         // anderes Material als die Wand haben (sonst wären die Giebel nicht zu trennen); ohne Überdachungen.
         static defined bool SmoothRoof(RoofModel m) {
@@ -875,10 +927,21 @@ namespace Raser {
                 defined float nn[] = whole.normals
                 for (int q = 0; q < whole.count; q++) {
                     int o = q * 12
-                    float mx = (pp[o] + pp[o + 3] + pp[o + 6] + pp[o + 9]) / 4.0
-                    float my = (pp[o + 1] + pp[o + 4] + pp[o + 7] + pp[o + 10]) / 4.0
-                    if (mx < x0 || my < y0 || mx >= x0 + size || my >= y0 + size) { continue }
-                    part.Quad(pp[o], pp[o + 1], pp[o + 2], pp[o + 3], pp[o + 4], pp[o + 5], pp[o + 6], pp[o + 7], pp[o + 8], pp[o + 9], pp[o + 10], pp[o + 11], nn[q * 3], nn[q * 3 + 1], nn[q * 3 + 2], whole.colors[q], whole.materials[q])
+                    // am Raster der Chunks (12,8 m) geschnitten: das Muster des Atlas reicht je Fläche nur über ein Feld (Raser.Atlas.QuadUV) -
+                    // so bekommen die Dächer ihre Ziegel, und jedes Stück liegt in genau einem Block
+                    float minX = Math.Min(Math.Min(pp[o], pp[o + 3]), Math.Min(pp[o + 6], pp[o + 9]))
+                    float maxX = Math.Max(Math.Max(pp[o], pp[o + 3]), Math.Max(pp[o + 6], pp[o + 9]))
+                    float minY = Math.Min(Math.Min(pp[o + 1], pp[o + 4]), Math.Min(pp[o + 7], pp[o + 10]))
+                    float maxY = Math.Max(Math.Max(pp[o + 1], pp[o + 4]), Math.Max(pp[o + 7], pp[o + 10]))
+                    int cx0 = Math.Floor(Math.Max(minX, x0) / 12.8)!int
+                    int cx1 = Math.Floor((Math.Min(maxX, x0 + size) - 0.0001) / 12.8)!int
+                    int cy0 = Math.Floor(Math.Max(minY, y0) / 12.8)!int
+                    int cy1 = Math.Floor((Math.Min(maxY, y0 + size) - 0.0001) / 12.8)!int
+                    for (int cy = cy0; cy <= cy1; cy++) {
+                        for (int cx = cx0; cx <= cx1; cx++) {
+                            Raser.FarMesher.ClipQuad(part, pp, o, cx * 12.8, cy * 12.8, cx * 12.8 + 12.8, cy * 12.8 + 12.8, nn[q * 3], nn[q * 3 + 1], nn[q * 3 + 2], whole.colors[q], whole.materials[q])
+                        }
+                    }
                 }
             }
         }
