@@ -466,7 +466,7 @@ class GameMenu {
         else if (c == "taste") { this.Capture(e) }
         else if (c == "standard") {
             this.settings.ResetKeys()
-            this.changed = true
+            this.Changed()
             this.RefreshKeys()
             this.Say("Alle Tasten wieder auf dem Standard")
         }
@@ -515,7 +515,7 @@ class GameMenu {
             return
         }
         string swapped = this.settings.Assign(k.action, key)
-        this.changed = true
+        this.Changed()
         this.StopCapture()
         this.RefreshKeys()
         if (swapped != "") { this.Say("Getauscht: " + this.LabelOf(swapped) + " hat jetzt " + GameSettings.KeyName(this.settings.KeyOf(swapped))) }
@@ -584,17 +584,25 @@ class GameMenu {
             s.fullscreen = i == 1
             if (this.win != undefined) { this.win.Fullscreen = s.fullscreen }
         }
-        this.changed = true
+        this.Changed()
         // auf dem Bildschirm sofort (offline steht das Bild: es wird erst beim Schließen neu gerendert)
+        if (this.changed) { return }          // nicht gespeichert: die Meldung von Changed bleibt stehen
         if (c.restart) { this.Say("Gespeichert - wirkt nach dem nächsten Start") }
         else if (this.paused && (id == "near" || id == "far" || id == "sky" || id == "camera" || id == "threads")) { this.Say("Wirkt sofort - zu sehen, sobald das Spiel weiterläuft") }
         else { this.Say(c.Label + ": " + v) }
     }
 
+    // Eine Einstellung hat sich geändert: gleich in die Datei (auch wer danach über „Spiel beenden“ geht oder das Spiel abstürzt, behält sie).
+    undefined Changed() {
+        this.changed = true
+        string problem = this.settings.Save()
+        if (problem == "") { this.changed = false } else { this.Say(problem) }
+    }
+
     // Der Regler hat sich bewegt (die Lautstärke: nur gemerkt, es gibt noch keinen Ton).
     undefined Slid(MenuSlider m) {
         if (m.setting == "volume") { this.settings.volume = Math.Round(m.Value)!int }
-        this.changed = true
+        this.Changed()
         this.Say(m.Label + ": " + m.ValueText(m.Value) + " %")
     }
 
@@ -694,7 +702,7 @@ class GameMenu {
         scroller.SetContent(pages)
         this.scroller = scroller
         opt.Add(scroller)
-        this.Entry(opt, "Zurück", "zurueck", "Gespeichert wird beim Schließen des Menüs")
+        this.Entry(opt, "Zurück", "zurueck", "Jede Änderung wird sofort gespeichert")
         var hint = new UI.Label("", 14, 0)
         hint.FontSize = 16
         hint.Color = look.dim
