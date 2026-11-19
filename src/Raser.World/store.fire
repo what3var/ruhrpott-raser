@@ -60,6 +60,7 @@ namespace Raser {
                 if (stored != undefined) { Raser.Footprints.Clean(stored) }
                 Raser.Greens.Build(stored)
                 Raser.Props.Settle(stored)
+                Raser.Props.Face(stored)
                 if (stored != undefined) { Raser.Strips.Build(stored) }
                 return stored
             }
@@ -74,6 +75,7 @@ namespace Raser {
             Raser.Footprints.Clean(tile)
             Raser.Greens.Build(tile)
             Raser.Props.Settle(tile)
+            Raser.Props.Face(tile)
             Raser.Strips.Build(tile)
             return tile
         }

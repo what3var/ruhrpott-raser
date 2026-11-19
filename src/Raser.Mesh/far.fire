@@ -19,6 +19,13 @@ namespace Raser {
         List<Road> roads
         StreetField streets         // Fahrbahnen und Gehwege mit natürlichen Kanten
         List<float[]> inner         // die Grundrisse der Gebäude, 15 cm nach innen versetzt (für InBuilding, bei Bedarf)
+        defined bool natural        // Grenzen der Flächen im öffentlichen Raum schneiden (Raser.PublicSpace); false: eine Farbe je Zelle (wie früher)
+        int areaGrid[]              // je Punkt des Geländerasters des Blocks die Fläche dort (AreaAt), für CellMixed
+        defined float gridX0
+        defined float gridY0
+        defined float gridSp
+        defined int gridN
+        defined bool plainCell      // (Fringe) die ganze Zelle hat nur eine Fläche: ihre Säulen nicht einzeln prüfen
 
         construct(Tile tile, defined int seed) {
             this.tile = tile
@@ -40,11 +47,145 @@ namespace Raser {
             this.areas = new List<Area>()
             this.roads = new List<Road>()
             this.streets = new Raser.StreetField()
+            this.natural = true
         }
 
         defined float GroundAt(defined float x, defined float y) {
             if (this.tile.heights == undefined) { return 0.0 }
             return this.tile.heights.At(x, y)
+        }
+
+        // Die Fläche an einem Punkt (Index in this.areas, -1: keine) - nach denselben Regeln wie SurfaceAt (höchste Priorität, dann kleinere ID).
+        defined int AreaAt(defined float x, defined float y) {
+            int best = -1
+            int priority = -1000000
+            int areaId = 0
+            for (int i = 0; i < this.areas.Count; i++) {
+                var a = this.areas[i]
+                if (a.priority < priority || (a.priority == priority && a.id >= areaId)) { continue }
+                if (Raser.Geo.Inside(a.ring, x, y)) {
+                    priority = a.priority
+                    areaId = a.id
+                    best = i
+                }
+            }
+            return best
+        }
+
+        // AreaAt an einer Ecke: auf dem Raster des Blocks aus areaGrid, sonst gerechnet.
+        defined int CornerArea(defined float x, defined float y) {
+            if (this.areaGrid != undefined) {
+                float fi = (x - this.gridX0) / this.gridSp
+                float fj = (y - this.gridY0) / this.gridSp
+                int i = Math.Round(fi)!int
+                int j = Math.Round(fj)!int
+                if (i >= 0 && j >= 0 && i <= this.gridN && j <= this.gridN && Math.Abs(fi - i) < 0.001 && Math.Abs(fj - j) < 0.001) { return this.areaGrid[i + j * (this.gridN + 1)] }
+            }
+            return this.AreaAt(x, y)
+        }
+
+        // Liegt an der Zelle (ax, ay, Kante sp) mehr als eine Fläche (an den Ecken und in der Mitte)?
+        defined bool CellMixed(defined float ax, defined float ay, defined float sp) {
+            int a = this.CornerArea(ax, ay)
+            if (this.CornerArea(ax + sp, ay) != a || this.CornerArea(ax + sp, ay + sp) != a || this.CornerArea(ax, ay + sp) != a) { return true }
+            return this.AreaAt(ax + sp / 2.0, ay + sp / 2.0) != a
+        }
+
+        // Ein Grundstück am Haus (Raser.PublicSpace.PlotMargin an einem Gebäude)?
+        defined bool AtHouse(defined float x, defined float y) {
+            float m = Raser.PublicSpace.PlotMargin
+            foreach (rm in this.models) {
+                var b = rm.box
+                if (x < b.minX - m || x > b.maxX + m || y < b.minY - m || y > b.maxY + m) { continue }
+                if (Raser.Geo.Inside(rm.building.footprint, x, y)) { return true }
+                if (Raser.HouseStyle.RingDistance(rm.building.footprint, x, y) < m) { return true }
+            }
+            return false
+        }
+
+        // Das Gelände eines konvexen Polygons in der Zelle (ax, ay, sp) mit dem Belag der Flächen (ohne Fahrbahnen und Wege). Im öffentlichen
+        // Raum (Raser.PublicSpace: alle Flächen an der Zelle öffentlich, nicht am Haus) wird das Polygon an den Grenzen der Flächen geschnitten -
+        // die Grenze läuft schräg und in Kurven, wie in den Daten, nicht im Raster. Sonst (Grundstücke) eine Farbe für alles, wie bisher.
+        undefined Surface(MeshPart part, defined float qx[], defined float qy[], defined int m, defined float ax, defined float ay, defined float sp, defined float h0, defined float h1, defined float h2, defined float h3, defined float nx, defined float ny, defined float nz, defined bool streets) {
+            if (m < 3) { return }
+            float mx = Raser.FarMesher.Mean(qx, m)
+            float my = Raser.FarMesher.Mean(qy, m)
+            int s = this.SurfaceAt(mx, my, streets)
+            if (!this.natural || this.plainCell || this.areas.Count == 0 || !this.CellMixed(ax, ay, sp)) {
+                Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, s & 255, s >> 8)
+                return
+            }
+            // eine Straße (ohne StreetField) gewinnt: wie bisher
+            if (streets && this.SurfaceAt(mx, my, false) != s) {
+                Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, s & 255, s >> 8)
+                return
+            }
+            // die Flächen an der Zelle, nach Rang (wie AreaAt)
+            var found = new List<int>()
+            for (int c = 0; c < 5; c++) {
+                float px = ax + sp / 2.0
+                float py = ay + sp / 2.0
+                if (c < 4) {
+                    px = ax
+                    py = ay
+                    if (c == 1 || c == 2) { px = ax + sp }
+                    if (c >= 2) { py = ay + sp }
+                }
+                int a = this.CornerArea(px, py)
+                if (a >= 0 && !found.Contains(a)) { found.Add(a) }
+            }
+            bool open = !this.AtHouse(ax + sp / 2.0, ay + sp / 2.0)
+            foreach (a in found) {
+                if (!Raser.PublicSpace.IsPublic(this.areas[a].kind)) { open = false }
+            }
+            if (!open || found.Count == 0) {
+                Raser.FarMesher.Poly(part, qx, qy, m, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, s & 255, s >> 8)
+                return
+            }
+            // nach Rang ordnen (höhere Priorität, dann kleinere ID zuerst)
+            for (int i = 0; i < found.Count; i++) {
+                for (int j = i + 1; j < found.Count; j++) {
+                    var ai = this.areas[found[i]]
+                    var aj = this.areas[found[j]]
+                    if (aj.priority > ai.priority || (aj.priority == ai.priority && aj.id < ai.id)) {
+                        int t = found[i]
+                        found[i] = found[j]
+                        found[j] = t
+                    }
+                }
+            }
+            defined float rx[24]
+            defined float ry[24]
+            defined float rv[24]
+            defined float ox[24]
+            defined float oy[24]
+            defined float ov[24]
+            int n = Math.Min(m, 20)
+            for (int k = 0; k < n; k++) {
+                rx[k] = qx[k]
+                ry[k] = qy[k]
+            }
+            foreach (a in found) {
+                var area = this.areas[a]
+                // der Abstand zur Grenze, innen negativ - an der Grenze 0, dort schneidet Clip
+                for (int k = 0; k < n; k++) {
+                    float d = Raser.HouseStyle.RingDistance(area.ring, rx[k], ry[k])
+                    if (Raser.Geo.Inside(area.ring, rx[k], ry[k])) { d = -d }
+                    rv[k] = d
+                }
+                int mi = Raser.StreetField.Clip(rx, ry, rv, n, 0.0, true, ox, oy, ov)
+                if (mi >= 3) { Raser.FarMesher.Poly(part, ox, oy, mi, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, area.color, area.surface!int) }
+                int mo = Raser.StreetField.Clip(rx, ry, rv, n, 0.0, false, ox, oy, ov)
+                n = Math.Min(mo, 20)
+                for (int k = 0; k < n; k++) {
+                    rx[k] = ox[k]
+                    ry[k] = oy[k]
+                }
+                if (n < 3) { return }
+            }
+            // der Rest: was dort ist (eine Fläche, die an keiner Ecke lag, oder keine)
+            int r = this.SurfaceAt(Raser.FarMesher.Mean(rx, n), Raser.FarMesher.Mean(ry, n), false)
+            Raser.FarMesher.Poly(part, rx, ry, n, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, r & 255, r >> 8)
         }
 
         // Die Oberfläche (Farbe + Material << 8) an einem Punkt. streets = false: ohne die Fahrbahnen (die kommen aus dem StreetField).
@@ -95,6 +236,19 @@ namespace Raser {
             for (int i = 0; i < this.tile.data.roads.Count; i++) {
                 if (this.roadBoxes[i].Overlaps(x0, y0, x0 + size, y0 + size)) { this.roads.Add(this.tile.data.roads[i]) }
             }
+            // die Flächen je Punkt des Rasters (für CellMixed; nur, wo Flächen sind)
+            this.areaGrid = undefined
+            if (this.natural && this.areas.Count > 0) {
+                this.areaGrid = new int[(n + 1) * (n + 1)]
+                int ag[] = this.areaGrid
+                for (int j = 0; j <= n; j++) {
+                    for (int i = 0; i <= n; i++) { ag[i + j * (n + 1)] = this.AreaAt(x0 + i * spacing, y0 + j * spacing) }
+                }
+                this.gridX0 = x0
+                this.gridY0 = y0
+                this.gridSp = spacing
+                this.gridN = n
+            }
             // Gelände, darin Fahrbahnen und Gehwege mit natürlichen Kanten (Raser.StreetField)
             int side = 0
             if (skip != undefined) { side = Math.Round(Math.Sqrt(skip.length))!int }
@@ -135,6 +289,20 @@ namespace Raser {
                     float ny = ((h0 + h1) - (h2 + h3)) / (2.0 * spacing)
                     float len = Math.Sqrt(nx * nx + ny * ny + 1.0)
                     if (field.Empty) {
+                        if (this.natural && this.areas.Count > 0 && this.CellMixed(ax, ay, spacing)) {
+                            defined float cx[4]
+                            defined float cy[4]
+                            cx[0] = ax
+                            cy[0] = ay
+                            cx[1] = bx
+                            cy[1] = ay
+                            cx[2] = bx
+                            cy[2] = by
+                            cx[3] = ax
+                            cy[3] = by
+                            this.Surface(part, cx, cy, 4, ax, ay, spacing, h0, h1, h2, h3, nx / len, ny / len, 1.0 / len, true)
+                            continue
+                        }
                         int s = this.SurfaceAt(ax + spacing / 2.0, ay + spacing / 2.0)
                         part.Quad(ax, ay, h0, bx, ay, h1, bx, by, h2, ax, by, h3, nx / len, ny / len, 1.0 / len, s & 255, s >> 8)
                         continue
@@ -208,10 +376,9 @@ namespace Raser {
             foreach (p in this.tile.data.props) {
                 if (p.kind != "tree") { continue }
                 if (p.x < x0 || p.y < y0 || p.x >= x0 + size || p.y >= y0 + size) { continue }
-                float h = p.height
-                if (h <= 0.0) { h = 12.0 }
-                bool needle = p.detail == "needleleaved" || p.detail == "fichte"
-                if (needle) { h = Math.Max(h, 14.0) }
+                // dieselbe Höhe wie das Modell der nahen Stufe (Raser.PropMesher.Tree)
+                float h = Raser.Props.TreeHeight(p)
+                bool needle = Raser.Props.Conical(p.detail)
                 float g = this.GroundAt(p.x, p.y)
                 float r = h * 0.3
                 float trunk = h * 0.4
@@ -687,6 +854,98 @@ namespace Raser {
         // Die Fenster, Türen und Tore der Gebäude im Block (nahe Stufe): je Öffnung ein Parallelogramm zwischen den Laibungen (Raser.Facade.Panes) -
         // Glas mit Rahmen (10 cm, weiß bei Lochfenstern, dunkel bei Schaufenstern) nach glass und opaque, Türblätter aus Holz, Tore aus Metall.
         // Ein Element gehört dem Block, in dem seine Mitte liegt.
+        // Ein Viereck (positions ab o; ein Dreieck: die letzten beiden Ecken gleich) auf das Rechteck (ax, ay) .. (bx, by) zugeschnitten (in x und y,
+        // z geht mit - die Fläche ist eben) und als Vierecke (Fächer) in part.
+        static undefined ClipQuad(MeshPart part, float pp[], defined int o, defined float ax, defined float ay, defined float bx, defined float by, defined float nx, defined float ny, defined float nz, defined int color, defined int material) {
+            var poly = new List<float>()
+            for (int e = 0; e < 4; e++) {
+                float x = pp[o + e * 3]
+                float y = pp[o + e * 3 + 1]
+                float z = pp[o + e * 3 + 2]
+                int n = poly.Count
+                // doppelte Ecke (Dreieck) auslassen
+                if (n >= 3 && Math.Abs(poly[n - 3] - x) < 0.00001 && Math.Abs(poly[n - 2] - y) < 0.00001 && Math.Abs(poly[n - 1] - z) < 0.00001) { continue }
+                poly.Add(x)
+                poly.Add(y)
+                poly.Add(z)
+            }
+            for (int side = 0; side < 4 && poly.Count >= 9; side++) {
+                var next = new List<float>()
+                int n = poly.Count / 3
+                for (int i = 0; i < n; i++) {
+                    int j = (i + 1) % n
+                    float pa = Raser.FarMesher.ClipDist(poly, i, side, ax, ay, bx, by)
+                    float pb = Raser.FarMesher.ClipDist(poly, j, side, ax, ay, bx, by)
+                    if (pa >= 0.0) {
+                        next.Add(poly[i * 3])
+                        next.Add(poly[i * 3 + 1])
+                        next.Add(poly[i * 3 + 2])
+                    }
+                    if ((pa >= 0.0) != (pb >= 0.0)) {
+                        float t = pa / (pa - pb)
+                        for (int c = 0; c < 3; c++) { next.Add(poly[i * 3 + c] + (poly[j * 3 + c] - poly[i * 3 + c]) * t) }
+                    }
+                }
+                poly.Clear()
+                foreach (v in next) { poly.Add(v) }
+            }
+            int count = poly.Count / 3
+            if (count < 3) { return }
+            for (int k = 1; k + 1 < count; k = k + 2) {
+                int c = k + 1
+                int d = Math.Min(k + 2, count - 1)
+                part.Quad(poly[0], poly[1], poly[2], poly[k * 3], poly[k * 3 + 1], poly[k * 3 + 2], poly[c * 3], poly[c * 3 + 1], poly[c * 3 + 2], poly[d * 3], poly[d * 3 + 1], poly[d * 3 + 2], nx, ny, nz, color, material)
+            }
+        }
+
+        // (ClipQuad) Wie weit die Ecke i innerhalb der Seite side (0 links, 1 rechts, 2 unten, 3 oben) des Rechtecks liegt (negativ: draußen).
+        static defined float ClipDist(List<float> poly, defined int i, defined int side, defined float ax, defined float ay, defined float bx, defined float by) {
+            if (side == 0) { return poly[i * 3] - ax }
+            if (side == 1) { return bx - poly[i * 3] }
+            if (side == 2) { return poly[i * 3 + 1] - ay }
+            return by - poly[i * 3 + 1]
+        }
+
+        // Bekommt das Gebäude in der nahen Stufe ein glattes Dach (aus dem Dachmodell wie fern) statt Ziegel-Voxeln? Steildächer, deren Ziegel ein
+        // anderes Material als die Wand haben (sonst wären die Giebel nicht zu trennen); ohne Überdachungen.
+        static defined bool SmoothRoof(RoofModel m) {
+            if (!m.pitched || m.canopy) { return false }
+            int roof = m.building.roof!int
+            return roof != 0 && roof != m.wallMaterial
+        }
+
+        // Die glatten Dächer (SmoothRoof) samt Überstand im Block (x0, y0, size; kachel-lokal): jedes Dreieck bzw. Viereck in dem Block, in dem
+        // seine Mitte liegt - so kommt ein Dach über zwei Blöcken nicht doppelt.
+        undefined SmoothRoofs(MeshPart part, defined float x0, defined float y0, defined float size) {
+            foreach (m in this.models) {
+                if (!Raser.FarMesher.SmoothRoof(m)) { continue }
+                if (!m.box.Overlaps(x0 - 1.0, y0 - 1.0, x0 + size + 1.0, y0 + size + 1.0)) { continue }
+                var whole = new MeshPart()
+                Raser.FarMesher.Roof(whole, m)
+                Raser.FarMesher.Eaves(whole, m)
+                defined float pp[] = whole.positions
+                defined float nn[] = whole.normals
+                for (int q = 0; q < whole.count; q++) {
+                    int o = q * 12
+                    // am Raster der Chunks (12,8 m) geschnitten: das Muster des Atlas reicht je Fläche nur über ein Feld (Raser.Atlas.QuadUV) -
+                    // so bekommen die Dächer ihre Ziegel, und jedes Stück liegt in genau einem Block
+                    float minX = Math.Min(Math.Min(pp[o], pp[o + 3]), Math.Min(pp[o + 6], pp[o + 9]))
+                    float maxX = Math.Max(Math.Max(pp[o], pp[o + 3]), Math.Max(pp[o + 6], pp[o + 9]))
+                    float minY = Math.Min(Math.Min(pp[o + 1], pp[o + 4]), Math.Min(pp[o + 7], pp[o + 10]))
+                    float maxY = Math.Max(Math.Max(pp[o + 1], pp[o + 4]), Math.Max(pp[o + 7], pp[o + 10]))
+                    int cx0 = Math.Floor(Math.Max(minX, x0) / 12.8)!int
+                    int cx1 = Math.Floor((Math.Min(maxX, x0 + size) - 0.0001) / 12.8)!int
+                    int cy0 = Math.Floor(Math.Max(minY, y0) / 12.8)!int
+                    int cy1 = Math.Floor((Math.Min(maxY, y0 + size) - 0.0001) / 12.8)!int
+                    for (int cy = cy0; cy <= cy1; cy++) {
+                        for (int cx = cx0; cx <= cx1; cx++) {
+                            Raser.FarMesher.ClipQuad(part, pp, o, cx * 12.8, cy * 12.8, cx * 12.8 + 12.8, cy * 12.8 + 12.8, nn[q * 3], nn[q * 3 + 1], nn[q * 3 + 2], whole.colors[q], whole.materials[q])
+                        }
+                    }
+                }
+            }
+        }
+
         undefined Windows(MeshPart opaque, MeshPart glass, defined float x0, defined float y0, defined float size) {
             var panes = new List<float>()
             foreach (m in this.models) {
@@ -826,6 +1085,7 @@ namespace Raser {
                 }
             }
             float sp = 0.2
+            this.plainCell = this.areaGrid == undefined || !this.CellMixed(x0 + i * 0.8, y0 + j * 0.8, 0.8)
             for (int v = 0; v < 4; v++) {
                 for (int u = 0; u < 4; u++) {
                     float ax = x0 + (i * 4 + u) * sp
@@ -839,8 +1099,17 @@ namespace Raser {
                     float ny = ((h0 + h1) - (h2 + h3)) / (2.0 * sp)
                     float len = Math.Sqrt(nx * nx + ny * ny + 1.0)
                     if (field.Empty) {
-                        int s = this.SurfaceAt(ax + sp / 2.0, ay + sp / 2.0)
-                        part.Quad(ax, ay, h0, ax + sp, ay, h1, ax + sp, ay + sp, h2, ax, ay + sp, h3, nx / len, ny / len, 1.0 / len, s & 255, s >> 8)
+                        defined float cx[4]
+                        defined float cy[4]
+                        cx[0] = ax
+                        cy[0] = ay
+                        cx[1] = ax + sp
+                        cy[1] = ay
+                        cx[2] = ax + sp
+                        cy[2] = ay + sp
+                        cx[3] = ax
+                        cy[3] = ay + sp
+                        this.Surface(part, cx, cy, 4, ax, ay, sp, h0, h1, h2, h3, nx / len, ny / len, 1.0 / len, true)
                         continue
                     }
                     defined float d[4]
@@ -862,6 +1131,7 @@ namespace Raser {
                     this.StreetCell(part, field, ax, ay, sp, h0, h1, h2, h3, nx / len, ny / len, 1.0 / len, d[0], d[1], d[2], d[3], Math.Max(Math.Max(w[0], w[1]), Math.Max(w[2], w[3])), pp[0], pp[1], pp[2], pp[3], g[0], g[1], g[2], g[3])
                 }
             }
+            this.plainCell = false
         }
 
         // Liegt der Punkt in einem Gebäude (Grundriss 15 cm nach innen versetzt)?
@@ -1073,8 +1343,7 @@ namespace Raser {
                         mr = Raser.StreetField.Clip(qx, qy, qv, m, 0.0, false, rx, ry, rv)
                         mr = Raser.FarMesher.CopyPoly(rx, ry, rv, mr, qx, qy, qv)
                     }
-                    int s = this.SurfaceAt(Raser.FarMesher.Mean(qx, mr), Raser.FarMesher.Mean(qy, mr), false)
-                    Raser.FarMesher.Poly(part, qx, qy, mr, ax, ay, sp, h0, h1, h2, h3, 0.0, nx, ny, nz, s & 255, s >> 8)
+                    this.Surface(part, qx, qy, mr, ax, ay, sp, h0, h1, h2, h3, nx, ny, nz, false)
                 }
             }
         }

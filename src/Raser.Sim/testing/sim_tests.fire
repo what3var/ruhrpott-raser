@@ -284,3 +284,40 @@ class CrashTests {
         Testing.Assert.IsTrue(npc.east > 104.5 && npc.east + npc.spread + npc.radius < 109.3, "Auto bei " + npc.east)
     }
 }
+
+// Möbel und Bäume sind Modelle im Netz (Raser.PropMesher), keine Voxel mehr: die Pfosten der Kollision bleiben, wo die Props stehen, mit
+// demselben Radius je Art - gleich in welchem Winkel das Modell gedreht ist.
+class PostTests {
+    [Test "Pfosten: Laterne, Ampel, Baum halten an ihrem Fuß auf, in jedem Winkel; der Ausleger nicht, Bank und Schild auch nicht"]
+    undefined Posts() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var raster = new Raser.HeightRaster(0.0, 0.0, 1.0, 257, 257, 50.0)
+        tile.heights = take raster
+        string kinds[] = ["lamp", "signal", "tree", "bench", "sign"]
+        float angles[] = [37.0, 211.0, 0.0, 123.0, 301.0]
+        for (int k = 0; k < 5; k++) {
+            var p = new Raser.Prop()
+            p.source = "test:" + kinds[k]
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = kinds[k]
+            p.x = 20.0 + k * 10.0
+            p.y = 50.0
+            p.angle = angles[k]
+            tile.data.props.Add(take p)
+        }
+        var o = new Raser.Obstacles("")
+        o.Install(new Raser.TileKey(0, 0), "0_0", take tile)
+        // ein Kreis von 20 cm: am Fuß getroffen (Radius der Art + 20 cm), daneben frei
+        float radius[] = [0.12, 0.12, 0.3, 0.0, 0.0]
+        for (int k = 0; k < 5; k++) {
+            float x = 20.0 + k * 10.0
+            bool hit = o.Push(x + radius[k] + 0.1, 50.0, 0.2)
+            Testing.Assert.AreEqual(radius[k] > 0.0, hit)
+            Testing.Assert.IsTrue(!o.Push(x + radius[k] + 0.25, 50.0, 0.2))
+        }
+        // unter dem Kopf der Laterne (LampReach in Richtung 37°) ist frei
+        float hx = 20.0 + Raser.Props.LampReach * Math.Cos(37.0 * Math.PI / 180.0)
+        float hy = 50.0 + Raser.Props.LampReach * Math.Sin(37.0 * Math.PI / 180.0)
+        Testing.Assert.IsTrue(!o.Push(hx, hy, 0.2))
+    }
+}

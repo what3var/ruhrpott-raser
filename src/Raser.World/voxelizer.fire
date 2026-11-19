@@ -253,7 +253,9 @@ namespace Raser {
         // 7: steile Dächer ohne Löcher (die Säule unter dem Dach-Voxel bis zur tiefsten Ecke gefüllt), Stämme und Masten ein Voxel im Boden
         // 33: Wälder, Parks und Grünflächen bepflanzt und möbliert (Raser.Greens beim Laden): Baumarten, Unterwuchs, Bänke, Spielgeräte, Tore,
         //     Hecken, Lauben, Gräber, Schilf; Waldboden
-        static readonly defined int Version = 33
+        // 34: Möbel, Spielgeräte, Bäume, Sträucher, Hecken im öffentlichen Raum nicht mehr als Voxel (Raser.Props.AsModel): Modelle im Netz der
+        //     nahen Stufe (Raser.PropMesher), in jedem Winkel; Sträucher der Grünstreifen ebenso (Raser.Strips.Bushes)
+        static readonly defined int Version = 34
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -300,7 +302,6 @@ namespace Raser {
             this.propAt = new List<int>()
             this.propIndex = new Dictionary<string, int>()
             this.AddProps(this.tile, 0.0, 0.0)
-            this.AddBushes()
         }
 
         Dictionary<string, int> propIndex
@@ -309,45 +310,10 @@ namespace Raser {
         // ihrer Säule. (ox, oy): wo die Kachel `t` liegt, von dieser aus (m) - für die Nachbarn, deren Bäume über die Grenze ragen; von ihnen nur
         // die Props bis 12 m an dieser Kachel.
         undefined AddProps(Tile t, defined float ox, defined float oy) {
-            foreach (p in t.data.props) { this.AddProp(t, ox, oy, p.kind, p.height, p.id, p.angle, p.detail, p.x + ox, p.y + oy) }
-        }
-
-        // Die Sträucher in den Grünstreifen der Kachel (Raser.Strips): in Reihen alle 0,6 m, quer alle 0,5 m, ein Teil frei; nicht auf der
-        // Einfassung und nicht dicht an Bäumen und Laternen. Deterministisch aus der Straße und der Lage im Streifen.
-        undefined AddBushes() {
-            if (this.tile.strips == undefined) { return }
-            var probe = new Raser.StripProbe()
-            foreach (strip in this.tile.strips) {
-                float line[] = undefined
-                foreach (r in this.tile.data.roads) {
-                    if (r.id == strip.road) { line = r.points }
-                }
-                if (line == undefined) { continue }
-                int row = 0
-                for (float s = strip.s0 + 0.4; s < strip.s1 - 0.3; s = s + 0.6) {
-                    int col = 0
-                    for (float q = Raser.Strips.Edge + 0.35; q < strip.width - Raser.Strips.Edge - 0.2; q = q + 0.5) {
-                        int seed = strip.road + row * 7919 + col * 104729
-                        col++
-                        if (Raser.Props.Rand(seed, 70, 0) < 0.3) { continue }
-                        float js = (Raser.Props.Rand(seed, 71, 0) - 0.5) * 0.3
-                        float jq = (Raser.Props.Rand(seed, 72, 0) - 0.5) * 0.2
-                        Raser.Strips.PointAt(line, s + js, strip.side * (strip.half + q + jq), probe)
-                        float x = probe.x
-                        float y = probe.y
-                        if (x < -1.0 || y < -1.0 || x > 257.0 || y > 257.0) { continue }
-                        bool near = false
-                        foreach (p in this.tile.data.props) {
-                            if ((p.kind == "tree" || p.kind == "lamp" || p.kind == "sign") && (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y) < 0.36) {
-                                near = true
-                                break
-                            }
-                        }
-                        if (near) { continue }
-                        this.AddProp(this.tile, 0.0, 0.0, "bush", 0.0, seed, 0.0, undefined, x, y)
-                    }
-                    row++
-                }
+            foreach (p in t.data.props) {
+                // Möbel, Spielgeräte und Pflanzen im öffentlichen Raum sind Modelle im Netz (Raser.Props.AsModel), keine Voxel
+                if (Raser.Props.AsModel(p.kind, p.source)) { continue }
+                this.AddProp(t, ox, oy, p.kind, p.height, p.id, p.angle, p.detail, p.x + ox, p.y + oy)
             }
         }
 

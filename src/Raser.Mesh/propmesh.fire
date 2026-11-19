@@ -1,0 +1,731 @@
+// Raser.Mesh: Stadtmöbel, Spielgeräte und Pflanzen im öffentlichen Raum als kleine Modelle aus wenigen Flächen (statt Voxeln im 90°-Raster).
+//
+// Je Art und Variante gibt es ein Modell (eine Vorlage in eigenen Koordinaten: Fuß bei 0, 0, 0, die Vorderseite nach +x), gebaut einmal je
+// Builder und dann für jedes Prop gedreht (in jedem Winkel: angle aus den Daten - Laternen und Ampeln mit dem Arm über die Fahrbahn, Bänke zum
+// Weg, Schilder zum Verkehr) und an seinen Platz gesetzt - in das Netz des Blocks (scene3d hat keine Instanzen; ein Objekt je Prop kostete mehr
+// als die Flächen). So entsteht es im Worker wie das übrige Netz und kommt mit ihm in den Netz-Cache.
+// Welche Arten Modelle sind: Raser.Props.AsModel (die übrigen bleiben Voxel). Die Kollision (Raser.Obstacles) liest die Props selbst.
+//
+// Bäume: ein Stamm (Sechseck, verjüngt), ein paar Äste und eine Krone aus wenigen unregelmäßigen Ballen (Laubbaum) oder Kegeln in Stufen (Fichte),
+// mit den Laubfarben der Palette (der Atlas legt die Laubkachel darauf). Ein Baum hat rund 60 .. 130 Vierecke statt tausender Voxelflächen.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class PropMesher {
+        Dictionary<string, Raser.MeshPart> models       // die Vorlagen, je Art und Variante
+        defined int count                               // so viele Props gesetzt (zuletzt)
+        defined int trees
+
+        construct() { this.models = new Dictionary<string, Raser.MeshPart>(Owns.Values) }
+
+        // Die Modelle der Props einer Kachel in einem Block (x0, y0, size kachel-lokal) nach part (kachel-lokal); das Gelände aus fm.
+        // Ein Prop gehört dem Block, in dem sein Fuß steht.
+        undefined Add(MeshPart part, FarMesher fm, defined float x0, defined float y0, defined float size) {
+            this.count = 0
+            this.trees = 0
+            var tile = fm.tile
+            if (tile == undefined || tile.data == undefined || tile.data.props == undefined) { return }
+            var field = fm.streets
+            foreach (p in tile.data.props) {
+                if (p.x < x0 || p.y < y0 || p.x >= x0 + size || p.y >= y0 + size) { continue }
+                if (!Raser.Props.AsModel(p.kind, p.source)) { continue }
+                var model = this.ModelOf(p, fm)
+                if (model == undefined) { continue }
+                float z = this.Foot(fm, field, p.x, p.y)
+                float scale = 1.0
+                if (p.kind == "tree" || p.kind == "bush") { scale = 0.92 + Raser.Props.Rand(p.id, 8, 0) * 0.16 }
+                Raser.PropMesher.Place(part, model, p.x, p.y, z, p.angle, scale)
+                this.count++
+                if (p.kind == "tree") { this.trees++ }
+            }
+            // die Sträucher der Grünstreifen (Raser.Strips.Bushes): klein, wenige Flächen
+            var bushes = Raser.Strips.Bushes(tile)
+            for (int k = 0; k + 2 < bushes.Count; k = k + 3) {
+                float bx = bushes[k]
+                float by = bushes[k + 1]
+                if (bx < x0 || by < y0 || bx >= x0 + size || by >= y0 + size) { continue }
+                int seed = Math.Round(bushes[k + 2])!int
+                int v = Math.Abs(seed) % 4
+                string key = "strip/" + v
+                if (!this.models.ContainsKey(key)) {
+                    var m = Raser.PropMesher.StripBush(v)
+                    this.models[key] = m
+                    m.TakeTo(this.models)
+                }
+                Raser.PropMesher.Place(part, this.models[key], bx, by, this.Foot(fm, field, bx, by), Raser.Props.Rand(seed, 73, 0) * 360.0, 1.0)
+                this.count++
+            }
+        }
+
+        // Der Fuß eines Props: das Gelände (auf dem Gehweg um den Bordstein höher), 8 cm tiefer - so steht nichts in der Luft.
+        defined float Foot(FarMesher fm, StreetField field, defined float x, defined float y) {
+            float z = fm.GroundAt(x, y)
+            if (field != undefined && !field.Empty) {
+                field.At(x, y)
+                if (field.d >= 0.0 && field.d < field.walk) { z = z + Raser.StreetField.Curb }
+            }
+            return z - 0.08
+        }
+
+        // Die Vorlage eines Props (zwischengespeichert je Art und Variante).
+        Raser.MeshPart ModelOf(Prop p, FarMesher fm) {
+            string kind = p.kind
+            int v = Math.Abs(p.id) % 6
+            string key = kind + "/" + v
+            if (kind == "tree") { key = "tree/" + p.detail + "/" + Math.Round(Raser.Props.TreeHeight(p))!int + "/" + v }
+            if (kind == "sign") { key = "sign/" + Raser.PropMesher.SignShape(p.detail) }
+            if (kind == "bush" && p.detail == "flowers") { key = "flowers/" + v }
+            if (kind == "signal") {
+                // an breiten Straßen hängt eine zweite Ampel am Ausleger über der Fahrbahn
+                float arm = Raser.PropMesher.SignalArm(fm, p.x, p.y)
+                key = "signal/" + Math.Round(arm * 2.0)!int
+            }
+            if (this.models.ContainsKey(key)) { return this.models[key] }
+            Raser.MeshPart m = undefined
+            if (kind == "tree") { m = Raser.PropMesher.Tree(Raser.Props.TreeHeight(p), v, p.detail) }
+            else if (kind == "bush") { m = Raser.PropMesher.Bush(v, p.detail == "flowers") }
+            else if (kind == "fern") { m = Raser.PropMesher.Fern(v) }
+            else if (kind == "reed") { m = Raser.PropMesher.Reed(v) }
+            else if (kind == "hedge") { m = Raser.PropMesher.Hedge(v) }
+            else if (kind == "lamp") { m = Raser.PropMesher.Lamp() }
+            else if (kind == "bench") { m = Raser.PropMesher.Bench() }
+            else if (kind == "bin") { m = Raser.PropMesher.Bin() }
+            else if (kind == "sign") { m = Raser.PropMesher.Sign(p.detail) }
+            else if (kind == "signal") { m = Raser.PropMesher.Signal(Raser.PropMesher.SignalArm(fm, p.x, p.y)) }
+            else if (kind == "swing") { m = Raser.PropMesher.Swing() }
+            else if (kind == "slide") { m = Raser.PropMesher.Slide() }
+            else if (kind == "climber") { m = Raser.PropMesher.Climber() }
+            else if (kind == "goal") { m = Raser.PropMesher.Goal() }
+            else if (kind == "hoop") { m = Raser.PropMesher.Hoop() }
+            if (m == undefined) { return undefined }
+            this.models[key] = m
+            m.TakeTo(this.models)
+            return m
+        }
+
+        // Setzt eine Vorlage nach part: um angle (Grad, gegen den Uhrzeigersinn) um die Hochachse gedreht, um scale vergrößert, der Fuß bei (x, y, z).
+        static undefined Place(MeshPart part, MeshPart model, defined float x, defined float y, defined float z, defined float angle, defined float scale) {
+            float a = angle * Math.PI / 180.0
+            float c = Math.Cos(a)
+            float s = Math.Sin(a)
+            defined float src[] = model.positions
+            defined float nn[] = model.normals
+            defined int col[] = model.colors
+            defined int mat[] = model.materials
+            defined float w[12]
+            for (int q = 0; q < model.count; q++) {
+                defined int o = q * 12
+                for (int e = 0; e < 4; e++) {
+                    float lx = src[o + e * 3] * scale
+                    float ly = src[o + e * 3 + 1] * scale
+                    w[e * 3] = x + c * lx - s * ly
+                    w[e * 3 + 1] = y + s * lx + c * ly
+                    w[e * 3 + 2] = z + src[o + e * 3 + 2] * scale
+                }
+                float nx = nn[q * 3]
+                float ny = nn[q * 3 + 1]
+                part.Quad(w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], c * nx - s * ny, s * nx + c * ny, nn[q * 3 + 2], col[q], mat[q])
+            }
+        }
+
+        // ---- Bausteine (in den Koordinaten der Vorlage) ----
+
+        // Ein Dreieck (als Viereck mit doppelter letzter Ecke); n zeigt nach außen.
+        static undefined Tri(MeshPart m, defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float cx, defined float cy, defined float cz, defined float nx, defined float ny, defined float nz, defined int color, defined int material) {
+            m.Quad(ax, ay, az, bx, by, bz, cx, cy, cz, cx, cy, cz, nx, ny, nz, color, material)
+        }
+
+        // Ein Viereck, dessen Außenseite von (ox, oy, oz) weg zeigt (die Normale aus den Ecken).
+        static undefined Face(MeshPart m, defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float cx, defined float cy, defined float cz, defined float dx, defined float dy, defined float dz, defined float ox, defined float oy, defined float oz, defined int color, defined int material) {
+            float ux = cx - ax
+            float uy = cy - ay
+            float uz = cz - az
+            float vx = dx - bx
+            float vy = dy - by
+            float vz = dz - bz
+            float nx = uy * vz - uz * vy
+            float ny = uz * vx - ux * vz
+            float nz = ux * vy - uy * vx
+            float mx = (ax + bx + cx + dx) / 4.0 - ox
+            float my = (ay + by + cy + dy) / 4.0 - oy
+            float mz = (az + bz + cz + dz) / 4.0 - oz
+            if (nx * mx + ny * my + nz * mz < 0.0) {
+                nx = -nx
+                ny = -ny
+                nz = -nz
+            }
+            float len = Math.Max(Math.Sqrt(nx * nx + ny * ny + nz * nz), 0.000001)
+            m.Quad(ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, nx / len, ny / len, nz / len, color, material)
+        }
+
+        // Ein Prisma mit n Seiten um die Hochachse bei (cx, cy): von z0 (Radius r0) bis z1 (Radius r1), oben ein Deckel (top).
+        static undefined Prism(MeshPart m, defined float cx, defined float cy, defined float z0, defined float z1, defined float r0, defined float r1, defined int n, defined int color, defined int material, defined bool top = true, defined float turn = 0.0) {
+            for (int k = 0; k < n; k++) {
+                float a0 = k * 2.0 * Math.PI / n + turn
+                float a1 = (k + 1) * 2.0 * Math.PI / n + turn
+                float am = (a0 + a1) / 2.0
+                m.Quad(cx + Math.Cos(a0) * r0, cy + Math.Sin(a0) * r0, z0, cx + Math.Cos(a1) * r0, cy + Math.Sin(a1) * r0, z0, cx + Math.Cos(a1) * r1, cy + Math.Sin(a1) * r1, z1, cx + Math.Cos(a0) * r1, cy + Math.Sin(a0) * r1, z1, Math.Cos(am), Math.Sin(am), (r0 - r1) / Math.Max(z1 - z0, 0.01), color, material)
+            }
+            if (!top) { return }
+            for (int k = 1; k + 1 < n; k = k + 2) {
+                int c = Math.Min(k + 2, n - 1)
+                float a0 = turn
+                float ak = k * 2.0 * Math.PI / n + turn
+                float a1 = (k + 1) * 2.0 * Math.PI / n + turn
+                float a2 = c * 2.0 * Math.PI / n + turn
+                m.Quad(cx + Math.Cos(a0) * r1, cy + Math.Sin(a0) * r1, z1, cx + Math.Cos(ak) * r1, cy + Math.Sin(ak) * r1, z1, cx + Math.Cos(a1) * r1, cy + Math.Sin(a1) * r1, z1, cx + Math.Cos(a2) * r1, cy + Math.Sin(a2) * r1, z1, 0.0, 0.0, 1.0, color, material)
+            }
+        }
+
+        // Ein Quader (alle sechs Seiten, achsparallel in der Vorlage).
+        static undefined Cube(MeshPart m, defined float x0, defined float y0, defined float z0, defined float x1, defined float y1, defined float z1, defined int color, defined int material, defined bool bottom = false) {
+            Raser.FarMesher.Box(m, x0, y0, z0, x1, y1, z1, color, material)
+            if (bottom) { m.Quad(x0, y0, z0, x0, y1, z0, x1, y1, z0, x1, y0, z0, 0.0, 0.0, -1.0, color, material) }
+        }
+
+        // Eine Stange von a nach b mit quadratischem Querschnitt (Kante w), ohne Enden.
+        static undefined Bar(MeshPart m, defined float ax, defined float ay, defined float az, defined float bx, defined float by, defined float bz, defined float w, defined int color, defined int material) {
+            float ux = bx - ax
+            float uy = by - ay
+            float uz = bz - az
+            float len = Math.Sqrt(ux * ux + uy * uy + uz * uz)
+            if (len < 0.0001) { return }
+            ux = ux / len
+            uy = uy / len
+            uz = uz / len
+            // zwei Richtungen quer zur Stange
+            float px = -uy
+            float py = ux
+            float pz = 0.0
+            if (Math.Abs(uz) > 0.9) {
+                px = 1.0
+                py = 0.0
+            }
+            float pl = Math.Sqrt(px * px + py * py + pz * pz)
+            px = px / pl * w / 2.0
+            py = py / pl * w / 2.0
+            pz = pz / pl * w / 2.0
+            float qx = (uy * pz - uz * py)
+            float qy = (uz * px - ux * pz)
+            float qz = (ux * py - uy * px)
+            defined float ox[4]
+            defined float oy[4]
+            defined float oz[4]
+            ox[0] = px + qx
+            oy[0] = py + qy
+            oz[0] = pz + qz
+            ox[1] = -px + qx
+            oy[1] = -py + qy
+            oz[1] = -pz + qz
+            ox[2] = -px - qx
+            oy[2] = -py - qy
+            oz[2] = -pz - qz
+            ox[3] = px - qx
+            oy[3] = py - qy
+            oz[3] = pz - qz
+            for (int k = 0; k < 4; k++) {
+                int l = (k + 1) % 4
+                m.Quad(ax + ox[k], ay + oy[k], az + oz[k], ax + ox[l], ay + oy[l], az + oz[l], bx + ox[l], by + oy[l], bz + oz[l], bx + ox[k], by + oy[k], bz + oz[k], ox[k] + ox[l], oy[k] + oy[l], oz[k] + oz[l], color, material)
+            }
+        }
+
+        // Ein Ballen Laub: ein unregelmäßiges Ellipsoid aus seg x rings Flächen; oben hell, unten dunkel (tone: 0 gemischt, 1 hell, 2 dunkel).
+        static undefined Lump(MeshPart m, defined float cx, defined float cy, defined float cz, defined float rx, defined float rz, defined int seg, defined int rings, defined int seed, defined int tone, defined int material = 16) {
+            int n = (rings + 1) * seg
+            defined float vx[] = new float[n]
+            defined float vy[] = new float[n]
+            defined float vz[] = new float[n]
+            float turn = Raser.Props.Rand(seed, 200, 0) * 6.2832
+            for (int i = 0; i <= rings; i++) {
+                float th = Math.PI * i / rings - Math.PI / 2.0
+                float ct = Math.Cos(th)
+                float st = Math.Sin(th)
+                for (int k = 0; k < seg; k++) {
+                    float j = 1.0
+                    float jz = 1.0
+                    if (i > 0 && i < rings) {
+                        j = 0.78 + 0.4 * Raser.Props.Rand(seed, 201 + i, k)
+                        jz = 0.85 + 0.3 * Raser.Props.Rand(seed, 221 + i, k)
+                    }
+                    float ph = k * 2.0 * Math.PI / seg + turn + (i % 2) * Math.PI / seg
+                    vx[i * seg + k] = cx + Math.Cos(ph) * ct * rx * j
+                    vy[i * seg + k] = cy + Math.Sin(ph) * ct * rx * j
+                    vz[i * seg + k] = cz + st * rz * jz
+                }
+            }
+            int light = Raser.Palette.LeavesLight
+            int mid = Raser.Palette.Leaves
+            int dark = Raser.Palette.LeavesDark
+            if (tone == 2) {
+                light = Raser.Palette.Leaves
+                mid = Raser.Palette.LeavesDark
+            } else if (tone == 1) {
+                mid = Raser.Palette.LeavesLight
+                dark = Raser.Palette.Leaves
+            }
+            for (int i = 0; i < rings; i++) {
+                for (int k = 0; k < seg; k++) {
+                    int a = i * seg + k
+                    int b = i * seg + (k + 1) % seg
+                    int c = (i + 1) * seg + (k + 1) % seg
+                    int d = (i + 1) * seg + k
+                    int color = mid
+                    float up = (i + 0.5) / rings
+                    float r = Raser.Props.Rand(seed, 240 + i, k)
+                    if (up > 0.7 || (up > 0.45 && r < 0.3)) { color = light }
+                    if (up < 0.3 || (up < 0.55 && r < 0.25)) { color = dark }
+                    if (i == 0) {
+                        Raser.PropMesher.Face(m, vx[a], vy[a], vz[a], vx[c], vy[c], vz[c], vx[d], vy[d], vz[d], vx[d], vy[d], vz[d], cx, cy, cz, color, material)
+                    } else if (i == rings - 1) {
+                        Raser.PropMesher.Face(m, vx[a], vy[a], vz[a], vx[b], vy[b], vz[b], vx[c], vy[c], vz[c], vx[c], vy[c], vz[c], cx, cy, cz, color, material)
+                    } else {
+                        Raser.PropMesher.Face(m, vx[a], vy[a], vz[a], vx[b], vy[b], vz[b], vx[c], vy[c], vz[c], vx[d], vy[d], vz[d], cx, cy, cz, color, material)
+                    }
+                }
+            }
+        }
+
+        // Ein Kegel (Etage einer Fichte): Rand bei z0 mit Radius r, Spitze bei z1; unten flach.
+        static undefined Cone(MeshPart m, defined float z0, defined float z1, defined float r, defined int n, defined int seed, defined int color, defined int below) {
+            float turn = Raser.Props.Rand(seed, 260, 0) * 6.2832
+            for (int k = 0; k < n; k++) {
+                float a0 = k * 2.0 * Math.PI / n + turn
+                float a1 = (k + 1) * 2.0 * Math.PI / n + turn
+                float j0 = 0.85 + 0.3 * Raser.Props.Rand(seed, 261, k)
+                float j1 = 0.85 + 0.3 * Raser.Props.Rand(seed, 261, (k + 1) % n)
+                float droop = 0.12 * r
+                float x0 = Math.Cos(a0) * r * j0
+                float y0 = Math.Sin(a0) * r * j0
+                float x1 = Math.Cos(a1) * r * j1
+                float y1 = Math.Sin(a1) * r * j1
+                int c = color
+                if (Raser.Props.Rand(seed, 262, k) < 0.3) { c = Raser.Palette.Leaves }
+                Raser.PropMesher.Face(m, x0, y0, z0 - droop, x1, y1, z0 - droop, 0.0, 0.0, z1, 0.0, 0.0, z1, 0.0, 0.0, z0 + (z1 - z0) * 0.3, c, 16)
+                // unten: zur Mitte am Stamm
+                Raser.PropMesher.Face(m, x1, y1, z0 - droop, x0, y0, z0 - droop, 0.0, 0.0, z0 + 0.1 * r, 0.0, 0.0, z0 + 0.1 * r, 0.0, 0.0, z0 + r, below, 16)
+            }
+        }
+
+        // ---- die Modelle ----
+
+        // Ein Baum der Höhe h (m), Variante v, Art detail (Raser.Greens: buche, eiche, birke, ahorn, kiefer, fichte; OSM: broadleaved, needleleaved).
+        // Die Maße wie die ferne Stufe (Raser.FarMesher: Krone r, Stamm bis trunk) - beim Wechsel der Stufe springt nichts.
+        static Raser.MeshPart Tree(defined float h, defined int v, string detail) {
+            var m = new Raser.MeshPart()
+            int wood = Raser.Material.Wood!int
+            int seed = v * 7919 + Math.Round(h)!int * 31
+            if (detail != undefined) { seed = seed + detail.Length * 104729 }
+            if (Raser.Props.Conical(detail)) {
+                // Fichte: dunkler Kegel in Etagen bis fast zum Boden, der Stamm schaut unten heraus
+                float r = h * 0.2
+                Raser.PropMesher.Prism(m, 0.0, 0.0, 0.0, h * 0.9, h * 0.018 + 0.1, 0.04, 6, Raser.Palette.Bark, wood, false)
+                int tiers = 4
+                for (int t = 0; t < tiers; t++) {
+                    float bottom = h * 0.12 + h * 0.88 * t * 0.22
+                    float top = bottom + (h - bottom) * 0.55
+                    if (t == tiers - 1) { top = h }
+                    Raser.PropMesher.Cone(m, bottom, top, r * (1.0 - t * 0.22), 8, seed + t, Raser.Palette.LeavesDark, Raser.Palette.LeavesDark)
+                }
+                return m
+            }
+            float r = h * 0.3
+            float trunk = h * 0.4
+            int bark = Raser.Palette.Bark
+            int tone = 0
+            int lumps = 3
+            if (detail == "buche") {
+                trunk = h * 0.32
+                r = h * 0.29
+                lumps = 4
+            } else if (detail == "eiche") {
+                trunk = h * 0.36
+                r = h * 0.34
+                tone = 2
+                lumps = 4
+            } else if (detail == "birke") {
+                r = h * 0.22
+                trunk = h * 0.45
+                bark = Raser.Palette.Plaster
+                tone = 1
+                lumps = 2
+            } else if (detail == "ahorn") {
+                r = h * 0.31
+                trunk = h * 0.38
+            } else if (detail == "kiefer") {
+                r = h * 0.2
+                trunk = h * 0.65
+                bark = Raser.Palette.BrickLight + 32
+                tone = 2
+            }
+            float thick = Math.Clamp(h * 0.022, 0.12, 0.4)
+            if (detail == "birke") { thick = thick * 0.7 }
+            // der Stamm bis in die Krone; die Birke mit dunklen Ringen
+            float stemTop = trunk + (h - trunk) * 0.4
+            if (detail == "birke") {
+                float z = 0.0
+                int k = 0
+                while (z < stemTop - 0.01) {
+                    float seg = 0.12
+                    int c = Raser.Palette.Metal + 96
+                    if (k % 2 == 0) {
+                        seg = 0.6 + Raser.Props.Rand(seed, 300, k) * 1.2
+                        c = bark
+                    }
+                    float z1 = Math.Min(z + seg, stemTop)
+                    Raser.PropMesher.Prism(m, 0.0, 0.0, z, z1, thick * (1.0 - z / stemTop * 0.5), thick * (1.0 - z1 / stemTop * 0.5), 6, c, wood, false)
+                    z = z1
+                    k++
+                }
+            } else {
+                Raser.PropMesher.Prism(m, 0.0, 0.0, 0.0, stemTop, thick, thick * 0.5, 6, bark, wood, false)
+            }
+            if (detail == "kiefer") {
+                // Kiefer: oben zwei, drei flache Schirme, an kurzen Ästen
+                for (int k = 0; k < 3; k++) {
+                    float dir = Raser.Props.Rand(seed, 70, k) * 6.2832
+                    float off = r * 0.4 * k / 2.0
+                    float cz = trunk + (h - trunk) * (0.25 + 0.3 * k)
+                    float cx = Math.Cos(dir) * off
+                    float cy = Math.Sin(dir) * off
+                    if (off > 0.1) { Raser.PropMesher.Bar(m, 0.0, 0.0, cz - 0.6, cx, cy, cz - 0.2, thick * 0.6, bark, wood) }
+                    Raser.PropMesher.Lump(m, cx, cy, cz, r * (0.85 - k * 0.15), (h - trunk) * 0.22, 7, 3, seed + k, tone)
+                }
+                return m
+            }
+            float ch = h - trunk                    // die Höhe der Krone
+            // Äste schräg nach oben zu den Ballen am Rand
+            for (int k = 0; k < lumps; k++) {
+                float dir = (k + Raser.Props.Rand(seed, 10, k) * 0.6) * 6.2832 / lumps
+                float out = r * (0.42 + Raser.Props.Rand(seed, 12, k) * 0.2)
+                float cz = trunk + ch * (0.32 + Raser.Props.Rand(seed, 11, k) * 0.22)
+                float cx = Math.Cos(dir) * out
+                float cy = Math.Sin(dir) * out
+                Raser.PropMesher.Bar(m, 0.0, 0.0, trunk * 0.92, cx * 0.7, cy * 0.7, cz - ch * 0.05, thick * 0.55, bark, wood)
+                float lr = r * (0.52 + Raser.Props.Rand(seed, 14, k) * 0.14)
+                Raser.PropMesher.Lump(m, cx, cy, cz, lr, lr * 0.8, 6, 4, seed * 13 + k, tone)
+            }
+            // die Krone oben
+            Raser.PropMesher.Lump(m, 0.0, 0.0, trunk + ch * 0.56, r * 0.8, ch * 0.44, 8, 5, seed * 13 + 99, tone)
+            return m
+        }
+
+        // Ein niedriger Strauch (0,4 .. 0,7 m), manche mit Blüten; flowers: ein Beet, viele Blüten.
+        static Raser.MeshPart Bush(defined int v, defined bool flowers) {
+            var m = new Raser.MeshPart()
+            float r = 0.4 + Raser.Props.Rand(v, 40, 0) * 0.25
+            float h = 0.4 + Raser.Props.Rand(v, 41, 0) * 0.3
+            Raser.PropMesher.Lump(m, 0.0, 0.0, h * 0.4, r, h * 0.6, 6, 3, v * 17 + 5, 0)
+            int flower = 0
+            float pick = Raser.Props.Rand(v, 42, 0)
+            if (pick < 0.3) { flower = Raser.Palette.FlowerPink } else if (pick < 0.45) { flower = Raser.Palette.FlowerYellow }
+            if (flowers) {
+                int fl[] = [Raser.Palette.FlowerPink, Raser.Palette.FlowerYellow, Raser.Palette.FlowerWhite, Raser.Palette.SignRed, Raser.Palette.FlowerPink, Raser.Palette.SignBlue]
+                flower = fl[((v % 6) + 6) % 6]
+            }
+            if (flower != 0) {
+                // die Flächen der oberen Hälfte zum Teil in der Farbe der Blüten
+                defined int col[] = m.colors
+                defined float pos[] = m.positions
+                for (int q = 0; q < m.count; q++) {
+                    if (pos[q * 12 + 2] > h * 0.5 && Raser.Props.Rand(v, 43, q) < 0.55) { col[q] = flower }
+                }
+            }
+            return m
+        }
+
+        // Ein Strauch im Grünstreifen: kleiner, noch weniger Flächen.
+        static Raser.MeshPart StripBush(defined int v) {
+            var m = new Raser.MeshPart()
+            float r = 0.25 + Raser.Props.Rand(v, 50, 0) * 0.1
+            Raser.PropMesher.Lump(m, 0.0, 0.0, 0.18, r, 0.24, 5, 3, v * 31 + 7, 0)
+            return m
+        }
+
+        // Farn: fünf Wedel flach über dem Boden.
+        static Raser.MeshPart Fern(defined int v) {
+            var m = new Raser.MeshPart()
+            for (int k = 0; k < 5; k++) {
+                float dir = k * 1.2566 + Raser.Props.Rand(v, 80, 0)
+                float len = 0.55 + Raser.Props.Rand(v, 81, k) * 0.2
+                float ux = Math.Cos(dir)
+                float uy = Math.Sin(dir)
+                float w = 0.12
+                Raser.PropMesher.Face(m, 0.0, 0.0, 0.08, ux * len * 0.5 - uy * w, uy * len * 0.5 + ux * w, 0.32, ux * len, uy * len, 0.12, ux * len * 0.5 + uy * w, uy * len * 0.5 - ux * w, 0.32, ux * len * 0.5, uy * len * 0.5, -1.0, Raser.Palette.LeavesLight, 16)
+            }
+            return m
+        }
+
+        // Schilf: dünne Halme (bis 1,6 m), oben bräunlich.
+        static Raser.MeshPart Reed(defined int v) {
+            var m = new Raser.MeshPart()
+            for (int k = 0; k < 7; k++) {
+                float x = (Raser.Props.Rand(v, 90, k) - 0.5) * 0.8
+                float y = (Raser.Props.Rand(v, 91, k) - 0.5) * 0.8
+                float h = 1.0 + Raser.Props.Rand(v, 92, k) * 0.6
+                float lx = (Raser.Props.Rand(v, 93, k) - 0.5) * 0.3
+                Raser.PropMesher.Prism(m, x, y, 0.0, h * 0.8, 0.025, 0.015, 3, Raser.Palette.LeavesLight, 16, false)
+                Raser.PropMesher.Bar(m, x, y, h * 0.8, x + lx, y, h, 0.04, Raser.Palette.Field, 16)
+            }
+            return m
+        }
+
+        // Hecke: ein Stück von 2 m (entlang x), 80 cm breit, um 1,2 m hoch, geschnitten (zwei Hälften, leicht verschieden hoch).
+        static Raser.MeshPart Hedge(defined int v) {
+            var m = new Raser.MeshPart()
+            int leaves = Raser.Material.Leaves!int
+            for (int k = 0; k < 2; k++) {
+                float z1 = 1.15 + Raser.Props.Rand(v, 95, k) * 0.12
+                Raser.PropMesher.Cube(m, -1.0 + k, -0.4, 0.0, k * 1.0, 0.4, z1, Raser.Palette.LeavesDark, leaves)
+                // die Oberseite heller
+                m.colors[m.count - 5] = Raser.Palette.Leaves
+            }
+            return m
+        }
+
+        // Laterne: Mast (5 m, nach oben dünner), oben ein Ausleger nach vorn (+x) bis LampReach, daran die flache Leuchte (unten hell).
+        static Raser.MeshPart Lamp() {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            float head = Raser.Props.LampHead
+            float reach = Raser.Props.LampReach
+            Raser.PropMesher.Prism(m, 0.0, 0.0, 0.0, head + 0.2, 0.09, 0.055, 6, Raser.Palette.Metal, metal, true)
+            Raser.PropMesher.Bar(m, 0.0, 0.0, head + 0.12, reach - 0.2, 0.0, head + 0.17, 0.06, Raser.Palette.Metal, metal)
+            Raser.PropMesher.Cube(m, reach - 0.35, -0.13, head - 0.02, reach + 0.2, 0.13, head + 0.1, Raser.Palette.Metal + 64, metal)
+            // die Leuchte unten: das Glas (leuchtet nachts)
+            m.Quad(reach - 0.3, -0.1, head - 0.03, reach - 0.3, 0.1, head - 0.03, reach + 0.15, 0.1, head - 0.03, reach + 0.15, -0.1, head - 0.03, 0.0, 0.0, -1.0, Raser.Palette.Lamp, Raser.Material.Glass!int)
+            return m
+        }
+
+        // Bank: 1,8 m lang (entlang y), Sitz aus Holz in 42 cm Höhe, Lehne hinten (-x), Füße aus Metall; die Vorderseite nach +x.
+        static Raser.MeshPart Bench() {
+            var m = new Raser.MeshPart()
+            int wood = Raser.Material.Wood!int
+            int metal = Raser.Material.Metal!int
+            Raser.PropMesher.Cube(m, -0.22, -0.9, 0.38, 0.2, 0.9, 0.44, Raser.Palette.Wood, wood, true)
+            // die Lehne, leicht nach hinten geneigt: zwei Bretter
+            Raser.PropMesher.Face(m, -0.26, -0.9, 0.5, -0.26, 0.9, 0.5, -0.32, 0.9, 0.86, -0.32, -0.9, 0.86, -1.0, 0.0, 0.68, Raser.Palette.Wood, wood)
+            Raser.PropMesher.Face(m, -0.29, -0.9, 0.5, -0.29, 0.9, 0.5, -0.35, 0.9, 0.86, -0.35, -0.9, 0.86, 1.0, 0.0, 0.68, Raser.Palette.Wood + 32, wood)
+            foreach (y in [-0.78, 0.78]) {
+                Raser.PropMesher.Cube(m, -0.2, y - 0.03, 0.0, 0.16, y + 0.03, 0.38, Raser.Palette.Metal + 64, metal)
+                Raser.PropMesher.Bar(m, -0.22, y, 0.38, -0.33, y, 0.88, 0.05, Raser.Palette.Metal + 64, metal)
+            }
+            return m
+        }
+
+        // Papierkorb: ein Sechseck (40 cm), 85 cm hoch, oben offen (dunkel), an einem Pfosten.
+        static Raser.MeshPart Bin() {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            Raser.PropMesher.Prism(m, 0.0, 0.0, 0.0, 0.95, 0.04, 0.04, 4, Raser.Palette.Metal + 64, metal, true)
+            Raser.PropMesher.Prism(m, 0.08, 0.0, 0.35, 0.85, 0.17, 0.2, 6, Raser.Palette.DoorGreen, metal, false)
+            Raser.PropMesher.Prism(m, 0.08, 0.0, 0.84, 0.85, 0.2, 0.2, 6, Raser.Palette.Asphalt, metal, true)
+            return m
+        }
+
+        // Die Form eines Verkehrszeichens aus seiner OSM-Nummer: stop, yield, round, priority, square.
+        static string SignShape(string detail) {
+            string d = ""
+            if (detail != undefined) { d = detail }
+            if (d.Contains("206")) { return "stop" }
+            if (d.Contains("205")) { return "yield" }
+            if (d.Contains("274") || d.Contains("250") || d.Contains("267")) { return "round" }
+            if (d.Contains("306")) { return "priority" }
+            return "square"
+        }
+
+        // Ein Verkehrszeichen: Mast 2,2 m, oben das Schild (60 cm) mit Rand und Mitte, die Vorderseite nach +x, hinten grau.
+        static Raser.MeshPart Sign(string detail) {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            Raser.PropMesher.Prism(m, 0.0, 0.0, 0.0, 2.75, 0.035, 0.035, 4, Raser.Palette.Metal, metal, true)
+            string shape = Raser.PropMesher.SignShape(detail)
+            int n = 4
+            float turn = Math.PI / 4.0
+            float r = 0.4
+            int edge = Raser.Palette.SignBlue
+            int center = Raser.Palette.SignWhite
+            float inner = 0.55
+            float cz = 2.45
+            if (shape == "stop") {
+                n = 8
+                turn = Math.PI / 8.0
+                r = 0.33
+                edge = Raser.Palette.SignRed
+                center = Raser.Palette.SignRed
+                inner = 0.8
+            } else if (shape == "yield") {
+                n = 3
+                turn = -Math.PI / 2.0
+                r = 0.42
+                edge = Raser.Palette.SignRed
+                inner = 0.6
+                cz = 2.5
+            } else if (shape == "round") {
+                n = 12
+                turn = 0.0
+                r = 0.3
+                edge = Raser.Palette.SignRed
+                inner = 0.72
+            } else if (shape == "priority") {
+                n = 4
+                turn = 0.0
+                r = 0.33
+                edge = Raser.Palette.SignWhite
+                center = Raser.Palette.SignYellow
+                inner = 0.7
+            }
+            float x = 0.05
+            // in der Ebene x = const: Punkte (y, z) = (cos, sin) * Radius; die Vorderseite zeigt nach +x
+            for (int k = 0; k < n; k++) {
+                float a0 = k * 2.0 * Math.PI / n + turn
+                float a1 = (k + 1) * 2.0 * Math.PI / n + turn
+                float y0 = Math.Cos(a0)
+                float z0 = Math.Sin(a0)
+                float y1 = Math.Cos(a1)
+                float z1 = Math.Sin(a1)
+                // der Rand vorn (außen bis inner), die Mitte vorn, die Rückseite
+                m.Quad(x, y0 * r, cz + z0 * r, x, y1 * r, cz + z1 * r, x, y1 * r * inner, cz + z1 * r * inner, x, y0 * r * inner, cz + z0 * r * inner, 1.0, 0.0, 0.0, edge, metal)
+                Raser.PropMesher.Tri(m, x, 0.0, cz, x, y0 * r * inner, cz + z0 * r * inner, x, y1 * r * inner, cz + z1 * r * inner, 1.0, 0.0, 0.0, center, metal)
+                Raser.PropMesher.Tri(m, x - 0.01, 0.0, cz, x - 0.01, y0 * r, cz + z0 * r, x - 0.01, y1 * r, cz + z1 * r, -1.0, 0.0, 0.0, Raser.Palette.Metal + 32, metal)
+            }
+            if (shape == "stop") {
+                // ein weißer Balken quer (statt der Schrift)
+                m.Quad(x + 0.005, -0.2, cz - 0.05, x + 0.005, 0.2, cz - 0.05, x + 0.005, 0.2, cz + 0.05, x + 0.005, -0.2, cz + 0.05, 1.0, 0.0, 0.0, Raser.Palette.SignWhite, metal)
+            }
+            return m
+        }
+
+        // Wie weit der Ausleger einer Ampel über die Fahrbahn reicht (m, 0: keiner): an Straßen ab 7 m Breite bis über die Mitte der rechten Spur.
+        static defined float SignalArm(FarMesher fm, defined float x, defined float y) {
+            float best = 1.0e30
+            float width = 0.0
+            foreach (r in fm.tile.data.roads) {
+                if (!Raser.Props.IsCarRoad(r)) { continue }
+                float d = Raser.Geo.DistanceToLine(r.points, x, y)
+                if (d < best) {
+                    best = d
+                    width = r.width
+                }
+            }
+            if (best > 20.0 || width < 7.0) { return 0.0 }
+            float arm = best - width / 4.0
+            return Math.Clamp(Math.Round(arm * 2.0) / 2.0, 0.0, 6.0)
+        }
+
+        // Ein Signalkopf: ein dunkler Kasten (30 x 30 x 90 cm) bei (0, y), unten bei z, Rot, Gelb, Grün nach vorn (+x).
+        static undefined SignalHead(MeshPart m, defined float y, defined float z) {
+            int metal = Raser.Material.Metal!int
+            Raser.PropMesher.Cube(m, 0.04, y - 0.15, z, 0.3, y + 0.15, z + 0.9, Raser.Palette.Asphalt, metal, true)
+            int lights[] = [Raser.Palette.SignGreen, Raser.Palette.SignYellow, Raser.Palette.SignRed]
+            for (int k = 0; k < 3; k++) {
+                float lz = z + 0.08 + k * 0.28
+                m.Quad(0.305, y - 0.1, lz, 0.305, y + 0.1, lz, 0.305, y + 0.1, lz + 0.2, 0.305, y - 0.1, lz + 0.2, 1.0, 0.0, 0.0, lights[k], metal)
+            }
+        }
+
+        // Ampel: Mast 3,2 m mit dem Signal nach vorn (+x, gegen die Fahrtrichtung); mit arm > 0 ein höherer Mast und ein Ausleger nach rechts (-y,
+        // über die Fahrbahn), an dessen Ende ein zweites Signal hängt.
+        static Raser.MeshPart Signal(defined float arm) {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            float top = 3.2
+            if (arm > 0.0) { top = 5.6 }
+            Raser.PropMesher.Prism(m, 0.0, 0.0, 0.0, top, 0.08, 0.06, 6, Raser.Palette.Metal + 32, metal, true)
+            Raser.PropMesher.SignalHead(m, 0.0, 2.2)
+            if (arm > 0.0) {
+                Raser.PropMesher.Bar(m, 0.0, 0.0, 5.4, 0.0, -arm, 5.5, 0.09, Raser.Palette.Metal + 32, metal)
+                Raser.PropMesher.Bar(m, 0.0, 0.0, 4.6, 0.0, -arm * 0.4, 5.42, 0.05, Raser.Palette.Metal + 32, metal)
+                Raser.PropMesher.SignalHead(m, -arm + 0.3, 4.45)
+            }
+            return m
+        }
+
+        // Schaukel: zwei A-Gestelle (2,4 m) mit Querbalken (3,2 m entlang x), zwei Sitze an Ketten.
+        static Raser.MeshPart Swing() {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            foreach (x in [-1.6, 1.6]) {
+                Raser.PropMesher.Bar(m, x, -0.8, 0.0, x, 0.0, 2.4, 0.08, Raser.Palette.SignRed, metal)
+                Raser.PropMesher.Bar(m, x, 0.8, 0.0, x, 0.0, 2.4, 0.08, Raser.Palette.SignRed, metal)
+            }
+            Raser.PropMesher.Bar(m, -1.65, 0.0, 2.4, 1.65, 0.0, 2.4, 0.1, Raser.Palette.SignRed, metal)
+            foreach (sx in [-0.8, 0.8]) {
+                Raser.PropMesher.Bar(m, sx - 0.2, 0.0, 2.4, sx - 0.2, 0.0, 0.45, 0.02, Raser.Palette.Metal, metal)
+                Raser.PropMesher.Bar(m, sx + 0.2, 0.0, 2.4, sx + 0.2, 0.0, 0.45, 0.02, Raser.Palette.Metal, metal)
+                Raser.PropMesher.Cube(m, sx - 0.24, -0.1, 0.4, sx + 0.24, 0.1, 0.45, Raser.Palette.SignBlue, metal, true)
+            }
+            return m
+        }
+
+        // Rutsche: Leiter hinten, Plattform (1,4 m), die Bahn nach vorn (+x) bis zum Boden.
+        static Raser.MeshPart Slide() {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            foreach (y in [-0.35, 0.35]) {
+                Raser.PropMesher.Bar(m, -0.7, y, 0.0, -0.6, y, 2.2, 0.06, Raser.Palette.SignYellow, metal)
+                Raser.PropMesher.Bar(m, 0.0, y, 0.0, 0.0, y, 2.2, 0.06, Raser.Palette.SignYellow, metal)
+            }
+            for (int k = 1; k <= 4; k++) { Raser.PropMesher.Bar(m, -0.67, -0.35, k * 0.3, -0.67, 0.35, k * 0.3, 0.04, Raser.Palette.Metal, metal) }
+            Raser.PropMesher.Cube(m, -0.7, -0.4, 1.35, 0.05, 0.4, 1.45, Raser.Palette.Wood, Raser.Material.Wood!int, true)
+            // die Bahn: eine schräge Platte mit Rand
+            Raser.PropMesher.Face(m, 0.05, -0.3, 1.42, 0.05, 0.3, 1.42, 2.8, 0.3, 0.12, 2.8, -0.3, 0.12, 1.4, 0.0, -3.0, Raser.Palette.SignBlue, metal)
+            Raser.PropMesher.Face(m, 0.05, -0.3, 1.38, 0.05, 0.3, 1.38, 2.8, 0.3, 0.08, 2.8, -0.3, 0.08, 1.4, 0.0, 3.0, Raser.Palette.SignBlue, metal)
+            foreach (y in [-0.32, 0.32]) { Raser.PropMesher.Bar(m, 0.05, y, 1.52, 2.8, y, 0.2, 0.05, Raser.Palette.SignBlue, metal) }
+            return m
+        }
+
+        // Klettergerüst: ein Würfel aus Stangen (2 m), Sprossen alle 50 cm.
+        static Raser.MeshPart Climber() {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            foreach (x in [-1.0, 1.0]) {
+                foreach (y in [-1.0, 1.0]) { Raser.PropMesher.Bar(m, x, y, 0.0, x, y, 2.0, 0.07, Raser.Palette.SignGreen, metal) }
+            }
+            for (int k = 1; k <= 4; k++) {
+                float z = k * 0.5
+                int c = Raser.Palette.SignGreen
+                if (k == 4) { c = Raser.Palette.SignYellow }
+                Raser.PropMesher.Bar(m, -1.0, -1.0, z, 1.0, -1.0, z, 0.05, c, metal)
+                Raser.PropMesher.Bar(m, -1.0, 1.0, z, 1.0, 1.0, z, 0.05, c, metal)
+                Raser.PropMesher.Bar(m, -1.0, -1.0, z, -1.0, 1.0, z, 0.05, c, metal)
+                Raser.PropMesher.Bar(m, 1.0, -1.0, z, 1.0, 1.0, z, 0.05, c, metal)
+            }
+            Raser.PropMesher.Bar(m, 0.0, -1.0, 2.0, 0.0, 1.0, 2.0, 0.05, Raser.Palette.SignYellow, metal)
+            Raser.PropMesher.Bar(m, -1.0, 0.0, 2.0, 1.0, 0.0, 2.0, 0.05, Raser.Palette.SignYellow, metal)
+            return m
+        }
+
+        // Fußballtor: 5 m breit (entlang y), 2 m hoch, weiß; das Netz nach hinten (-x) als Stangen angedeutet.
+        static Raser.MeshPart Goal() {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            int white = Raser.Palette.SignWhite
+            Raser.PropMesher.Bar(m, 0.0, -2.5, 0.0, 0.0, -2.5, 2.0, 0.1, white, metal)
+            Raser.PropMesher.Bar(m, 0.0, 2.5, 0.0, 0.0, 2.5, 2.0, 0.1, white, metal)
+            Raser.PropMesher.Bar(m, 0.0, -2.55, 2.0, 0.0, 2.55, 2.0, 0.1, white, metal)
+            foreach (y in [-2.5, 2.5]) {
+                Raser.PropMesher.Bar(m, 0.0, y, 2.0, -1.0, y, 0.0, 0.04, Raser.Palette.Metal, metal)
+                Raser.PropMesher.Bar(m, 0.0, y, 0.02, -1.0, y, 0.02, 0.04, Raser.Palette.Metal, metal)
+            }
+            Raser.PropMesher.Bar(m, -1.0, -2.5, 0.02, -1.0, 2.5, 0.02, 0.04, Raser.Palette.Metal, metal)
+            for (int k = -2; k <= 2; k++) { Raser.PropMesher.Bar(m, 0.0, k * 1.0, 2.0, -1.0, k * 1.0, 0.0, 0.02, Raser.Palette.Metal + 32, metal) }
+            return m
+        }
+
+        // Basketballkorb: Mast (3,4 m), Brett und Ring nach vorn (+x).
+        static Raser.MeshPart Hoop() {
+            var m = new Raser.MeshPart()
+            int metal = Raser.Material.Metal!int
+            Raser.PropMesher.Prism(m, 0.0, 0.0, 0.0, 3.4, 0.08, 0.07, 6, Raser.Palette.Metal + 64, metal, true)
+            Raser.PropMesher.Bar(m, 0.0, 0.0, 3.0, 0.4, 0.0, 3.0, 0.08, Raser.Palette.Metal + 64, metal)
+            Raser.PropMesher.Cube(m, 0.4, -0.6, 2.7, 0.46, 0.6, 3.6, Raser.Palette.SignWhite, metal, true)
+            for (int k = 0; k < 6; k++) {
+                float a0 = k * Math.PI / 3.0
+                float a1 = (k + 1) * Math.PI / 3.0
+                Raser.PropMesher.Bar(m, 0.7 + Math.Cos(a0) * 0.23, Math.Sin(a0) * 0.23, 3.05, 0.7 + Math.Cos(a1) * 0.23, Math.Sin(a1) * 0.23, 3.05, 0.03, Raser.Palette.SignRed, metal)
+            }
+            return m
+        }
+    }
+}

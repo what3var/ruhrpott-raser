@@ -407,3 +407,222 @@ class FarTests {
         Testing.Assert.AreEqual(4, b.indices[6])
     }
 }
+
+// Möbel, Spielgeräte und Pflanzen als gedrehte Modelle (Raser.PropMesher); natürliche Grenzen im öffentlichen Raum (FarMesher.Surface).
+class PublicTests {
+    static Raser.Tile Flat() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var raster = new Raser.HeightRaster(-0.5, -0.5, 1.0, 258, 258, 50.0)
+        tile.heights = take raster
+        return tile
+    }
+
+    static Raser.Prop Prop(string kind, defined float x, defined float y, defined float angle) {
+        var p = new Raser.Prop()
+        p.source = "test:" + kind + x + "_" + y
+        p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+        p.kind = kind
+        p.x = x
+        p.y = y
+        p.angle = angle
+        return p
+    }
+
+    [Test "Möbel: Laterne und Ampel gedreht zur Straße, in jedem Winkel; der Ausleger reicht über die Fahrbahn"]
+    undefined Turned() {
+        var tile = PublicTests.Flat()
+        // eine breite Straße unter 30° durch den Block
+        float dx = Math.Cos(Math.PI / 6.0)
+        float dy = Math.Sin(Math.PI / 6.0)
+        var road = new Raser.Road()
+        road.source = "test:schraeg"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=primary"
+        road.points = [0.0, 0.0, 200.0 * dx, 200.0 * dy]
+        road.width = 12.0
+        road.surface = Raser.Material.Asphalt
+        road.color = Raser.Palette.Asphalt
+        tile.data.roads.Add(take road)
+        // links der Straße eine Laterne 7 m neben der Mitte, Blick zur Straße (-60°); rechts eine Ampel, Blick gegen die Fahrtrichtung (210°)
+        float lx = 30.0 * dx - 7.0 * dy
+        float ly = 30.0 * dy + 7.0 * dx
+        tile.data.props.Add(PublicTests.Prop("lamp", lx, ly, -60.0))
+        float sx = 40.0 * dx + 6.6 * dy
+        float sy = 40.0 * dy - 6.6 * dx
+        tile.data.props.Add(PublicTests.Prop("signal", sx, sy, 210.0))
+        var fm = new Raser.FarMesher(tile, 1)
+        var pm = new Raser.PropMesher()
+        var part = new Raser.MeshPart()
+        pm.Add(part, fm, 0.0, 0.0, 51.2)
+        Testing.Assert.AreEqual(2, pm.count)
+        // die Leuchte (Palette.Lamp) LampReach vor dem Mast, in Richtung -60° (nicht im 90°-Raster)
+        float hx = 0.0
+        float hy = 0.0
+        int n = 0
+        int over = 0
+        for (int q = 0; q < part.Count; q++) {
+            float cx = (part.positions[q * 12] + part.positions[q * 12 + 6]) / 2.0
+            float cy = (part.positions[q * 12 + 1] + part.positions[q * 12 + 7]) / 2.0
+            float cz = (part.positions[q * 12 + 2] + part.positions[q * 12 + 8]) / 2.0
+            if (part.colors[q] == Raser.Palette.Lamp) {
+                hx = hx + cx
+                hy = hy + cy
+                n++
+            }
+            // über der Fahrbahn (bis 4 m an der Mitte), höher als 4 m: der Ausleger der Ampel
+            float along = cx * dx + cy * dy
+            float across = -cx * dy + cy * dx
+            if (along > 35.0 && Math.Abs(across) < 4.0 && cz > 54.0) { over++ }
+        }
+        Testing.Assert.AreEqual(1, n)
+        float ang = Math.Atan2(hy - ly, hx - lx) * 180.0 / Math.PI
+        Testing.Assert.IsTrue(Math.Abs(ang + 60.0) < 3.0)
+        float reach = Math.Sqrt((hx - lx) * (hx - lx) + (hy - ly) * (hy - ly))
+        Testing.Assert.IsTrue(Math.Abs(reach - Raser.Props.LampReach) < 0.15)
+        Testing.Assert.IsTrue(over > 4)
+        // die Modelle sind geteilt: ein zweiter Block mit denselben Arten baut keine neuen Vorlagen
+        int models = pm.models.Count
+        pm.Add(new Raser.MeshPart(), fm, 0.0, 0.0, 51.2)
+        Testing.Assert.AreEqual(models, pm.models.Count)
+    }
+
+    [Test "Bäume: wenige Flächen je Art, so hoch wie die ferne Stufe, Laub nach außen"]
+    undefined Trees() {
+        string kinds[] = ["buche", "eiche", "birke", "ahorn", "kiefer", "fichte", "broadleaved", "needleleaved"]
+        foreach (k in kinds) {
+            var m = Raser.PropMesher.Tree(14.0, 3, k)
+            Testing.Assert.IsTrue(m.Count > 30)
+            Testing.Assert.IsTrue(m.Count < 200)
+            float top = 0.0
+            int leaves = 0
+            int outward = 0
+            for (int q = 0; q < m.Count; q++) {
+                for (int c = 0; c < 4; c++) { top = Math.Max(top, m.positions[q * 12 + c * 3 + 2]) }
+                if (m.materials[q] != Raser.Material.Leaves!int) { continue }
+                leaves++
+                // die Normale zeigt von der Achse weg oder nach oben/unten (nach außen)
+                float cx = (m.positions[q * 12] + m.positions[q * 12 + 6]) / 2.0
+                float cy = (m.positions[q * 12 + 1] + m.positions[q * 12 + 7]) / 2.0
+                if (m.normals[q * 3] * cx + m.normals[q * 3 + 1] * cy > -0.05 || Math.Abs(m.normals[q * 3 + 2]) > 0.5) { outward++ }
+            }
+            Testing.Assert.IsTrue(leaves > 20)
+            Testing.Assert.IsTrue(outward * 10 > leaves * 8)
+            Testing.Assert.IsTrue(top > 12.0 && top < 16.5)
+        }
+    }
+
+    // Eine Fläche als gedrehtes Quadrat (Raute) mit Kanten unter 30° bzw. 120°, Mitte (25, 25), halbe Diagonale 15 m.
+    static Raser.Area Rhomb(string kind, Raser.Material surface, defined int color) {
+        var a = new Raser.Area()
+        a.source = "test:" + kind
+        a.id = Raser.Ids.Stable(Raser.IdKind.Area, a.source)
+        a.kind = kind
+        float ring[8]
+        for (int k = 0; k < 4; k++) {
+            float t = Math.PI / 6.0 + k * Math.PI / 2.0
+            ring[k * 2] = 25.0 + Math.Cos(t) * 15.0
+            ring[k * 2 + 1] = 25.0 + Math.Sin(t) * 15.0
+        }
+        a.ring = copy ring
+        a.surface = surface
+        a.color = color
+        a.priority = 5
+        return a
+    }
+
+    // Wie viele Flächen der Farbe color schräge Kanten haben (nicht achsparallel, nicht die Diagonale einer Zelle) und ihre Fläche zusammen.
+    static float[] Slanted(Raser.MeshPart part, defined int color) {
+        int slanted = 0
+        float area = 0.0
+        for (int q = 0; q < part.Count; q++) {
+            if (part.colors[q] != color) { continue }
+            defined float p[] = part.positions
+            int o = q * 12
+            // die Fläche in der Ebene (zwei Dreiecke)
+            float a1 = ((p[o + 3] - p[o]) * (p[o + 7] - p[o + 1]) - (p[o + 4] - p[o + 1]) * (p[o + 6] - p[o])) / 2.0
+            float a2 = ((p[o + 6] - p[o]) * (p[o + 10] - p[o + 1]) - (p[o + 7] - p[o + 1]) * (p[o + 9] - p[o])) / 2.0
+            area = area + Math.Abs(a1) + Math.Abs(a2)
+            for (int e = 0; e < 4; e++) {
+                int f = (e + 1) % 4
+                float ex = Math.Abs(p[o + f * 3] - p[o + e * 3])
+                float ey = Math.Abs(p[o + f * 3 + 1] - p[o + e * 3 + 1])
+                if (ex > 0.01 && ey > 0.01 && Math.Abs(ex - ey) > 0.01) {
+                    slanted++
+                    break
+                }
+            }
+        }
+        return [slanted * 1.0, area]
+    }
+
+    [Test "Untergrund im öffentlichen Raum: Grenzen schräg wie in den Daten, nicht im Raster der Zellen"]
+    undefined NaturalEdges() {
+        var tile = PublicTests.Flat()
+        tile.data.areas.Add(PublicTests.Rhomb("landuse=forest", Raser.Material.Soil, Raser.Palette.Forest))
+        var fm = new Raser.FarMesher(tile, 1)
+        var part = fm.Block(0.0, 0.0, 51.2, 0.8, false)
+        float got[] = PublicTests.Slanted(part, Raser.Palette.Forest)
+        // die Raute hat 450 m²: geschnitten fast genau, ohne Schnitt (je Zelle die Mitte) nur ungefähr
+        Testing.Assert.IsTrue(got[0] > 40.0)
+        Testing.Assert.IsTrue(Math.Abs(got[1] - 450.0) < 2.0)
+        fm.natural = false
+        float raster[] = PublicTests.Slanted(fm.Block(0.0, 0.0, 51.2, 0.8, false), Raser.Palette.Forest)
+        Testing.Assert.AreEqual(0.0, raster[0])
+        // auch die ferne Stufe (gröberes Raster) schneidet
+        fm.natural = true
+        float coarse[] = PublicTests.Slanted(fm.Block(0.0, 0.0, 51.2, 3.2, false), Raser.Palette.Forest)
+        Testing.Assert.IsTrue(coarse[0] > 10.0)
+        Testing.Assert.IsTrue(Math.Abs(coarse[1] - 450.0) < 5.0)
+    }
+
+    [Test "Grundstücke bleiben im Raster: Gewerbefläche und Garten am Haus wie bisher"]
+    undefined PlotsUnchanged() {
+        // eine Fläche, die kein öffentlicher Raum ist: dasselbe Netz wie ohne Schnitt
+        var tile = PublicTests.Flat()
+        tile.data.areas.Add(PublicTests.Rhomb("landuse=commercial", Raser.Material.Paving, Raser.Palette.Paving))
+        var fm = new Raser.FarMesher(tile, 1)
+        var cut = fm.Block(0.0, 0.0, 51.2, 0.8, false)
+        fm.natural = false
+        var plain = fm.Block(0.0, 0.0, 51.2, 0.8, false)
+        Testing.Assert.AreEqual(plain.Count, cut.Count)
+        for (int i = 0; i < plain.Count * 12; i++) { Testing.Assert.AreEqual(plain.positions[i], cut.positions[i]) }
+        for (int q = 0; q < plain.Count; q++) { Testing.Assert.AreEqual(plain.colors[q], cut.colors[q]) }
+        // Rasen am Haus: bis PlotMargin am Gebäude keine schrägen Grenzen, weiter weg schon
+        var home = PublicTests.Flat()
+        home.data.areas.Add(PublicTests.Rhomb("landuse=grass", Raser.Material.Grass, Raser.Palette.Grass + 32))
+        var b = new Raser.Building()
+        b.source = "test:haus"
+        b.id = Raser.Ids.Stable(Raser.IdKind.Building, b.source)
+        // das Haus an der Südostkante der Raute (die Ecke bei 30° liegt bei 38, 32,5)
+        b.footprint = [36.0, 20.0, 44.0, 20.0, 44.0, 28.0, 36.0, 28.0]
+        b.ground = 50.0
+        b.eaves = 56.0
+        b.ridge = 56.0
+        b.roofType = Raser.RoofType.Flat
+        home.data.buildings.Add(take b)
+        var hm = new Raser.FarMesher(home, 1)
+        var part = hm.Block(0.0, 0.0, 51.2, 0.8, false)
+        int near = 0
+        int away = 0
+        for (int q = 0; q < part.Count; q++) {
+            if (part.colors[q] != Raser.Palette.Grass + 32) { continue }
+            defined float p[] = part.positions
+            int o = q * 12
+            bool slant = false
+            for (int e = 0; e < 4; e++) {
+                int f = (e + 1) % 4
+                float ex = Math.Abs(p[o + f * 3] - p[o + e * 3])
+                float ey = Math.Abs(p[o + f * 3 + 1] - p[o + e * 3 + 1])
+                if (ex > 0.01 && ey > 0.01 && Math.Abs(ex - ey) > 0.01) { slant = true }
+            }
+            if (!slant) { continue }
+            float cx = (p[o] + p[o + 6]) / 2.0
+            float cy = (p[o + 1] + p[o + 7]) / 2.0
+            // (die Zelle zählt nach ihrer Mitte: knapp am Rand von PlotMargin darf eine Fläche schon schräg sein)
+            float fp[] = home.data.buildings[0].footprint
+            if (Raser.Geo.Inside(fp, cx, cy) || Raser.HouseStyle.RingDistance(fp, cx, cy) < Raser.PublicSpace.PlotMargin - 0.6) { near++ } else { away++ }
+        }
+        Testing.Assert.IsTrue(away > 20)
+        Testing.Assert.AreEqual(0, near)
+    }
+}

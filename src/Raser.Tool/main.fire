@@ -196,7 +196,7 @@ class Tool {
         var builder = new Raser.NearBuilder(args.Get("world", "world"), 0.0, 0.0, 0.0, false)
         builder.useCache = false
         builder.stats = new List<int>()
-        for (int i = 0; i < 66563; i++) { builder.stats.Add(0) }
+        for (int i = 0; i < 66819; i++) { builder.stats.Add(0) }
         int total = 0
         int blocks = 0
         for (int dy = -r; dy <= r; dy++) {
@@ -209,6 +209,8 @@ class Tool {
         Tool.Log(blocks + " Blöcke, " + total + " Vierecke (" + (total * 2 / blocks / 1000) + "k Dreiecke je Block)")
         string names[] = ["Gelände (glatt)", "Fenster/Türen/Bögen/Brücken", "Glas der Fenster"]
         for (int i = 0; i < 3; i++) { Tool.Log("  " + names[i] + ": " + builder.stats[256 + i]) }
+        Tool.Log("  Modelle (Möbel, Spielgeräte, Pflanzen): " + builder.propQuads + " (" + builder.propCount + " Props, davon " + builder.treeCount + " Bäume)")
+        Tool.Log("  Zeit: Gelände " + (builder.groundTicks / 10000) + " ms, Modelle " + (builder.propTicks / 10000) + " ms, Kachel laden " + (builder.loadTicks / 10000) + " ms, Chunks " + (builder.columnTicks / 10000) + " ms")
         // die Materialien, nach Anzahl
         var order = new List<int>()
         for (int m = 0; m < 256; m++) { if (builder.stats[m] > 0) { order.Add(builder.stats[m] * 256 + m) } }
@@ -217,7 +219,7 @@ class Tool {
             int m = order[i] % 256
             int colors = 0
             for (int c = 0; c < 256; c++) { colors = colors + builder.stats[515 + m * 256 + c] }
-            Tool.Log("  Material " + m + ": " + builder.stats[m] + " (einzelne Voxelflächen " + builder.stats[259 + m] + ", davon oben/unten " + builder.stats[66051 + m] + ", schräg " + builder.stats[66307 + m] + "; " + colors + " Farben)")
+            Tool.Log("  Material " + m + ": " + builder.stats[m] + " (einzelne Voxelflächen " + builder.stats[259 + m] + ", davon oben/unten " + builder.stats[66051 + m]  + ", schräg " + builder.stats[66307 + m] + ", ohne Fläche " + builder.stats[66563 + m] + "; " + colors + " Farben)")
         }
     }
 
