@@ -351,7 +351,7 @@ namespace Raser {
         defined bool opaqueOnly
         defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
         List<int> stats                 // (raser nearstats) Vierecke je Material der Voxel (0-255), dahinter Gelände, Fenster/Brücken, Glas der Fenster
-        static readonly defined int CacheVersion = 18     // (18: Autobahnen und Rastplätze, Raser.MotorwayMesher; 17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        static readonly defined int CacheVersion = 19     // (19: keine Seiten ohne Fläche an schrägen und geschnittenen Voxeln; 18: Autobahnen und Rastplätze, Raser.MotorwayMesher; 17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)
@@ -472,6 +472,8 @@ namespace Raser {
                             float cx = uy * vz - uz * vy
                             float cy = uz * vx - ux * vz
                             float cz = ux * vy - uy * vx
+                            // ohne Fläche (alle Ecken auf einer Linie): ab 66563
+                            if (cx * cx + cy * cy + cz * cz < 0.00000001) { this.stats[66563 + mq] = this.stats[66563 + mq] + 1 }
                             if (cx * cx + cy * cy + cz * cz < 0.0025) {
                                 this.stats[259 + mq] = this.stats[259 + mq] + 1
                                 // davon Oberseiten (die Normale zeigt eher nach oben/unten): ab 66051

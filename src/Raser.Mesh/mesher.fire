@@ -781,6 +781,8 @@ if (Raser.Plan.IsElevation(p)) {
                     bool rim = true
                     if (xs[k] < 0.0001 && xs[l] < 0.0001) { nx = x - 1 } else if (xs[k] > 0.9999 && xs[l] > 0.9999) { nx = x + 1 } else if (ys[k] < 0.0001 && ys[l] < 0.0001) { ny = y - 1 } else if (ys[k] > 0.9999 && ys[l] > 0.9999) { ny = y + 1 } else { rim = false }
                     if (!stacks) {
+                        // beide Ecken auf der Unterkante: keine Fläche
+                        if (hz[k] < z0 + 0.0001 && hz[l] < z0 + 0.0001) { continue }
                         if (rim && this.RimHidden(nx, ny, z, m, mats, cut)) { continue }
                         // gegen den Uhrzeigersinn: außen ist rechts der Kante
                         part.Quad(bx + xs[k] * 0.2, by + ys[k] * 0.2, z0, bx + xs[l] * 0.2, by + ys[l] * 0.2, z0, bx + xs[l] * 0.2, by + ys[l] * 0.2, hz[l], bx + xs[k] * 0.2, by + ys[k] * 0.2, hz[k], ey / el, -ex / el, 0.0, color, m)
@@ -931,10 +933,11 @@ if (Raser.Plan.IsElevation(p)) {
             float h2 = z0 + c2 * 0.2 / 3.0
             float h3 = z0 + c3 * 0.2 / 3.0
             // Ecken: 0 = (x0, y0), 1 = (x1, y0), 2 = (x1, y1), 3 = (x0, y1); der Nachbar teilt die gegenüberliegenden
-            if (!this.HidesSide(x - 1, y, z, material, c0, c3, 1, 2)) { part.Quad(x0, y1, z0, x0, y0, z0, x0, y0, h0, x0, y1, h3, -1.0, 0.0, 0.0, color, material) }
-            if (!this.HidesSide(x + 1, y, z, material, c1, c2, 0, 3)) { part.Quad(x1, y0, z0, x1, y1, z0, x1, y1, h2, x1, y0, h1, 1.0, 0.0, 0.0, color, material) }
-            if (!this.HidesSide(x, y - 1, z, material, c0, c1, 3, 2)) { part.Quad(x0, y0, z0, x1, y0, z0, x1, y0, h1, x0, y0, h0, 0.0, -1.0, 0.0, color, material) }
-            if (!this.HidesSide(x, y + 1, z, material, c3, c2, 0, 1)) { part.Quad(x1, y1, z0, x0, y1, z0, x0, y1, h3, x1, y1, h2, 0.0, 1.0, 0.0, color, material) }
+            // eine Seite, deren beide Ecken auf der Unterkante liegen, hat keine Fläche (gut ein Fünftel der Dach-Vierecke)
+            if (c0 + c3 > 0 && !this.HidesSide(x - 1, y, z, material, c0, c3, 1, 2)) { part.Quad(x0, y1, z0, x0, y0, z0, x0, y0, h0, x0, y1, h3, -1.0, 0.0, 0.0, color, material) }
+            if (c1 + c2 > 0 && !this.HidesSide(x + 1, y, z, material, c1, c2, 0, 3)) { part.Quad(x1, y0, z0, x1, y1, z0, x1, y1, h2, x1, y0, h1, 1.0, 0.0, 0.0, color, material) }
+            if (c0 + c1 > 0 && !this.HidesSide(x, y - 1, z, material, c0, c1, 3, 2)) { part.Quad(x0, y0, z0, x1, y0, z0, x1, y0, h1, x0, y0, h0, 0.0, -1.0, 0.0, color, material) }
+            if (c3 + c2 > 0 && !this.HidesSide(x, y + 1, z, material, c3, c2, 0, 1)) { part.Quad(x1, y1, z0, x0, y1, z0, x0, y1, h3, x1, y1, h2, 0.0, 1.0, 0.0, color, material) }
         }
     }
 }

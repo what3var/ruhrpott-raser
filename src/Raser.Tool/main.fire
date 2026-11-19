@@ -196,7 +196,7 @@ class Tool {
         var builder = new Raser.NearBuilder(args.Get("world", "world"), 0.0, 0.0, 0.0, false)
         builder.useCache = false
         builder.stats = new List<int>()
-        for (int i = 0; i < 66563; i++) { builder.stats.Add(0) }
+        for (int i = 0; i < 66819; i++) { builder.stats.Add(0) }
         int total = 0
         int blocks = 0
         for (int dy = -r; dy <= r; dy++) {
@@ -217,7 +217,7 @@ class Tool {
             int m = order[i] % 256
             int colors = 0
             for (int c = 0; c < 256; c++) { colors = colors + builder.stats[515 + m * 256 + c] }
-            Tool.Log("  Material " + m + ": " + builder.stats[m] + " (einzelne Voxelflächen " + builder.stats[259 + m] + ", davon oben/unten " + builder.stats[66051 + m] + ", schräg " + builder.stats[66307 + m] + "; " + colors + " Farben)")
+            Tool.Log("  Material " + m + ": " + builder.stats[m] + " (einzelne Voxelflächen " + builder.stats[259 + m] + ", davon oben/unten " + builder.stats[66051 + m]  + ", schräg " + builder.stats[66307 + m] + ", ohne Fläche " + builder.stats[66563 + m] + "; " + colors + " Farben)")
         }
     }
 
