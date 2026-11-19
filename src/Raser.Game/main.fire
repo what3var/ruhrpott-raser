@@ -915,6 +915,8 @@ class Game {
             }
         }
         cam.WaitRender()
+        // Einstellungen sichern: wer über „Spiel beenden“ oder das Fenster geht, schließt das Menü nicht (Close speichert, was sich geändert hat)
+        menu.Close()
         online.Close()
         view.Close()
         return 0
