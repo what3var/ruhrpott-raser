@@ -358,7 +358,7 @@ namespace Raser {
         defined int propTicks
         defined int loadTicks
         defined int columnTicks
-        static readonly defined int CacheVersion = 18     // (18: Möbel, Spielgeräte und Pflanzen als gedrehte Modelle (Raser.PropMesher), Grenzen im öffentlichen Raum geschnitten; 17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        static readonly defined int CacheVersion = 19     // (19: Möbel, Spielgeräte und Pflanzen als gedrehte Modelle (Raser.PropMesher), Grenzen im öffentlichen Raum geschnitten; 17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)

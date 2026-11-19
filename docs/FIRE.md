@@ -93,6 +93,6 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 
 - **forge baut nativ jetzt mit TinyCC, wenn nichts anderes gesagt ist** (seit fire master am 18.11., etwa 21:50): `forge build ... --engine native
   -m RELEASE` ruft `tcc -O2` statt `gcc -O2`. Das geht in einer Minute statt acht, aber das Programm ist rund zehnmal langsamer: `raser nearstats`
-  am Startpunkt (ein Block) 19,6 s statt 2,0 s, Voxelisieren einer Kachel 9 statt etwa 1 Minute - Messungen ohne `--toolchain gcc` sind
+  am Startpunkt (ein Block) 19,6 s statt 2,0 s, Voxelisieren einer Kachel 534 s statt 74 s - Messungen ohne `--toolchain gcc` sind
   nicht vergleichbar. Umweg: `--toolchain gcc` bei jedem Bau, der gemessen oder ausgeliefert wird. Wunsch: `-m RELEASE` nimmt den optimierenden
   Compiler (TinyCC nur für schnelle Probebauten oder ausdrücklich), oder forge sagt beim Bauen deutlich, welcher Compiler läuft.
