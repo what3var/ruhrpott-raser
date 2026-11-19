@@ -21,6 +21,7 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 |---|---|---|
 | Nebel auch auf der GPU (laut Doku nur Fast und Software). | Hardware-Renderer | offen |
 | Kacheln (`Scene.LightCulling`) und Spiegelungen (`Object.Reflectivity`) auch auf der GPU. | Hardware-Renderer | offen |
+| Keine Instanzen: ein Model an vielen Stellen braucht je Stelle ein `Object` (eine Zeichnung je Bild). Wunsch: `Object.Instances` (Lage und Drehung je Kopie, ein Model). | Laternen, Bänke, Bäume (um 1000 Props je Kachel): Raser.PropMesher setzt gedrehte Kopien der Vorlagen ins Netz des Blocks (im Worker) | offen (fire master 58efe6cb) |
 
 ## scene3d: gemischt oder nicht
 
@@ -87,3 +88,11 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
   für OSM `Http.Client.Get` (ganz in den Speicher, dann über eine Teildatei schreiben). Wunsch: chunked in `Http.Download` (fortsetzen geht
   dann nicht, laden schon). Stand fire master 6db80cbb.
 
+
+## Bauen
+
+- **forge baut nativ jetzt mit TinyCC, wenn nichts anderes gesagt ist** (seit fire master am 18.11., etwa 21:50): `forge build ... --engine native
+  -m RELEASE` ruft `tcc -O2` statt `gcc -O2`. Das geht in einer Minute statt acht, aber das Programm ist rund zehnmal langsamer: `raser nearstats`
+  am Startpunkt (ein Block) 19,6 s statt 2,0 s, Voxelisieren einer Kachel 9 statt etwa 1 Minute - Messungen ohne `--toolchain gcc` sind
+  nicht vergleichbar. Umweg: `--toolchain gcc` bei jedem Bau, der gemessen oder ausgeliefert wird. Wunsch: `-m RELEASE` nimmt den optimierenden
+  Compiler (TinyCC nur für schnelle Probebauten oder ausdrücklich), oder forge sagt beim Bauen deutlich, welcher Compiler läuft.

@@ -226,7 +226,7 @@ class VoxelizerTests {
         Testing.Assert.AreEqual(Raser.Material.Soil!int, c.MaterialAt(5, 37, 35))
     }
 
-    [Test "Props: Baum und Bank stehen auf dem Gelände, nur in Luft"]
+    [Test "Props: Baum und Bank sind Modelle (keine Voxel mehr), die Laube bleibt Voxel; in Kleingärten bleibt alles Voxel"]
     undefined Props() {
         var tile = Sample.Make()
         var tree = new Raser.Prop()
@@ -244,34 +244,95 @@ class VoxelizerTests {
         bench.x = 23.1
         bench.y = 20.1
         tile.data.props.Add(take bench)
+        var shed = new Raser.Prop()
+        shed.source = "test:laube"
+        shed.id = Raser.Ids.Stable(Raser.IdKind.Prop, shed.source)
+        shed.kind = "shed"
+        shed.x = 15.5
+        shed.y = 14.5
+        tile.data.props.Add(take shed)
+        // ein Obstbaum in einer Parzelle (Raser.Greens.Allotments): Grundstück, bleibt im Raster
+        var fruit = new Raser.Prop()
+        fruit.source = "green:landuse=allotments:test/tree/1"
+        fruit.id = Raser.Ids.Stable(Raser.IdKind.Prop, fruit.source)
+        fruit.kind = "tree"
+        fruit.detail = "ahorn"
+        fruit.x = 14.5
+        fruit.y = 24.5
+        fruit.height = 6.0
+        tile.data.props.Add(take fruit)
+        Testing.Assert.IsTrue(Raser.Props.AsModel("tree", "osm:node/1"))
+        Testing.Assert.IsTrue(Raser.Props.AsModel("bench", "green:leisure=park:x/bench/1"))
+        Testing.Assert.IsTrue(!Raser.Props.AsModel("tree", fruit.source))
+        Testing.Assert.IsTrue(!Raser.Props.AsModel("shed", "test:laube"))
         var v = new Raser.Voxelizer(tile, new Raser.OverrideSet(), 7)
-        var low = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 4))
-        // Gelände bei x 20 m: 60 + 21 * 0,02 = 60,42 m - oberstes Gelände-Voxel 302, der Stamm ab 303 (z 47 im Chunk 4); Säule 100 = x 0 im Chunk 1
-        Testing.Assert.AreEqual(Raser.Material.Wood!int, low.MaterialAt(100 - 64, 100 - 64, 47))
-        Testing.Assert.AreEqual(Raser.Palette.Bark, low.ColorAt(100 - 64, 100 - 64, 47))
-        // eine Lage reicht in den Boden (das oberste Gelände-Voxel), darunter bleibt das Gelände
-        Testing.Assert.AreEqual(Raser.Material.Wood!int, low.MaterialAt(100 - 64, 100 - 64, 46))
-        Testing.Assert.IsTrue(low.MaterialAt(100 - 64, 100 - 64, 45) != Raser.Material.Wood!int)
-        // die Krone reicht in den Chunk darüber: Laub
-        var high = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, 5))
-        int leaves = 0
-        for (int z = 0; z < 64; z++) {
-            for (int y = 0; y < 64; y++) {
-                for (int x = 0; x < 64; x++) {
-                    if (high.MaterialAt(x, y, z) == Raser.Material.Leaves!int) { leaves++ }
+        int wood[] = [0, 0, 0, 0]
+        int leaves[] = [0, 0, 0, 0]
+        foreach (cz in [4, 5]) {
+            var c = v.Generate(new Raser.ChunkKey(1473 * 20 + 1, 22292 * 20 + 1, cz))
+            if (c.IsEmpty) { continue }
+            for (int z = 0; z < 64; z++) {
+                for (int y = 0; y < 64; y++) {
+                    for (int x = 0; x < 64; x++) {
+                        int m = c.MaterialAt(x, y, z)
+                        if (m != Raser.Material.Wood!int && m != Raser.Material.Leaves!int) { continue }
+                        // welches Prop: das nächste zur Säule (Chunk 1 beginnt bei 12,8 m)
+                        float px = 12.8 + x * 0.2
+                        float py = 12.8 + y * 0.2
+                        float xs[] = [20.1, 23.1, 15.5, 14.5]
+                        float ys[] = [20.1, 20.1, 14.5, 24.5]
+                        int which = 0
+                        for (int k = 1; k < 4; k++) {
+                            if ((px - xs[k]) * (px - xs[k]) + (py - ys[k]) * (py - ys[k]) < (px - xs[which]) * (px - xs[which]) + (py - ys[which]) * (py - ys[which])) { which = k }
+                        }
+                        if (m == Raser.Material.Wood!int) { wood[which] = wood[which] + 1 } else { leaves[which] = leaves[which] + 1 }
+                    }
                 }
             }
         }
-        Testing.Assert.IsTrue(leaves > 200)
-        // die Bank (x 23,1 m = Säule 115, im Chunk 51): der Sitz aus Holz 40 cm über dem Gelände, 9 Voxel lang
-        int seat = 0
-        for (int y = 0; y < 64; y++) {
-            if (low.MaterialAt(51, y, 49) == Raser.Material.Wood!int) { seat++ }
-        }
-        Testing.Assert.AreEqual(9, seat)
+        // kein Stamm, keine Krone, keine Bank in den Chunks
+        Testing.Assert.AreEqual(0, wood[0] + leaves[0])
+        Testing.Assert.AreEqual(0, wood[1])
+        // die Laube aus Holz, der Obstbaum in der Parzelle mit Laub
+        Testing.Assert.IsTrue(wood[2] > 50)
+        Testing.Assert.IsTrue(leaves[3] > 50)
         // gleiche Daten, gleicher Chunk
         var again = new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7)
         Testing.Assert.IsTrue(again.Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)).ContentHash() == new Raser.Voxelizer(Sample.Make(), new Raser.OverrideSet(), 7).Generate(new Raser.ChunkKey(1473 * 20, 22292 * 20, 4)).ContentHash())
+    }
+
+    [Test "Verkehrszeichen zeigen dem Verkehr entgegen, der auf sie zufährt (Rechtsverkehr), in jedem Winkel"]
+    undefined SignsFaceTraffic() {
+        var tile = Sample.Make()
+        var road = new Raser.Road()
+        road.source = "test:schraeg"
+        road.id = Raser.Ids.Stable(Raser.IdKind.Road, road.source)
+        road.kind = "highway=residential"
+        float dx = Math.Cos(Math.PI / 6.0)
+        float dy = Math.Sin(Math.PI / 6.0)
+        road.points = [0.0, 0.0, 200.0 * dx, 200.0 * dy]
+        road.width = 6.0
+        tile.data.roads.Add(take road)
+        // rechts der Linie (Fahrtrichtung 30°): zeigt nach 210°; links: nach 30°
+        for (int side = -1; side <= 1; side = side + 2) {
+            var p = new Raser.Prop()
+            p.source = "test:schild" + side
+            p.id = Raser.Ids.Stable(Raser.IdKind.Prop, p.source)
+            p.kind = "sign"
+            p.x = 50.0 * dx - side * 4.0 * dy
+            p.y = 50.0 * dy + side * 4.0 * dx
+            p.angle = Math.Atan2(-side * dx, side * dy) * 180.0 / Math.PI      // wie der Import: zur Straße
+            tile.data.props.Add(take p)
+        }
+        Raser.Props.Face(tile)
+        int n = tile.data.props.Count
+        float right = tile.data.props[n - 2].angle
+        float left = tile.data.props[n - 1].angle
+        Testing.Assert.IsTrue(Math.Abs(Math.Abs(right) - 150.0) < 0.01 || Math.Abs(right - 210.0) < 0.01)
+        Testing.Assert.IsTrue(Math.Abs(left - 30.0) < 0.01)
+        // Bäume bekommen eine feste Drehung aus der ID (wiederholt dieselbe)
+        Raser.Props.Face(tile)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.props[n - 1].angle - 30.0) < 0.01)
     }
 
     [Test "Steiles Dach: die Säule unter dem Dach-Voxel ist bis zur tiefsten Ecke gefüllt"]
@@ -876,7 +937,8 @@ class StoreTests {
         if (IO.Directory.Exists(root)) { IO.Directory.Delete(root, true) }
         var store = new Raser.FileTileStore(root)
         var tile = Sample.Make()
-        Raser.Greens.Build(tile)          // (beim Laden bepflanzt: wie gespeichert)
+        Raser.Greens.Build(tile)          // (beim Laden bepflanzt und gedreht: wie gespeichert)
+        Raser.Props.Face(tile)
         int hash = tile.DataHash()
         store.Save(tile)
         Testing.Assert.IsTrue(store.Has(new Raser.TileKey(1473, 22292)))

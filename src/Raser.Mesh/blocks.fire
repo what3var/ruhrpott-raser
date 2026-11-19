@@ -354,6 +354,10 @@ namespace Raser {
         defined int propQuads           // (raser nearstats) die Vierecke der Modelle, die Props, davon Bäume
         defined int propCount
         defined int treeCount
+        defined int groundTicks         // (raser nearstats) die Zeit für das glatte Gelände und für die Modelle
+        defined int propTicks
+        defined int loadTicks
+        defined int columnTicks
         static readonly defined int CacheVersion = 18     // (18: Möbel, Spielgeräte und Pflanzen als gedrehte Modelle (Raser.PropMesher), Grenzen im öffentlichen Raum geschnitten; 17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
@@ -433,7 +437,10 @@ namespace Raser {
             float east = bx * 51.2
             float north = by * 51.2
             var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
+            int tl = DateTime.Now.Ticks
             var fm = this.FarFor(tileKey)
+            this.loadTicks = this.loadTicks + DateTime.Now.Ticks - tl
+            tl = DateTime.Now.Ticks
             for (int column = 0; column < 16; column++) {
                 int cx = bx * 4 + (column % 4)
                 int cy = by * 4 + (column / 4)
@@ -490,14 +497,19 @@ namespace Raser {
                     glass.Add(take p.transparent, ox, oy, oz)
                 }
             }
+            this.columnTicks = this.columnTicks + DateTime.Now.Ticks - tl
             // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein, ohne die harten Zellen; die Voxel bringen, was darauf steht
             if (fm != undefined) {
+                int tg = DateTime.Now.Ticks
                 var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip, false, fine)
+                this.groundTicks = this.groundTicks + DateTime.Now.Ticks - tg
                 if (this.stats != undefined) { this.stats[256] = this.stats[256] + ground.count }
                 opaque.Add(take ground, tileKey.East - east, tileKey.North - north, 0.0)
                 // Möbel, Spielgeräte und Pflanzen: gedrehte Modelle (nach dem Gelände: der Fuß steht auf dem Gehweg, wo einer ist)
                 var models = new Raser.MeshPart()
+                int tp = DateTime.Now.Ticks
                 this.props.Add(models, fm, east - tileKey.East, north - tileKey.North, 51.2)
+                this.propTicks = this.propTicks + DateTime.Now.Ticks - tp
                 if (this.stats != undefined) {
                     this.propQuads = this.propQuads + models.count
                     this.propCount = this.propCount + this.props.count

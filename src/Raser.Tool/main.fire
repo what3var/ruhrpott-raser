@@ -210,6 +210,7 @@ class Tool {
         string names[] = ["Gelände (glatt)", "Fenster/Türen/Bögen/Brücken", "Glas der Fenster"]
         for (int i = 0; i < 3; i++) { Tool.Log("  " + names[i] + ": " + builder.stats[256 + i]) }
         Tool.Log("  Modelle (Möbel, Spielgeräte, Pflanzen): " + builder.propQuads + " (" + builder.propCount + " Props, davon " + builder.treeCount + " Bäume)")
+        Tool.Log("  Zeit: Gelände " + (builder.groundTicks / 10000) + " ms, Modelle " + (builder.propTicks / 10000) + " ms, Kachel laden " + (builder.loadTicks / 10000) + " ms, Chunks " + (builder.columnTicks / 10000) + " ms")
         // die Materialien, nach Anzahl
         var order = new List<int>()
         for (int m = 0; m < 256; m++) { if (builder.stats[m] > 0) { order.Add(builder.stats[m] * 256 + m) } }
