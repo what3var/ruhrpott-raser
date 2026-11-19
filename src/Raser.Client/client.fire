@@ -342,7 +342,7 @@ class Atmosphere {
         this.cam.RenderAsync()
     }
 
-    // Die Laternenköpfe einer Kachel (Ost, Nord, Höhe in der Welt): der Mast 4,9 m hoch, der Kopf 0,7 m zur Straße (wie Raser.Props.Lamp).
+    // Die Laternenköpfe einer Kachel (Ost, Nord, Höhe in der Welt): wie das Modell (Raser.PropMesher.Lamp), der Kopf LampReach vor dem Mast.
     List<float> LampsOf(Raser.TileKey key) {
         string name = key + ""
         if (this.lamps.ContainsKey(name)) { return this.lamps[name] }
@@ -351,14 +351,22 @@ class Atmosphere {
         if (tile != undefined) {
             foreach (p in tile.data.props) {
                 if (p.kind != "lamp") { continue }
-                int q = (Math.Round(p.angle / 90.0)!int % 4 + 4) % 4
-                float hx = p.x + 0.7 * Math.Cos(q * Math.PI / 2.0)
-                float hy = p.y + 0.7 * Math.Sin(q * Math.PI / 2.0)
+                // in Kleingärten noch als Voxel (Raser.Props.AsModel): der Kopf 0,7 m vor dem Mast, in Vierteln gedreht
+                float reach = Raser.Props.LampReach
+                float a = p.angle * Math.PI / 180.0
+                float head = Raser.Props.LampHead
+                if (!Raser.Props.AsModel(p.kind, p.source)) {
+                    reach = 0.7
+                    a = ((Math.Round(p.angle / 90.0)!int % 4 + 4) % 4) * Math.PI / 2.0
+                    head = 4.8
+                }
+                float hx = p.x + reach * Math.Cos(a)
+                float hy = p.y + reach * Math.Sin(a)
                 float g = 0.0
                 if (tile.heights != undefined) { g = tile.heights.At(p.x, p.y) }
                 heads.Add(hx + key.East)
                 heads.Add(hy + key.North)
-                heads.Add(g + 4.8)
+                heads.Add(g + head - 0.1)
             }
         }
         this.lamps[name] = heads

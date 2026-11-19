@@ -29,6 +29,7 @@ dem es gefunden wurde. Erledigtes fliegt raus (die Geschichte steht in git). Zul
 | Kacheln (`Scene.LightCulling`) und Spiegelungen (`Object.Reflectivity`) auch auf der GPU. | Hardware-Renderer | offen |
 | **In der VM sind die Aufrufe in die Bibliothek eines Pakets einer nach dem anderen**, auch mit `"threadSafe": true` (die Sperre des Wrappers, `native/abi/fire_pkg_wrapper.h`): ein `Model.FromArrays` im Worker hält dort das Hauptprogramm auf, bis das Modell fertig ist (nativ nicht mehr, ab fire-scene3d 1.0.2). | das Spiel läuft nativ | offen (Wunsch: ohne Sperre für Pakete, die thread-sicher sind) |
 | **Die GPU lädt jedes neue Netz einzeln und wartet zweimal darauf** (`s3d_gpu_deviceBuffer`: Vertices und Indizes je ein `submitAndWait`), und zwar in dem Bild, das es zuerst zeigt; ohne DirectDrawing wird außerdem jedes Bild zurückgelesen und gewartet. Kommen viele Blöcke auf einmal, stockt das Bild. Mit `RenderAsync` geschieht beides im Render-Thread von scene3d. | `--async 1` (Standard) | offen (Wunsch: Uploads gesammelt in einem Puffer, oder schon im Worker) |
+| Keine Instanzen: ein Model an vielen Stellen braucht je Stelle ein `Object` (eine Zeichnung je Bild). Wunsch: `Object.Instances` (Lage und Drehung je Kopie, ein Model). | Laternen, Bänke, Bäume (um 1000 Props je Kachel): Raser.PropMesher setzt gedrehte Kopien der Vorlagen ins Netz des Blocks (im Worker) | offen (fire master 58efe6cb) |
 
 ## scene3d: gemischt oder nicht
 
@@ -106,3 +107,11 @@ Umwege der ersten Fassung sind damit weg, auch der `readonly`-Fund (`ContainerKi
   für OSM `Http.Client.Get` (ganz in den Speicher, dann über eine Teildatei schreiben). Wunsch: chunked in `Http.Download` (fortsetzen geht
   dann nicht, laden schon). Stand fire master 6db80cbb.
 
+
+## Bauen
+
+- **forge baut nativ jetzt mit TinyCC, wenn nichts anderes gesagt ist** (seit fire master am 18.11., etwa 21:50): `forge build ... --engine native
+  -m RELEASE` ruft `tcc -O2` statt `gcc -O2`. Das geht in einer Minute statt acht, aber das Programm ist rund zehnmal langsamer: `raser nearstats`
+  am Startpunkt (ein Block) 19,6 s statt 2,0 s, Voxelisieren einer Kachel 534 s statt 74 s - Messungen ohne `--toolchain gcc` sind
+  nicht vergleichbar. Umweg: `--toolchain gcc` bei jedem Bau, der gemessen oder ausgeliefert wird. Wunsch: `-m RELEASE` nimmt den optimierenden
+  Compiler (TinyCC nur für schnelle Probebauten oder ausdrücklich), oder forge sagt beim Bauen deutlich, welcher Compiler läuft.

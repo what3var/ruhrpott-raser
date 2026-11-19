@@ -162,6 +162,8 @@ namespace Raser {
         defined int wordBits        // Breite der Bit-Wörter (0: Word.Bits; kleiner nur für Tests, die ein 32- oder 16-Bit-Ziel nachstellen)
         byte shapeMap[]             // beim Vernetzen: je Voxel die Form (255: voll) - statt je Voxel im Dictionary des Chunks nachzuschlagen
         byte hardColumns[]          // mit skipTerrain: Säulen (x + 64 y, 1), in denen das Gelände doch Flächen bekommt (Raser.GroundCut); undefined: keine
+        byte roofMat[]              // je Säule (x + 64 y) das Material eines Steildachs darüber (0: keins): Voxel aus ihm ab roofFrom bekommen keine
+        int roofFrom[]              // Flächen (das Dach kommt glatt aus dem Dachmodell, Raser.NearBuilder), verdecken aber weiter; undefined: keine
         ChunkFace west          // die Randschichten der Nachbarn, die diesen Chunk berühren (undefined: Luft)
         ChunkFace east
         ChunkFace south
@@ -310,6 +312,13 @@ namespace Raser {
         // Bekommt dieses Gelände-Voxel (Index i im Chunk) keine Flächen?
         defined bool Skips(defined int i) { return this.hardColumns == undefined || this.hardColumns[i & 4095] == 0 }
 
+        // Kommt das Voxel i (Material m) als glattes Dach (roofMat)? Dann bekommt es keine Flächen.
+        defined bool RoofSkips(defined int i, defined int m) {
+            if (this.roofMat == undefined) { return false }
+            defined int c = i & 4095
+            return this.roofMat[c] == m && (i >> 12) >= this.roofFrom[c]
+        }
+
         ChunkMesh Build() {
             var mesh = new Raser.ChunkMesh(new Raser.ChunkKey(this.center.key.x, this.center.key.y, this.center.key.z))
             if (this.center.IsEmpty) { return mesh }
@@ -365,10 +374,11 @@ namespace Raser {
                         hardRow[y * per + k] = hb
                     }
                 }
-            }            for (int z = 0; z < 64; z++) {
+            }            bool roofs = this.roofMat != undefined
+            for (int z = 0; z < 64; z++) {
                 if (states[z] == 1) { continue }
                 bool q = quiet[z] != 0
-                if (states[z] == 2 && (q || !this.skipTerrain)) {
+                if (states[z] == 2 && (q || !this.skipTerrain) && !roofs) {
                     for (int k = (z << 6) * per; k < ((z + 1) << 6) * per; k++) {
                         nonair[k] = full
                         occ[k] = full
@@ -385,6 +395,7 @@ namespace Raser {
                         word cb = 0         // geschnitten
                         word pb = 0         // mit Grundriss-Form
                         word tr = 0         // durchsichtig
+                        word rb = 0         // glattes Dach (keine Flächen)
                         defined int i0 = at + k * wb
                         for (int b = 0; b < wb; b++) {
                             defined int m = mats[i0 + b]
@@ -395,10 +406,12 @@ namespace Raser {
                             if (m == 11 || m == 6) { tr = tr | bit }
                             if (cut[i0 + b] != 0) { cb = cb | bit }
                             if (cut[i0 + b] == 2) { pb = pb | bit }
+                            if (roofs && this.RoofSkips(i0 + b, m)) { rb = rb | bit }
                         }
                         // was Flächen bringt: alles außer der stillen Schicht; mit skipTerrain Gelände nur in den harten Säulen
                         word emits = full
                         if (q) { emits = 0 } else if (this.skipTerrain) { emits = ~tb | hardRow[y * per + k] }
+                        emits = emits & ~rb
                         defined int w = r * per + k
                         nonair[w] = na
                         occ[w] = na & ~tr & ~cb
@@ -693,6 +706,7 @@ namespace Raser {
                 defined int m = mats[i]
                 if (m == 0) { continue }
                 if (this.skipTerrain && m <= 8 && this.Skips(i)) { continue }
+                if (this.RoofSkips(i, m)) { continue }
 if (Raser.Plan.IsElevation(p)) {
                     this.ElevationFaces(mesh, mats, cols, cut, i, p, xs, ys)
                     continue
@@ -831,7 +845,7 @@ if (Raser.Plan.IsElevation(p)) {
                     int i = k + (z << 12)
                     if (cut[i] != 1) { continue }
                     int m = mats[i]
-                    if (m == 0 || (this.skipTerrain && m <= 8 && this.Skips(i))) { continue }
+                    if (m == 0 || (this.skipTerrain && m <= 8 && this.Skips(i)) || this.RoofSkips(i, m)) { continue }
                     int x = k & 63
                     int y = k >> 6
                     int shape = this.shapeMap[i]

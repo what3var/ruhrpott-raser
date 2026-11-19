@@ -23,6 +23,8 @@ namespace Raser {
         Dictionary<string, List<int>> layers
         HashSet<string> manifests
         byte hard[]                                       // die harten Säulen der zuletzt gebauten Säule (Raser.GroundCut)
+        byte roofMat[]                                    // je Voxelsäule der Chunk-Säule das Material eines glatten Dachs (Raser.FarMesher.SmoothRoof), 0: keins
+        int roofAbs[]                                     // ... ab welchem Voxel (absolut) seine Voxel keine Flächen bekommen
 
         construct(Raser.FileTileStore store) {
             this.store = store
@@ -93,6 +95,39 @@ namespace Raser {
             return this.layers[key]
         }
 
+        // Die Säulen der Chunk-Säule (Südwest-Ecke ox, oy kachel-lokal) unter einem glatten Steildach (Raser.FarMesher.SmoothRoof): in roofMat das
+        // Material seiner Ziegel, in roofAbs ab welchem Voxel (eine Traufe minus 1 m) sie keine Flächen bekommen. false: keine.
+        defined bool RoofMask(Raser.FarMesher fm, defined float ox, defined float oy) {
+            bool any = false
+            byte mat[] = new byte[4096]
+            int abs[] = new int[4096]
+            for (int k = 0; k < 4096; k++) { abs[k] = 0 }
+            foreach (m in fm.models) {
+                if (!Raser.FarMesher.SmoothRoof(m)) { continue }
+                if (!m.box.Overlaps(ox - 1.0, oy - 1.0, ox + 13.8, oy + 13.8)) { continue }
+                float ring[] = m.building.footprint
+                if (m.eaveRing != undefined) { ring = m.eaveRing }
+                int startZ = Math.Floor((m.building.eaves - 1.0) / 0.2)!int
+                int roof = m.building.roof!int
+                int x0 = Math.Max(0, Math.Floor((m.box.minX - 1.0 - ox) / 0.2)!int)
+                int x1 = Math.Min(63, Math.Floor((m.box.maxX + 1.0 - ox) / 0.2)!int)
+                int y0 = Math.Max(0, Math.Floor((m.box.minY - 1.0 - oy) / 0.2)!int)
+                int y1 = Math.Min(63, Math.Floor((m.box.maxY + 1.0 - oy) / 0.2)!int)
+                for (int y = y0; y <= y1; y++) {
+                    for (int x = x0; x <= x1; x++) {
+                        if (!Raser.Geo.Inside(ring, ox + (x + 0.5) * 0.2, oy + (y + 0.5) * 0.2)) { continue }
+                        mat[x + y * 64] = roof
+                        abs[x + y * 64] = startZ
+                        any = true
+                    }
+                }
+            }
+            if (!any) { return false }
+            this.roofMat = take mat
+            this.roofAbs = take abs
+            return true
+        }
+
         // Die Netze einer Chunk-Säule. Mit fm (die Kachel, kachel-lokal ab tileE, tileN) kommt das Gelände glatt von dort: Gelände-Voxel bekommen nur
         // in den harten Säulen Flächen (danach in this.hard).
         List<ChunkParts> Parts(defined int cx, defined int cy, Raser.FarMesher fm = undefined, defined float tileE = 0.0, defined float tileN = 0.0) {
@@ -105,6 +140,7 @@ namespace Raser {
                 foreach (z in this.LayersOf(cx, cy)) { cut.Add(this.ChunkAt(cx, cy, z)) }
                 this.hard = cut.Hard(fm, cx * 12.8 - tileE, cy * 12.8 - tileN)
             }
+            bool roofs = fm != undefined && this.RoofMask(fm, cx * 12.8 - tileE, cy * 12.8 - tileN)
             foreach (z in this.LayersOf(cx, cy)) {
                 var chunk = this.ChunkAt(cx, cy, z)
                 if (chunk == undefined) { continue }
@@ -113,6 +149,13 @@ namespace Raser {
                 if (this.hard != undefined) {
                     mesher.skipTerrain = true          // das Gelände kommt glatt aus dem Höhenraster, nur die harten Säulen als Voxel
                     mesher.hardColumns = this.hard
+                }
+                if (roofs) {
+                    // die Dachziegel der Steildächer kommen glatt (NearBuilder: FarMesher.SmoothRoofs); hier ab der Traufe ohne Flächen
+                    int starts[] = new int[4096]
+                    for (int k = 0; k < 4096; k++) { starts[k] = this.roofAbs[k] - z * 64 }
+                    mesher.roofMat = this.roofMat
+                    mesher.roofFrom = take starts
                 }
                 var mesh = mesher.Build()
                 var p = new ChunkParts()
@@ -351,7 +394,15 @@ namespace Raser {
         defined bool opaqueOnly
         defined bool useCache           // gebaute Blöcke unter <welt>/meshes speichern und von dort laden
         List<int> stats                 // (raser nearstats) Vierecke je Material der Voxel (0-255), dahinter Gelände, Fenster/Brücken, Glas der Fenster
-        static readonly defined int CacheVersion = 19     // (19: keine Seiten ohne Fläche an schrägen und geschnittenen Voxeln; 18: Autobahnen und Rastplätze, Raser.MotorwayMesher; 17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
+        Raser.PropMesher props          // Möbel, Spielgeräte, Pflanzen als Modelle (die Vorlagen bleiben über die Blöcke)
+        defined int propQuads           // (raser nearstats) die Vierecke der Modelle, die Props, davon Bäume
+        defined int propCount
+        defined int treeCount
+        defined int groundTicks         // (raser nearstats) die Zeit für das glatte Gelände und für die Modelle
+        defined int propTicks
+        defined int loadTicks
+        defined int columnTicks
+        static readonly defined int CacheVersion = 21     // (21: Steildächer nah glatt aus dem Dachmodell (FarMesher.SmoothRoofs), ihre Ziegel-Voxel ohne Flächen; 20: Möbel, Spielgeräte und Pflanzen als gedrehte Modelle (Raser.PropMesher), Grenzen im öffentlichen Raum geschnitten; 19: keine Seiten ohne Fläche an schrägen und geschnittenen Voxeln; 18: Autobahnen und Rastplätze, Raser.MotorwayMesher; 17: geschnittene Voxel übereinander als eine Seitenfläche (Mesher.PlanFaces); 16: Bäume in Wald und Park ohne Baumscheibe, Arten, Wald fern zusammengefasst; 15: Brücken, Raser.BridgeMesher) das Format und alles, was das Netz ändert, ohne dass sich die Chunks ändern (Mesher, Gelände)
 
         construct(string root, defined float e, defined float n, defined float z, defined bool opaqueOnly) {
             this.store = new Raser.FileTileStore(root)
@@ -365,6 +416,7 @@ namespace Raser {
             this.nearSpacing = 0.8
             this.opaqueOnly = opaqueOnly
             this.useCache = true
+            this.props = new Raser.PropMesher()
         }
 
         // Wo der Netz-Cache eines Blocks liegt: <welt>/meshes/<kachel>/<bx>_<by>.rrn (Deflate). Beim Voxelisieren einer Kachel wird ihr Ordner gelöscht.
@@ -437,7 +489,10 @@ namespace Raser {
             float east = bx * 51.2
             float north = by * 51.2
             var tileKey = Raser.TileKey.Of(east + 1.0, north + 1.0)
+            int tl = DateTime.Now.Ticks
             var fm = this.FarFor(tileKey)
+            this.loadTicks = this.loadTicks + DateTime.Now.Ticks - tl
+            tl = DateTime.Now.Ticks
             for (int column = 0; column < 16; column++) {
                 int cx = bx * 4 + (column % 4)
                 int cy = by * 4 + (column / 4)
@@ -496,11 +551,25 @@ namespace Raser {
                     glass.Add(take p.transparent, ox, oy, oz)
                 }
             }
+            this.columnTicks = this.columnTicks + DateTime.Now.Ticks - tl
             // der Untergrund: glatt aus dem Höhenraster (mit Diagonalen), fein, ohne die harten Zellen; die Voxel bringen, was darauf steht
             if (fm != undefined) {
+                int tg = DateTime.Now.Ticks
                 var ground = fm.Block(east - tileKey.East, north - tileKey.North, 51.2, this.nearSpacing, false, skip, false, fine)
+                this.groundTicks = this.groundTicks + DateTime.Now.Ticks - tg
                 if (this.stats != undefined) { this.stats[256] = this.stats[256] + ground.count }
                 opaque.Add(take ground, tileKey.East - east, tileKey.North - north, 0.0)
+                // Möbel, Spielgeräte und Pflanzen: gedrehte Modelle (nach dem Gelände: der Fuß steht auf dem Gehweg, wo einer ist)
+                var models = new Raser.MeshPart()
+                int tp = DateTime.Now.Ticks
+                this.props.Add(models, fm, east - tileKey.East, north - tileKey.North, 51.2)
+                this.propTicks = this.propTicks + DateTime.Now.Ticks - tp
+                if (this.stats != undefined) {
+                    this.propQuads = this.propQuads + models.count
+                    this.propCount = this.propCount + this.props.count
+                    this.treeCount = this.treeCount + this.props.trees
+                }
+                opaque.Add(take models, tileKey.East - east, tileKey.North - north, 0.0)
                 // Fenster, Türen und Tore: eingehängt zwischen die Laibungen
                 var frames = new Raser.MeshPart()
                 var panes = new Raser.MeshPart()
@@ -508,6 +577,8 @@ namespace Raser {
                 fm.Arches(frames, east - tileKey.East, north - tileKey.North, 51.2)
                 // Brücken: das Deck mit Brüstungen, Pfeilern, Widerlagern
                 Raser.BridgeMesher.Add(frames, this.DecksFor(tileKey, fm), fm.tile.data.roads, east - tileKey.East, north - tileKey.North, 51.2)
+                // die Steildächer glatt (ihre Ziegel-Voxel bekommen keine Flächen, ColumnBuilder.RoofMask)
+                fm.SmoothRoofs(frames, east - tileKey.East, north - tileKey.North, 51.2)
                 // Autobahnen: Markierungen, Leitplanken, Wände, Schilderbrücken; Stellplätze auf Rastplätzen
                 Raser.MotorwayMesher.Add(frames, fm.tile, this.MotorwaysFor(tileKey, fm), east - tileKey.East, north - tileKey.North, 51.2)
                 if (this.stats != undefined) {
