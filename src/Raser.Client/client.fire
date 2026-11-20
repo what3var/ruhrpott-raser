@@ -256,7 +256,7 @@ class Atmosphere {
         var w = this.weather
         this.scene.AmbientColor = Atmosphere.Rgb(w.ambientColor)
         this.scene.AmbientIntensity = w.ambientIntensity
-        float u = Math.Clamp(this.under, 0.0, 1.0)
+        float u = Math.Clamp(this.underground, 0.0, 1.0)
         if (u > 0.0) {
             // unter der Erde: das Umgebungslicht schwach und warm (Lampen statt Himmel)
             this.scene.AmbientColor = S3D.Rgb(255, 232, 200)
@@ -299,16 +299,16 @@ class Atmosphere {
     // Unter der Erde (Tunnel, Tiefgarage; Raser.Obstacles.Ceiling: überdeckt): kein Sonnen- und Mondlicht, kein Schatten, ein schwaches warmes
     // Umgebungslicht, die Lampen an der Decke leuchten (Emission wie nachts) und die nächsten werfen Licht (Punktlichter wie die Laternen).
     // Weich über eine halbe Sekunde; dt 0: sofort. Aufzurufen vor Update, mit der Lage und Ebene des Spielers bzw. seines Fahrzeugs.
-    defined float under                     // 0 im Freien .. 1 unter der Erde
+    defined float underground                 // 0 im Freien .. 1 unter der Erde
     List<Light> tubeLights
     defined float tubeE
     defined float tubeN
     undefined Inside(Raser.Obstacles obstacles, defined float e, defined float n, defined int level, defined float dt) {
         float target = 0.0
         if (obstacles != undefined && level != 0 && obstacles.Ceiling(e, n, level) != undefined) { target = 1.0 }
-        float was = this.under
-        if (dt <= 0.0) { this.under = target } else { this.under = this.under + Math.Clamp(target - this.under, -2.0 * dt, 2.0 * dt) }
-        if (this.under != was) { this.Apply() }
+        float was = this.underground
+        if (dt <= 0.0) { this.underground = target } else { this.underground = this.underground + Math.Clamp(target - this.underground, -2.0 * dt, 2.0 * dt) }
+        if (this.underground != was) { this.Apply() }
         if (this.tubeLights == undefined) {
             this.tubeLights = new List<Light>()
             for (int i = 0; i < 10; i++) {
@@ -322,7 +322,7 @@ class Atmosphere {
             }
         }
         bool moved = (e - this.tubeE) * (e - this.tubeE) + (n - this.tubeN) * (n - this.tubeN) > 9.0
-        if (this.under <= 0.0) {
+        if (this.underground <= 0.0) {
             foreach (l in this.tubeLights) { l.Enabled = false }
             this.tubeE = 1.0e30
             return
