@@ -444,6 +444,50 @@ namespace Raser {
             return undefined
         }
 
+        // Die Lampen der Tunnel (wie Raser.TunnelMesher: alle LampStep m an der Decke, wo sie überdeckt sind) bis radius m um (e, n), auf der
+        // Höhe der Ebene level (bis 3 m): Ost, Nord, Höhe je Lampe, die nächsten zuerst, höchstens max.
+        List<float> TubeLamps(defined float e, defined float n, defined int level, defined float radius, defined int max) {
+            var out = new List<float>()
+            var list = this.DecksAt(e, n)
+            if (list == undefined || level == 0) { return out }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            float z = 0.0
+            bool found = false
+            foreach (d in list) {
+                if (d.road == level && d.tunnel) {
+                    d.Nearest(x, y)
+                    z = d.HeightHit()
+                    found = true
+                }
+            }
+            if (!found) { return out }
+            var dist = new List<float>()
+            float p[] = new float[4]
+            foreach (d in list) {
+                if (!d.tunnel || d.ring != undefined) { continue }
+                for (float s = Raser.Tunnels.LampStep * 0.5; s < d.length; s = s + Raser.Tunnels.LampStep) {
+                    d.PointAt(s, p)
+                    float dx = p[0] - x
+                    float dy = p[1] - y
+                    float dd = dx * dx + dy * dy
+                    if (dd > radius * radius) { continue }
+                    float zz = d.At(s)
+                    if (Math.Abs(zz - z) > 3.0 || !Raser.Tunnels.Covered(zz, d.TopAt(s))) { continue }
+                    // einsortieren (die nächsten zuerst)
+                    int at = dist.Count
+                    while (at > 0 && dist[at - 1] > dd) { at-- }
+                    dist.Insert(at, dd)
+                    out.Insert(at * 3, Raser.Tunnels.Ceiling(zz, d.TopAt(s), d.clearance) - 0.1)
+                    out.Insert(at * 3, p[1] + key.North)
+                    out.Insert(at * 3, p[0] + key.East)
+                }
+            }
+            while (out.Count > max * 3) { out.RemoveAt(out.Count - 1) }
+            return out
+        }
+
         // Liegt (e, n) in einem Tunnel bzw. einer Tiefgarage der Höhe z (bis 0,7 m) - mit margin m Abstand zu den Wänden?
         defined bool InTube(defined float e, defined float n, defined float z, defined float margin) {
             var list = this.DecksAt(e, n)

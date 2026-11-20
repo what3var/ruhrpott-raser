@@ -256,6 +256,12 @@ class Atmosphere {
         var w = this.weather
         this.scene.AmbientColor = Atmosphere.Rgb(w.ambientColor)
         this.scene.AmbientIntensity = w.ambientIntensity
+        float u = Math.Clamp(this.under, 0.0, 1.0)
+        if (u > 0.0) {
+            // unter der Erde: das Umgebungslicht schwach und warm (Lampen statt Himmel)
+            this.scene.AmbientColor = S3D.Rgb(255, 232, 200)
+            this.scene.AmbientIntensity = w.ambientIntensity * (1.0 - u) + 0.38 * u
+        }
         // der Hintergrund: der Himmel (Sky, Hintergrund-Objekte der Szene); die Farbe nur, wo er nicht deckt. Der Nebel in der Farbe des
         // Horizonts (Sky.Follow)
         this.cam.Background = Atmosphere.Rgb(w.skyColor)
@@ -266,9 +272,9 @@ class Atmosphere {
         // Szene: x = Ost, y = oben, z = -Nord; das Licht läuft von der Sonne weg
         this.sun.Direction(-w.sunX, -w.sunZ, w.sunY)
         this.sun.Color = Atmosphere.Rgb(w.sunColor)
-        this.sun.Intensity = w.sunIntensity
-        this.sun.Enabled = w.sunIntensity > 0.01
-        this.scene.Shadows = w.shadows
+        this.sun.Intensity = w.sunIntensity * (1.0 - u)
+        this.sun.Enabled = w.sunIntensity * (1.0 - u) > 0.01
+        this.scene.Shadows = w.shadows && u < 0.5
         // nachts der Mond (schwach, bläulich), in der Dämmerung ausgeblendet
         this.moon.Intensity = Math.Clamp((-w.elevation - 2.0) / 8.0, 0.0, 1.0) * 0.12 * (1.0 - 0.7 * w.clouds)
         // steht er am Himmel, kommt sein Licht von dort, nach seiner Phase (sonst bleibt das schwache Licht der Nacht von schräg oben)
@@ -279,14 +285,63 @@ class Atmosphere {
             this.moon.Direction(0.3, -1.0, 0.5)
             this.moon.Intensity = this.moon.Intensity * 0.5
         }
+        this.moon.Intensity = this.moon.Intensity * (1.0 - u)
         this.moon.Enabled = this.moon.Intensity > 0.005
         this.rain.Running = w.rain > 0.0
         this.rain.Rate = 2000.0 + 10000.0 * w.rain
         // nass: alles etwas dunkler und kühler
         if (w.wetness > 0.0) { this.scene.Tint(S3D.Rgb(30, 38, 50), 0.14 * w.wetness) } else { this.scene.Tint(0, 0.0) }
-        this.view.SetNight(w.lampsOn)
+        this.view.SetNight(w.lampsOn || u > 0.5)
         this.view.SetWet(w.wetness)
         this.lastE = 1.0e30
+    }
+
+    // Unter der Erde (Tunnel, Tiefgarage; Raser.Obstacles.Ceiling: überdeckt): kein Sonnen- und Mondlicht, kein Schatten, ein schwaches warmes
+    // Umgebungslicht, die Lampen an der Decke leuchten (Emission wie nachts) und die nächsten werfen Licht (Punktlichter wie die Laternen).
+    // Weich über eine halbe Sekunde; dt 0: sofort. Aufzurufen vor Update, mit der Lage und Ebene des Spielers bzw. seines Fahrzeugs.
+    defined float under                     // 0 im Freien .. 1 unter der Erde
+    List<Light> tubeLights
+    defined float tubeE
+    defined float tubeN
+    undefined Inside(Raser.Obstacles obstacles, defined float e, defined float n, defined int level, defined float dt) {
+        float target = 0.0
+        if (obstacles != undefined && level != 0 && obstacles.Ceiling(e, n, level) != undefined) { target = 1.0 }
+        float was = this.under
+        if (dt <= 0.0) { this.under = target } else { this.under = this.under + Math.Clamp(target - this.under, -2.0 * dt, 2.0 * dt) }
+        if (this.under != was) { this.Apply() }
+        if (this.tubeLights == undefined) {
+            this.tubeLights = new List<Light>()
+            for (int i = 0; i < 10; i++) {
+                var l = Light.Point(0m, 0m, 0m, S3D.Rgb(255, 236, 200), 1.6)
+                l.Range = 6m
+                l.Cutoff = 13m
+                l.CastShadows = false
+                l.Enabled = false
+                this.tubeLights.Add(l)
+                this.scene.Add(take l)
+            }
+        }
+        bool moved = (e - this.tubeE) * (e - this.tubeE) + (n - this.tubeN) * (n - this.tubeN) > 9.0
+        if (this.under <= 0.0) {
+            foreach (l in this.tubeLights) { l.Enabled = false }
+            this.tubeE = 1.0e30
+            return
+        }
+        if (!moved) { return }
+        this.tubeE = e
+        this.tubeN = n
+        var lamps = obstacles.TubeLamps(e, n, level, 45.0, this.tubeLights.Count)
+        for (int i = 0; i < this.tubeLights.Count; i++) {
+            var l = this.tubeLights[i]
+            if (i * 3 + 2 >= lamps.Count) {
+                l.Enabled = false
+                continue
+            }
+            l.X = (lamps[i * 3] - this.view.originE) * 1m
+            l.Y = (lamps[i * 3 + 2] - this.view.originZ) * 1m
+            l.Z = -(lamps[i * 3 + 1] - this.view.originN) * 1m
+            l.Enabled = true
+        }
     }
 
     // Je Bild: Regen über der Kamera, die Laternen der Kacheln rundherum (3 x 3) als Punktlichter mit Ende (scene3d Light.Cutoff: jedes Pixel

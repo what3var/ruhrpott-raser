@@ -648,6 +648,7 @@ class Game {
             if (options.Get("follow", "") != "") { npcs.Follow(cam, terrain, view, car.east, car.north, options.Get("follow", ""), options.Get("look", "0").ToFloat()) }
             view.lead = Math.Abs(car.speed) * 2.5
             view.Fill(car.east, car.north)
+            if (onFoot) { atmosphere.Inside(obstacles, walker.east, walker.north, walker.bridge, 0.0) } else { atmosphere.Inside(obstacles, car.east, car.north, car.bridge, 0.0) }
             atmosphere.Update(car.east, car.north, 0.0)
             model.beam.Enabled = weather.lampsOn
             if (weather.rain > 0.0) {
@@ -831,6 +832,7 @@ class Game {
                 view.near = near
                 view.SetMotion(walker.east, walker.north, walker.heading, walker.speed)
                 view.Update(walker.east, walker.north, 12.0)
+                atmosphere.Inside(obstacles, walker.east, walker.north, walker.bridge, dt)
                 atmosphere.Update(walker.east, walker.north, dt)
             } else {
                 int sub = DateTime.Now.Ticks
@@ -849,6 +851,7 @@ class Game {
                 view.SetMotion(car.east, car.north, car.heading, car.speed)
                 view.Update(car.east - Math.Sin(h) * view.lead, car.north + Math.Cos(h) * view.lead, 12.0)
                 if (profile) { sub = Game.Lap(prof, 13, sub) }
+                atmosphere.Inside(obstacles, car.east, car.north, car.bridge, dt)
                 atmosphere.Update(car.east, car.north, dt)
                 if (profile) { sub = Game.Lap(prof, 14, sub) }
             }

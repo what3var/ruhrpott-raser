@@ -255,7 +255,9 @@ namespace Raser {
         //     Hecken, Lauben, Gräber, Schilf; Waldboden
         // 34: Möbel, Spielgeräte, Bäume, Sträucher, Hecken im öffentlichen Raum nicht mehr als Voxel (Raser.Props.AsModel): Modelle im Netz der
         //     nahen Stufe (Raser.PropMesher), in jedem Winkel; Sträucher der Grünstreifen ebenso (Raser.Strips.Bushes)
-        static readonly defined int Version = 34
+        // 35: Tunnel (layer < 0) nicht als Belag auf dem Gelände (Raser.Tunnels: im Netz), Möbel nicht an Wegen im Tunnel; Durchfahrten aus
+        //     tunnel=building_passage (der Import nimmt sie jetzt auf)
+        static readonly defined int Version = 35
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
