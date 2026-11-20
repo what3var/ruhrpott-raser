@@ -1,0 +1,92 @@
+// Raser.Game: Absturzberichte.
+//
+// Eine Ausnahme, die niemand fängt - im Hauptprogramm (Game.Run) oder in einem Thread (catch threads am Ende von main.fire) -, schreibt einen
+// Bericht nach <Einstellungsordner>/logs/absturz-JJJJMMTT-HHMMSS.txt (Windows: %APPDATA%\RuhrpottRaser\logs, sonst ~/.config/ruhrpott-raser/logs;
+// --config ordner wie für spiel.json) und nennt ihn auf der Fehlerausgabe. Darin: die Ausnahme (Klasse und Meldung) und wo sie auftrat, die
+// Versionen (Generator, Netz-Cache, Protokoll), das System, die Kommandozeile, die Einstellungen (spiel.json) und die letzten Ereignisse und
+// Zustände des Spiels (CrashLog.Note, je 10 s ein Stand: Ort, Fahrzeug, Bilder je Sekunde, Objekte). Die letzten 20 Berichte bleiben.
+// (fire kennt keinen Stack-Trace: wo genau es knallte, sagen die Meldung und die letzten Einträge.)
+#import "filesystem"
+#import "time"
+#import "reflection"
+#import "raser.world"
+#import "raser.mesh"
+#import "raser.net"
+
+class CrashLog {
+    static List<string> notes = new List<string>()        // die letzten Einträge (höchstens Keep)
+    static readonly defined int Keep = 120
+    static string configDir = undefined
+
+    // Wohin die Berichte gehen (der Ordner der Einstellungen; undefined: der übliche).
+    static undefined Configure(string dir) { CrashLog.configDir = dir }
+
+    // Ein Eintrag (mit Uhrzeit) für den nächsten Bericht.
+    static undefined Note(string text) {
+        CrashLog.notes.Add(DateTime.Now.ToString("HH:mm:ss") + "  " + text)
+        if (CrashLog.notes.Count > CrashLog.Keep) { CrashLog.notes.RemoveAt(0) }
+    }
+
+    // Die Klasse einer Ausnahme ("DestroyedException", "Raser.DataException", ...).
+    static string KindOf(Exception e) {
+        try {
+            var t = Type.Of(e)
+            if (t != undefined) { return t.Name }
+        } catch (Exception inner) { }
+        return "Exception"
+    }
+
+    // Schreibt den Bericht; gibt seinen Pfad ("" wenn das Schreiben scheiterte - dann steht alles auf der Fehlerausgabe).
+    static string Write(Exception e, string place) {
+        string kind = CrashLog.KindOf(e)
+        string text = "Ruhrpott-Raser - Absturzbericht\n"
+        text = text + "Zeit:        " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + "\n"
+        text = text + "Wo:          " + place + "\n"
+        text = text + "Ausnahme:    " + kind + "\n"
+        text = text + "Meldung:     " + e.message + "\n\n"
+        text = text + "Versionen:   Generator " + Raser.Voxelizer.Version + ", Netz-Cache " + Raser.NearBuilder.CacheVersion + ", Protokoll " + Raser.Protocol.Version + "\n"
+        text = text + "System:      " + Environment.Platform + "\n"
+        string args = ""
+        foreach (a in Environment.Args) { args = args + " " + a }
+        text = text + "Aufruf:     " + args + "\n"
+        string dir = CrashLog.Dir()
+        string settings = IO.Path.Combine(IO.Path.GetDirectoryName(dir), "spiel.json")
+        try {
+            if (IO.File.Exists(settings)) { text = text + "\nEinstellungen (" + settings + "):\n" + IO.File.ReadAllText(settings) + "\n" }
+        } catch (Exception ignored) { }
+        text = text + "\nDie letzten Einträge:\n"
+        foreach (n in CrashLog.notes) { text = text + "  " + n + "\n" }
+        string path = ""
+        try {
+            if (!IO.Directory.Exists(dir)) { IO.Directory.CreateDirectory(dir) }
+            path = IO.Path.Combine(dir, "absturz-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".txt")
+            IO.File.WriteAllText(path, text)
+            CrashLog.Tidy(dir)
+        } catch (Exception failed) {
+            path = ""
+            text = text + "\n(Bericht nicht gespeichert: " + failed.message + ")\n"
+        }
+        // auf die Fehlerausgabe: die Kurzfassung und wo der Bericht liegt (ohne Datei: alles)
+        string head = "Unhandled exception of type '" + kind + "': " + e.message
+        if (path != "") { print(head + "\nAbsturzbericht: " + path) } else { print(head + "\n" + text) }
+        return path
+    }
+
+    // Der Ordner der Berichte.
+    static string Dir() {
+        string root = CrashLog.configDir
+        if (root == undefined || root == "") { root = GameSettings.ConfigDir() }
+        return IO.Path.Combine(root, "logs")
+    }
+
+    // Nur die letzten 20 Berichte behalten (die Namen sortieren nach der Zeit).
+    static undefined Tidy(string dir) {
+        var names = new List<string>()
+        foreach (f in IO.Directory.GetFiles(dir)) {
+            string name = IO.Path.GetFileName(f)
+            if (name.StartsWith("absturz-") && name.EndsWith(".txt")) { names.Add(f) }
+        }
+        names.Sort()
+        for (int i = 0; i + 20 < names.Count; i++) { IO.File.Delete(names[i]) }
+    }
+}

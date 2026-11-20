@@ -315,6 +315,16 @@ class Game {
     // Laternen und Ampeln. Gibt je Platz Ost, Nord, Richtung.
     static List<float> Parking(Raser.FileTileStore store, Obstacles obstacles, defined float e, defined float n, defined int count) { return Raser.Physics.Parking(store, obstacles, e, n, count) }
 
+    // Main mit Absturzbericht: was niemand fängt, kommt in logs/absturz-....txt (crash.fire).
+    static defined int Run(string items[]) {
+        try {
+            return Game.Main(items)
+        } catch (Exception e) {
+            CrashLog.Write(e, "im Hauptprogramm")
+            return 1
+        }
+    }
+
     static defined int Main(string items[]) {
         var options = new Options(items)
         // --bot s: ein Spieler ohne Welt und Fenster am Server (online.fire)
@@ -327,6 +337,18 @@ class Game {
         // die Einstellungen (settings.fire): die Datei füllt, was die Kommandozeile nicht sagt
         var settings = GameSettings.Load(options)
         if (settings.error != "") { print(settings.error) }
+        // Absturzberichte (crash.fire) neben spiel.json
+        CrashLog.Configure(options.Get("config", ""))
+        // --crash-test main|thread: absichtlich abstürzen (prüft die Absturzberichte)
+        string crashTest = options.Get("crash-test", "")
+        if (crashTest == "main") { throw new Raser.DataException("Absichtlicher Absturz (--crash-test main)") }
+        if (crashTest == "thread") {
+            fire dedicated { throw new Raser.DataException("Absichtlicher Absturz in einem Thread (--crash-test thread)") }
+            Sleep(3000ms)
+            print("Der Thread-Absturz kam nicht an")
+            return 2
+        }
+        CrashLog.Note("Start: Welt " + options.Get("world", "world") + ", bei " + options.Get("at", "376117,5705005") + ", Größe " + options.Get("size", "960x600") + ", GPU " + (options.Get("gpu", "") != "") + ", Server " + options.Get("server", "-"))
         string world = options.Get("world", "world")
         var store = new Raser.FileTileStore(world)
         var at = options.Get("at", "376117,5705005").Split(",")
@@ -365,7 +387,10 @@ class Game {
         view.farAhead = far
         view.nearAhead = 2
         view.memory.minFree = 20.0
-        if (options.Get("gpu", "") != "") { scene.Renderer = RenderMode.Hardware }
+        if (options.Get("gpu", "") != "") {
+            scene.Renderer = RenderMode.Hardware
+            CrashLog.Note("Renderer: Grafikkarte '" + S3D.HardwareName() + "' " + S3D.HardwareError())
+        }
         var atmosphere = new Atmosphere(weather, scene, cam, view, world)
         atmosphere.Apply()
         atmosphere.drawSky = options.Get("no-sky", "") == ""
@@ -723,7 +748,20 @@ class Game {
         int quitAt = DateTime.Now.Ticks + Math.Round(quitAfter * 10000000.0)!int
         // --async 1 (Standard): scene3d zeichnet das Bild in seinem eigenen Thread (Camera.RenderAsync), während das Spiel das nächste rechnet
         bool renderAsync = options.Get("async", "1") != "0"
+        CrashLog.Note("Fenster offen, Spiel läuft")
+        int noteAt = DateTime.Now.Ticks
+        int noteFrames = 0
         while (win.Tick()) {
+            // je 10 s ein Stand für den Absturzbericht (crash.fire)
+            noteFrames++
+            if (DateTime.Now.Ticks - noteAt > 100000000) {
+                float secs = (DateTime.Now.Ticks - noteAt) / 10000000.0
+                string spot = "im " + car.kind + " bei " + Math.Round(car.east) + "," + Math.Round(car.north) + ", " + Math.Round(Math.Abs(car.speed) * 3.6) + " km/h"
+                if (onFoot) { spot = "zu Fuß bei " + Math.Round(walker.east) + "," + Math.Round(walker.north) }
+                CrashLog.Note("Stand: " + spot + ", " + Math.Round(noteFrames / secs * 10.0) / 10.0 + " fps, " + view.objects + " Objekte, " + view.triangles + " Dreiecke, " + cam.LastRenderer + ", Menü " + menu.IsOpen)
+                noteAt = DateTime.Now.Ticks
+                noteFrames = 0
+            }
             if (quitAfter > 0.0 && DateTime.Now.Ticks > quitAt) { break }
             if (profile) { mark = Game.Lap(prof, 0, mark) }
             any ev = win.NextEvent()
@@ -1141,4 +1179,9 @@ class Game {
     }
 }
 
-Environment.Exit(Game.Main(Environment.Args))
+// Absturzberichte (crash.fire): eine Ausnahme aus einem Thread (Worker der Welt, der Karte, ...) und eine aus dem Hauptprogramm (Game.Run)
+catch threads(Exception e) {
+    CrashLog.Write(e, "in einem Thread")
+    Environment.Exit(1)
+}
+Environment.Exit(Game.Run(Environment.Args))
