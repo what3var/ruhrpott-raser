@@ -400,7 +400,8 @@ namespace Raser {
                 } else if (cur == undefined && d.ring == undefined) {
                     // vom Gelände in einen Tunnel: nur durch das Portal (das offene Ende; das Raster springt dort auf die Oberfläche)
                     bool portal = (d.startJoined && d.hitS <= 3.0) || (d.endJoined && d.hitS >= d.length - 3.0)
-                    if (!portal || h > z + 2.0) { continue }
+                    // (wer oben über dem Portal steht, ist höher als die Decke; das Raster mischt im ersten Meter Graben und Oberfläche)
+                    if (!portal || h > z + d.clearance + 0.5) { continue }
                     diff = 0.0
                 }
                 if (diff <= bestDiff) {
