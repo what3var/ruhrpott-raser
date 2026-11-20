@@ -279,6 +279,7 @@ class Online {
             var a = this.AvatarOf(scene, r.id, r.type, r.variant)
             int onBridge = 0
             if ((r.bits & Raser.EntityType.OnBridge) != 0) { onBridge = -1 }
+            if ((r.bits & Raser.EntityType.Underground) != 0) { onBridge = -2 }
             a.Show(ip.east, ip.north, ip.heading, ip.lean, r.a != 0, terrain, view, weather.lampsOn, onBridge, dt)
         }
         // das eigene Fahrzeug: an der vorhergesagten Lage

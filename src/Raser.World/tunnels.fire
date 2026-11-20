@@ -1,0 +1,270 @@
+// Raser.World: Tunnel, Unterführungen und Tiefgaragen - das Gegenstück zu den Brücken (Raser.Bridges): eine Ebene unter dem Gelände.
+//
+// Die Höhen rechnet der Import (Raser.TunnelSolver, mit dem ganzen DGM der Region): je Meter entlang eines Tunnels (Straße mit layer < 0) die
+// Fahrbahn (Raser.Road.profile) und die Oberfläche darüber (Raser.Road.top: Gelände, oder der Damm über einer Unterführung, den das DGM als
+// Senke zeigt, weil es Brücken herausrechnet). Die Rampen davor liegen auf dem Gelände: der Import senkt dort das Höhenraster auf die Rampe
+// ab (wo das DGM schon eine Senke zeigt, folgt die Rampe ihr) und merkt sich an der Straße davor Rampe und Oberkante der Stützwände.
+// Tiefgaragen (Raser.Garage) haben einen Boden auf der Höhe ihrer Fahrgassen.
+//
+// Zur Laufzeit werden daraus Decks wie die der Brücken (Raser.BridgeDeck mit tunnel = true): dieselben Ebenen in der Fahrphysik (Raser.Sim),
+// im Verkehr (Raser.RoadGraph) und im Netz (Raser.TunnelMesher zeichnet Wände, Decke, Portale, Stützwände und Lampen).
+#import "raser.core"
+
+namespace Raser {
+    class Tunnels {
+        static readonly defined float Roof = 0.5          // die Decke (m)
+        static readonly defined float Wall = 0.4          // die Wände (m)
+        static readonly defined float Open = 10000.0      // Raser.Road.profile: hier keine Rampe (auf dem Gelände)
+        static readonly defined float LampStep = 8.0      // Lampen an der Decke (m)
+        static readonly defined float GarageClearance = 2.5
+
+        // Ist die Straße ein Tunnel mit Höhen aus dem Import?
+        static defined bool IsTunnel(Road r) {
+            if (r.kind == undefined || r.layer >= 0 || r.points == undefined || r.points.length < 4) { return false }
+            return r.kind.StartsWith("highway=") && r.profile != undefined && r.profile.length >= 2
+        }
+
+        // Hat die Straße (auf dem Gelände) eine Rampe zu einem Tunnel?
+        static defined bool HasRamp(Road r) { return r.layer >= 0 && r.profile != undefined && r.top != undefined && r.profile.length >= 2 }
+
+        static defined bool IsFoot(string kind) { return kind == "highway=footway" || kind == "highway=path" || kind == "highway=pedestrian" || kind == "highway=cycleway" || kind == "highway=bridleway" || kind == "highway=steps" }
+
+        // Die lichte Höhe nach Art (in einer Tiefgarage GarageClearance).
+        static defined float Clearance(string kind) {
+            if (Raser.Tunnels.IsFoot(kind)) { return 2.5 }
+            if (kind == "highway=service") { return 3.5 }
+            return 4.5
+        }
+
+        // Die halbe lichte Breite (Wand zu Wand): die Fahrbahn mit einem Notgehweg je Seite (Fußwege: etwas Luft).
+        static defined float HalfWidth(string kind, defined float width) {
+            if (Raser.Tunnels.IsFoot(kind)) { return Math.Max(width, 2.0) / 2.0 + 0.25 }
+            return Math.Max(width, 3.0) / 2.0 + 1.0
+        }
+
+        // Die größte Steigung der Rampen (Fußweg 12 %, Treppe 60 %, Zufahrt 15 %, Straße 8 %).
+        static defined float Slope(string kind) {
+            if (kind == "highway=steps") { return 0.6 }
+            if (Raser.Tunnels.IsFoot(kind)) { return 0.12 }
+            if (kind == "highway=service") { return 0.15 }
+            return 0.08
+        }
+
+        // Ist der Tunnel an Stelle i (je Meter) überdeckt (sonst ein offener Einschnitt)?
+        static defined bool Covered(defined float z, defined float top) { return top - z >= 2.0 }
+
+        // Die Decke innen: die lichte Höhe, unter einer dünnen Überdeckung tiefer (mindestens 2 m).
+        static defined float Ceiling(defined float z, defined float top, defined float clearance) {
+            return Math.Max(z + 2.0, Math.Min(z + clearance, top - Raser.Tunnels.Roof))
+        }
+
+        // Die Decks der Tunnel einer Kachel (wie Raser.Bridges.Deck: Linie, Höhen, Gelände) und ihrer Tiefgaragen.
+        static undefined AddDecks(Tile tile, List<BridgeDeck> decks) {
+            foreach (r in tile.data.roads) {
+                if (!Raser.Tunnels.IsTunnel(r)) { continue }
+                var d = Raser.Tunnels.Deck(r, tile.data.roads, tile.heights)
+                if (d != undefined) { decks.Add(take d) }
+            }
+            if (tile.data.garages == undefined) { return }
+            foreach (g in tile.data.garages) {
+                if (g.ring == undefined || g.ring.length < 6) { continue }
+                var d = new Raser.BridgeDeck()
+                d.road = g.id
+                d.kind = "parking=underground"
+                d.level = -1
+                d.tunnel = true
+                d.garage = true
+                d.ring = copy g.ring
+                d.clearance = g.clearance
+                d.z = [g.floor, g.floor]
+                d.top = [g.floor + g.clearance + Raser.Tunnels.Roof, g.floor + g.clearance + Raser.Tunnels.Roof]
+                float gr = 0.0
+                if (tile.heights != undefined) {
+                    var box = Raser.Box2.Of(g.ring)
+                    gr = tile.heights.At((box.minX + box.maxX) * 0.5, (box.minY + box.maxY) * 0.5)
+                }
+                d.ground = [gr, gr]
+                d.color = Raser.Palette.Concrete
+                d.surface = Raser.Material.Concrete!int
+                d.pts = [0.0, 0.0, 0.0, 0.0]
+                d.acc = [0.0, 0.0]
+                decks.Add(take d)
+            }
+        }
+
+        static BridgeDeck Deck(Road r, List<Road> roads, HeightRaster heights) {
+            var d = new Raser.BridgeDeck()
+            d.road = r.id
+            d.kind = r.kind
+            d.level = r.layer
+            d.tunnel = true
+            d.half = Raser.Tunnels.HalfWidth(r.kind, r.width)
+            d.width = d.half * 2.0
+            d.roadWidth = Math.Max(r.width, 1.5)
+            d.foot = Raser.Tunnels.IsFoot(r.kind)
+            d.color = r.color
+            d.surface = r.surface!int
+            d.clearance = r.clearance
+            if (d.clearance <= 0.0) { d.clearance = Raser.Tunnels.Clearance(r.kind) }
+            d.pts = copy r.points
+            int n = r.points.length / 2
+            d.acc = new float[n]
+            d.acc[0] = 0.0
+            float total = 0.0
+            for (int i = 1; i < n; i++) {
+                float dx = r.points[i * 2] - r.points[i * 2 - 2]
+                float dy = r.points[i * 2 + 1] - r.points[i * 2 - 1]
+                total = total + Math.Sqrt(dx * dx + dy * dy)
+                d.acc[i] = total
+            }
+            d.length = total
+            if (total < 0.5) { return undefined }
+            d.z = copy r.profile
+            int m = d.z.length
+            d.top = new float[m]
+            d.ground = new float[m]
+            float p[] = new float[4]
+            for (int i = 0; i < m; i++) {
+                if (r.top != undefined && i < r.top.length) { d.top[i] = r.top[i] } else { d.top[i] = d.z[i] + d.clearance + Raser.Tunnels.Roof }
+                d.PointAt(Math.Min(i * Raser.BridgeDeck.Step, total), p)
+                d.ground[i] = d.z[i]
+                if (heights != undefined) { d.ground[i] = heights.At(p[0], p[1]) }
+            }
+            // offene Enden: dort schließt eine Straße auf dem Gelände an (das Portal), sonst ein anderer Tunnel oder nichts (eine Wand)
+            float sx = r.points[0]
+            float sy = r.points[1]
+            float ex = r.points[n * 2 - 2]
+            float ey = r.points[n * 2 - 1]
+            foreach (o in roads) {
+                if (o == r || o.points == undefined || o.kind == undefined || !o.kind.StartsWith("highway=")) { continue }
+                bool tunnel = o.layer < 0
+                for (int k = 0; k + 1 < o.points.length; k = k + 2) {
+                    float ox = o.points[k]
+                    float oy = o.points[k + 1]
+                    bool atStart = (ox - sx) * (ox - sx) + (oy - sy) * (oy - sy) < 0.09
+                    bool atEnd = (ox - ex) * (ox - ex) + (oy - ey) * (oy - ey) < 0.09
+                    if (tunnel) {
+                        if (atStart) { d.startLinked = true }
+                        if (atEnd) { d.endLinked = true }
+                    } else {
+                        if (atStart) { d.startJoined = true }
+                        if (atEnd) { d.endJoined = true }
+                    }
+                }
+            }
+            // an einem offenen Ende liegt die Fahrbahn auf dem Gelände (Rampe davor); sonst bleibt es ein Ende im Berg
+            if (d.startJoined && Math.Abs(d.z[0] - d.ground[0]) > 0.7) { d.startJoined = false }
+            if (d.endJoined && Math.Abs(d.z[m - 1] - d.ground[m - 1]) > 0.7) { d.endJoined = false }
+            return d
+        }
+
+        // Die Stützwände der Rampen und offenen Einschnitte einer Kachel für die Fahrphysik (wie Raser.Motorways.Rails: je Stück die Enden und
+        // die Art 2, also 5 Zahlen; kachel-lokal): je Seite der Rampe, wo die Oberkante mehr als 0,5 m über der Fahrbahn liegt.
+        static List<float> Walls(Tile tile) {
+            var out = new List<float>()
+            if (tile == undefined || tile.data == undefined || tile.data.roads == undefined) { return out }
+            foreach (r in tile.data.roads) {
+                if (!Raser.Tunnels.HasRamp(r)) { continue }
+                var line = Raser.Tunnels.Line(r.points)
+                float half = Raser.Tunnels.RampHalf(r)
+                float p[] = new float[4]
+                float q[] = new float[4]
+                int m = r.profile.length
+                for (int i = 0; i + 1 < m; i++) {
+                    if (!Raser.Tunnels.RampAt(r, i) || !Raser.Tunnels.RampAt(r, i + 1)) { continue }
+                    if (r.top[i] - r.profile[i] < 0.5 && r.top[i + 1] - r.profile[i + 1] < 0.5) { continue }
+                    line.PointAt(i * 1.0, p)
+                    line.PointAt(Math.Min((i + 1) * 1.0, line.length), q)
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float sg = side * 1.0 * half
+                        out.Add(p[0] + p[3] * sg)
+                        out.Add(p[1] - p[2] * sg)
+                        out.Add(q[0] + q[3] * sg)
+                        out.Add(q[1] - q[2] * sg)
+                        out.Add(2.0)
+                    }
+                }
+            }
+            return out
+        }
+
+        // Liegt an Meter i der Straße r (auf dem Gelände) eine Rampe?
+        static defined bool RampAt(Road r, defined int i) { return i >= 0 && i < r.profile.length && r.profile[i] < Raser.Tunnels.Open - 1.0 }
+
+        // Die halbe Breite einer Rampe (wie der Tunnel, an den sie führt: die Art der Straße davor).
+        static defined float RampHalf(Road r) { return Raser.Tunnels.HalfWidth(r.kind, r.width) }
+
+        // Eine Linie als Deck ohne Höhen (für PointAt entlang einer Rampe).
+        static BridgeDeck Line(float points[]) {
+            var d = new Raser.BridgeDeck()
+            d.pts = copy points
+            int n = points.length / 2
+            d.acc = new float[n]
+            float total = 0.0
+            if (n > 0) { d.acc[0] = 0.0 }
+            for (int i = 1; i < n; i++) {
+                float dx = points[i * 2] - points[i * 2 - 2]
+                float dy = points[i * 2 + 1] - points[i * 2 - 1]
+                total = total + Math.Sqrt(dx * dx + dy * dy)
+                d.acc[i] = total
+            }
+            d.length = total
+            return d
+        }
+
+        // Die Stellplätze einer Tiefgarage (deterministisch aus den Fahrgassen darin): je Fahrgasse beidseits alle 2,5 m eine Linie quer, 5 m
+        // lang; Stützen am Ende der Stellplätze alle 7,5 m. Gibt die Stützen (x, y je Stück, kachel-lokal) in pillars und die Linien (x0, y0, x1,
+        // y1) in lines.
+        static undefined Bays(BridgeDeck garage, List<BridgeDeck> decks, List<float> pillars, List<float> lines) {
+            if (garage.ring == undefined) { return }
+            float p[] = new float[4]
+            foreach (a in decks) {
+                if (!a.tunnel || a.garage || a.pts == undefined || a.length < 6.0) { continue }
+                if (Math.Abs(a.At(a.length * 0.5) - garage.z[0]) > 0.3) { continue }
+                a.PointAt(a.length * 0.5, p)
+                if (!Raser.Geo.Inside(garage.ring, p[0], p[1])) { continue }
+                float inner = a.roadWidth / 2.0 + 0.2
+                int k = 0
+                for (float s = 1.25; s <= a.length - 1.25; s = s + 2.5) {
+                    a.PointAt(s, p)
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float rx = p[3] * side
+                        float ry = -p[2] * side
+                        float x0 = p[0] + rx * inner
+                        float y0 = p[1] + ry * inner
+                        float x1 = p[0] + rx * (inner + 5.0)
+                        float y1 = p[1] + ry * (inner + 5.0)
+                        if (!Raser.Geo.Inside(garage.ring, x1, y1) || !Raser.Geo.Inside(garage.ring, x0, y0)) { continue }
+                        if (Raser.Tunnels.OnAisle(decks, a, (x0 + x1) * 0.5, (y0 + y1) * 0.5, garage.z[0])) { continue }
+                        // die Linie zwischen zwei Stellplätzen (1,25 m vor bzw. hinter s)
+                        float bx = p[2] * 1.25
+                        float by = p[3] * 1.25
+                        lines.Add(x0 - bx)
+                        lines.Add(y0 - by)
+                        lines.Add(x1 - bx)
+                        lines.Add(y1 - by)
+                        if (k % 3 == 0) {
+                            float cx = p[0] + rx * (inner + 5.4) - bx
+                            float cy = p[1] + ry * (inner + 5.4) - by
+                            if (Raser.Geo.Inside(garage.ring, cx, cy) && !Raser.Tunnels.OnAisle(decks, a, cx, cy, garage.z[0])) {
+                                pillars.Add(cx)
+                                pillars.Add(cy)
+                            }
+                        }
+                    }
+                    k++
+                }
+            }
+        }
+
+        // Liegt (x, y) auf einer anderen Fahrgasse der Höhe z (mit 1 m Rand)?
+        static defined bool OnAisle(List<BridgeDeck> decks, BridgeDeck self, defined float x, defined float y, defined float z) {
+            foreach (o in decks) {
+                if (o == self || !o.tunnel || o.garage || o.pts == undefined) { continue }
+                if (!o.Covers(x, y, 1.0 - (o.width - o.roadWidth) / 2.0)) { continue }
+                if (Math.Abs(o.At(o.hitS) - z) < 1.0) { return true }
+            }
+            return false
+        }
+    }
+}

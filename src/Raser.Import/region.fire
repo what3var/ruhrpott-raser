@@ -15,6 +15,8 @@ namespace Raser {
         List<Box2> featureBoxes
         List<OsmPoint> pois
         List<string> sources
+        List<TerrainEdit> edits         // Tunnel und Rampen: Änderungen am Höhenraster (Raser.TunnelSolver, vor der ersten Kachel)
+        defined bool solved
 
         construct() {
             this.dgm = new List<GeoRaster>()
@@ -23,6 +25,7 @@ namespace Raser {
             this.featureBoxes = new List<Box2>()
             this.pois = new List<OsmPoint>()
             this.sources = new List<string>()
+            this.edits = new List<TerrainEdit>()
         }
 
         undefined AddDgm(GeoRaster raster, string source) {
@@ -85,6 +88,11 @@ namespace Raser {
         }
 
         Tile Build(TileKey key) {
+            // Tunnel, Rampen und Tiefgaragen: einmal für die ganze Region (Raser.TunnelSolver)
+            if (!this.solved) {
+                this.solved = true
+                Raser.TunnelSolver.Solve(this, this.edits)
+            }
             var tile = new Raser.Tile(new Raser.TileKey(key.x, key.y))
             float e0 = key.East
             float n0 = key.North
@@ -102,7 +110,12 @@ namespace Raser {
                     last = h
                 }
             }
-            if (found) { tile.heights = take raster }
+            if (found) {
+                // erst auffüllen (Dämme über Unterführungen), dann absenken (Rampen gewinnen)
+                foreach (ed in this.edits) { if (ed.fill) { ed.Apply(raster, e0, n0) } }
+                foreach (ed in this.edits) { if (!ed.fill) { ed.Apply(raster, e0, n0) } }
+                tile.heights = take raster
+            }
 
             float minX = e0 - 1.0
             float minY = n0 - 1.0
@@ -155,6 +168,19 @@ namespace Raser {
                     tile.data.zones.Add(take z)
                     continue
                 }
+                if (f.kind == "parking=underground") {
+                    // Tiefgaragen mit Zufahrt (Raser.TunnelSolver: sonst kein Boden)
+                    if (f.floor == 0.0) { continue }
+                    var g = new Raser.Garage()
+                    g.source = f.source
+                    g.id = Raser.Ids.Stable(Raser.IdKind.Area, f.source)
+                    g.name = f.name
+                    g.ring = take local
+                    g.floor = Math.Round(f.floor * 100.0) / 100.0
+                    g.clearance = f.clearance
+                    tile.data.garages.Add(take g)
+                    continue
+                }
                 if (f.area) {
                     var a = new Raser.Area()
                     a.source = f.source
@@ -177,6 +203,11 @@ namespace Raser {
                     road.lanes = f.lanes
                     road.layer = f.layer
                     road.sidewalk = f.sidewalk
+                    if (f.profile != undefined) {
+                        road.profile = copy f.profile
+                        road.top = copy f.top
+                    }
+                    road.clearance = f.clearance
                     tile.data.roads.Add(take road)
                 }
             }
@@ -229,6 +260,7 @@ namespace Raser {
             float dy = 0.0
             float width = 0.0
             foreach (r in tile.data.roads) {
+                if (r.layer < 0) { continue }
                 for (int k = 0; k + 3 < r.points.length; k = k + 2) {
                     float ax = r.points[k]
                     float ay = r.points[k + 1]

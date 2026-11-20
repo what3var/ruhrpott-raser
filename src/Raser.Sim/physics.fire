@@ -133,7 +133,7 @@ namespace Raser {
                 float h = car.heading * Math.PI / 180.0
                 float ce = car.east - Math.Sin(h) * offset
                 float cn = car.north + Math.Cos(h) * offset
-                if (obstacles.Push(ce, cn, car.radius, car.bridge == 0)) {
+                if (obstacles.Push(ce, cn, car.radius, car.bridge == 0, !obstacles.Underground(ce, cn, car.bridge))) {
                     if (car.Collide(offset, obstacles.pushX, obstacles.pushY, obstacles.depth) > 0.5) { hit = true }
                 }
                 h = car.heading * Math.PI / 180.0
@@ -251,7 +251,7 @@ namespace Raser {
             foreach (side in [1.0, -1.0]) {
                 float e = car.east - Math.Cos(h) * (car.width / 2.0 + 0.8) * side
                 float n = car.north - Math.Sin(h) * (car.width / 2.0 + 0.8) * side
-                if (obstacles.Blocked(e, n, 0.4)) { continue }
+                if (obstacles.BlockedAt(e, n, 0.4, car.bridge)) { continue }
                 walker.east = e
                 walker.north = n
                 walker.heading = car.heading
@@ -266,7 +266,7 @@ namespace Raser {
         static undefined Walk(Raser.Walker walker, List<Raser.Vehicle> vehicles, Raser.Obstacles obstacles, defined float dt, defined float forward, defined float turn, defined bool sprint) {
             walker.Step(dt, forward, turn, sprint)
             walker.bridge = obstacles.Level(walker.east, walker.north, walker.bridge)
-            if (obstacles.Push(walker.east, walker.north, 0.35, walker.bridge == 0)) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
+            if (obstacles.Push(walker.east, walker.north, 0.35, walker.bridge == 0, !obstacles.Underground(walker.east, walker.north, walker.bridge))) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
             if (obstacles.PushBridge(walker.east, walker.north, 0.35, walker.bridge)) { walker.Push(obstacles.pushX, obstacles.pushY, obstacles.depth) }
             foreach (car in vehicles) {
                 if (car.bridge != walker.bridge) { continue }

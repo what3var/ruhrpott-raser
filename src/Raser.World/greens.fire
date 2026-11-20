@@ -84,7 +84,7 @@ namespace Raser {
             }
             var rs = this.tile.data.roads
             for (int i = 0; i < rs.Count; i++) {
-                if (!this.roadBoxes[i].Contains(x, y) || rs[i].points == undefined) { continue }
+                if (!this.roadBoxes[i].Contains(x, y) || rs[i].points == undefined || rs[i].layer < 0) { continue }
                 if (Raser.Geo.DistanceToLine(rs[i].points, x, y) < rs[i].width / 2.0 + 1.0) { return true }
             }
             return false
@@ -279,6 +279,7 @@ namespace Raser {
             var probe = new Raser.StripProbe()
             foreach (r in this.tile.data.roads) {
                 if (r.kind != "highway=footway" && r.kind != "highway=path" && r.kind != "highway=pedestrian" && r.kind != "highway=cycleway") { continue }
+                if (r.layer != 0) { continue }
                 if (r.points == undefined || r.points.length < 4) { continue }
                 float total = 0.0
                 for (int q = 0; q + 3 < r.points.length; q = q + 2) {

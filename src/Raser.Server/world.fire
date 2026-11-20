@@ -748,13 +748,18 @@ class RegionServer {
                 e.a = q.pawn.vehicle
             }
             if (this.tick < q.lyingUntil) { e.bits = e.bits | Raser.EntityType.Lying }
-            if (q.pawn.OnFoot && q.pawn.walker.bridge != 0) { e.bits = e.bits | Raser.EntityType.OnBridge }
+            if (q.pawn.OnFoot && q.pawn.walker.bridge != 0) {
+                e.bits = e.bits | Raser.EntityType.OnBridge
+                if (this.sim.obstacles.Underground(q.east, q.north, q.pawn.walker.bridge)) { e.bits = e.bits | Raser.EntityType.Underground }
+            }
             if (q.inv != undefined && q.inv.LampShining()) { e.bits = e.bits | Raser.EntityType.Lamp }
             list.Add(take e)
         }
         foreach (v in this.sim.vehicles) {
             if (v.id == p.pawn.vehicle || !RegionServer.InSight(p, v.body.east, v.body.north)) { continue }
-            list.Add(Raser.Entity.OfVehicle(v))
+            var ve = Raser.Entity.OfVehicle(v)
+            if (v.body.bridge != 0 && this.sim.obstacles.Underground(v.body.east, v.body.north, v.body.bridge)) { ve.bits = ve.bits | Raser.EntityType.Underground }
+            list.Add(take ve)
         }
         foreach (d in this.drops.all) {
             if (!RegionServer.InSight(p, d.east, d.north)) { continue }

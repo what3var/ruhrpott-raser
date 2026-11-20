@@ -957,8 +957,9 @@ namespace Raser {
             for (int ri = 0; ri < this.tile.data.roads.Count; ri++) {
                 if (!this.roadBoxes[ri].Overlaps(mx0, my0, mx1, my1)) { continue }
                 var r = this.tile.data.roads[ri]
-                // Brücken (layer > 0) liegen auf ihrem Deck (Raser.Bridges, im Netz gebaut), nicht auf dem Gelände: die Straße darunter bleibt frei
-                if (r.layer > 0) { continue }
+                // Brücken (layer > 0) liegen auf ihrem Deck (Raser.Bridges, im Netz gebaut), nicht auf dem Gelände: die Straße darunter bleibt frei;
+                // Tunnel (layer < 0) unter dem Gelände (Raser.Tunnels, ebenso im Netz)
+                if (r.layer != 0) { continue }
                 float hw = r.width / 2.0
                 int n = r.points.length / 2
                 for (int sgi = 0; sgi < n; sgi++) {

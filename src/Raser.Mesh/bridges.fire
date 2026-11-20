@@ -12,7 +12,9 @@ namespace Raser {
 
         // Die Brücken der Kachel im Block (x0, y0, Kantenlänge size) in part.
         static undefined Add(MeshPart part, List<BridgeDeck> decks, List<Road> roads, defined float x0, defined float y0, defined float size) {
-            foreach (d in decks) { Raser.BridgeMesher.Deck(part, d, roads, x0, y0, size) }
+            foreach (d in decks) { if (!d.tunnel) { Raser.BridgeMesher.Deck(part, d, roads, x0, y0, size) } }
+            // Tunnel, Tiefgaragen und Rampen (Raser.TunnelMesher)
+            Raser.TunnelMesher.Add(part, decks, roads, x0, y0, size)
         }
 
         static defined bool Inside(defined float x, defined float y, defined float x0, defined float y0, defined float size) {

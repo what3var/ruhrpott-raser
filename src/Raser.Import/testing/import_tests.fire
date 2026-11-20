@@ -134,8 +134,11 @@ class OsmTests {
         Testing.Assert.AreEqual(1, osm.points.Count)
         Testing.Assert.AreEqual("Tanke & Trinkhalle", osm.points[0].tags["name"])
         var features = osm.Features()
-        // Straße, Park, Fußweg (der Tunnel fehlt); dazu ein Gebiet und ein Gebäude-Umriss (für das Aussehen der Häuser)
-        Testing.Assert.AreEqual(5, features.Count)
+        // Straße, Park, Fußweg, Tunnel; dazu ein Gebiet und ein Gebäude-Umriss (für das Aussehen der Häuser)
+        Testing.Assert.AreEqual(6, features.Count)
+        Testing.Assert.AreEqual("highway=primary", features[3].kind)
+        Testing.Assert.AreEqual(-1, features[3].layer)
+        features.RemoveAt(3)
         Testing.Assert.AreEqual("zone:landuse=residential", features[3].kind)
         Testing.Assert.AreEqual("Altstadt", features[3].name)
         Testing.Assert.AreEqual("osm:building", features[4].kind)
@@ -158,7 +161,7 @@ class OsmTests {
         region.AddOsm(osm, "osm_small.osm")
         var key = Raser.TileKey.Of(376122.8, 5704914.2)
         var tile = region.Build(key)
-        Testing.Assert.AreEqual(2, tile.data.roads.Count)
+        Testing.Assert.AreEqual(3, tile.data.roads.Count)
         Testing.Assert.AreEqual(1, tile.data.areas.Count)
         Testing.Assert.AreEqual(1, tile.data.zones.Count)
         Testing.Assert.AreEqual("landuse=residential", tile.data.zones[0].kind)
@@ -166,5 +169,145 @@ class OsmTests {
         Testing.Assert.AreEqual("amenity=fuel", tile.data.pois[0].kind)
         var p = tile.data.pois[0]
         Testing.Assert.IsTrue(p.x >= 0.0 && p.x < 256.0 && p.y >= 0.0 && p.y < 256.0)
+    }
+}
+
+// Tunnel, Unterführungen und Tiefgaragen (Raser.TunnelSolver) auf einem künstlichen DGM.
+class TunnelTests {
+    // Ein DGM von 600 x 300 m (1 m) ab der Südwest-Ecke der Kachel (1500, 22280), überall h außer wo dam es anders sagt.
+    static Raser.Region Region(defined float h, defined bool dam) {
+        var region = new Raser.Region()
+        var r = new Raser.GeoRaster()
+        r.width = 600
+        r.height = 300
+        r.pixel = 1.0
+        r.east = 1500 * 256.0 - 10.0
+        r.north = 22280 * 256.0 + 290.0
+        r.values = new float[600 * 300]
+        for (int y = 0; y < 300; y++) {
+            for (int x = 0; x < 600; x++) {
+                float v = h
+                // ein Bahndamm (6 m) quer über die Straße, 30 m breit; über der Straße (y 100 +- 6) fehlt er im DGM (die Brücke ist herausgerechnet)
+                float e = x + 0.5 - 10.0
+                float n = 290.0 - y - 0.5
+                if (dam && e >= 100.0 && e <= 130.0 && Math.Abs(n - 100.0) > 6.0) { v = h + 6.0 }
+                r.values[y * 600 + x] = v
+            }
+        }
+        region.AddDgm(take r, "test")
+        return region
+    }
+
+    static undefined Road(Raser.Region region, string source, string kind, defined int layer, defined float x0, defined float y0, defined float x1, defined float y1) {
+        var f = new Raser.OsmFeature()
+        f.source = source
+        f.kind = kind
+        f.layer = layer
+        f.width = 7.0
+        float e = 1500 * 256.0
+        float n = 22280 * 256.0
+        f.points = [e + x0, n + y0, e + x1, n + y1]
+        var box = Raser.Box2.Of(f.points)
+        box.Grow(4.0)
+        region.featureBoxes.Add(take box)
+        region.features.Add(take f)
+    }
+
+    static Raser.Road Find(Raser.Tile tile, string source) {
+        foreach (r in tile.data.roads) { if (r.source == source) { return r } }
+        return undefined
+    }
+
+    [Test "Tunnel unter dem Gelände: Fahrbahn tief, Rampen davor"]
+    undefined UnderGround() {
+        var region = TunnelTests.Region(100.0, false)
+        TunnelTests.Road(region, "a", "highway=secondary", 0, 10.0, 100.0, 60.0, 100.0)
+        TunnelTests.Road(region, "b", "highway=secondary", -1, 60.0, 100.0, 160.0, 100.0)
+        TunnelTests.Road(region, "c", "highway=secondary", 0, 160.0, 100.0, 230.0, 100.0)
+        var tile = region.Build(new Raser.TileKey(1500, 22280))
+        var b = TunnelTests.Find(tile, "b")
+        Testing.Assert.IsTrue(b.profile != undefined)
+        Testing.Assert.AreEqual(101, b.profile.length)
+        Testing.Assert.AreEqual(4.5, b.clearance)
+        // in der Mitte: Gelände - lichte Höhe - Decke
+        Testing.Assert.IsTrue(Math.Abs(b.profile[50] - 95.0) < 0.01)
+        Testing.Assert.IsTrue(Math.Abs(b.top[50] - 100.0) < 0.01)
+        // an den Enden (offen) höchstens 8 % steiler
+        Testing.Assert.IsTrue(b.profile[0] < 95.2)
+        // die Rampe davor: von 95,08 die Straße a hinauf (8 %), am anderen Ende noch 4 m tiefer
+        var a = TunnelTests.Find(tile, "a")
+        Testing.Assert.IsTrue(a.profile != undefined)
+        Testing.Assert.IsTrue(Math.Abs(a.profile[a.profile.length - 1] - b.profile[0]) < 0.02)
+        Testing.Assert.IsTrue(Math.Abs(a.profile[0] - (b.profile[0] + 0.08 * 50.0)) < 0.05)
+        Testing.Assert.IsTrue(Math.Abs(a.top[0] - 100.0) < 0.01)
+        // das Raster: über dem Tunnel unverändert, auf der Rampe abgesenkt (neben ihr nicht)
+        Testing.Assert.IsTrue(Math.Abs(tile.heights.At(110.0, 100.0) - 100.0) < 0.01)
+        Testing.Assert.IsTrue(tile.heights.At(55.0, 100.0) < 96.0)
+        Testing.Assert.IsTrue(Math.Abs(tile.heights.At(55.0, 110.0) - 100.0) < 0.01)
+        // zur Laufzeit ein Deck unter dem Gelände, mit Portalen an beiden Enden
+        var decks = Raser.Bridges.Of(tile)
+        Raser.BridgeDeck deck = undefined
+        foreach (d in decks) { if (d.road == b.id) { deck = d } }
+        Testing.Assert.IsTrue(deck != undefined)
+        Testing.Assert.IsTrue(deck.tunnel)
+        Testing.Assert.IsTrue(deck.startJoined && deck.endJoined)
+        Testing.Assert.IsTrue(Math.Abs(deck.half - 4.5) < 0.01)
+        Testing.Assert.IsTrue(Raser.Tunnels.Covered(deck.At(50.0), deck.TopAt(50.0)))
+        // die Stützwände der Rampen (Fahrphysik)
+        var walls = Raser.Tunnels.Walls(tile)
+        Testing.Assert.IsTrue(walls.Count > 100)
+    }
+
+    [Test "Unterführung unter einem Damm: Fahrbahn auf dem DGM, der Damm läuft darüber"]
+    undefined UnderDam() {
+        var region = TunnelTests.Region(100.0, true)
+        TunnelTests.Road(region, "a", "highway=secondary", 0, 10.0, 100.0, 95.0, 100.0)
+        TunnelTests.Road(region, "b", "highway=secondary", -1, 95.0, 100.0, 135.0, 100.0)
+        TunnelTests.Road(region, "c", "highway=secondary", 0, 135.0, 100.0, 230.0, 100.0)
+        var tile = region.Build(new Raser.TileKey(1500, 22280))
+        var b = TunnelTests.Find(tile, "b")
+        Testing.Assert.IsTrue(Math.Abs(b.profile[20] - 100.0) < 0.01)
+        Testing.Assert.IsTrue(Math.Abs(b.top[20] - 106.0) < 0.01)
+        Testing.Assert.IsTrue(Math.Abs(tile.heights.At(115.0, 100.0) - 106.0) < 0.01)
+        // keine Rampe
+        var a = TunnelTests.Find(tile, "a")
+        Testing.Assert.IsTrue(a.profile == undefined)
+    }
+
+    [Test "Tiefgarage: Fahrgasse auf ihrem Boden"]
+    undefined Garage() {
+        var region = TunnelTests.Region(100.0, false)
+        TunnelTests.Road(region, "a", "highway=service", 0, 10.0, 100.0, 60.0, 100.0)
+        TunnelTests.Road(region, "b", "highway=service", -1, 60.0, 100.0, 100.0, 100.0)
+        TunnelTests.Road(region, "c", "highway=service", -1, 100.0, 100.0, 150.0, 100.0)
+        var f = new Raser.OsmFeature()
+        f.source = "g"
+        f.kind = "parking=underground"
+        f.area = true
+        float e = 1500 * 256.0
+        float n = 22280 * 256.0
+        f.points = [e + 95.0, n + 80.0, e + 160.0, n + 80.0, e + 160.0, n + 120.0, e + 95.0, n + 120.0]
+        region.featureBoxes.Add(Raser.Box2.Of(f.points))
+        region.features.Add(take f)
+        var tile = region.Build(new Raser.TileKey(1500, 22280))
+        Testing.Assert.AreEqual(1, tile.data.garages.Count)
+        Testing.Assert.IsTrue(Math.Abs(tile.data.garages[0].floor - 97.0) < 0.01)
+        var c = TunnelTests.Find(tile, "c")
+        Testing.Assert.IsTrue(Math.Abs(c.profile[25] - 97.0) < 0.01)
+        Testing.Assert.AreEqual(2.5, c.clearance)
+        // die Zufahrt b liegt so tief wie die Garage (dieselbe lichte Höhe), die Rampe davor steigt mit 15 %
+        var b = TunnelTests.Find(tile, "b")
+        Testing.Assert.IsTrue(Math.Abs(b.profile[0] - 97.15) < 0.01)
+        var a = TunnelTests.Find(tile, "a")
+        Testing.Assert.IsTrue(Math.Abs(a.profile[a.profile.length - 2] - 97.3) < 0.02)
+        var decks = Raser.Bridges.Of(tile)
+        int garages = 0
+        foreach (d in decks) { if (d.ring != undefined) { garages++ } }
+        Testing.Assert.AreEqual(1, garages)
+        var pillars = new List<float>()
+        var lines = new List<float>()
+        foreach (d in decks) { if (d.ring != undefined) { Raser.Tunnels.Bays(d, decks, pillars, lines) } }
+        Testing.Assert.IsTrue(lines.Count > 0)
+        Testing.Assert.IsTrue(pillars.Count > 0)
     }
 }

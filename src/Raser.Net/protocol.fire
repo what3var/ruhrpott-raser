@@ -14,7 +14,7 @@
 namespace Raser {
     // Die Nummern des Protokolls.
     class Protocol {
-        static readonly defined int Version = 5       // 3: Delta-Snapshots (debt) bzw. die Brücke im eigenen Zustand (bridges); 4: beides; 5: das Drehen des eigenen Fahrzeugs (SelfState)
+        static readonly defined int Version = 6       // 3: Delta-Snapshots (debt) bzw. die Brücke im eigenen Zustand (bridges); 4: beides; 5: das Drehen des eigenen Fahrzeugs (SelfState); 6: Tunnel (EntityType.Underground)
         static readonly defined int MaxClientFrame = 1024        // Bytes je Rahmen vom Client
         static readonly defined int MaxServerFrame = 65535       // Bytes je Rahmen vom Server
         static readonly defined int MaxText = 200                // Zeichen je Chatzeile oder Befehl
@@ -95,6 +95,7 @@ namespace Raser {
         static readonly defined int Standing = 8        // NPC: steht (wartet)
         static readonly defined int OnBridge = 16       // Spieler/Fahrzeug: auf einer Brücke (welche: die höchste dort, Raser.Obstacles.DeckUnder)
         static readonly defined int Lamp = 16           // Spieler: die Taschenlampe leuchtet
+        static readonly defined int Underground = 32    // Spieler/Fahrzeug (mit OnBridge): in einem Tunnel bzw. einer Tiefgarage (welcher: der tiefste dort, Raser.Obstacles.DeckBelow)
     }
 
     // Eine Entität im Snapshot: ID, Art, Variante, Zustandsbits, Lage, Richtung, Tempo und zwei Zahlen je nach Art.

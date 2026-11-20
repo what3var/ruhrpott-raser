@@ -997,7 +997,7 @@ class Game {
         float bestScore = -1000.0
         float bestSwing = 0.0
         foreach (swing in [0.0, 20.0, -20.0, 40.0, -40.0, 60.0, -60.0]) {
-            float free = Game.FreeBehind(obstacles, east, north, camHeading + swing, nearest, reach)
+            float free = Game.FreeBehind(obstacles, east, north, camHeading + swing, nearest, reach, bridge)
             // gerade dahinter gilt 1 m mehr als 20° daneben; die alte Seite behält 0,5 m Vorsprung (kein Hin und Her)
             float score = free - Math.Abs(swing) / 20.0
             if ((swing > 0.0) == (chase.swing > 0.0) && swing != 0.0) { score = score + 0.5 }
@@ -1015,7 +1015,7 @@ class Game {
         float h = (camHeading + chase.swing) * Math.PI / 180.0
         float fx = -Math.Sin(h)
         float fz = -Math.Cos(h)
-        float free = Game.FreeBehind(obstacles, east, north, camHeading + chase.swing, nearest, reach)
+        float free = Game.FreeBehind(obstacles, east, north, camHeading + chase.swing, nearest, reach, bridge)
         if (dt <= 0.0 || free < chase.distance) { chase.distance = free } else { chase.distance = Math.Min(free, chase.distance + 4.0 * dt) }
         float back = Math.Max(chase.distance, nearest - 0.5)
         float cx = x - fx * back
@@ -1023,7 +1023,15 @@ class Game {
         // dicht dran höher: der Blick geht über das Dach bzw. den Kopf; unter 2,5 m steil von oben
         float cy = y + up + Math.Max(0.0, reach * 0.5 - back) * 0.6 + Math.Max(0.0, 2.5 - back) * 1.4
         any gc = terrain.At(view.originE + cx, view.originN - cz)
-        if (gc != undefined) { cy = Math.Max(cy, gc - view.originZ + 1.0) }
+        if (obstacles.Underground(east, north, bridge)) {
+            // im Tunnel bzw. in der Tiefgarage: unter der Decke (über dem Fahrzeug und an ihrem Platz), nicht hinauf auf das Gelände darüber
+            float lid = 1.0e30
+            any c0 = obstacles.Ceiling(east, north, bridge)
+            any c1 = obstacles.Ceiling(view.originE + cx, view.originN - cz, bridge)
+            if (c0 != undefined) { lid = c0 }
+            if (c1 != undefined) { lid = Math.Min(lid, c1) }
+            if (lid < 1.0e29) { cy = Math.Max(Math.Min(cy, lid - view.originZ - 0.3), y + 0.9) }
+        } else if (gc != undefined) { cy = Math.Max(cy, gc - view.originZ + 1.0) }
         cam.SetPosition(cx * 1m, cy * 1m, cz * 1m)
         // der Blick: voraus in Fahrtrichtung; eng von oben näher auf das Fahrzeug
         float hh = camHeading * Math.PI / 180.0
@@ -1032,12 +1040,13 @@ class Game {
     }
 
     // Wie weit (m) hinter (east, north) entgegen der Richtung heading (Grad) frei ist, ab nearest, bis reach (in 0,5-m-Schritten).
-    static defined float FreeBehind(Obstacles obstacles, defined float east, defined float north, defined float heading, defined float nearest, defined float reach) {
+    // level: die Ebene (in einem Tunnel halten seine Wände).
+    static defined float FreeBehind(Obstacles obstacles, defined float east, defined float north, defined float heading, defined float nearest, defined float reach, defined int level = 0) {
         float h = heading * Math.PI / 180.0
         float fx = -Math.Sin(h)
         float fn = Math.Cos(h)
         for (float d = nearest; d <= reach; d = d + 0.5) {
-            if (obstacles.Blocked(east - fx * d, north - fn * d, 0.6)) { return d - 0.5 }
+            if (obstacles.BlockedAt(east - fx * d, north - fn * d, 0.6, level)) { return d - 0.5 }
         }
         return reach
     }
