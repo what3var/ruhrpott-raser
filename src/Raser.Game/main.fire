@@ -339,6 +339,7 @@ class Game {
         if (settings.error != "") { print(settings.error) }
         // Absturzberichte (crash.fire) neben spiel.json
         CrashLog.Configure(options.Get("config", ""))
+        CrashLog.Note("Start: Welt " + options.Get("world", "world") + ", bei " + options.Get("at", "376117,5705005") + ", Größe " + options.Get("size", "960x600") + ", GPU " + (options.Get("gpu", "") != "") + ", Server " + options.Get("server", "-"))
         // --crash-test main|thread: absichtlich abstürzen (prüft die Absturzberichte)
         string crashTest = options.Get("crash-test", "")
         if (crashTest == "main") { throw new Raser.DataException("Absichtlicher Absturz (--crash-test main)") }
@@ -348,7 +349,6 @@ class Game {
             print("Der Thread-Absturz kam nicht an")
             return 2
         }
-        CrashLog.Note("Start: Welt " + options.Get("world", "world") + ", bei " + options.Get("at", "376117,5705005") + ", Größe " + options.Get("size", "960x600") + ", GPU " + (options.Get("gpu", "") != "") + ", Server " + options.Get("server", "-"))
         string world = options.Get("world", "world")
         var store = new Raser.FileTileStore(world)
         var at = options.Get("at", "376117,5705005").Split(",")

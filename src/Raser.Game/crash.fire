@@ -59,7 +59,10 @@ class CrashLog {
         string path = ""
         try {
             if (!IO.Directory.Exists(dir)) { IO.Directory.CreateDirectory(dir) }
-            path = IO.Path.Combine(dir, "absturz-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".txt")
+            string stamp = "absturz-" + DateTime.Now.ToString("yyyyMMdd-HHmmss")
+            path = IO.Path.Combine(dir, stamp + ".txt")
+            // zwei in derselben Sekunde (Hauptprogramm und Thread): nicht überschreiben
+            for (int n = 2; IO.File.Exists(path); n++) { path = IO.Path.Combine(dir, stamp + "-" + n + ".txt") }
             IO.File.WriteAllText(path, text)
             CrashLog.Tidy(dir)
         } catch (Exception failed) {
