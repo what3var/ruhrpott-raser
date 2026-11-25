@@ -203,6 +203,18 @@ namespace Raser {
             return best
         }
 
+        // Der kleinste Abstand von (x, y) zum Rand eines Rings (ohne wiederholten Endpunkt).
+        static defined float DistanceToRing(float ring[], defined float x, defined float y) {
+            float best = 1.0e30
+            int n = ring.length / 2
+            for (int i = 0; i < n; i++) {
+                int j = (i + 1) % n
+                float d = Raser.Geo.DistanceToSegment(x, y, ring[i * 2], ring[i * 2 + 1], ring[j * 2], ring[j * 2 + 1])
+                if (d < best) { best = d }
+            }
+            return best
+        }
+
         static defined float DistanceToSegment(defined float px, defined float py, defined float ax, defined float ay, defined float bx, defined float by) {
             float dx = bx - ax
             float dy = by - ay

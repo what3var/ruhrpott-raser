@@ -172,10 +172,10 @@ namespace Raser {
         defined bool car
         defined bool foot
         defined bool oneway
-        defined int level             // OSM layer (0 auf dem Gelände, > 0 Brücke)
+        defined int level             // OSM layer (0 auf dem Gelände, > 0 Brücke, < 0 Tunnel)
         float pts[]                   // global
         float ground[]                // je Punkt die Höhe des Geländes (m über NHN; -1e9: unbekannt) - für Brücken
-        float deck[]                  // Brücken: die Höhe des Decks je Meter entlang der Linie (Raser.Bridges, wie gezeichnet)
+        float deck[]                  // Brücken und Tunnel: die Höhe des Decks je Meter entlang der Linie (Raser.Bridges, Raser.Tunnels, wie gezeichnet)
         defined bool deckOwner        // das Deck kommt aus der Kachel mit dem ersten Punkt (sie gilt, wenn mehrere es liefern)
         float line[]                  // geglättet (wie Raser.StreetField)
         List<float> strips            // Grünstreifen: Seite (1 links, -1 rechts), s0, s1, Breite
@@ -307,7 +307,9 @@ namespace Raser {
             float north = tile.key.North
             var decks = Raser.Bridges.Of(tile)
             foreach (r in tile.data.roads) {
-                if (r.kind == undefined || r.layer < 0 || !r.kind.StartsWith("highway=") || r.points == undefined || r.points.length < 4) { continue }
+                if (r.kind == undefined || !r.kind.StartsWith("highway=") || r.points == undefined || r.points.length < 4) { continue }
+                // Tunnel nur mit ihren Höhen (Raser.Tunnels, aus dem Import)
+                if (r.layer < 0 && !Raser.Tunnels.IsTunnel(r)) { continue }
                 string k = r.kind.Substring(8)
                 bool car = Raser.RoadGraph.IsCar(k)
                 bool foot = k == "footway" || k == "path" || k == "pedestrian"

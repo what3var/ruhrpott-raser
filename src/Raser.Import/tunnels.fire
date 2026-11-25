@@ -1,0 +1,484 @@
+// Raser.Import: Tunnel, Unterführungen und Tiefgaragen (Raser.Tunnels) - die Höhen aus dem ganzen DGM der Region, bevor die Kacheln entstehen
+// (so sehen alle Kacheln eines Tunnels dieselben Höhen, auch über die Kachelgrenze).
+//
+// Je Tunnel (Straße mit layer < 0) und Meter entlang der Linie:
+// - G, das DGM auf der Linie, und T, das Höchste aus G und dem DGM daneben (1,5 / 4 / 7 m neben der Röhre, beide Seiten).
+// - Zeigt das DGM eine Senke (T - G > 1,5 m: unter Bahndämmen und Brücken rechnet es das Bauwerk heraus, man sieht die Straße darunter), liegt
+//   die Fahrbahn höchstens auf G und die Oberfläche darüber ist T: das Raster wird dort auf T aufgefüllt (der Damm läuft über die Unterführung).
+// - Sonst liegt der Tunnel unter dem Gelände: die Fahrbahn höchstens G - lichte Höhe - Decke, die Oberfläche ist G.
+// - In einer Tiefgarage (OSM amenity=parking, parking=underground) liegen die Fahrgassen auf ihrem Boden: das tiefste DGM im Grundriss - lichte
+//   Höhe (2,5 m) - Decke.
+// - An einem offenen Ende (dort schließt eine Straße auf dem Gelände an) darf die Fahrbahn bis auf G steigen.
+// Daraus die größte Höhe, die überall darunter bleibt und nirgends steiler ist als die Rampe erlaubt (Raser.Tunnels.Slope) - über alle Tunnel
+// eines Netzes zusammen (Abzweige, Tiefgaragen: an gemeinsamen Punkten dieselbe Höhe).
+// Wo ein Ende tiefer als das Gelände liegt, läuft eine Rampe die anschließende Straße hinauf (mit derselben Steigung), bis sie das Gelände
+// erreicht: das Raster wird auf die Rampe abgesenkt (wo das DGM schon eine Senke zeigt, folgt die Rampe ihr) und die Straße merkt sich Rampe
+// und Oberkante der Stützwände (Raser.Road.profile, top). Offene Stücke eines Tunnels (zu wenig Überdeckung) werden genauso abgesenkt.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    // Eine Änderung am Höhenraster (absolut): entlang der Strecke a-b, bis left m links und right m rechts der Linie, die Höhe von za nach zb.
+    // fill: anheben (ein Damm über einer Unterführung), sonst absenken (Rampe, offener Einschnitt).
+    class TerrainEdit {
+        defined float ax
+        defined float ay
+        defined float bx
+        defined float by
+        defined float za
+        defined float zb
+        defined float left
+        defined float right
+        defined bool fill
+
+        construct() { }
+
+        // Auf ein Raster der Kachel mit der Südwest-Ecke (e0, n0) anwenden.
+        undefined Apply(HeightRaster raster, defined float e0, defined float n0) {
+            float reach = Math.Max(this.left, this.right) + 1.0
+            float minX = Math.Min(this.ax, this.bx) - reach - e0
+            float maxX = Math.Max(this.ax, this.bx) + reach - e0
+            float minY = Math.Min(this.ay, this.by) - reach - n0
+            float maxY = Math.Max(this.ay, this.by) + reach - n0
+            int c0 = Math.Max(0, Math.Floor((minX - raster.x0) / raster.spacing)!int)
+            int c1 = Math.Min(raster.cols - 1, Math.Ceiling((maxX - raster.x0) / raster.spacing)!int)
+            int r0 = Math.Max(0, Math.Floor((minY - raster.y0) / raster.spacing)!int)
+            int r1 = Math.Min(raster.rows - 1, Math.Ceiling((maxY - raster.y0) / raster.spacing)!int)
+            if (c0 > c1 || r0 > r1) { return }
+            float ex = this.bx - this.ax
+            float ey = this.by - this.ay
+            float len = Math.Sqrt(ex * ex + ey * ey)
+            if (len < 0.0001) { return }
+            float dx = ex / len
+            float dy = ey / len
+            for (int r = r0; r <= r1; r++) {
+                float y = n0 + raster.y0 + r * raster.spacing - this.ay
+                for (int c = c0; c <= c1; c++) {
+                    float x = e0 + raster.x0 + c * raster.spacing - this.ax
+                    float along = x * dx + y * dy
+                    // ein halber Meter über die Enden (an Knicken der Linie bleibt keine Lücke)
+                    if (along < -0.5 || along > len + 0.5) { continue }
+                    float across = dx * y - dy * x
+                    if (across > this.left || -across > this.right) { continue }
+                    float t = Math.Clamp(along / len, 0.0, 1.0)
+                    float z = this.za + (this.zb - this.za) * t
+                    float h = raster.Get(c, r)
+                    if (this.fill) {
+                        if (z > h) { raster.Set(c, r, z) }
+                    } else if (z < h) {
+                        raster.Set(c, r, z)
+                    }
+                }
+            }
+        }
+    }
+
+    class TunnelSolver {
+        static readonly defined float Hole = 1.5        // so tief muss die Senke im DGM sein (m), damit sie als Unterführung unter einem Bauwerk gilt
+
+        // Rechnet die Höhen aller Tunnel und Rampen der Region (setzt profile, top, clearance der Merkmale, floor der Tiefgaragen) und die
+        // Änderungen am Höhenraster (edits).
+        static undefined Solve(Region region, List<TerrainEdit> edits) {
+            var feats = region.features
+            // die Tiefgaragen und ihr Boden (das tiefste DGM im Grundriss, alle 3 m und an den Ecken)
+            var garages = new List<int>()
+            for (int i = 0; i < feats.Count; i++) {
+                var f = feats[i]
+                if (!f.area || f.kind != "parking=underground" || f.points == undefined || f.points.length < 6) { continue }
+                var box = Raser.Box2.Of(f.points)
+                float low = 1.0e30
+                for (int k = 0; k + 1 < f.points.length; k = k + 2) {
+                    any h = region.HeightAt(f.points[k], f.points[k + 1])
+                    if (h != undefined && h < low) { low = h }
+                }
+                for (float y = box.minY + 1.5; y < box.maxY; y = y + 3.0) {
+                    for (float x = box.minX + 1.5; x < box.maxX; x = x + 3.0) {
+                        if (!Raser.Geo.Inside(f.points, x, y)) { continue }
+                        any h = region.HeightAt(x, y)
+                        if (h != undefined && h < low) { low = h }
+                    }
+                }
+                if (low > 1.0e29) { continue }
+                f.clearance = Raser.Tunnels.GarageClearance
+                f.floor = low - Raser.Tunnels.GarageClearance - Raser.Tunnels.Roof
+                garages.Add(i)
+            }
+            // die Tunnel: je Meter ein Punkt
+            var tunnels = new List<int>()
+            var start = new List<int>()          // je Tunnel der erste Punkt
+            var count = new List<int>()
+            var px = new List<float>()
+            var py = new List<float>()
+            var upper = new List<float>()        // die größte erlaubte Höhe je Punkt
+            var top = new List<float>()
+            var slope = new List<float>()
+            var hole = new List<bool>()
+            float p[] = new float[4]
+            for (int i = 0; i < feats.Count; i++) {
+                var f = feats[i]
+                if (f.area || f.kind == undefined || !f.kind.StartsWith("highway=") || f.layer >= 0 || f.points == undefined || f.points.length < 4) { continue }
+                var line = Raser.Tunnels.Line(f.points)
+                if (line.length < 0.5) { continue }
+                tunnels.Add(i)
+            }
+            if (tunnels.Count == 0) { return }
+            // Netze aus Tunneln, die sich an Punkten treffen (ein Ende auf einem Punkt des anderen): führt eines in eine Tiefgarage, gilt für alle
+            // ihre lichte Höhe (Rampen und Fahrgassen liegen so auf einer Höhe)
+            var group = new List<int>()
+            for (int t = 0; t < tunnels.Count; t++) { group.Add(t) }
+            for (int t = 0; t < tunnels.Count; t++) {
+                var f = feats[tunnels[t]]
+                int n = f.points.length / 2
+                for (int u = 0; u < tunnels.Count; u++) {
+                    if (u == t) { continue }
+                    var o = feats[tunnels[u]]
+                    if (Raser.TunnelSolver.VertexAt(o.points, f.points[0], f.points[1]) < 0 && Raser.TunnelSolver.VertexAt(o.points, f.points[n * 2 - 2], f.points[n * 2 - 1]) < 0) { continue }
+                    int ra = Raser.TunnelSolver.Root(group, t)
+                    int rb = Raser.TunnelSolver.Root(group, u)
+                    if (ra != rb) { group[Math.Max(ra, rb)] = Math.Min(ra, rb) }
+                }
+            }
+            var inGarage = new List<bool>()
+            for (int t = 0; t < tunnels.Count; t++) {
+                var f = feats[tunnels[t]]
+                bool hit = false
+                foreach (g in garages) {
+                    for (int k = 0; k + 1 < f.points.length && !hit; k = k + 2) {
+                        if (Raser.Geo.Inside(feats[g].points, f.points[k], f.points[k + 1])) { hit = true }
+                    }
+                }
+                inGarage.Add(hit)
+            }
+            for (int t = 0; t < tunnels.Count; t++) {
+                if (inGarage[t]) { inGarage[Raser.TunnelSolver.Root(group, t)] = true }
+            }
+            for (int t = 0; t < tunnels.Count; t++) {
+                var f = feats[tunnels[t]]
+                var line = Raser.Tunnels.Line(f.points)
+                int m = Math.Ceiling(line.length / Raser.BridgeDeck.Step)!int + 1
+                float half = Raser.Tunnels.HalfWidth(f.kind, f.width)
+                float clearance = Raser.Tunnels.Clearance(f.kind)
+                if (inGarage[Raser.TunnelSolver.Root(group, t)]) { clearance = Raser.Tunnels.GarageClearance }
+                f.clearance = clearance
+                float need = clearance + Raser.Tunnels.Roof
+                start.Add(px.Count)
+                count.Add(m)
+                // je Meter: das DGM auf der Linie (g) und daneben (die Oberfläche t)
+                float gs[] = new float[m]
+                float ts[] = new float[m]
+                int sunk = 0
+                for (int k = 0; k < m; k++) {
+                    line.PointAt(Math.Min(k * Raser.BridgeDeck.Step, line.length), p)
+                    any gh = region.HeightAt(p[0], p[1])
+                    float g = 0.0
+                    if (gh != undefined) { g = gh }
+                    float tt = g
+                    foreach (off in [1.5, 4.0, 7.0]) {
+                        for (int side = -1; side <= 1; side = side + 2) {
+                            float o = (half + off) * side
+                            any sh = region.HeightAt(p[0] + p[3] * o, p[1] - p[2] * o)
+                            if (sh != undefined && sh > tt) { tt = sh }
+                        }
+                    }
+                    gs[k] = g
+                    ts[k] = tt
+                    if (tt - g > Raser.TunnelSolver.Hole) { sunk++ }
+                    px.Add(p[0])
+                    py.Add(p[1])
+                    slope.Add(Raser.Tunnels.Slope(f.kind))
+                }
+                // zeigt das DGM auf mehr als einem Drittel der Länge eine Senke, ist es eine Unterführung unter einem Bauwerk: die Fahrbahn auf
+                // dem DGM (auch an den Enden, wo das Bauwerk aufhört)
+                bool bridged = sunk * 3 > m
+                for (int k = 0; k < m; k++) {
+                    hole.Add(bridged && ts[k] - gs[k] > Raser.TunnelSolver.Hole)
+                    if (bridged) {
+                        upper.Add(gs[k])
+                        top.Add(Math.Max(ts[k], gs[k]))
+                    } else {
+                        upper.Add(gs[k] - need)
+                        top.Add(gs[k])
+                    }
+                    foreach (g in garages) {
+                        if (Raser.Geo.Inside(feats[g].points, px[start[t] + k], py[start[t] + k])) {
+                            upper[upper.Count - 1] = feats[g].floor
+                            top[top.Count - 1] = feats[g].floor + clearance + Raser.Tunnels.Roof
+                        }
+                    }
+                }
+            }
+            if (tunnels.Count == 0) { return }
+            // die Kanten: entlang jedes Tunnels, dazu an gemeinsamen Punkten (ein Ende auf einem Punkt eines anderen Tunnels)
+            var ea = new List<int>()
+            var eb = new List<int>()
+            var elen = new List<float>()
+            for (int t = 0; t < tunnels.Count; t++) {
+                for (int k = 0; k + 1 < count[t]; k++) {
+                    int a = start[t] + k
+                    float dx = px[a + 1] - px[a]
+                    float dy = py[a + 1] - py[a]
+                    ea.Add(a)
+                    eb.Add(a + 1)
+                    elen.Add(Math.Sqrt(dx * dx + dy * dy))
+                }
+            }
+            // offene Enden: eine Straße auf dem Gelände hat dort einen Punkt; ramps: die Straßen, die dort enden (die Rampe läuft sie hinauf)
+            var openAt = new List<int>()         // Punkt-Index des offenen Endes
+            var openTunnel = new List<int>()
+            for (int t = 0; t < tunnels.Count; t++) {
+                var f = feats[tunnels[t]]
+                int n = f.points.length / 2
+                for (int end = 0; end < 2; end++) {
+                    float ex = f.points[0]
+                    float ey = f.points[1]
+                    int at = start[t]
+                    if (end == 1) {
+                        ex = f.points[n * 2 - 2]
+                        ey = f.points[n * 2 - 1]
+                        at = start[t] + count[t] - 1
+                    }
+                    bool open = false
+                    for (int j = 0; j < feats.Count; j++) {
+                        var o = feats[j]
+                        if (j == tunnels[t] || o.area || o.kind == undefined || !o.kind.StartsWith("highway=") || o.points == undefined) { continue }
+                        int hit = Raser.TunnelSolver.VertexAt(o.points, ex, ey)
+                        if (hit < 0) { continue }
+                        if (o.layer >= 0) {
+                            open = true
+                            continue
+                        }
+                        // ein anderer Tunnel: mit seinem nächsten Punkt verbinden
+                        int ot = tunnels.IndexOf(j)
+                        if (ot < 0) { continue }
+                        int best = -1
+                        float bd = 1.0e30
+                        for (int k = 0; k < count[ot]; k++) {
+                            int q = start[ot] + k
+                            float d = (px[q] - ex) * (px[q] - ex) + (py[q] - ey) * (py[q] - ey)
+                            if (d < bd) {
+                                bd = d
+                                best = q
+                            }
+                        }
+                        if (best >= 0) {
+                            ea.Add(at)
+                            eb.Add(best)
+                            elen.Add(Math.Sqrt(bd))
+                        }
+                    }
+                    if (open) {
+                        any g = region.HeightAt(ex, ey)
+                        if (g != undefined) {
+                            upper[at] = g
+                            top[at] = g
+                        }
+                        openAt.Add(at)
+                        openTunnel.Add(t)
+                    }
+                }
+            }
+            // die größte Höhe unter upper mit höchstens der erlaubten Steigung (Kanten so lange entspannen, bis sich nichts mehr ändert)
+            int np = px.Count
+            float z[] = new float[np]
+            for (int k = 0; k < np; k++) { z[k] = upper[k] }
+            bool changed = true
+            int rounds = 0
+            while (changed && rounds < 2000) {
+                changed = false
+                rounds++
+                for (int q = 0; q < ea.Count; q++) {
+                    int a = ea[q]
+                    int b = eb[q]
+                    float rise = Math.Max(slope[a], slope[b]) * elen[q]
+                    if (z[a] > z[b] + rise + 0.0001) {
+                        z[a] = z[b] + rise
+                        changed = true
+                    }
+                    if (z[b] > z[a] + rise + 0.0001) {
+                        z[b] = z[a] + rise
+                        changed = true
+                    }
+                }
+                for (int q = ea.Count - 1; q >= 0; q--) {
+                    int a = ea[q]
+                    int b = eb[q]
+                    float rise = Math.Max(slope[a], slope[b]) * elen[q]
+                    if (z[a] > z[b] + rise + 0.0001) {
+                        z[a] = z[b] + rise
+                        changed = true
+                    }
+                    if (z[b] > z[a] + rise + 0.0001) {
+                        z[b] = z[a] + rise
+                        changed = true
+                    }
+                }
+            }
+            // die Höhen an die Tunnel; offene Stücke (zu wenig Überdeckung) absenken, unter Bauwerken das Raster auf den Damm auffüllen
+            for (int t = 0; t < tunnels.Count; t++) {
+                var f = feats[tunnels[t]]
+                int m = count[t]
+                float prof[] = new float[m]
+                float tops[] = new float[m]
+                for (int k = 0; k < m; k++) {
+                    prof[k] = Math.Round(z[start[t] + k] * 100.0) / 100.0
+                    tops[k] = Math.Round(top[start[t] + k] * 100.0) / 100.0
+                }
+                float half = Raser.Tunnels.HalfWidth(f.kind, f.width)
+                for (int k = 0; k + 1 < m; k++) {
+                    int a = start[t] + k
+                    bool openA = !Raser.Tunnels.Covered(prof[k], tops[k])
+                    bool openB = !Raser.Tunnels.Covered(prof[k + 1], tops[k + 1])
+                    if (openA || openB) {
+                        if (tops[k] > prof[k] + 0.1 || tops[k + 1] > prof[k + 1] + 0.1) { edits.Add(Raser.TunnelSolver.Edit(px[a], py[a], px[a + 1], py[a + 1], prof[k], prof[k + 1], half + 0.3, half + 0.3, false)) }
+                        continue
+                    }
+                    if (hole[a] && hole[a + 1]) {
+                        // die Senke im DGM zu beiden Seiten so weit, wie sie reicht (bis 10 m neben der Röhre), auffüllen
+                        float l = Raser.TunnelSolver.Reach(region, px, py, a, half, 1.0, tops[k])
+                        float r = Raser.TunnelSolver.Reach(region, px, py, a, half, -1.0, tops[k])
+                        edits.Add(Raser.TunnelSolver.Edit(px[a], py[a], px[a + 1], py[a + 1], tops[k], tops[k + 1], l, r, true))
+                    }
+                }
+                f.profile = take prof
+                f.top = take tops
+            }
+            // die Rampen davor: von jedem offenen Ende, das tiefer als das Gelände liegt, die anschließenden Straßen hinauf
+            for (int q = 0; q < openAt.Count; q++) {
+                int at = openAt[q]
+                var tf = feats[tunnels[openTunnel[q]]]
+                any gh = region.HeightAt(px[at], py[at])
+                if (gh == undefined || gh - z[at] < 0.1) { continue }
+                float half = Raser.Tunnels.HalfWidth(tf.kind, tf.width)
+                float rate = Raser.Tunnels.Slope(tf.kind)
+                for (int j = 0; j < feats.Count; j++) {
+                    var o = feats[j]
+                    if (o.area || o.kind == undefined || !o.kind.StartsWith("highway=") || o.layer < 0 || o.points == undefined || o.points.length < 4) { continue }
+                    int no = o.points.length / 2
+                    bool atStart = (o.points[0] - px[at]) * (o.points[0] - px[at]) + (o.points[1] - py[at]) * (o.points[1] - py[at]) < 0.09
+                    bool atEnd = (o.points[no * 2 - 2] - px[at]) * (o.points[no * 2 - 2] - px[at]) + (o.points[no * 2 - 1] - py[at]) * (o.points[no * 2 - 1] - py[at]) < 0.09
+                    if (!atStart && !atEnd) { continue }
+                    Raser.TunnelSolver.Ramp(region, o, atStart, z[at], rate, half, edits)
+                }
+            }
+            // Tiefgaragen ohne Zufahrt (kein Tunnel darin) fallen weg
+            foreach (g in garages) {
+                bool used = false
+                foreach (t in tunnels) {
+                    var f = feats[t]
+                    for (int k = 0; k + 1 < f.points.length && !used; k = k + 2) {
+                        if (Raser.Geo.Inside(feats[g].points, f.points[k], f.points[k + 1])) { used = true }
+                    }
+                }
+                if (!used) { feats[g].floor = 0.0 }
+            }
+        }
+
+        // Eine Rampe die Straße o hinauf (vom Anfang, sonst vom Ende), ab der Höhe z0 mit der Steigung rate, bis sie das Gelände erreicht.
+        static undefined Ramp(Region region, OsmFeature o, defined bool fromStart, defined float z0, defined float rate, defined float half, List<TerrainEdit> edits) {
+            var line = Raser.Tunnels.Line(o.points)
+            int m = Math.Ceiling(line.length / Raser.BridgeDeck.Step)!int + 1
+            if (o.profile == undefined || o.profile.length != m) {
+                float prof[] = new float[m]
+                float tops[] = new float[m]
+                for (int k = 0; k < m; k++) {
+                    prof[k] = Raser.Tunnels.Open
+                    tops[k] = Raser.Tunnels.Open
+                }
+                o.profile = take prof
+                o.top = take tops
+            }
+            float p[] = new float[4]
+            float q[] = new float[4]
+            int last = -1
+            for (int t = 0; t < m; t++) {
+                int k = t
+                if (!fromStart) { k = m - 1 - t }
+                float s = Math.Min(k * Raser.BridgeDeck.Step, line.length)
+                float dist = s
+                if (!fromStart) { dist = line.length - s }
+                line.PointAt(s, p)
+                any gh = region.HeightAt(p[0], p[1])
+                if (gh == undefined) { break }
+                float zr = z0 + rate * dist
+                if (zr >= gh - 0.05) { break }
+                float zz = Math.Round(zr * 100.0) / 100.0
+                if (zz < o.profile[k]) {
+                    o.profile[k] = zz
+                    o.top[k] = Math.Round(gh * 100.0) / 100.0
+                }
+                if (last >= 0) {
+                    float sl = Math.Min(last * Raser.BridgeDeck.Step, line.length)
+                    line.PointAt(sl, q)
+                    float zl = z0 + rate * Math.Abs(sl - (fromStart ? 0.0 : line.length))
+                    edits.Add(Raser.TunnelSolver.Edit(q[0], q[1], p[0], p[1], zl, zr, half + 0.3, half + 0.3, false))
+                }
+                last = k
+            }
+            // das letzte Stück bis dahin, wo die Rampe das Gelände erreicht
+            if (last >= 0) {
+                int next = last + 1
+                if (!fromStart) { next = last - 1 }
+                if (next >= 0 && next < m) {
+                    float sl = Math.Min(last * Raser.BridgeDeck.Step, line.length)
+                    float sn = Math.Min(next * Raser.BridgeDeck.Step, line.length)
+                    line.PointAt(sl, q)
+                    line.PointAt(sn, p)
+                    float zl = z0 + rate * Math.Abs(sl - (fromStart ? 0.0 : line.length))
+                    float zn = z0 + rate * Math.Abs(sn - (fromStart ? 0.0 : line.length))
+                    edits.Add(Raser.TunnelSolver.Edit(q[0], q[1], p[0], p[1], zl, zn, half + 0.3, half + 0.3, false))
+                }
+            }
+        }
+
+        // Wie weit die Senke im DGM neben Punkt a zur Seite side (1 links, -1 rechts) reicht: bis das DGM wieder bis 1 m an top heranreicht
+        // (höchstens 10 m neben der Röhre).
+        static defined float Reach(Region region, List<float> px, List<float> py, defined int a, defined float half, defined float side, defined float top) {
+            int b = a + 1
+            float dx = px[b] - px[a]
+            float dy = py[b] - py[a]
+            float len = Math.Max(0.0001, Math.Sqrt(dx * dx + dy * dy))
+            dx = dx / len
+            dy = dy / len
+            float reach = half + 0.5
+            for (float o = half; o <= half + 10.0; o = o + 0.5) {
+                float x = px[a] - dy * o * side
+                float y = py[a] + dx * o * side
+                any h = region.HeightAt(x, y)
+                if (h == undefined || h >= top - 1.0) { break }
+                reach = o + 0.5
+            }
+            return reach
+        }
+
+        static TerrainEdit Edit(defined float ax, defined float ay, defined float bx, defined float by, defined float za, defined float zb, defined float left, defined float right, defined bool fill) {
+            var e = new Raser.TerrainEdit()
+            e.ax = ax
+            e.ay = ay
+            e.bx = bx
+            e.by = by
+            e.za = za
+            e.zb = zb
+            e.left = left
+            e.right = right
+            e.fill = fill
+            return e
+        }
+
+        // Die Wurzel von t im Wald group (Union-Find).
+        static defined int Root(List<int> group, defined int t) {
+            int r = t
+            while (group[r] != r) { r = group[r] }
+            return r
+        }
+
+        // Der Index des Punkts von line, der (x, y) trifft (bis 0,3 m); -1: keiner.
+        static defined int VertexAt(float line[], defined float x, defined float y) {
+            for (int k = 0; k + 1 < line.length; k = k + 2) {
+                float dx = line[k] - x
+                float dy = line[k + 1] - y
+                if (dx * dx + dy * dy < 0.09) { return k / 2 }
+            }
+            return -1
+        }
+    }
+}

@@ -45,6 +45,12 @@ namespace Raser {
         defined int layer
         string sidewalk
         string tags             // Gebäude-Umrisse ("osm:building"): die Tags für Raser.Building.tags
+        // Tunnel und Rampen (Raser.TunnelSolver, nach dem Lesen aller Daten): je Meter die Höhe der Fahrbahn und die Oberfläche darüber bzw.
+        // daneben, die lichte Höhe (Raser.Road.profile, top, clearance); Tiefgaragen ("parking=underground"): Boden und lichte Höhe
+        float profile[]
+        float top[]
+        defined float clearance
+        defined float floor
 
         construct() { }
     }
@@ -338,7 +344,14 @@ namespace Raser {
                 return f
             }
             if (highway != undefined && tags.Get("area", "no") != "yes") {
-                if (tags.Get("tunnel", "no") != "no" || f.layer < 0) { return undefined }
+                // Tunnel und Unterführungen (Raser.TunnelSolver): eine Ebene unter dem Gelände (layer < 0, ohne layer -1). Durchfahrten durch
+                // Gebäude (tunnel=building_passage) und überdachte Wege (tunnel=covered) bleiben auf dem Gelände (Raser.Voxelizer.Passages).
+                string tunnel = tags.Get("tunnel", "no")
+                if (tunnel == "building_passage" || tunnel == "covered" || tunnel == "passage") {
+                    f.layer = 0
+                } else if (tunnel != "no" && f.layer >= 0) {
+                    f.layer = -1
+                }
                 if (highway == "proposed" || highway == "construction" || highway == "platform" || highway == "elevator" || highway == "corridor") { return undefined }
                 f.kind = "highway=" + highway
                 f.width = Raser.OsmData.RoadWidth(highway)
@@ -400,6 +413,9 @@ namespace Raser {
             string amenity = tags.Get("amenity", undefined)
             if (natural == "water" || landuse == "basin" || landuse == "reservoir" || tags.ContainsKey("water")) {
                 Raser.OsmData.Area(f, "natural=water", Raser.Material.Water, Raser.Palette.Water, 40); return f
+            }
+            if (amenity == "parking" && tags.Get("parking", "") == "underground") {
+                Raser.OsmData.Area(f, "parking=underground", Raser.Material.Concrete, Raser.Palette.Concrete, 0); return f
             }
             if (amenity == "parking" && tags.Get("parking", "surface") == "surface") {
                 Raser.OsmData.Area(f, "amenity=parking", Raser.Material.Asphalt, Raser.Palette.Asphalt, 30); return f

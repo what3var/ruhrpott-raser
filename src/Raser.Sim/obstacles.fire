@@ -79,7 +79,11 @@ namespace Raser {
                 }
             }
             this.decks[name] = Raser.Bridges.Of(loaded)
-            this.rails[name] = Raser.Motorways.Rails(loaded)
+            var rails = Raser.Motorways.Rails(loaded)
+            // die Stützwände an den Rampen der Tunnel (Raser.Tunnels.Walls, dieselbe Form)
+            foreach (v in Raser.Tunnels.Walls(loaded)) { rails.Add(v) }
+            this.rails[name] = rails
+            rails.TakeTo(this.rails)
             this.tiles[name] = loaded
             if (loaded != undefined) { loaded.TakeTo(this.tiles) }
             var grid = Raser.Obstacles.Grid(list)
@@ -149,7 +153,8 @@ namespace Raser {
         defined float pushY
         defined float depth
         // posts = false: ohne die Pfosten (auf einer Brücke stehen sie unten).
-        defined bool Push(defined float e, defined float n, defined float radius, defined bool posts = true) {
+        // buildings = false: ohne die Gebäude (in einem Tunnel liegen sie darüber).
+        defined bool Push(defined float e, defined float n, defined float radius, defined bool posts = true, defined bool buildings = true) {
             var key = Raser.TileKey.Of(e, n)
             string name = key + ""
             this.Need(key, name)
@@ -204,6 +209,7 @@ namespace Raser {
                     }
                 }
             }
+            if (!buildings) { return this.depth > 0.0 }
             var bx = this.boxes[name]
             float x = e - key.East
             float y = n - key.North
@@ -353,31 +359,153 @@ namespace Raser {
             return this.decks[name]
         }
 
-        // Die Ebene nach einem Schritt nach (e, n): current ist die Brücke, auf der man war (0: auf dem Gelände). Auf ein Deck kommt man nur, wo es
-        // höchstens 0,7 m über dem Gelände liegt (an seinen Rampen); man bleibt darauf, solange man auf ihm ist (bis 0,3 m über den Rand); verlässt
-        // man es (am Ende, oder über den Rand), ist man wieder auf dem Gelände. Gibt die ID der Brücke oder 0.
+        // Die Ebene nach einem Schritt nach (e, n): current ist die Brücke bzw. der Tunnel, auf dem man war (0: auf dem Gelände). Man bleibt darauf,
+        // solange man auf ihm ist (bis 0,3 m über den Rand). Verlässt man es, kommt man auf ein anderes Deck derselben Höhe (bis 0,7 m: an den
+        // Rampen der Brücken - nur über ihre Enden -, an Abzweigen der Tunnel und in Tiefgaragen) oder auf das Gelände; in einen Tunnel kommt man
+        // vom Gelände über sein Portal (bis 3 m hinein, wo die Fahrbahn auf dem Gelände endet). Aus einem Tunnel heraus geht es nur dort aufs
+        // Gelände, wo es höchstens 1,5 m darüber liegt (sonst bleibt man im Tunnel: eine Wand am Ende). Gibt die ID der Brücke bzw. des Tunnels
+        // oder 0.
         defined int Level(defined float e, defined float n, defined int current) {
             var list = this.DecksAt(e, n)
             if (list == undefined || list.Count == 0) { return 0 }
             var key = Raser.TileKey.Of(e, n)
             float x = e - key.East
             float y = n - key.North
+            Raser.BridgeDeck cur = undefined
             if (current != 0) {
                 foreach (d in list) {
-                    if (d.road == current && d.Covers(x, y, 0.3)) { return current }
+                    if (d.road == current) { cur = d }
+                }
+                if (cur != undefined && cur.Covers(x, y, 0.3)) { return current }
+            }
+            // die Höhe, auf der man ist
+            float ground = 0.0
+            var tile = this.tiles.Get(key + "", undefined)
+            if (tile != undefined && tile.heights != undefined) { ground = tile.heights.At(x, y) }
+            float h = ground
+            if (cur != undefined) {
+                cur.Nearest(x, y)
+                h = cur.HeightHit()
+            }
+            int found = 0
+            float bestDiff = 0.7
+            foreach (d in list) {
+                if (d == cur || !d.Covers(x, y, 0.0)) { continue }
+                float z = d.HeightHit()
+                float diff = Math.Abs(z - h)
+                if (!d.tunnel) {
+                    // auf eine Brücke nur über die Enden (die Seiten hat die Brüstung)
+                    if (d.hitS > 3.0 && d.hitS < d.length - 3.0) { continue }
+                    if (cur == undefined) { diff = Math.Abs(z - d.GroundAt(d.hitS)) }
+                } else if (cur == undefined && d.ring == undefined) {
+                    // vom Gelände in einen Tunnel: nur durch das Portal (das offene Ende; das Raster springt dort auf die Oberfläche)
+                    bool portal = (d.startJoined && d.hitS <= 3.0) || (d.endJoined && d.hitS >= d.length - 3.0)
+                    // (wer oben über dem Portal steht, ist höher als die Decke; das Raster mischt im ersten Meter Graben und Oberfläche)
+                    if (!portal || h > z + d.clearance + 0.5) { continue }
+                    diff = 0.0
+                }
+                if (diff <= bestDiff) {
+                    bestDiff = diff
+                    found = d.road
                 }
             }
-            foreach (d in list) {
-                if (!d.Covers(x, y, 0.0)) { continue }
-                // nur an den Enden (die Seiten hat die Brüstung)
-                if (d.hitS > 3.0 && d.hitS < d.length - 3.0) { continue }
-                if (Math.Abs(d.At(d.hitS) - d.GroundAt(d.hitS)) <= 0.7) { return d.road }
-            }
+            if (found != 0) { return found }
+            if (cur != undefined && cur.tunnel && ground - h > 1.5) { return current }
             return 0
         }
 
+        // Ist die Ebene level an (e, n) ein Tunnel bzw. eine Tiefgarage?
+        defined bool Underground(defined float e, defined float n, defined int level) {
+            if (level == 0) { return false }
+            var list = this.DecksAt(e, n)
+            if (list == undefined) { return false }
+            foreach (d in list) {
+                if (d.road == level) { return d.tunnel }
+            }
+            return false
+        }
+
+        // Unter der Decke: die Höhe der Decke über (e, n) auf der Ebene level (m über NHN); undefined: kein Tunnel oder offen (Rampe, Einschnitt).
+        any Ceiling(defined float e, defined float n, defined int level) {
+            if (level == 0) { return undefined }
+            var list = this.DecksAt(e, n)
+            if (list == undefined) { return undefined }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            foreach (d in list) {
+                if (d.road != level || !d.tunnel) { continue }
+                d.Nearest(x, y)
+                float z = d.HeightHit()
+                float top = d.top[0]
+                if (d.ring == undefined) { top = d.TopAt(d.hitS) }
+                if (!Raser.Tunnels.Covered(z, top)) { return undefined }
+                return Raser.Tunnels.Ceiling(z, top, d.clearance)
+            }
+            return undefined
+        }
+
+        // Die Lampen der Tunnel (wie Raser.TunnelMesher: alle LampStep m an der Decke, wo sie überdeckt sind) bis radius m um (e, n), auf der
+        // Höhe der Ebene level (bis 3 m): Ost, Nord, Höhe je Lampe, die nächsten zuerst, höchstens max.
+        List<float> TubeLamps(defined float e, defined float n, defined int level, defined float radius, defined int max) {
+            var out = new List<float>()
+            var list = this.DecksAt(e, n)
+            if (list == undefined || level == 0) { return out }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            float z = 0.0
+            bool found = false
+            foreach (d in list) {
+                if (d.road == level && d.tunnel) {
+                    d.Nearest(x, y)
+                    z = d.HeightHit()
+                    found = true
+                }
+            }
+            if (!found) { return out }
+            var dist = new List<float>()
+            float p[] = new float[4]
+            foreach (d in list) {
+                if (!d.tunnel || d.ring != undefined) { continue }
+                for (float s = Raser.Tunnels.LampStep * 0.5; s < d.length; s = s + Raser.Tunnels.LampStep) {
+                    d.PointAt(s, p)
+                    float dx = p[0] - x
+                    float dy = p[1] - y
+                    float dd = dx * dx + dy * dy
+                    if (dd > radius * radius) { continue }
+                    float zz = d.At(s)
+                    if (Math.Abs(zz - z) > 3.0 || !Raser.Tunnels.Covered(zz, d.TopAt(s))) { continue }
+                    // einsortieren (die nächsten zuerst)
+                    int at = dist.Count
+                    while (at > 0 && dist[at - 1] > dd) { at-- }
+                    dist.Insert(at, dd)
+                    out.Insert(at * 3, Raser.Tunnels.Ceiling(zz, d.TopAt(s), d.clearance) - 0.1)
+                    out.Insert(at * 3, p[1] + key.North)
+                    out.Insert(at * 3, p[0] + key.East)
+                }
+            }
+            while (out.Count > max * 3) { out.RemoveAt(out.Count - 1) }
+            return out
+        }
+
+        // Liegt (e, n) in einem Tunnel bzw. einer Tiefgarage der Höhe z (bis 0,7 m) - mit margin m Abstand zu den Wänden?
+        defined bool InTube(defined float e, defined float n, defined float z, defined float margin) {
+            var list = this.DecksAt(e, n)
+            if (list == undefined) { return false }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            foreach (d in list) {
+                if (!d.tunnel || !d.Covers(x, y, -margin)) { continue }
+                if (Math.Abs(d.HeightHit() - z) <= 0.7) { return true }
+            }
+            return false
+        }
+
         // Die Höhe der Fahrbahn an (e, n) auf der Brücke bridge (m über NHN); undefined: nicht darauf (dann gilt das Gelände). bridge -1: die
-        // höchste Brücke, die (e, n) überdeckt (für die anderen, von denen der Snapshot nur weiß, dass sie auf einer sind).
+        // höchste Brücke, die (e, n) überdeckt (für die anderen, von denen der Snapshot nur weiß, dass sie auf einer sind); -2: der tiefste
+        // Tunnel dort (Raser.EntityType.Underground).
         any DeckHeight(defined float e, defined float n, defined int bridge) {
             if (bridge == 0) { return undefined }
             var list = this.DecksAt(e, n)
@@ -388,11 +516,57 @@ namespace Raser {
             any best = undefined
             foreach (d in list) {
                 if (bridge > 0 && d.road != bridge) { continue }
-                if (!d.Covers(x, y, 0.5)) { continue }
-                float z = d.At(d.hitS)
-                if (best == undefined || z > best) { best = z }
+                if (bridge == -2 && !d.tunnel) { continue }
+                if (d.tunnel && bridge > 0) {
+                    // im Tunnel auch über ein Ende hinaus (an einer Wand), solange man in seiner Breite ist
+                    if (d.Nearest(x, y) > d.width / 2.0 + 1.0) { continue }
+                } else if (!d.Covers(x, y, 0.5)) {
+                    continue
+                }
+                float z = d.HeightHit()
+                if (best == undefined || (bridge == -2 && z < best) || (bridge != -2 && z > best)) { best = z }
             }
             return best
+        }
+
+        // Der tiefste Tunnel bzw. die Tiefgarage an (e, n) (für die anderen, von denen der Snapshot nur weiß, dass sie unter dem Gelände sind); 0: keiner.
+        defined int DeckBelow(defined float e, defined float n) {
+            var list = this.DecksAt(e, n)
+            if (list == undefined) { return 0 }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            int found = 0
+            float low = 1.0e30
+            foreach (d in list) {
+                if (!d.tunnel || !d.Covers(x, y, 0.5)) { continue }
+                float z = d.HeightHit()
+                if (z < low) {
+                    low = z
+                    found = d.road
+                }
+            }
+            return found
+        }
+
+        // Das Deck an (e, n), dessen Fahrbahn z am nächsten liegt (bis 3 m); 0: keins. (Verkehr: die Höhe kommt mit, die Ebene nicht.)
+        defined int DeckNear(defined float e, defined float n, defined float z) {
+            var list = this.DecksAt(e, n)
+            if (list == undefined) { return 0 }
+            var key = Raser.TileKey.Of(e, n)
+            float x = e - key.East
+            float y = n - key.North
+            int found = 0
+            float best = 3.0
+            foreach (d in list) {
+                if (!d.Covers(x, y, 0.5)) { continue }
+                float diff = Math.Abs(d.HeightHit() - z)
+                if (diff < best) {
+                    best = diff
+                    found = d.road
+                }
+            }
+            return found
         }
 
         // Die Brücke, die (e, n) überdeckt (die höchste); 0: keine.
@@ -405,7 +579,7 @@ namespace Raser {
             int found = 0
             float top = -1.0e30
             foreach (d in list) {
-                if (!d.Covers(x, y, 0.5)) { continue }
+                if (d.tunnel || !d.Covers(x, y, 0.5)) { continue }
                 float z = d.At(d.hitS)
                 if (z > top) {
                     top = z
@@ -426,6 +600,11 @@ namespace Raser {
             float p[] = new float[4]
             this.depth = 0.0
             foreach (d in list) {
+                if (bridge != 0 && d.tunnel) {
+                    if (d.road == bridge) { this.PushTube(d, list, x, y, radius) }
+                    continue
+                }
+                if (d.tunnel) { continue }        // vom Gelände: die Rampen haben Stützwände (Raser.Tunnels.Walls, wie Leitplanken)
                 if (bridge != 0) {
                     if (d.road != bridge || !d.Covers(x, y, 0.3)) { continue }
                     float half = d.width / 2.0
@@ -478,6 +657,155 @@ namespace Raser {
                 }
             }
             return this.depth > 0.0
+        }
+
+        // Ein Kreis (kachel-lokal) im Tunnel bzw. der Tiefgarage d gegen ihre Wände (und die Wand an einem geschlossenen Ende, die Stützen der
+        // Tiefgarage): frei, wo der Kreis in einen anderen Tunnel derselben Höhe reicht (Abzweig, Einfahrt). Setzt pushX, pushY, depth.
+        undefined PushTube(Raser.BridgeDeck d, List<Raser.BridgeDeck> list, defined float x, defined float y, defined float radius) {
+            float p[] = new float[4]
+            if (d.ring != undefined) {
+                float z = d.z[0]
+                bool inside = Raser.Geo.Inside(d.ring, x, y)
+                float dist = Raser.Geo.DistanceToRing(d.ring, x, y)
+                float deep = radius - dist
+                if (!inside) { deep = radius + dist }
+                if (deep > this.depth) {
+                    // die Richtung zum nächsten Punkt des Rands (nach innen)
+                    float best = 1.0e30
+                    float qx = x
+                    float qy = y
+                    int n = d.ring.length / 2
+                    for (int i = 0; i < n; i++) {
+                        int j = (i + 1) % n
+                        float ax = d.ring[i * 2]
+                        float ay = d.ring[i * 2 + 1]
+                        float ex = d.ring[j * 2] - ax
+                        float ey = d.ring[j * 2 + 1] - ay
+                        float l2 = ex * ex + ey * ey
+                        if (l2 < 0.000001) { continue }
+                        float t = Math.Clamp(((x - ax) * ex + (y - ay) * ey) / l2, 0.0, 1.0)
+                        float dd = (ax + ex * t - x) * (ax + ex * t - x) + (ay + ey * t - y) * (ay + ey * t - y)
+                        if (dd < best) {
+                            best = dd
+                            qx = ax + ex * t
+                            qy = ay + ey * t
+                        }
+                    }
+                    float nx = qx - x
+                    float ny = qy - y
+                    float l = Math.Sqrt(nx * nx + ny * ny)
+                    if (l > 0.0001) {
+                        nx = nx / l
+                        ny = ny / l
+                        if (inside) {
+                            nx = -nx
+                            ny = -ny
+                        }
+                        // die Wand fehlt, wo der Kreis in eine Fahrgasse oder Rampe derselben Höhe reicht
+                        float ox = x - nx * radius
+                        float oy = y - ny * radius
+                        if (!Raser.Obstacles.OtherTube(d, list, ox, oy, z) && !Raser.Obstacles.OtherTube(d, list, x, y, z)) {
+                            this.depth = deep
+                            this.pushX = nx
+                            this.pushY = ny
+                        }
+                    }
+                }
+                // die Stützen (0,5 m im Quadrat, als Kreis)
+                if (d.pillars == undefined) {
+                    d.pillars = new List<float>()
+                    var lines = new List<float>()
+                    Raser.Tunnels.Bays(d, list, d.pillars, lines)
+                }
+                for (int q = 0; q + 1 < d.pillars.Count; q = q + 2) {
+                    float dx = x - d.pillars[q]
+                    float dy = y - d.pillars[q + 1]
+                    float dd = Math.Sqrt(dx * dx + dy * dy)
+                    float deep = radius + 0.35 - dd
+                    if (deep > this.depth && dd > 0.0001) {
+                        this.depth = deep
+                        this.pushX = dx / dd
+                        this.pushY = dy / dd
+                    }
+                }
+                return
+            }
+            float dist = d.Nearest(x, y)
+            float s = d.hitS
+            float side = d.hitSide
+            float z = d.At(s)
+            d.PointAt(s, p)
+            // die Seitenwände
+            float over = Math.Abs(side) + radius - d.half
+            if (over > 0.0 && over > this.depth) {
+                float sg = -1.0
+                if (side > 0.0) { sg = 1.0 }
+                // nach außen: links (-dy, dx), rechts (dy, -dx)
+                float ox = p[0] - p[3] * sg * (d.half + 0.2)
+                float oy = p[1] + p[2] * sg * (d.half + 0.2)
+                if (!Raser.Obstacles.OtherTube(d, list, ox, oy, z)) {
+                    this.depth = over
+                    this.pushX = p[3] * sg
+                    this.pushY = -p[2] * sg
+                }
+            }
+            // die Wand an einem geschlossenen Ende (kein Portal, kein anderer Tunnel)
+            float along = 0.0
+            float back = 0.0
+            if (!d.startJoined && !d.startLinked) {
+                along = radius - s
+                if (along > 0.0 && along > this.depth) {
+                    d.PointAt(0.0, p)
+                    // vor dem Anfang (Nearest hält s fest): um den Abstand dahinter
+                    float ax = x - p[0]
+                    float ay = y - p[1]
+                    float behind = -(ax * p[2] + ay * p[3])
+                    if (behind > 0.0) { along = radius + behind }
+                    this.depth = along
+                    this.pushX = p[2]
+                    this.pushY = p[3]
+                }
+            }
+            if (!d.endJoined && !d.endLinked) {
+                back = radius - (d.length - s)
+                if (back > 0.0 && back > this.depth) {
+                    d.PointAt(d.length, p)
+                    float ax = x - p[0]
+                    float ay = y - p[1]
+                    float beyond = ax * p[2] + ay * p[3]
+                    if (beyond > 0.0) { back = radius + beyond }
+                    this.depth = back
+                    this.pushX = -p[2]
+                    this.pushY = -p[3]
+                }
+            }
+        }
+
+        // Liegt (x, y) (kachel-lokal) in einem anderen Tunnel bzw. einer Tiefgarage als self, auf der Höhe z (bis 0,7 m)?
+        static defined bool OtherTube(Raser.BridgeDeck self, List<Raser.BridgeDeck> list, defined float x, defined float y, defined float z) {
+            foreach (o in list) {
+                if (o == self || !o.tunnel || !o.Covers(x, y, 0.0)) { continue }
+                if (Math.Abs(o.HeightHit() - z) <= 0.7) { return true }
+            }
+            return false
+        }
+
+        // Steht an (e, n) ein Gebäude (mit margin m Abstand zur Wand, bis 1,9 m)?
+        // level: die Ebene; in einem Tunnel bzw. einer Tiefgarage ist frei, was in ihm liegt (margin m von den Wänden).
+        defined bool BlockedAt(defined float e, defined float n, defined float margin, defined int level) {
+            if (level != 0 && this.Underground(e, n, level)) {
+                var list = this.DecksAt(e, n)
+                var key = Raser.TileKey.Of(e, n)
+                float z = 0.0
+                foreach (d in list) {
+                    if (d.road == level) {
+                        d.Nearest(e - key.East, n - key.North)
+                        z = d.HeightHit()
+                    }
+                }
+                return !this.InTube(e, n, z, margin)
+            }
+            return this.Blocked(e, n, margin)
         }
 
         // Steht an (e, n) ein Gebäude (mit margin m Abstand zur Wand, bis 1,9 m)?

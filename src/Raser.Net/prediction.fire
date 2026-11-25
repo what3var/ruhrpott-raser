@@ -131,7 +131,9 @@ namespace Raser {
             b.lean = e.b / 10.0
             b.sliding = (e.bits & Raser.EntityType.Sliding) != 0
             b.bridge = 0
-            if ((e.bits & Raser.EntityType.OnBridge) != 0) { b.bridge = this.world.obstacles.DeckUnder(e.east, e.north) }
+            if ((e.bits & Raser.EntityType.OnBridge) != 0) {
+                if ((e.bits & Raser.EntityType.Underground) != 0) { b.bridge = this.world.obstacles.DeckBelow(e.east, e.north) } else { b.bridge = this.world.obstacles.DeckUnder(e.east, e.north) }
+            }
             b.pushE = 0.0
             b.pushN = 0.0
             b.spin = 0.0

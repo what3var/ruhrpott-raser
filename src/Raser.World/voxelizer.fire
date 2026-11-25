@@ -255,7 +255,9 @@ namespace Raser {
         //     Hecken, Lauben, Gräber, Schilf; Waldboden
         // 34: Möbel, Spielgeräte, Bäume, Sträucher, Hecken im öffentlichen Raum nicht mehr als Voxel (Raser.Props.AsModel): Modelle im Netz der
         //     nahen Stufe (Raser.PropMesher), in jedem Winkel; Sträucher der Grünstreifen ebenso (Raser.Strips.Bushes)
-        static readonly defined int Version = 34
+        // 35: Tunnel (layer < 0) nicht als Belag auf dem Gelände (Raser.Tunnels: im Netz), Möbel nicht an Wegen im Tunnel; Durchfahrten aus
+        //     tunnel=building_passage (der Import nimmt sie jetzt auf)
+        static readonly defined int Version = 35
         static readonly defined float StoreyHeight = 2.8
 
         Tile tile
@@ -957,8 +959,9 @@ namespace Raser {
             for (int ri = 0; ri < this.tile.data.roads.Count; ri++) {
                 if (!this.roadBoxes[ri].Overlaps(mx0, my0, mx1, my1)) { continue }
                 var r = this.tile.data.roads[ri]
-                // Brücken (layer > 0) liegen auf ihrem Deck (Raser.Bridges, im Netz gebaut), nicht auf dem Gelände: die Straße darunter bleibt frei
-                if (r.layer > 0) { continue }
+                // Brücken (layer > 0) liegen auf ihrem Deck (Raser.Bridges, im Netz gebaut), nicht auf dem Gelände: die Straße darunter bleibt frei;
+                // Tunnel (layer < 0) unter dem Gelände (Raser.Tunnels, ebenso im Netz)
+                if (r.layer != 0) { continue }
                 float hw = r.width / 2.0
                 int n = r.points.length / 2
                 for (int sgi = 0; sgi < n; sgi++) {

@@ -43,6 +43,120 @@ class BridgeWorld {
     }
 }
 
+// Kachel 0_0: Gelände 50 m; ein Tunnel (layer -1) von Süd nach Nord (x = 100, y = 60 .. 140) auf 44 m, davor und dahinter Rampen (das
+// Raster auf 25 m abgesenkt, wie der Import es tut); quer darüber eine Straße auf dem Gelände.
+class TunnelWorld {
+    static Raser.Obstacles Make() {
+        var tile = new Raser.Tile(new Raser.TileKey(0, 0))
+        var raster = new Raser.HeightRaster(0.0, 0.0, 1.0, 257, 257, 50.0)
+        for (int r = 0; r < 257; r++) {
+            for (int c = 96; c <= 104; c++) {
+                if (r >= 35 && r <= 60) { raster.Set(c, r, 50.0 - (r - 35.0) * 6.0 / 25.0) }
+                if (r >= 140 && r <= 165) { raster.Set(c, r, 44.0 + (r - 140.0) * 6.0 / 25.0) }
+            }
+        }
+        tile.heights = take raster
+        var t = BridgeWorld.Road(5, "highway=residential", [100.0, 60.0, 100.0, 140.0], 5.5, -1)
+        t.profile = new float[81]
+        t.top = new float[81]
+        for (int i = 0; i < 81; i++) {
+            t.profile[i] = 44.0
+            t.top[i] = 50.0
+        }
+        t.top[0] = 44.0
+        t.top[80] = 44.0
+        t.clearance = 4.5
+        tile.data.roads.Add(take t)
+        tile.data.roads.Add(BridgeWorld.Road(6, "highway=residential", [100.0, 0.0, 100.0, 60.0], 5.5, 0))
+        tile.data.roads.Add(BridgeWorld.Road(7, "highway=residential", [100.0, 140.0, 100.0, 250.0], 5.5, 0))
+        tile.data.roads.Add(BridgeWorld.Road(8, "highway=residential", [0.0, 100.0, 200.0, 100.0], 5.5, 0))
+        var o = new Raser.Obstacles("")
+        o.decks["0_0"] = Raser.Bridges.Of(tile)
+        var none = new List<Raser.Box2>()
+        o.boxes["0_0"] = none
+        none.TakeTo(o.boxes)
+        var grid = Raser.Obstacles.Grid(none)
+        o.grids["0_0"] = grid
+        grid.TakeTo(o.grids)
+        o.tiles["0_0"] = take tile
+        return o
+    }
+}
+
+class TunnelTests {
+    [Test "Tunnel: durch das Portal hinein, unter der Straße durch, am anderen Ende hinaus; oben fährt man darüber"]
+    undefined Drive() {
+        var o = TunnelWorld.Make()
+        var decks = o.decks["0_0"]
+        Testing.Assert.AreEqual(1, decks.Count)
+        Testing.Assert.IsTrue(decks[0].tunnel && decks[0].startJoined && decks[0].endJoined)
+        var all = new List<Raser.Vehicle>()
+        var car = Raser.Vehicle.Of("auto")
+        car.east = 101.4
+        car.north = 20.0
+        car.heading = 0.0
+        car.speed = 12.0
+        var over = Raser.Vehicle.Of("auto")
+        over.east = 40.0
+        over.north = 101.4
+        over.heading = -90.0
+        over.speed = 12.0
+        all.Add(car)
+        all.Add(over)
+        bool inside = false
+        bool overAlways = true
+        float dt = 1.0 / 30.0
+        for (int i = 0; i < 360; i++) {
+            Raser.Physics.Advance(car, all, o, dt, 0.3, 0.0, 0.0, false, 0.0)
+            Raser.Physics.Advance(over, all, o, dt, 0.3, 0.0, 0.0, false, 0.0)
+            if (car.north > 65.0 && car.north < 135.0) {
+                Testing.Assert.AreEqual(5, car.bridge)
+                Testing.Assert.IsTrue(o.Underground(car.east, car.north, car.bridge))
+                any z = o.DeckHeight(car.east, car.north, car.bridge)
+                Testing.Assert.IsTrue(z != undefined && Math.Abs(z - 44.0) < 0.05)
+                any c = o.Ceiling(car.east, car.north, car.bridge)
+                Testing.Assert.IsTrue(c != undefined && Math.Abs(c - 48.5) < 0.05)
+                inside = true
+            }
+            if (over.bridge != 0) { overAlways = false }
+        }
+        Testing.Assert.IsTrue(inside)
+        Testing.Assert.IsTrue(overAlways)
+        Testing.Assert.IsTrue(car.north > 150.0)
+        Testing.Assert.AreEqual(0, car.bridge)
+        Testing.Assert.IsTrue(over.east > 150.0)
+        Testing.Assert.AreEqual(5, o.DeckBelow(100.0, 100.0))
+        Testing.Assert.AreEqual(0, o.DeckUnder(100.0, 100.0))
+    }
+
+    [Test "Tunnel: die Wände halten auf, zu Fuß bleibt man drin"]
+    undefined Walls() {
+        var o = TunnelWorld.Make()
+        var all = new List<Raser.Vehicle>()
+        var car = Raser.Vehicle.Of("auto")
+        car.east = 100.0
+        car.north = 100.0
+        car.heading = -90.0
+        car.speed = 10.0
+        car.bridge = 5
+        float dt = 1.0 / 30.0
+        for (int i = 0; i < 90; i++) { Raser.Physics.Advance(car, all, o, dt, 0.5, 0.0, 0.0, false, 0.0) }
+        Testing.Assert.AreEqual(5, car.bridge)
+        Testing.Assert.IsTrue(Math.Abs(car.east - 100.0) < 4.5)
+        var w = new Raser.Walker()
+        w.east = 100.0
+        w.north = 100.0
+        w.heading = 90.0
+        w.bridge = 5
+        for (int i = 0; i < 120; i++) { Raser.Physics.Walk(w, all, o, dt, 1.0, 0.0, false) }
+        Testing.Assert.AreEqual(5, w.bridge)
+        Testing.Assert.IsTrue(Math.Abs(w.east - 100.0) < 4.5)
+        // die Kamera: frei nur in der Röhre
+        Testing.Assert.IsFalse(o.BlockedAt(100.0, 95.0, 0.6, 5))
+        Testing.Assert.IsTrue(o.BlockedAt(108.0, 95.0, 0.6, 5))
+    }
+}
+
 class BridgeTests {
     [Test "Deck: über dem Einschnitt auf Höhe der Enden, Rampen am Gelände, kein Pfeiler auf der Straße darunter"]
     undefined Deck() {

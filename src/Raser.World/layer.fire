@@ -70,8 +70,14 @@ namespace Raser {
         Material surface
         defined int color
         defined int lanes
-        defined int layer         // OSM layer (Brücken > 0, Tunnel < 0; noch nicht genutzt)
+        defined int layer         // OSM layer (Brücken > 0, Tunnel und Unterführungen < 0: Raser.Tunnels)
         string sidewalk           // OSM sidewalk: "both", "left", "right", "no", "separate"; undefined: nicht angegeben (dann nach Art)
+        // Tunnel (layer < 0) und die Rampen davor (Raser.Tunnels, aus dem Import): je Meter entlang der Linie die Höhe der Fahrbahn (m über NHN;
+        // Rampe: Raser.Tunnels.Open, wo sie auf dem Gelände liegt) und die Oberfläche darüber bzw. daneben (Tunnel: Gelände oder Bahndamm über
+        // der Decke; Rampe: die Oberkante der Stützwand). undefined: auf dem Gelände.
+        float profile[]
+        float top[]
+        defined float clearance   // Tunnel: die lichte Höhe (m; Straße 4,5, Fußweg 2,5, Tiefgarage 2,5)
 
         construct() {
             this.surface = Raser.Material.Asphalt
@@ -89,6 +95,19 @@ namespace Raser {
         Material surface
         defined int color
         defined int priority      // bei Überlappung gewinnt die höhere
+
+        construct() { }
+    }
+
+    // Eine Tiefgarage (OSM amenity=parking, parking=underground; Raser.Tunnels): der Grundriss und die Höhe ihres Bodens. Nur mit einer Zufahrt
+    // (einem Tunnel, der in ihr liegt).
+    class Garage {
+        defined int id
+        string source
+        string name
+        float ring[]
+        defined float floor       // m über NHN (wie die Fahrgassen darin)
+        defined float clearance   // lichte Höhe (m)
 
         construct() { }
     }
@@ -134,6 +153,7 @@ namespace Raser {
         List<Poi> pois
         List<Prop> props
         List<Area> zones          // Gebiete ohne eigenen Belag (Wohngebiet, Hof, Dorf, Altstadt ...): nur für das Aussehen der Häuser (Raser.HouseStyle)
+        List<Garage> garages      // Tiefgaragen (Raser.Tunnels)
 
         construct() {
             this.format = 1
@@ -146,6 +166,7 @@ namespace Raser {
             this.pois = new List<Poi>()
             this.props = new List<Prop>()
             this.zones = new List<Area>()
+            this.garages = new List<Garage>()
         }
     }
 

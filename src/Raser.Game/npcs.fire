@@ -399,7 +399,14 @@ class TrafficView {
             // nah: auf seinen Rädern (geneigt am Hang, auf dem Bordstein, gefedert - CarModel.Stand), fern flach
             if (near) {
                 int level = 0
-                if (TrafficView.BridgesDrawn && st.z != 0.0) { level = -1 }
+                if (TrafficView.BridgesDrawn && st.z != 0.0) {
+                    // das Deck, dessen Fahrbahn zur Höhe passt (Brücke oder Tunnel)
+                    level = -1
+                    if (terrain.bridges != undefined) {
+                        int near = terrain.bridges.DeckNear(st.east, st.north, st.z)
+                        if (near != 0) { level = near }
+                    }
+                }
                 m.Stand(terrain, view, st.east, st.north, st.heading, 0.0, level, this.placeDt)
                 continue
             }

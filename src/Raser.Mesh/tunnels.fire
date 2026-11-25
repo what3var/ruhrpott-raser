@@ -1,0 +1,341 @@
+// Raser.Mesh: Tunnel, Unterführungen und Tiefgaragen als Netz-Bausteine (wie Raser.BridgeMesher; Höhen aus Raser.Tunnels) - je Meter entlang
+// der Röhre die Fahrbahn (Fußwege: Pflaster) mit Notgehwegen (15 cm hoch, Beton), die Wände und die Decke (Beton), alle 8 m eine Lampe an der
+// Decke (Palette.Lamp: leuchtet nachts und unter der Erde, Raser.Atlas); an den Übergängen zum offenen Einschnitt das Portal (die Stirnwand bis
+// zur Oberfläche, oben eine Brüstung). Offene Stücke und die Rampen davor (auf dem Gelände, das der Import abgesenkt hat) bekommen Stützwände
+// bis zur Oberfläche mit einer Brüstung. Tiefgaragen: Boden, Decke, Außenwände, Stützen und Stellplatzlinien (Raser.Tunnels.Bays). Wo ein Tunnel
+// in einen anderen derselben Höhe übergeht (Abzweig, Fahrgasse in der Garage), fehlt die Wand. Gebaut für die nahe und die ferne Stufe; ein Stück
+// gehört dem Block, in dem seine Mitte liegt. Koordinaten wie Raser.FarMesher: kachel-lokal in x, y, absolut in z.
+#import "raser.core"
+#import "raser.world"
+
+namespace Raser {
+    class TunnelMesher {
+        static readonly defined float Curb = 0.15         // Notgehweg (m)
+        static readonly defined float Parapet = 1.0       // Brüstung über der Oberfläche (m)
+
+        static defined bool Inside(defined float x, defined float y, defined float x0, defined float y0, defined float size) {
+            return x >= x0 && y >= y0 && x < x0 + size && y < y0 + size
+        }
+
+        // Alle Tunnel, Tiefgaragen und Rampen der Kachel im Block (x0, y0, Kantenlänge size) in part.
+        static undefined Add(MeshPart part, List<BridgeDeck> decks, List<Road> roads, defined float x0, defined float y0, defined float size) {
+            foreach (d in decks) {
+                if (!d.tunnel) { continue }
+                if (d.ring != undefined) { Raser.TunnelMesher.Garage(part, d, decks, x0, y0, size) } else { Raser.TunnelMesher.Tube(part, d, decks, x0, y0, size) }
+            }
+            foreach (r in roads) {
+                if (Raser.Tunnels.HasRamp(r)) { Raser.TunnelMesher.Ramp(part, r, decks, x0, y0, size) }
+            }
+        }
+
+        // Liegt (x, y) in einem anderen Tunnel derselben Höhe (bis 1 m)? before: nur die mit kleinerer ID bzw. Tiefgaragen (wer zeichnet, wo sie sich
+        // überdecken).
+        static defined bool Other(List<BridgeDeck> decks, BridgeDeck self, defined float x, defined float y, defined float z, defined bool before) {
+            foreach (o in decks) {
+                if (o == self || !o.tunnel) { continue }
+                if (before && !(o.ring != undefined || o.road < self.road)) { continue }
+                if (!o.Covers(x, y, 0.0)) { continue }
+                if (Math.Abs(o.HeightHit() - z) < 1.0) { return true }
+            }
+            return false
+        }
+
+        static undefined Tube(MeshPart part, BridgeDeck d, List<BridgeDeck> decks, defined float x0, defined float y0, defined float size) {
+            int m = d.z.length
+            if (m < 2) { return }
+            int concrete = Raser.Palette.Concrete
+            int cm = Raser.Material.Concrete!int
+            float hw = d.half
+            float rw = Math.Min(d.roadWidth / 2.0, hw)
+            float p[] = new float[4]
+            float q[] = new float[4]
+            for (int i = 0; i + 1 < m; i++) {
+                float s0 = i * Raser.BridgeDeck.Step
+                float s1 = Math.Min((i + 1) * Raser.BridgeDeck.Step, d.length)
+                if (s1 <= s0) { continue }
+                d.PointAt(s0, p)
+                d.PointAt(s1, q)
+                float mx = (p[0] + q[0]) * 0.5
+                float my = (p[1] + q[1]) * 0.5
+                if (!Raser.TunnelMesher.Inside(mx, my, x0, y0, size)) { continue }
+                float prx = p[3]
+                float pry = -p[2]
+                float qrx = q[3]
+                float qry = -q[2]
+                float za = d.z[i]
+                float zb = d.z[i + 1]
+                float ta = d.top[i]
+                float tb = d.top[i + 1]
+                bool covA = Raser.Tunnels.Covered(za, ta)
+                bool covB = Raser.Tunnels.Covered(zb, tb)
+                bool covered = covA && covB
+                float ca = Raser.Tunnels.Ceiling(za, ta, d.clearance)
+                float cb = Raser.Tunnels.Ceiling(zb, tb, d.clearance)
+                float fx = q[0] - p[0]
+                float fy = q[1] - p[1]
+                float fl = Math.Max(0.0001, Math.Sqrt(fx * fx + fy * fy))
+                float nx = fy / fl
+                float ny = -fx / fl
+                float zm = (za + zb) * 0.5
+                // wo ein anderer Tunnel derselben Höhe dasselbe Stück überdeckt, zeichnet der mit der kleineren ID (bzw. die Tiefgarage)
+                bool shared = Raser.TunnelMesher.Other(decks, d, mx, my, zm, true)
+                bool inGarage = false
+                foreach (o in decks) {
+                    if (o.ring != undefined && o.Covers(mx, my, 0.0) && Math.Abs(o.z[0] - zm) < 1.0) { inGarage = true }
+                }
+                // die Fahrbahn und die Notgehwege (in der Tiefgarage 2 cm über ihrem Boden)
+                float lift = 0.0
+                if (inGarage) { lift = 0.02 }
+                if (!shared || inGarage) {
+                    part.Quad(p[0] - prx * rw, p[1] - pry * rw, za + lift, p[0] + prx * rw, p[1] + pry * rw, za + lift, q[0] + qrx * rw, q[1] + qry * rw, zb + lift, q[0] - qrx * rw, q[1] - qry * rw, zb + lift, 0.0, 0.0, 1.0, d.color, d.surface)
+                }
+                if (!shared && !inGarage && hw - rw > 0.2) {
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float sg = side * 1.0
+                        float ax = p[0] + prx * rw * sg
+                        float ay = p[1] + pry * rw * sg
+                        float bx = q[0] + qrx * rw * sg
+                        float by = q[1] + qry * rw * sg
+                        float wx = p[0] + prx * hw * sg
+                        float wy = p[1] + pry * hw * sg
+                        float vx = q[0] + qrx * hw * sg
+                        float vy = q[1] + qry * hw * sg
+                        float k = Raser.TunnelMesher.Curb
+                        part.Quad(ax, ay, za - 0.05, bx, by, zb - 0.05, bx, by, zb + k, ax, ay, za + k, -nx * sg, -ny * sg, 0.0, concrete, cm)
+                        part.Quad(ax, ay, za + k, bx, by, zb + k, vx, vy, zb + k, wx, wy, za + k, 0.0, 0.0, 1.0, Raser.Palette.Sidewalk, Raser.Material.Paving!int)
+                    }
+                }
+                // die Wände: bis unter die Decke, im offenen Einschnitt bis zur Oberfläche (mit Brüstung); nicht, wo ein anderer Tunnel anschließt
+                for (int side = -1; side <= 1; side = side + 2) {
+                    float sg = side * 1.0
+                    float wx = p[0] + prx * hw * sg
+                    float wy = p[1] + pry * hw * sg
+                    float vx = q[0] + qrx * hw * sg
+                    float vy = q[1] + qry * hw * sg
+                    if (Raser.TunnelMesher.Other(decks, d, (wx + vx) * 0.5 + nx * sg * 0.3, (wy + vy) * 0.5 + ny * sg * 0.3, zm, false)) { continue }
+                    if (inGarage) { continue }
+                    float ha = ca
+                    float hb = cb
+                    if (!covered) {
+                        ha = Math.Max(ta, za + 0.3)
+                        hb = Math.Max(tb, zb + 0.3)
+                    }
+                    part.Quad(wx, wy, za - 0.05, vx, vy, zb - 0.05, vx, vy, hb, wx, wy, ha, -nx * sg, -ny * sg, 0.0, concrete, cm)
+                    if (!covered && (ta - za > 0.5 || tb - zb > 0.5)) {
+                        Raser.TunnelMesher.Parapet(part, wx, wy, vx, vy, ha, hb, nx * sg, ny * sg, concrete, cm)
+                    }
+                }
+                if (!covered) { continue }
+                // die Decke
+                if (!shared && !inGarage) {
+                    part.Quad(p[0] - prx * hw, p[1] - pry * hw, ca, q[0] - qrx * hw, q[1] - qry * hw, cb, q[0] + qrx * hw, q[1] + qry * hw, cb, p[0] + prx * hw, p[1] + pry * hw, ca, 0.0, 0.0, -1.0, concrete, cm)
+                }
+                // die Lampen (alle LampStep m, in der Mitte, 1,2 x 0,3 m, 5 cm unter der Decke)
+                float lampS = Math.Floor(s0 / Raser.Tunnels.LampStep) * Raser.Tunnels.LampStep + Raser.Tunnels.LampStep * 0.5
+                if (lampS >= s0 && lampS < s1 && !shared) {
+                    float lp[] = new float[4]
+                    d.PointAt(lampS, lp)
+                    float lz = Raser.Tunnels.Ceiling(d.At(lampS), d.TopAt(lampS), d.clearance) - 0.05
+                    float lx = lp[2] * 0.6
+                    float ly = lp[3] * 0.6
+                    float rx = lp[3] * 0.15
+                    float ry = -lp[2] * 0.15
+                    part.Quad(lp[0] - lx - rx, lp[1] - ly - ry, lz, lp[0] + lx - rx, lp[1] + ly - ry, lz, lp[0] + lx + rx, lp[1] + ly + ry, lz, lp[0] - lx + rx, lp[1] - ly + ry, lz, 0.0, 0.0, -1.0, Raser.Palette.Lamp, Raser.Material.Glass!int)
+                }
+            }
+            // die Portale: wo ein offenes Stück in ein überdecktes übergeht, die Stirnwand von der Decke bis zur Oberfläche (außen) und darauf eine
+            // Brüstung; an einem geschlossenen Ende (kein Portal, kein anderer Tunnel) eine Wand innen
+            for (int i = 0; i < m; i++) {
+                float s = Math.Min(i * Raser.BridgeDeck.Step, d.length)
+                bool cov = Raser.Tunnels.Covered(d.z[i], d.top[i])
+                float dir = 0.0
+                if (cov && i > 0 && !Raser.Tunnels.Covered(d.z[i - 1], d.top[i - 1])) { dir = -1.0 }
+                if (cov && i + 1 < m && !Raser.Tunnels.Covered(d.z[i + 1], d.top[i + 1])) { dir = 1.0 }
+                if (cov && i == 0 && d.startJoined) { dir = -1.0 }
+                if (cov && i == m - 1 && d.endJoined) { dir = 1.0 }
+                d.PointAt(s, p)
+                if (!Raser.TunnelMesher.Inside(p[0], p[1], x0, y0, size)) { continue }
+                float rx = p[3]
+                float ry = -p[2]
+                if (dir != 0.0) {
+                    float c = Raser.Tunnels.Ceiling(d.z[i], d.top[i], d.clearance)
+                    float t = d.top[i]
+                    float w = hw + Raser.Tunnels.Wall + 0.6
+                    float ax = p[0] - rx * w
+                    float ay = p[1] - ry * w
+                    float bx = p[0] + rx * w
+                    float by = p[1] + ry * w
+                    // die Stirn über der Öffnung (außen) und der Rahmen zu den Seiten bis zum Boden
+                    part.Quad(ax, ay, c, bx, by, c, bx, by, t + 0.05, ax, ay, t + 0.05, p[2] * dir, p[3] * dir, 0.0, concrete, cm)
+                    for (int side = -1; side <= 1; side = side + 2) {
+                        float sg = side * 1.0
+                        float ix = p[0] + rx * hw * sg
+                        float iy = p[1] + ry * hw * sg
+                        float ox = p[0] + rx * w * sg
+                        float oy = p[1] + ry * w * sg
+                        part.Quad(ix, iy, d.z[i] - 0.05, ox, oy, d.z[i] - 0.05, ox, oy, c, ix, iy, c, p[2] * dir, p[3] * dir, 0.0, concrete, cm)
+                    }
+                    // die Unterseite des Sturzes (von der Decke bis zur Stirn, 0,4 m)
+                    float lx = p[0] + p[2] * dir * 0.4
+                    float ly = p[1] + p[3] * dir * 0.4
+                    part.Quad(ax, ay, c, lx - rx * w, ly - ry * w, c, lx + rx * w, ly + ry * w, c, bx, by, c, 0.0, 0.0, -1.0, concrete, cm)
+                    Raser.TunnelMesher.Parapet(part, ax, ay, bx, by, t, t, p[2] * dir, p[3] * dir, concrete, cm)
+                    continue
+                }
+                bool closedStart = i == 0 && !d.startJoined && !d.startLinked
+                bool closedEnd = i == m - 1 && !d.endJoined && !d.endLinked
+                if ((closedStart || closedEnd) && !Raser.TunnelMesher.Other(decks, d, p[0], p[1], d.z[i], false)) {
+                    float c = Raser.Tunnels.Ceiling(d.z[i], d.top[i], d.clearance)
+                    if (!cov) { c = Math.Max(d.top[i], d.z[i] + 0.3) }
+                    float inward = 1.0
+                    if (closedEnd) { inward = -1.0 }
+                    part.Quad(p[0] - rx * hw, p[1] - ry * hw, d.z[i] - 0.05, p[0] + rx * hw, p[1] + ry * hw, d.z[i] - 0.05, p[0] + rx * hw, p[1] + ry * hw, c, p[0] - rx * hw, p[1] - ry * hw, c, p[2] * inward, p[3] * inward, 0.0, concrete, cm)
+                }
+            }
+        }
+
+        // Eine Brüstung auf einer Wand von a nach b (Oberkante za, zb), außen in Richtung (nx, ny): 0,3 m dick, Parapet m hoch.
+        static undefined Parapet(MeshPart part, defined float ax, defined float ay, defined float bx, defined float by, defined float za, defined float zb, defined float nx, defined float ny, defined int color, defined int material) {
+            float h = Raser.TunnelMesher.Parapet
+            float t = 0.3
+            float cx = ax + nx * t
+            float cy = ay + ny * t
+            float dx = bx + nx * t
+            float dy = by + ny * t
+            part.Quad(ax, ay, za, bx, by, zb, bx, by, zb + h, ax, ay, za + h, -nx, -ny, 0.0, color, material)
+            part.Quad(cx, cy, za - 0.3, dx, dy, zb - 0.3, dx, dy, zb + h, cx, cy, za + h, nx, ny, 0.0, color, material)
+            part.Quad(ax, ay, za + h, bx, by, zb + h, dx, dy, zb + h, cx, cy, za + h, 0.0, 0.0, 1.0, color, material)
+        }
+
+        // Die Rampe einer Straße auf dem Gelände (Raser.Road.profile): je Meter zu beiden Seiten eine Stützwand von der Fahrbahn bis zur Oberkante
+        // mit Brüstung, wo sie mehr als 0,3 m darüber liegt. Wo ein Tunnel dasselbe Stück überdeckt, zeichnet er.
+        static undefined Ramp(MeshPart part, Road r, List<BridgeDeck> decks, defined float x0, defined float y0, defined float size) {
+            var line = Raser.Tunnels.Line(r.points)
+            float hw = Raser.Tunnels.RampHalf(r)
+            int m = r.profile.length
+            int concrete = Raser.Palette.Concrete
+            int cm = Raser.Material.Concrete!int
+            float p[] = new float[4]
+            float q[] = new float[4]
+            for (int i = 0; i + 1 < m; i++) {
+                if (!Raser.Tunnels.RampAt(r, i) || !Raser.Tunnels.RampAt(r, i + 1)) { continue }
+                float za = r.profile[i]
+                float zb = r.profile[i + 1]
+                float ta = r.top[i]
+                float tb = r.top[i + 1]
+                if (ta - za < 0.3 && tb - zb < 0.3) { continue }
+                float s0 = i * Raser.BridgeDeck.Step
+                float s1 = Math.Min((i + 1) * Raser.BridgeDeck.Step, line.length)
+                if (s1 <= s0) { continue }
+                line.PointAt(s0, p)
+                line.PointAt(s1, q)
+                float mx = (p[0] + q[0]) * 0.5
+                float my = (p[1] + q[1]) * 0.5
+                if (!Raser.TunnelMesher.Inside(mx, my, x0, y0, size)) { continue }
+                bool tube = false
+                foreach (o in decks) {
+                    if (o.tunnel && o.ring == undefined && o.Covers(mx, my, 0.0) && Math.Abs(o.HeightHit() - (za + zb) * 0.5) < 1.0) { tube = true }
+                }
+                if (tube) { continue }
+                float fx = q[0] - p[0]
+                float fy = q[1] - p[1]
+                float fl = Math.Max(0.0001, Math.Sqrt(fx * fx + fy * fy))
+                float nx = fy / fl
+                float ny = -fx / fl
+                for (int side = -1; side <= 1; side = side + 2) {
+                    float sg = side * 1.0
+                    float wx = p[0] + p[3] * hw * sg
+                    float wy = p[1] - p[2] * hw * sg
+                    float vx = q[0] + q[3] * hw * sg
+                    float vy = q[1] - q[2] * hw * sg
+                    float ha = Math.Max(ta, za + 0.3)
+                    float hb = Math.Max(tb, zb + 0.3)
+                    part.Quad(wx, wy, za - 0.3, vx, vy, zb - 0.3, vx, vy, hb, wx, wy, ha, -nx * sg, -ny * sg, 0.0, concrete, cm)
+                    Raser.TunnelMesher.Parapet(part, wx, wy, vx, vy, ha, hb, nx * sg, ny * sg, concrete, cm)
+                }
+            }
+        }
+
+        // Eine Tiefgarage: Boden und Decke (aus dem Grundriss trianguliert, je Dreieck im Block seiner Mitte), die Außenwände (je Meter, offen, wo eine
+        // Rampe oder Fahrgasse hinausführt), Stützen und Stellplatzlinien.
+        static undefined Garage(MeshPart part, BridgeDeck g, List<BridgeDeck> decks, defined float x0, defined float y0, defined float size) {
+            float ring[] = g.ring
+            float z = g.z[0]
+            float c = z + g.clearance
+            int concrete = Raser.Palette.Concrete
+            int cm = Raser.Material.Concrete!int
+            var tris = Raser.Geo.Triangulate(ring)
+            if (tris != undefined) {
+                for (int t = 0; t + 2 < tris.length; t = t + 3) {
+                    float ax = ring[tris[t] * 2]
+                    float ay = ring[tris[t] * 2 + 1]
+                    float bx = ring[tris[t + 1] * 2]
+                    float by = ring[tris[t + 1] * 2 + 1]
+                    float cx = ring[tris[t + 2] * 2]
+                    float cy = ring[tris[t + 2] * 2 + 1]
+                    if (!Raser.TunnelMesher.Inside((ax + bx + cx) / 3.0, (ay + by + cy) / 3.0, x0, y0, size)) { continue }
+                    part.Quad(ax, ay, z, bx, by, z, cx, cy, z, cx, cy, z, 0.0, 0.0, 1.0, Raser.Palette.Asphalt, Raser.Material.Concrete!int)
+                    part.Quad(ax, ay, c, bx, by, c, cx, cy, c, cx, cy, c, 0.0, 0.0, -1.0, concrete, cm)
+                }
+            }
+            // die Außenwände, je Stück bis 1 m (innen)
+            int n = ring.length / 2
+            float area = Raser.Geo.Area(ring)
+            float turn = 1.0
+            if (area < 0.0) { turn = -1.0 }
+            for (int i = 0; i < n; i++) {
+                int j = (i + 1) % n
+                float ax = ring[i * 2]
+                float ay = ring[i * 2 + 1]
+                float ex = ring[j * 2] - ax
+                float ey = ring[j * 2 + 1] - ay
+                float len = Math.Sqrt(ex * ex + ey * ey)
+                if (len < 0.01) { continue }
+                // nach innen: links der Kante bei einem Ring gegen den Uhrzeigersinn
+                float nx = -ey / len * turn
+                float ny = ex / len * turn
+                int pieces = Math.Max(1, Math.Ceiling(len)!int)
+                for (int k = 0; k < pieces; k++) {
+                    float t0 = k * 1.0 / pieces
+                    float t1 = (k + 1) * 1.0 / pieces
+                    float px = ax + ex * t0
+                    float py = ay + ey * t0
+                    float qx = ax + ex * t1
+                    float qy = ay + ey * t1
+                    float mx = (px + qx) * 0.5
+                    float my = (py + qy) * 0.5
+                    if (!Raser.TunnelMesher.Inside(mx, my, x0, y0, size)) { continue }
+                    // offen, wo eine Rampe hinausführt (ein Tunnel derselben Höhe außen vor der Wand)
+                    if (Raser.TunnelMesher.Other(decks, g, mx - nx * 0.5, my - ny * 0.5, z, false)) { continue }
+                    part.Quad(px, py, z - 0.05, qx, qy, z - 0.05, qx, qy, c, px, py, c, nx, ny, 0.0, concrete, cm)
+                }
+            }
+            // Stützen und Stellplatzlinien
+            var pillars = new List<float>()
+            var lines = new List<float>()
+            Raser.Tunnels.Bays(g, decks, pillars, lines)
+            for (int k = 0; k + 3 < lines.Count; k = k + 4) {
+                float mx = (lines[k] + lines[k + 2]) * 0.5
+                float my = (lines[k + 1] + lines[k + 3]) * 0.5
+                if (!Raser.TunnelMesher.Inside(mx, my, x0, y0, size)) { continue }
+                Raser.TunnelMesher.Line(part, lines[k], lines[k + 1], lines[k + 2], lines[k + 3], z + 0.03)
+            }
+            for (int k = 0; k + 1 < pillars.Count; k = k + 2) {
+                float px = pillars[k]
+                float py = pillars[k + 1]
+                if (!Raser.TunnelMesher.Inside(px, py, x0, y0, size)) { continue }
+                Raser.BridgeMesher.Block(part, px, py, 1.0, 0.0, 0.25, 0.25, z - 0.05, c, concrete, cm)
+            }
+        }
+
+        // Eine Linie am Boden (12 cm breit, weiß).
+        static undefined Line(MeshPart part, defined float ax, defined float ay, defined float bx, defined float by, defined float z) {
+            float dx = bx - ax
+            float dy = by - ay
+            float l = Math.Max(0.0001, Math.Sqrt(dx * dx + dy * dy))
+            float rx = dy / l * 0.06
+            float ry = -dx / l * 0.06
+            part.Quad(ax - rx, ay - ry, z, ax + rx, ay + ry, z, bx + rx, by + ry, z, bx - rx, by - ry, z, 0.0, 0.0, 1.0, Raser.Palette.RoadMarking, Raser.Material.Paving!int)
+        }
+    }
+}
