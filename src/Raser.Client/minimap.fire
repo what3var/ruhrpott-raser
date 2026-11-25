@@ -511,11 +511,13 @@ class MinimapWorker {
             var key = Raser.TileKey.Parse(job.name)
             if (key != undefined) {
                 var tile = store.Load(key)
+                // (am Rand der Region gibt es keine Kachel: dann nichts zu zeichnen und nichts zu löschen - `delete undefined` beendete hier
+                // den Worker und damit das Spiel)
                 if (tile != undefined) {
                     var fb = Minimap.PaintTile(tile, paint)
                     job.image = take fb
+                    delete tile
                 }
-                delete tile
             }
             done.Send(take job)
         }

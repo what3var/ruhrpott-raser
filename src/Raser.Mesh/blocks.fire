@@ -471,8 +471,27 @@ namespace Raser {
             float sz = -this.originZ
             string path = this.CachePath(bx, by)
             if (this.useCache && IO.File.Exists(path)) {
-                byte cached[] = Compression.Deflate.Decompress(IO.File.ReadAllBytes(path))
-                if (cached.length >= 24 && cached[0] == 82 && cached[1] == 82 && cached[2] == 78 && cached[3] == 49 && cached.ReadInt32(4) == this.Stamp() && cached.ReadInt32(8) == Math.Round(this.nearSpacing * 100.0)!int) {
+                // eine kaputte Datei (halb geschrieben: ein Absturz, zwei Prozesse) ist kein Grund zum Absturz - weg damit, der Block wird neu gebaut
+                byte cached[] = undefined
+                try {
+                    cached = Compression.Deflate.Decompress(IO.File.ReadAllBytes(path))
+                } catch (Exception broken) {
+                    print("Netz-Cache: " + path + " ist kaputt (" + broken.message + ") - wird neu gebaut")
+                    cached = undefined
+                    try { IO.File.Delete(path) } catch (Exception gone) { }
+                }
+                // gültig: Kopf "RRN1", dieselbe Version und dasselbe Geländeraster, und lang genug für die Vierecke, die er ankündigt
+                bool usable = cached != undefined && cached.length >= 24 && cached[0] == 82 && cached[1] == 82 && cached[2] == 78 && cached[3] == 49 && cached.ReadInt32(4) == this.Stamp() && cached.ReadInt32(8) == Math.Round(this.nearSpacing * 100.0)!int
+                if (usable) {
+                    defined int nq = cached.ReadInt32(12)
+                    defined int gq = cached.ReadInt32(16)
+                    if (nq < 0 || gq < 0 || cached.length < 24 + (nq + gq) * 49) {
+                        print("Netz-Cache: " + path + " ist zu kurz - wird neu gebaut")
+                        try { IO.File.Delete(path) } catch (Exception gone) { }
+                        usable = false
+                    }
+                }
+                if (usable) {
                     defined int no = cached.ReadInt32(12)
                     defined int ng = cached.ReadInt32(16)
                     BlockMesh.BatchesFrom(cached, 24, no, 1.0, sx, sy, sz, result.batches)
@@ -604,8 +623,8 @@ namespace Raser {
                 // (der Cache ist nur ein Vorrat: wird der Ordner gerade von einem Voxelisieren gelöscht, bleibt der Block eben ungespeichert)
                 try {
                     IO.Directory.CreateDirectory(IO.Path.GetDirectoryName(path))
-                    IO.File.WriteAllBytes(path, Compression.Deflate.Compress(data))
-                } catch (IO.IOException e) {
+                    Raser.FileTileStore.WriteSafely(path, Compression.Deflate.Compress(data))
+                } catch (Exception e) {
                 }
             }
             BlockMesh.BatchesFrom(data, 24, opaque.quads, 1.0, sx, sy, sz, result.batches)
